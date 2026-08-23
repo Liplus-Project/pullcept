@@ -6,7 +6,7 @@
 //!
 //! Frames on the wire are the room protocol:
 //!
-//!   sidecar -> room : { type: "hello", protocol, name, hue? }
+//!   sidecar -> room : { type: "hello", protocol, name, hue?, account_id? }
 //!   both ways       : { type: "post", message_id, speaker, content, to?, ts,
 //!                       last_seen? }
 //!   room -> sidecar : { type: "post_result", message_id, delivered, missed }
@@ -35,6 +35,21 @@
 //! Roster identity is the connection, not the name. Two participants may answer
 //! to one name; they are still two, and one of them leaving must not take the
 //! other off the roster (#40).
+//!
+//! `account_id` is optional on `hello` and on `room_join`, and the room does no
+//! more with it than put it on the seat and hand it back on the roster. It is
+//! not an identity here and does not become one by being more stable than a
+//! name: the roster is keyed on the connection, self-suppression is decided on
+//! the connection, and `speaker` is stamped from the connection — all three
+//! unchanged, and all three are what would break if any of them started reading
+//! this field (#39 / #40 / #47). What it buys is on the screen: its own list of
+//! accounts can be joined against the roster by id rather than by name, which
+//! is the match #40 and #53 ruled out and the reason the panel had split into
+//! two lists (#57, #59).
+//!
+//! A connection may carry none. The room does not presume an account exists
+//! behind a participant — a person or a session that has one is not a different
+//! kind of participant from one that has not.
 //!
 //! `last_seen` on a post is the speaker's watermark: the `message_id` of the
 //! newest post they had actually seen when they composed. The room checks it
@@ -79,7 +94,10 @@ use uuid::Uuid;
 /// 3: `hello` carries the declared `hue` beside the name.
 /// 4: `post` carries the speaker's `last_seen` watermark, and the room answers
 ///    every post with `post_result` (#47).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: `hello` may carry the `account_id` the session was launched as, and the
+///    roster hands it back. Carried only — identity stays on the connection
+///    (#59).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -115,6 +133,15 @@ pub struct Participant {
     /// Declared at join; `None` when this participant declared none, which the
     /// screen answers by deriving one from the name.
     pub hue: Option<f64>,
+    /// The account this participant was launched as, or `None` when they
+    /// declared none.
+    ///
+    /// Handed back so the screen can join its own account list against this
+    /// roster by id. It is not the identity and is not what this entry is keyed
+    /// on — `id` above is both, and stays both however much more stable an
+    /// account id looks (#39 / #40 / #59). `None` is a participant like any
+    /// other, not a participant the screen may leave out.
+    pub account: Option<String>,
     /// True for this screen's own person. Viewer-relative, like a message's
     /// `own`, and there is one screen.
     pub own: bool,
@@ -162,6 +189,7 @@ struct IncomingFrame {
     message_id: Option<String>,
     name: Option<String>,
     hue: Option<f64>,
+    account_id: Option<String>,
     content: Option<String>,
     to: Option<String>,
     ts: Option<String>,
@@ -174,6 +202,9 @@ struct IncomingFrame {
 struct Seat {
     name: String,
     hue: Option<f64>,
+    /// The account declared at join, or `None`. Held so the roster can hand it
+    /// back; nothing in this file branches on it.
+    account: Option<String>,
     /// Where the floor stood when this connection took its seat. It is the
     /// watermark of a participant who declares none: what predates the seat
     /// was never delivered to them, so it is not theirs to have missed.
@@ -247,6 +278,10 @@ impl RoomState {
                 id: id.clone(),
                 name: seat.name.clone(),
                 hue: seat.hue,
+                account: seat.account.clone(),
+                // Decided on the connection, as it has to be: this is the one
+                // identity a shared name — or a shared account id arriving from
+                // somewhere this app did not launch — cannot blur (#40).
                 own: *id == self.local_origin,
             })
             .collect();
@@ -257,6 +292,19 @@ impl RoomState {
     /// The hue declared by whoever is on `origin`, for stamping onto a post.
     fn hue_of(&self, origin: &str) -> Option<f64> {
         self.inner.lock().participants.get(origin).and_then(|seat| seat.hue)
+    }
+
+    /// The account whoever is on `origin` joined under.
+    ///
+    /// Read back for the same reason the hue is: `room_post` re-seats under the
+    /// name it was given, and passing `None` for what it was not told would
+    /// silently withdraw a declaration nobody withdrew.
+    fn account_of(&self, origin: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .participants
+            .get(origin)
+            .and_then(|seat| seat.account.clone())
     }
 
     fn set_port(&self, port: u16) {
@@ -270,14 +318,17 @@ impl RoomState {
     ///
     /// Returns true when the roster changed, so a declaration that declares
     /// nothing new does not emit a roster event.
-    fn seat(&self, origin: &str, name: &str, hue: Option<f64>) -> bool {
+    fn seat(&self, origin: &str, name: &str, hue: Option<f64>, account: Option<&str>) -> bool {
         let mut inner = self.inner.lock();
         let current = inner
             .participants
             .get(origin)
-            .map(|seat| (seat.name.clone(), seat.hue, seat.since));
-        if let Some((current_name, current_hue, _)) = &current {
-            if current_name == name && *current_hue == hue {
+            .map(|seat| (seat.name.clone(), seat.hue, seat.account.clone(), seat.since));
+        if let Some((current_name, current_hue, current_account, _)) = &current {
+            if current_name == name
+                && *current_hue == hue
+                && current_account.as_deref() == account
+            {
                 return false;
             }
         }
@@ -286,7 +337,7 @@ impl RoomState {
         // being replaced keeps the position it started from — renaming does
         // not make a participant newly arrived.
         let since = match &current {
-            Some((_, _, since)) => *since,
+            Some((_, _, _, since)) => *since,
             None => inner.floor.seq(),
         };
         inner.participants.insert(
@@ -294,6 +345,7 @@ impl RoomState {
             Seat {
                 name: name.to_string(),
                 hue,
+                account: account.map(str::to_string),
                 since,
             },
         );
@@ -318,6 +370,15 @@ fn normalize_hue(hue: Option<f64>) -> Option<f64> {
 fn normalize_to(to: Option<String>) -> Option<String> {
     to.map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
+}
+
+/// Absent is the key omitted, never an empty one, for the same reason `to` is:
+/// the screen matches this against its own account ids, and an empty string
+/// would be an id no account has while looking like a declared one.
+fn normalize_account(account_id: Option<String>) -> Option<String> {
+    account_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
 }
 
 /// The room's clock.
@@ -563,8 +624,18 @@ async fn serve_participant(
                     );
                 }
                 // Seated on this connection. A second session answering to the
-                // same name is a second seat, not the same one.
-                room.seat(&origin, &name, normalize_hue(frame.hue));
+                // same name is a second seat, not the same one — and so is a
+                // second session declaring the same account, which this room
+                // does not refuse: refusing a duplicate account belongs to the
+                // launcher's seat ledger, which knows what it started
+                // (`session::RoomSeats`), and a room that enforced it here
+                // would be treating the account as the identity.
+                room.seat(
+                    &origin,
+                    &name,
+                    normalize_hue(frame.hue),
+                    normalize_account(frame.account_id).as_deref(),
+                );
                 joined_as = Some(name);
                 let _ = app.emit("room-participants", room.participants());
             }
@@ -640,22 +711,31 @@ pub fn room_participants(state: tauri::State<RoomState>) -> Vec<Participant> {
 /// roster would list only sessions until the first utterance, and nobody could
 /// address someone who had not spoken yet.
 ///
-/// `hue` is optional and the same declaration a session makes in its `hello`.
-/// The screen's person and a session take one seat of the same kind, and there
-/// is one path to it.
+/// `hue` and `account_id` are optional and are the same declarations a session
+/// makes in its `hello`. The screen's person and a session take one seat of the
+/// same kind, and there is one path to it — which is why the account rides here
+/// too: the person at the keyboard is an account of this app like any other
+/// (#59), and a join path that could not say so would put them back outside the
+/// one list this exists to make possible.
 #[tauri::command]
 pub fn room_join(
     app: AppHandle,
     state: tauri::State<RoomState>,
     name: String,
     hue: Option<f64>,
+    account_id: Option<String>,
 ) -> Result<(), String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("name is empty".to_string());
     }
     let local_origin = state.local_origin.clone();
-    if state.seat(&local_origin, &name, normalize_hue(hue)) {
+    if state.seat(
+        &local_origin,
+        &name,
+        normalize_hue(hue),
+        normalize_account(account_id).as_deref(),
+    ) {
         let _ = app.emit("room-participants", state.participants());
     }
     Ok(())
@@ -692,12 +772,13 @@ pub fn room_post(
         return Err("speaker is empty".to_string());
     }
     // Speaking is being present. A post under a name the roster has not seen
-    // seats it, so the two cannot disagree. The hue is left as it stands: the
-    // composer declares nothing, and passing `None` here would silently
-    // withdraw a declaration the person made in the titlebar.
+    // seats it, so the two cannot disagree. The hue and the account are left as
+    // they stand: the composer declares neither, and passing `None` here would
+    // silently withdraw a declaration made at the join.
     let local_origin = state.local_origin.clone();
     let seated_hue = state.hue_of(&local_origin);
-    if state.seat(&local_origin, &speaker, seated_hue) {
+    let seated_account = state.account_of(&local_origin);
+    if state.seat(&local_origin, &speaker, seated_hue, seated_account.as_deref()) {
         let _ = app.emit("room-participants", state.participants());
     }
 

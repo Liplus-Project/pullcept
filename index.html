@@ -15,56 +15,23 @@
              participant panel's list now: two renderings of one roster is one
              surface too many, and the panel is always on screen. -->
         <span class="spacer"></span>
-        <!-- Who this screen's person is in the room: the name they answer to
-             and the colour they are drawn in. One pair, declared together,
-             because they are one declaration — this is who I am here. The
-             launcher below carries the same pair for a session. -->
-        <label class="who">
-          名前
-          <input id="display-name" type="text" value="human" spellcheck="false" />
-        </label>
-        <label class="who">
-          色
-          <select id="display-hue"></select>
-        </label>
+        <!-- The person at this screen used to declare their name and colour
+             here, every session, into fields that saved as they lost focus.
+             They are an account now (#59), so both live where every other
+             account's do: in the dialog their row in the participant list
+             opens. Two surfaces editing one pair is the split this issue is
+             closing, in miniature. -->
         <button id="toggle-diagnostics" type="button" aria-expanded="false">診断</button>
       </header>
 
-      <!-- The accounts. An account exists whether or not it is running, so
-           this row is where one is made, named, coloured and pointed at a
-           working directory — not where a launch declares those (#53). Editing
-           any field here edits the account; the launch button starts the one
-           selected. -->
+      <!-- Which account joins, and the join. Nothing else: choosing who to
+           join as and editing what that account is are two acts, and the row
+           that did both had to grow a field per attribute (#59). The
+           attributes are in the dialog; making an account is the ＋ beside the
+           list it appears in. -->
       <div id="launcher">
-        <select id="account-select" aria-label="アカウント"></select>
-        <button id="account-new" type="button" title="アカウントを追加">＋</button>
-        <button id="account-delete" type="button" title="選択中のアカウントを削除">−</button>
-        <label class="who">
-          名前
-          <input id="account-name" type="text" spellcheck="false" />
-        </label>
-        <label class="who">
-          色
-          <select id="account-hue"></select>
-        </label>
-        <label class="cwd">
-          作業ディレクトリ
-          <input id="session-cwd" type="text" spellcheck="false" />
-        </label>
+        <select id="account-select" aria-label="参加するアカウント"></select>
         <button id="start-session" type="button">セッション参加</button>
-      </div>
-
-      <div id="launch-row">
-        <label class="options">
-          起動オプション
-          <input
-            id="launch-options"
-            type="text"
-            spellcheck="false"
-            placeholder="例: --dangerously-skip-permissions"
-          />
-        </label>
-        <span id="launch-preview" class="preview"></span>
       </div>
 
       <div id="body">
@@ -111,43 +78,35 @@
           <div id="status" role="status"></div>
         </div>
 
-        <!-- Who is in the room, and what the session under it was launched
-             from. The values were all reachable before this panel existed;
-             what was missing was a place that shows them without being
-             opened.
+        <!-- Who is here, and what the session under a row was launched from.
+             The values were all reachable before this panel existed; what was
+             missing was a place that shows them without being opened.
 
-             The list is the room's roster and the accounts that are not in it,
-             joined on the account id. An account that is not running is still
-             someone, so it is listed and marked offline rather than left out
-             (#53); it is not offered as an addressee, because a name that
-             cannot be reached is not one worth naming. -->
+             **One list.** The room's roster and this app's accounts, joined on
+             the account id the room now carries (#59). It was two lists — a
+             roster and a terminal list — because a `Participant` had no account
+             id and the two halves could only have been matched by name, which
+             #40 and #53 ruled out (#57). With the id on the wire the two
+             answers are one row: who is here, and what can be done with them.
+
+             Grouped by the kind declared when the account was made. An account
+             that is not running is still someone, so it is listed dimmed rather
+             than left out (#53); it is still not offered as an addressee,
+             because a name that cannot be reached is not one worth naming. -->
         <aside id="participants" aria-label="参加者">
-          <h2 class="panel-title">参加者</h2>
+          <div class="panel-head">
+            <h2 class="panel-title">参加者</h2>
+            <!-- Making an account belongs beside the list an account appears
+                 in, not on the row that launches one. It opens an empty form
+                 and creates nothing until that form is decided (#59). -->
+            <button id="account-new" type="button" title="アカウントを追加">＋</button>
+          </div>
           <!-- Seeded, because the roster only arrives once the room answers:
                a blank strip there would read as "nobody" before anyone has
                been asked. -->
           <ul id="roster" class="roster">
             <li class="empty">参加者なし</li>
           </ul>
-
-          <!-- The terminals this screen is holding, one row per account. Not
-               the roster above and not a second copy of it: that list answers
-               who is in the room and is keyed on each participant's
-               connection, while this one answers which sessions have a pane
-               here and is keyed on the account id. The memberships differ — a
-               participant who joined from elsewhere has no terminal here, and a
-               session that has just exited has a terminal and no seat.
-
-               Keying on the account id is what lets a row carry an operation:
-               the pane, the input and the 終了 all act on one account, and a
-               name match would tie the wrong one as soon as two accounts
-               answer to one name (#53). Hidden entirely until something has
-               been launched — an account with no session has no terminal to
-               show or end (#57). -->
-          <section id="terminals-section" class="terminals-section" hidden>
-            <h2 class="panel-title">端末</h2>
-            <ul id="terminals" class="terminals"></ul>
-          </section>
 
           <!-- What the terminal on the glass was launched from. The values
                follow the row that is selected above, so they answer for the
@@ -171,6 +130,80 @@
           </dl>
         </aside>
       </div>
+
+      <!-- The account form. In this webview rather than an OS window: it is a
+           step inside one act, and a second window is a thing to find, move and
+           lose behind the app.
+
+           It holds a draft. Nothing here reaches the account list until 決定 —
+           the fields used to save as they lost focus, so ＋ created an account
+           at the moment it was pressed and there was no moment of deciding and
+           no way back (#59). 取消 leaves nothing behind, for a new account and
+           for an edit alike. -->
+      <dialog id="account-dialog" aria-labelledby="account-dialog-title">
+        <form id="account-form" method="dialog">
+          <h2 id="account-dialog-title">アカウント</h2>
+
+          <label class="field">
+            名前
+            <input id="dialog-name" type="text" spellcheck="false" />
+          </label>
+
+          <!-- Declared here, and only here. The room sees what kind of
+               connection someone arrived on, which says nothing about whether
+               they are a person — a human joining from another client arrives
+               the same way a session does (#59). -->
+          <label class="field">
+            種別
+            <select id="dialog-kind">
+              <option value="user">user（人間）</option>
+              <option value="ai">AI（セッション）</option>
+            </select>
+          </label>
+
+          <label class="field">
+            色
+            <select id="dialog-hue"></select>
+          </label>
+
+          <!-- How to start a session. Shown for an AI account only: a person is
+               not launched, and there is no command under them to write options
+               for. -->
+          <div id="dialog-launch" class="launch">
+            <label class="field">
+              作業ディレクトリ
+              <input id="dialog-cwd" type="text" spellcheck="false" />
+            </label>
+            <label class="field">
+              起動オプション
+              <input
+                id="dialog-options"
+                type="text"
+                spellcheck="false"
+                placeholder="例: --dangerously-skip-permissions"
+              />
+            </label>
+            <!-- What will actually run. The app merges its own channel entry
+                 into whatever is typed above, so the line written here is not
+                 the line that launches; showing the result is cheaper than
+                 explaining the merge. It sits beside the field it explains. -->
+            <span id="dialog-preview" class="preview"></span>
+          </div>
+
+          <p id="dialog-error" class="error" role="alert"></p>
+
+          <menu class="actions">
+            <!-- Two clicks, like 終了 in the list and for the same reason: this
+                 one cannot be taken back and it sits beside two that can. Not
+                 `window.confirm`, whose two failure directions are both wrong
+                 here (#57). -->
+            <button id="dialog-delete" type="button" class="delete">削除</button>
+            <span class="spacer"></span>
+            <button id="dialog-cancel" type="button">取消</button>
+            <button id="dialog-commit" type="submit" value="commit">決定</button>
+          </menu>
+        </form>
+      </dialog>
     </div>
   </body>
 </html>

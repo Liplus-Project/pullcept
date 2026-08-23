@@ -24,6 +24,12 @@ const REPO = join(HERE, "..", "..");
 
 const TIMEOUT = 20_000;
 
+/**
+ * The account this session is launched as. Opaque, as it is in the app: an id
+ * a name could be read out of would be the wrong thing to carry (#53).
+ */
+const TEST_ACCOUNT = "8f14e45f-ceea-467a-b160-6f14e45fceea";
+
 // The manners, whole.
 //
 // Asserted as complete literals rather than by a regex on the opening clause.
@@ -189,6 +195,7 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "test-agent",
         PULLCEPT_AGENT_HUE: "145",
+        PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
         PULLCEPT_ROOM_ID: "test-room",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -346,7 +353,12 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // the same name (#40).
   assert.equal(hello.name, "test-agent");
   assert.equal(hello.hue, 145);
-  assert.equal(hello.protocol, 4);
+  // The account this session was launched as, carried so the screen can join
+  // its own account list against the room's roster by id rather than by name
+  // (#59). It rides on `hello` and decides nothing: identity in the room is the
+  // connection, and this frame cannot set that (#39 / #40).
+  assert.equal(hello.account_id, TEST_ACCOUNT);
+  assert.equal(hello.protocol, 5);
 
   roomSocket.send(
     JSON.stringify({
@@ -558,11 +570,16 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   );
 });
 
-test("a session launched without a declared hue says so by omission", async (t) => {
+test("a session launched without a hue or an account says so by omission", async (t) => {
   // The undeclared state has to survive the wire. The room derives a colour
   // from the name for a participant who chose none, and it can only do that
   // while "chose none" is still distinguishable from a number a default put
   // there (#40).
+  //
+  // The account id is the same shape and a stronger case: a connection with no
+  // account behind it is a participant like any other, and the room must not
+  // presume one exists (#59). An empty string here would be an id no account
+  // has, offered to the screen as though someone had declared it.
   const http = createServer();
   const wss = new WebSocketServer({ server: http });
   await new Promise((r) => http.listen(0, "127.0.0.1", r));
@@ -605,4 +622,9 @@ test("a session launched without a declared hue says so by omission", async (t) 
   const hello = await withTimeout(helloSeen.promise, "hello frame");
   assert.equal(hello.name, "no-colour");
   assert.equal("hue" in hello, false, "an undeclared hue must carry no key");
+  assert.equal(
+    "account_id" in hello,
+    false,
+    "a connection with no account behind it must carry no account key",
+  );
 });

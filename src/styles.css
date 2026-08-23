@@ -290,24 +290,87 @@ body {
   font-size: 0.78rem;
 }
 
+/* The list's own heading, with the control that makes an account beside it.
+   Making one belongs next to the list it appears in, not on the row that
+   launches one (#59). */
+#participants .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem 0.35rem;
+}
+
 #participants .panel-title {
   margin: 0;
-  padding: 0.6rem 0.9rem 0.35rem;
+  flex: 1;
   font-size: inherit;
   font-weight: 600;
 }
 
+#participants .panel-head button {
+  font: inherit;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+
 #participants .roster {
   margin: 0;
-  padding: 0;
+  padding: 0 0.3rem 0.35rem;
   list-style: none;
 }
 
-#participants .roster li {
+/* A group of one kind, and how many of them are here. The count is what a
+   heading buys over a divider — the label alone would say what these are, and
+   this says how many without counting rows (#59).
+
+   The kind is the one declared when the account was made. A participant with no
+   account declared none, and their group is that absence rather than a guess
+   read off the connection they arrived on. */
+#participants .roster .group {
+  padding: 0.7rem 0.6rem 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+#participants .member {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* The name is the control that picks this account's terminal, so it takes the
+   width of the row: choosing which session to watch is a click on the session
+   itself. A row whose account has no terminal here is the same shape without
+   the button — the layout must not move when a session starts or ends. */
+#participants .member .pick {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.45rem 0.9rem;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.3rem;
+}
+
+#participants .member button.pick {
+  cursor: pointer;
+}
+
+/* The pane on the glass. Lifted out of the panel's surface rather than tinted,
+   so which terminal is showing reads at a glance and in either theme. */
+#participants .member.shown .pick {
+  background: var(--bg);
+  border-color: var(--line);
 }
 
 /* The same colour the participant's lines carry in the room. */
@@ -319,30 +382,37 @@ body {
   background: var(--speaker, var(--line));
 }
 
+/* The name carries the participant's own colour, which is what makes this list
+   a legend for the conversation rather than a second copy of the same names. */
 #participants .who {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--speaker, var(--fg));
 }
 
-/* What a line says about itself beyond the name: 「（あなた）」 for the name
-   this screen posts under, 「未起動」 for an account with no session in the
-   room. Colour alone would say the first of those, but only to someone who
-   already knows which colour is theirs. */
+/* What a line says about itself beyond the name: 「（あなた）」 for the person at
+   this screen, 「未起動」 for an account with no session in the room, 「終了」 for
+   one whose session has ended and whose output is still readable. Colour alone
+   would say the first of those, but only to someone who already knows which
+   colour is theirs. */
 #participants .note {
   color: var(--muted);
 }
 
-/* An account that exists but is not in the room. Dimmed rather than dropped:
-   it is still someone, and this list is where the person reads who they have
-   (#53). It is not an addressee — that list comes from the room's roster, so
-   an offline account cannot appear in it at all. */
-#participants .roster li.offline .who {
-  color: var(--muted);
+/* An account that exists but is not in the room. Dimmed rather than dropped: it
+   is still someone, and this list is where the person reads who they have
+   (#53). Dimmed rather than greyed — the colour carries the account's identity,
+   and someone merely absent must not read as someone else (#59). The dot goes
+   from filled to outline, which is the part that says "not here" at a glance.
+   It is still not an addressee: that list comes from the room's roster, so an
+   offline account cannot appear in it at all. */
+#participants .member.offline .pick {
+  opacity: 0.55;
 }
 
-#participants .roster li.offline .dot {
+#participants .member.offline .dot {
   background: none;
   border: 1px solid var(--speaker, var(--line));
 }
@@ -352,75 +422,14 @@ body {
   color: var(--muted);
 }
 
-/* ── panel: terminals ────────────────────────────────────────────────────── */
-
-/* The sessions this screen holds a pane for. Its own block under the roster,
-   because it answers a different question: the roster says who is in the room,
-   this says which terminals are here to be watched and ended. */
-#participants .terminals-section {
-  border-top: 1px solid var(--line);
-  margin-top: 0.35rem;
-}
-
-#participants .terminals {
-  margin: 0;
-  padding: 0 0.6rem 0.35rem;
-  list-style: none;
-}
-
-#participants .term-row {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-/* The name is the control that picks the pane, so it takes the width of the
-   row: choosing which session to watch is a click on the session, not on a
-   separate button beside it. */
-#participants .term-row .pick {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font: inherit;
-  text-align: left;
-  color: var(--fg);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 0.3rem;
-  cursor: pointer;
-}
-
-/* The pane on the glass. Lifted out of the panel's surface rather than tinted,
-   so which terminal is showing reads at a glance and in either theme. */
-#participants .term-row.shown .pick {
-  background: var(--bg);
-  border-color: var(--line);
-}
-
-/* Dimmed, and the dot goes from filled to outline — the same pair the roster
-   uses for an account that is not in the room. A session that has ended is not
-   in it either; the row is still here only for what it printed. */
-#participants .term-row.ended .who {
-  color: var(--muted);
-}
-
-#participants .term-row.ended .dot {
-  background: none;
-  border: 1px solid var(--speaker, var(--line));
-}
-
-/* Its resting state is a quiet outline in the danger colour: this is the one
-   control here that cannot be taken back, and it sits next to one that only
-   changes what is displayed. Armed, it fills — the button says which of its two
-   states it is in, and the second click is the one that acts (src/main.ts). */
-#participants .term-row .end {
+/* The account's own operations, riding on its row. This is what one list buys:
+   the row is keyed on the account id, so these act on one account and cannot be
+   tied to the wrong one by a shared name (#53, #59). */
+#participants .member .edit,
+#participants .member .end {
   flex: none;
   font: inherit;
   font-size: 0.72rem;
-  color: var(--danger);
   background: none;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -428,7 +437,19 @@ body {
   cursor: pointer;
 }
 
-#participants .term-row .end.armed {
+#participants .member .edit {
+  color: var(--muted);
+}
+
+/* Its resting state is a quiet outline in the danger colour: this is the one
+   control here that cannot be taken back, and it sits next to two that can.
+   Armed, it fills — the button says which of its two states it is in, and the
+   second click is the one that acts (src/main.ts). */
+#participants .member .end {
+  color: var(--danger);
+}
+
+#participants .member .end.armed {
   color: var(--bg);
   background: var(--danger);
   border-color: var(--danger);
@@ -480,8 +501,9 @@ body {
 
 /* ── launcher ────────────────────────────────────────────────────────────── */
 
-/* Its own row rather than the titlebar: the working directory is a path, and a
-   path squeezed into a title strip is a path nobody reads before launching. */
+/* Which account joins, and the join. It used to carry a field per attribute of
+   the selected account as well; those are in the dialog now, because choosing
+   who to join as and editing what that account is are two acts (#59). */
 #launcher {
   display: flex;
   align-items: center;
@@ -491,29 +513,6 @@ body {
   font-size: 0.8rem;
 }
 
-/* The name and colour of the selected account. The same pair the titlebar
-   carries for this screen's person — the person declares theirs at the moment
-   of joining, and an account carries its own whether or not it is running. */
-#launcher .who {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--muted);
-}
-
-#launcher .who input {
-  width: 7rem;
-}
-
-#launcher .cwd {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex: 1;
-  color: var(--muted);
-}
-
-#launcher input,
 #launcher select,
 #launcher button {
   font: inherit;
@@ -524,24 +523,15 @@ body {
   padding: 0.25rem 0.45rem;
 }
 
-#launcher .cwd input {
-  flex: 1;
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 0.75rem;
+#launcher select {
+  min-width: 12rem;
 }
 
 #launcher button {
   cursor: pointer;
 }
 
-/* Add and remove an account. Square and unlabelled beside the picker they act
-   on, so the row keeps its width for the working directory. */
-#launcher #account-new,
-#launcher #account-delete {
-  padding: 0.25rem 0.5rem;
-  line-height: 1;
-}
-
+#launcher select:disabled,
 #launcher button:disabled {
   cursor: default;
   opacity: 0.6;
@@ -572,42 +562,137 @@ body {
   height: 100%;
 }
 
-/* ── launch options ──────────────────────────────────────────────────────── */
+/* ── the account dialog ──────────────────────────────────────────────────── */
 
-#launch-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  border-bottom: 1px solid var(--line);
-  padding: 0.35rem 0.9rem 0.5rem;
-  font-size: 0.78rem;
+/* In this webview, not an OS window: it is a step inside one act, and a second
+   window is a thing to find, move and lose behind the app. */
+#account-dialog {
+  width: min(30rem, calc(100vw - 3rem));
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  font-size: 0.85rem;
 }
 
-#launch-row .options {
+#account-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+#account-form {
   display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem 1.1rem 0.9rem;
+}
+
+#account-dialog h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+#account-dialog .field {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.6rem;
   color: var(--muted);
 }
 
-#launch-row input {
-  width: 22rem;
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 0.75rem;
+#account-dialog input,
+#account-dialog select {
+  font: inherit;
+  width: 100%;
   color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 0.25rem 0.45rem;
+  padding: 0.3rem 0.45rem;
 }
 
-/* What will actually run, including the channel entry the app merges in. */
-#launch-row .preview {
-  flex: 1;
+#account-dialog #dialog-cwd,
+#account-dialog #dialog-options {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.78rem;
+}
+
+/* Only for a session. A person has no command under them, so these would be
+   fields that never do anything. */
+#account-dialog .launch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+#account-dialog .launch[hidden] {
+  display: none;
+}
+
+/* What will actually run, including the channel entry the app merges in. It
+   sits beside the field it explains rather than out on the launcher row, where
+   the field it explains no longer is.
+
+   It wraps here, where the one-line row it came from had to clip it. The tail
+   is the channel entry the app merged in, which is the half the person did not
+   write and the reason this line is shown at all — an ellipsis would hide
+   exactly that. The dialog has the vertical room the row did not. */
+#account-dialog .preview {
   color: var(--muted);
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Why the form cannot be decided yet, or why a delete was refused. Empty most
+   of the time and holding its line, so the buttons do not jump when it fills. */
+#account-dialog .error {
+  margin: 0;
+  min-height: 1.2rem;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+#account-dialog .actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+}
+
+#account-dialog .actions .spacer {
+  flex: 1;
+}
+
+#account-dialog .actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+/* The decision. Filled, because it is the one control here that does anything
+   to the account list. */
+#account-dialog #dialog-commit {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Two clicks, in the same shape 終了 uses in the list: a quiet outline at rest,
+   filled once armed. Selected through `.actions` so it outranks the colour that
+   rule sets on every button in the row. */
+#account-dialog .actions .delete {
+  color: var(--danger);
+}
+
+#account-dialog .actions .delete.armed {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
 }

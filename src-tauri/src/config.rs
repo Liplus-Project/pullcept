@@ -3,6 +3,29 @@ use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
 
+/// What kind of participant an account is.
+///
+/// **Declared when the account is made, never inferred.** The room knows only
+/// what kind of connection someone arrived on, and a person joining from
+/// another client arrives on the same kind of connection a session does — so
+/// inferring this from the connection mistakes one for the other, which is
+/// exactly the participant the room was built to stop treating differently
+/// (#39). The one moment anyone can say which this is, is the moment the
+/// account is created, and there is already a form there (#59).
+///
+/// It sorts the participant list into groups and does nothing else. Nothing in
+/// the room reads it; the room still has one kind of participant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountKind {
+    /// A person. The one at this keyboard is one of these (#59, which is where
+    /// #53 left this open).
+    User,
+    /// A CLI session this app launches.
+    #[default]
+    Ai,
+}
+
 /// One account: someone who exists in this app whether or not they are running.
 ///
 /// The identity is `id`, and only `id`. It is minted once and never changes;
@@ -39,6 +62,14 @@ pub struct Account {
     /// account is named and coloured while it is not running.
     #[serde(default)]
     pub hue: Option<f64>,
+    /// What kind of participant this account is, declared when it was made.
+    ///
+    /// Defaulted to `Ai` for an account written before this field existed, and
+    /// that is a migration rather than a fallback: every account that could
+    /// have been saved then was a launch recipe for a CLI. The person at the
+    /// keyboard had no account at all until now.
+    #[serde(default)]
+    pub kind: AccountKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +130,7 @@ impl Default for AppConfig {
                 args: vec![],
                 cwd: None,
                 hue: None,
+                kind: AccountKind::Ai,
             }],
         }
     }
@@ -138,6 +170,13 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     // unknown field serde ignores. No migration step runs, because there is
     // nothing left for one to do — the person's own working directory and
     // launch options are what would have been lost, and they carry over.
+    //
+    // A config written before `kind` existed is the same shape of nothing: the
+    // field defaults to `Ai`, which every account saved then was. The account
+    // the person at the keyboard now has is made on the screen rather than
+    // migrated, because what it is made from — the name and hue they had been
+    // joining under — lives in the webview's own storage and never reached
+    // this file (#59).
     //
     // No path exists for anything older than that. Pullcept has never
     // shipped a release, and its app data directory is keyed to its own

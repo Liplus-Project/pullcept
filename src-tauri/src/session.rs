@@ -8,7 +8,7 @@
 //!
 //! The session must be interactive: `--print` never receives a push.
 
-use crate::config::Account;
+use crate::config::{Account, AccountKind};
 use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use mcp_config::{
@@ -239,6 +239,18 @@ pub fn start_session(
              lists it under and what a post is addressed to."
                 .to_string(),
         );
+    }
+
+    // A person is not launched. Their account exists for the same reasons every
+    // account does — a name, a colour, a row in the list whether or not they
+    // are in the room — and there is no CLI under it to spawn (#59). Refused
+    // here rather than only hidden from the launcher, so the screen is not the
+    // only thing standing between a `user` account and a spawned `claude`.
+    if account.kind == AccountKind::User {
+        return Err(format!(
+            "Account \"{name}\" is a person, not a session. There is nothing to launch: a \
+             person joins by being at the screen."
+        ));
     }
 
     if let Err(flag) = reject_incompatible_flags(&account.args) {
