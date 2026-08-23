@@ -1,0 +1,16 @@
+[package]
+name = "room-floor"
+version = "0.1.0"
+description = "The floor of the liplus-chat room: what has been said, and who had seen it before speaking"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Deliberately free of tauri, for the reason docs/0-requirements.md gives: a
+# test binary that links the tauri dependency tree does not load on the GNU
+# target, so pure logic left in `src-tauri/src/` is unverifiable the moment it
+# is written. The ordering this crate decides is the part of #47 that a reader
+# cannot check by reading, so it has to be the part a test can run.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
