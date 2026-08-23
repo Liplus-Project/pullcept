@@ -5,6 +5,7 @@ mod session;
 
 use pty::PtyState;
 use room::RoomState;
+use session::RoomSeats;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -14,6 +15,9 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::new())
         .manage(RoomState::new())
+        // Which account is in the room, so a second launch of one account is
+        // refused rather than seating one identity twice (session::RoomSeats).
+        .manage(RoomSeats::new())
         .setup(|app| {
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
@@ -41,6 +45,7 @@ pub fn run() {
             room::room_participants,
             room::room_join,
             room::room_post,
+            session::seated_accounts,
             session::parse_launch_options,
             session::preview_launch_args,
             session::start_session,

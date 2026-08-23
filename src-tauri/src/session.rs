@@ -8,14 +8,17 @@
 //!
 //! The session must be interactive: `--print` never receives a push.
 
-use crate::config::TabConfig;
+use crate::config::Account;
 use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use mcp_config::{
     channel_launch_args, register_sidecar, reject_incompatible_flags, server_name_for,
     RoomRegistration,
 };
-use std::path::PathBuf;
+use parking_lot::Mutex;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::AppHandle;
 
 /// The sidecar entry point and the runner that executes it.
@@ -72,6 +75,104 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
         .to_string())
 }
 
+/// Which seat in the room each account is holding.
+///
+/// **One account, one seat per room.** An account is who someone is, and the
+/// same someone cannot be in one room twice: two connections under one account
+/// would put one identity in the roster twice, and a post addressed to that
+/// name would have two places to land.
+///
+/// The rule is scoped to the room, not to the account. There is one room today
+/// — the sidecar's `LIPLUS_ROOM_ID` is fixed to `liplus-chat` — so this map
+/// needs no room in its key yet, and with one room the refusal is
+/// indistinguishable from "an account runs once". They are not the same rule.
+/// Rooms are meant to become plural (`design/Vision.dc.html`), and one account
+/// holding a seat in each of two rooms is the intended shape rather than a
+/// violation of this one. The scope is written down here because the mechanism
+/// cannot show it: a rule remembered as "an account runs once" would outlive
+/// the reason for it and block that case later, when nobody remembers why the
+/// line was drawn.
+#[derive(Clone)]
+pub struct RoomSeats {
+    seats: Arc<Mutex<BTreeMap<String, Seat>>>,
+}
+
+/// One account's seat, from the launch being decided to the session ending.
+enum Seat {
+    /// A launch is in flight: the registration is being written, or the CLI is
+    /// being spawned. Held so that two launches racing for one account cannot
+    /// both find the seat empty — the loser is refused before a second process
+    /// exists, rather than after.
+    Starting,
+    /// A session is running. The PTY id is what says so, and asking the PTY is
+    /// the only liveness question anyone asks here.
+    Running(String),
+}
+
+impl RoomSeats {
+    pub fn new() -> Self {
+        RoomSeats {
+            seats: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    /// The accounts holding a seat right now.
+    ///
+    /// Liveness is read off the PTY rather than from a release call anyone has
+    /// to remember to make. A seat whose session has exited is a free seat, and
+    /// a release that never arrived would otherwise lock an account out of the
+    /// room for the rest of the run with no way back short of restarting.
+    pub fn seated(&self, ptys: &PtyState) -> Vec<String> {
+        let mut seats = self.seats.lock();
+        seats.retain(|_, seat| match seat {
+            Seat::Starting => true,
+            Seat::Running(pty_id) => ptys.is_running(pty_id),
+        });
+        seats.keys().cloned().collect()
+    }
+
+    /// Claim the seat for `account_id`, or fail because it is taken.
+    ///
+    /// The sweep and the claim are one acquisition of the lock: checking first
+    /// and claiming after would let two launches pass the same empty seat.
+    fn claim(&self, account_id: &str, ptys: &PtyState) -> Result<(), ()> {
+        let mut seats = self.seats.lock();
+        let taken = match seats.get(account_id) {
+            Some(Seat::Starting) => true,
+            Some(Seat::Running(pty_id)) => ptys.is_running(pty_id),
+            None => false,
+        };
+        if taken {
+            return Err(());
+        }
+        seats.insert(account_id.to_string(), Seat::Starting);
+        Ok(())
+    }
+
+    /// The launch got a session up; the seat is now held by that session.
+    fn hold(&self, account_id: &str, pty_id: &str) {
+        self.seats
+            .lock()
+            .insert(account_id.to_string(), Seat::Running(pty_id.to_string()));
+    }
+
+    /// The launch failed. Nothing is running, so nothing holds the seat.
+    fn release(&self, account_id: &str) {
+        self.seats.lock().remove(account_id);
+    }
+}
+
+/// The accounts with a session in the room, for the screen to draw against its
+/// own list of accounts.
+///
+/// Account ids, never names. The screen matches these against its accounts by
+/// id, so an account renamed while its session runs is still the same account
+/// on both sides, and two accounts sharing a name are still two.
+#[tauri::command]
+pub fn seated_accounts(pty_state: tauri::State<PtyState>, seats: tauri::State<RoomSeats>) -> Vec<String> {
+    seats.seated(&pty_state)
+}
+
 /// Split a launch-options string into arguments.
 ///
 /// The splitter lives in `mcp-config` so it is covered by tests; this is the
@@ -87,13 +188,14 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// The app merges its own channel entry into what the person wrote, so the
 /// line they typed is not the line that runs. This returns the line that runs.
 ///
-/// The entry names this session's own server, which is a function of the name
-/// being launched under, so the preview moves as the name field is typed in.
-/// That is the point rather than a side effect: the identity a session is about
-/// to take is the thing this launch is now choosing.
+/// The entry names this account's own server, which is a function of the
+/// account id, so the preview changes when a different account is selected and
+/// holds still while that account's name is edited. Holding still is the point:
+/// the identity being launched is the account, and renaming it does not make it
+/// something else (#53).
 #[tauri::command]
-pub fn preview_launch_args(args: Vec<String>, name: String) -> Vec<String> {
-    channel_launch_args(&args, &server_name_for(name.trim()))
+pub fn preview_launch_args(args: Vec<String>, account_id: String) -> Vec<String> {
+    channel_launch_args(&args, &server_name_for(account_id.trim()))
 }
 
 /// What the caller gets back after a session joins.
@@ -112,39 +214,37 @@ pub struct StartedSession {
     pub started_at: String,
 }
 
-/// Launch one session under a declared identity.
+/// Put one account into the room.
 ///
-/// `name` and `hue` are the session's own, not the tab's. A tab is which CLI to
-/// run; who joins the room is chosen at the moment of joining, the same way the
-/// screen's person chooses theirs. Under the tab-attribute form every launch
-/// answered to the one name in the default config, so two sessions were both
-/// `Claude Code` and neither could be addressed (#40).
+/// The account carries who this is: its id is the identity, and its name and
+/// hue are what the room lists it under. Both used to be declared per launch,
+/// beside a tab that said only which CLI to run — the way to name a session at
+/// all before there was anything durable to hang a name on (#40). The account
+/// is that durable thing, so the launch no longer declares anything; it starts
+/// someone who already exists.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub fn start_session(
     app: AppHandle,
     room: tauri::State<RoomState>,
     pty_state: tauri::State<PtyState>,
-    tab: TabConfig,
-    name: String,
-    hue: Option<f64>,
+    seats: tauri::State<RoomSeats>,
+    account: Account,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
-    let name = name.trim().to_string();
+    let name = account.name.trim().to_string();
     if name.is_empty() {
         return Err(
-            "This session has no name. Give it one before starting: it is what the room \
+            "This account has no name. Give it one before starting: it is what the room \
              lists it under and what a post is addressed to."
                 .to_string(),
         );
     }
 
-    if let Err(flag) = reject_incompatible_flags(&tab.args) {
+    if let Err(flag) = reject_incompatible_flags(&account.args) {
         return Err(format!(
-            "Tab \"{}\" passes {flag}, which stops channel pushes from arriving. \
-             Remove it from the tab configuration.",
-            tab.name
+            "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
+             Remove it from the launch options."
         ));
     }
 
@@ -156,30 +256,75 @@ pub fn start_session(
     // No fallback to the app's own process directory. Under `tauri dev` that
     // is `src-tauri`, and a session silently launched there is a session the
     // person never chose and cannot see they got (#20).
-    let cwd = match tab.cwd.as_deref().map(str::trim) {
+    let cwd = match account.cwd.as_deref().map(str::trim) {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
             return Err(format!(
-                "Tab \"{}\" has no working directory. Set one before starting a session.",
-                tab.name
+                "Account \"{name}\" has no working directory. Set one before starting a session."
             ))
         }
     };
     if !cwd.is_dir() {
-        return Err(format!("Tab \"{}\" points at a missing directory: {}", tab.name, cwd.display()));
+        return Err(format!(
+            "Account \"{name}\" points at a missing directory: {}",
+            cwd.display()
+        ));
     }
 
+    // One account, one seat per room (`RoomSeats`). Claimed before anything is
+    // written or spawned, so a refusal costs nothing and leaves nothing behind.
+    seats.claim(&account.id, &pty_state).map_err(|()| {
+        format!(
+            "Account \"{name}\" already holds a seat in this room. One account holds one seat \
+             per room: stop its running session before starting it again."
+        )
+    })?;
+
+    match launch(app, &room, pty_state, &account, &name, &room_url, &cwd, cols, rows) {
+        Ok(started) => {
+            seats.hold(&account.id, &started.pty_id);
+            Ok(started)
+        }
+        Err(err) => {
+            // Nothing is running, so nothing holds the seat. Without this the
+            // account would stay locked out by a launch that never happened.
+            seats.release(&account.id);
+            Err(err)
+        }
+    }
+}
+
+/// Write the registration and spawn the CLI, with the seat already claimed.
+///
+/// Split out so the seat has exactly one release point: every failure from here
+/// down leaves the account seatless, and the caller does not have to remember
+/// that at each `?`.
+#[allow(clippy::too_many_arguments)]
+fn launch(
+    app: AppHandle,
+    room: &RoomState,
+    pty_state: tauri::State<PtyState>,
+    account: &Account,
+    name: &str,
+    room_url: &str,
+    cwd: &Path,
+    cols: u16,
+    rows: u16,
+) -> Result<StartedSession, String> {
     let (sidecar_entry, sidecar_runner) = resolve_sidecar_paths()?;
-    // Keyed on the name, so two sessions launched into one working directory
-    // write two entries instead of overwriting each other's identity (#40).
-    let server_name = server_name_for(&name);
+    // Keyed on the account id, so two accounts launched into one working
+    // directory write two entries instead of overwriting each other's identity
+    // (#40), and renaming an account does not move the key out from under the
+    // session running on it (#53).
+    let server_name = server_name_for(&account.id);
     let mcp_config = register_sidecar(
-        &cwd,
+        cwd,
         &RoomRegistration {
-            room_url: &room_url,
+            room_url,
             token: &room.token(),
-            agent_name: &name,
-            agent_hue: hue,
+            account_id: &account.id,
+            agent_name: name,
+            agent_hue: account.hue,
             sidecar_entry: &sidecar_entry,
             sidecar_runner: &sidecar_runner,
         },
@@ -189,8 +334,8 @@ pub fn start_session(
     let pty_id = pty::spawn_pty(
         app,
         pty_state,
-        tab.command.clone(),
-        channel_launch_args(&tab.args, &server_name),
+        account.command.clone(),
+        channel_launch_args(&account.args, &server_name),
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),

@@ -326,10 +326,25 @@ body {
   white-space: nowrap;
 }
 
-/* The name this screen posts under. Colour alone would say it, but only to
-   someone who already knows which colour is theirs. */
-#participants .self {
+/* What a line says about itself beyond the name: 「（あなた）」 for the name
+   this screen posts under, 「未起動」 for an account with no session in the
+   room. Colour alone would say the first of those, but only to someone who
+   already knows which colour is theirs. */
+#participants .note {
   color: var(--muted);
+}
+
+/* An account that exists but is not in the room. Dimmed rather than dropped:
+   it is still someone, and this list is where the person reads who they have
+   (#53). It is not an addressee — that list comes from the room's roster, so
+   an offline account cannot appear in it at all. */
+#participants .roster li.offline .who {
+  color: var(--muted);
+}
+
+#participants .roster li.offline .dot {
+  background: none;
+  border: 1px solid var(--speaker, var(--line));
 }
 
 #participants .empty {
@@ -394,9 +409,9 @@ body {
   font-size: 0.8rem;
 }
 
-/* The name and colour this session joins under. The same pair the titlebar
-   carries for this screen's person, in the row where a launch is set up: both
-   are declared at the moment of joining, so both are set where joining is. */
+/* The name and colour of the selected account. The same pair the titlebar
+   carries for this screen's person — the person declares theirs at the moment
+   of joining, and an account carries its own whether or not it is running. */
 #launcher .who {
   display: flex;
   align-items: center;
@@ -435,6 +450,14 @@ body {
 
 #launcher button {
   cursor: pointer;
+}
+
+/* Add and remove an account. Square and unlabelled beside the picker they act
+   on, so the row keeps its width for the working directory. */
+#launcher #account-new,
+#launcher #account-delete {
+  padding: 0.25rem 0.5rem;
+  line-height: 1;
 }
 
 #launcher button:disabled {

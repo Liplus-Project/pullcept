@@ -68,19 +68,29 @@ interface Participant {
   own: boolean;
 }
 
-interface TabConfig {
+/**
+ * One account: someone who exists whether or not they are running.
+ *
+ * `id` is the identity and never changes. Everything else is an attribute the
+ * person edits — the name included, which is why an account can be renamed
+ * without anything losing track of it. The launch recipe this replaced had no
+ * identity of its own, so the name a session took was the only handle on it,
+ * and two launches off one recipe took the same name (#40).
+ */
+interface Account {
   id: string;
-  /** The tab's label — which CLI it launches. Not the name a session takes in
-   *  the room: that is chosen per launch, in the launcher. */
+  /** What the room lists this account under, and what a post is addressed to. */
   name: string;
   command: string;
   args: string[];
   cwd: string | null;
-  cli_kind: string;
+  /** The hue chosen for this account, or null when none was — the derived one
+   *  from the name is used then. */
+  hue: number | null;
 }
 
 interface AppConfig {
-  tabs: TabConfig[];
+  accounts: Account[];
 }
 
 interface StartedSession {
@@ -92,8 +102,6 @@ interface StartedSession {
 
 const NAME_KEY = "liplus-chat.display-name";
 const HUE_KEY = "liplus-chat.display-hue";
-const SESSION_NAME_KEY = "liplus-chat.session-name";
-const SESSION_HUE_KEY = "liplus-chat.session-hue";
 
 /**
  * The hues a participant can declare.
@@ -133,9 +141,11 @@ const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
 const nameEl = document.getElementById("display-name") as HTMLInputElement;
 const hueEl = document.getElementById("display-hue") as HTMLSelectElement;
-const tabEl = document.getElementById("tab-select") as HTMLSelectElement;
-const sessionNameEl = document.getElementById("session-name") as HTMLInputElement;
-const sessionHueEl = document.getElementById("session-hue") as HTMLSelectElement;
+const accountEl = document.getElementById("account-select") as HTMLSelectElement;
+const accountNameEl = document.getElementById("account-name") as HTMLInputElement;
+const accountHueEl = document.getElementById("account-hue") as HTMLSelectElement;
+const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
+const accountDeleteEl = document.getElementById("account-delete") as HTMLButtonElement;
 const startEl = document.getElementById("start-session") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
@@ -155,11 +165,23 @@ const cwdEl = document.getElementById("session-cwd") as HTMLInputElement;
 const optionsEl = document.getElementById("launch-options") as HTMLInputElement;
 const previewEl = document.getElementById("launch-preview") as HTMLElement;
 
-let tabs: TabConfig[] = [];
+let accounts: Account[] = [];
+/**
+ * The accounts holding a seat in the room, by id.
+ *
+ * Ids, never names: this is matched against the account list to decide who is
+ * offline, and a name match would tie the wrong account as soon as two share a
+ * name — which they may, now that a name is an editable attribute (#53). The
+ * app is the authority (`seated_accounts`); the screen re-reads it rather than
+ * keeping a count of its own launches.
+ */
+let seated = new Set<string>();
 /** Everyone in the room, this screen's person included. */
 let participants: Participant[] = [];
 /** The session the terminal is attached to, once one is running. */
 let activePtyId: string | null = null;
+/** Prefill for an account that has never been given a working directory. */
+let homeDir = "";
 /**
  * The newest post this screen has drawn, declared as `last_seen` when posting.
  *
@@ -231,6 +253,24 @@ function joinArgs(args: string[]): string {
   return args.map((arg) => (arg === "" || arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
 }
 
+/** The account the launcher is pointed at, or null when there is none. */
+function selectedAccount(): Account | null {
+  return accounts.find((candidate) => candidate.id === accountEl.value) ?? null;
+}
+
+/**
+ * Write the account list back to disk.
+ *
+ * Every edit persists as it is made rather than at the next launch: an account
+ * is a thing that exists whether or not it runs, so a name typed and never
+ * launched is not a draft (#53).
+ */
+function saveAccounts(): void {
+  void invoke("save_config", { config: { accounts } }).catch(() => {
+    status("アカウントを保存できませんでした。", "error");
+  });
+}
+
 /**
  * Show the command that will actually run.
  *
@@ -239,20 +279,22 @@ function joinArgs(args: string[]): string {
  * cheaper than explaining the merge.
  */
 async function refreshPreview(): Promise<void> {
-  const tab = tabs.find((candidate) => candidate.id === tabEl.value);
-  if (!tab) {
+  const account = selectedAccount();
+  if (!account) {
     previewEl.textContent = "";
     return;
   }
   try {
     const parsed = await invoke<string[]>("parse_launch_options", { text: optionsEl.value });
-    // The channel entry names this session's own server, which follows the
-    // name being launched under, so the preview moves as that field is typed.
+    // The channel entry names this account's own server, which follows the
+    // account id. So the preview changes when another account is selected and
+    // holds still while this one is renamed — the identity being launched is
+    // the account, and renaming it does not make it something else (#53).
     const merged = await invoke<string[]>("preview_launch_args", {
       args: parsed,
-      name: sessionName(),
+      accountId: account.id,
     });
-    previewEl.textContent = `${tab.command} ${joinArgs(merged)}`;
+    previewEl.textContent = `${account.command} ${joinArgs(merged)}`;
   } catch {
     previewEl.textContent = "";
   }
@@ -388,63 +430,113 @@ function appendMessage(message: RoomMessage): void {
 }
 
 /**
- * Draw the roster into the panel.
+ * Draw one line of the panel's list.
  *
- * The list is the room's roster and nothing else: the screen keeps no second
- * list of who is present, so a name on this panel is a name a post can be
- * addressed to. Each entry carries the colour that participant's lines carry
- * in the room, which is what makes the panel a legend for the conversation
- * rather than a second copy of the same names.
+ * The colour is the one that participant's lines carry in the room, which is
+ * what makes the panel a legend for the conversation rather than a second copy
+ * of the same names.
  */
-function renderRoster(joined: Participant[]): void {
-  participants = joined;
+function rosterEntry(name: string, hue: number | null, own: boolean, note?: string): HTMLLIElement {
+  const entry = document.createElement("li");
+  entry.style.setProperty("--speaker", speakerColor(name, hue, own));
+
+  const dot = document.createElement("span");
+  dot.className = "dot";
+
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = name;
+  who.title = name;
+
+  entry.append(dot, who);
+  if (note) {
+    const tag = document.createElement("span");
+    tag.className = "note";
+    tag.textContent = note;
+    entry.appendChild(tag);
+  }
+  return entry;
+}
+
+/**
+ * Draw the panel's list: who is in the room, and who exists but is not.
+ *
+ * The two halves are joined **on the account id**. The live half is the room's
+ * roster verbatim — the screen keeps no second list of who is present, so a
+ * name on a live line is a name a post can be addressed to. The offline half is
+ * every account with no seat, which the app answers by id (`seated_accounts`).
+ *
+ * By id and never by name. A name is an editable attribute now, so two accounts
+ * may answer to one name and a running account may have been renamed since it
+ * joined; matching the two halves by name would tie the wrong pair in both
+ * cases, which is the failure #40 was about in another shape.
+ *
+ * An account that is not running is still someone, so it is listed rather than
+ * left out — that is the whole point of an account existing while it is off
+ * (#53). It does not become an addressee: `renderAddressees` reads the live
+ * roster only, because a name that cannot be reached is not worth naming.
+ */
+function renderPanel(): void {
   rosterEl.replaceChildren();
 
-  if (!joined.length) {
+  const offline = accounts.filter((account) => !seated.has(account.id));
+  if (!participants.length && !offline.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
     empty.textContent = "参加者なし";
     rosterEl.appendChild(empty);
   }
 
-  for (const participant of joined) {
+  for (const participant of participants) {
     // `own` comes from the room, decided on the connection. A name test here
     // would mark every participant answering to this screen's name as oneself.
-    const entry = document.createElement("li");
-    entry.style.setProperty(
-      "--speaker",
-      speakerColor(participant.name, participant.hue, participant.own),
+    rosterEl.appendChild(
+      rosterEntry(
+        participant.name,
+        participant.hue,
+        participant.own,
+        participant.own ? "（あなた）" : undefined,
+      ),
     );
+  }
 
-    const dot = document.createElement("span");
-    dot.className = "dot";
-
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = participant.name;
-    who.title = participant.name;
-
-    entry.append(dot, who);
-    if (participant.own) {
-      const you = document.createElement("span");
-      you.className = "self";
-      you.textContent = "（あなた）";
-      entry.appendChild(you);
-    }
+  for (const account of offline) {
+    const entry = rosterEntry(account.name, account.hue, false, "未起動");
+    entry.classList.add("offline");
     rosterEl.appendChild(entry);
   }
 
   renderAddressees();
 }
 
+/** Take the room's roster and redraw the panel around it. */
+function renderRoster(joined: Participant[]): void {
+  participants = joined;
+  renderPanel();
+}
+
+/**
+ * Re-read which accounts hold a seat, from the app.
+ *
+ * The app is the authority because it is what refuses a second launch; a count
+ * kept on this side would be a second opinion about the same fact. It is read
+ * after a launch and after a session exits, which are the two moments the
+ * answer changes.
+ */
+async function refreshSeats(): Promise<void> {
+  try {
+    seated = new Set(await invoke<string[]>("seated_accounts"));
+  } catch {
+    // The panel keeps the last answer rather than declaring everyone offline
+    // on a failed read.
+    return;
+  }
+  renderPanel();
+}
+
 /** The name this screen posts under, and is listed in the roster under. */
 function localName(): string {
   return nameEl.value.trim() || "human";
-}
-
-/** The name the next session will join under. */
-function sessionName(): string {
-  return sessionNameEl.value.trim();
 }
 
 /**
@@ -477,7 +569,10 @@ async function join(): Promise<void> {
  * back to the whole room when they leave.
  *
  * Everyone but oneself is addressable — sessions and people alike, since the
- * roster no longer separates them.
+ * roster no longer separates them. The room's roster is the whole source, so an
+ * account with no session in it is absent from here by construction: naming a
+ * participant who cannot be reached is a post addressed to nobody, which is the
+ * reason addressees are picked from a roster at all (#43).
  */
 function renderAddressees(): void {
   const chosen = toEl.value;
@@ -550,11 +645,8 @@ async function send(): Promise<void> {
  * the room simply stays empty. Without this the screen is identical whether
  * the CLI is running or was never there.
  */
-async function followSession(
-  tab: TabConfig,
-  name: string,
-  started: StartedSession,
-): Promise<void> {
+async function followSession(account: Account, started: StartedSession): Promise<void> {
+  const name = account.name;
   sessionStateEl.textContent = `${name} 起動中`;
   sessionStateEl.dataset.kind = "ok";
   activePtyId = started.pty_id;
@@ -564,9 +656,9 @@ async function followSession(
   // and the command it actually got, not against the ones that were intended.
   // They stay on screen after the session exits — the question is what ran.
   transportEl.textContent = "PTY";
-  commandEl.textContent = tab.command;
-  dirEl.textContent = tab.cwd ?? "—";
-  dirEl.title = tab.cwd ?? "";
+  commandEl.textContent = account.command;
+  dirEl.textContent = account.cwd ?? "—";
+  dirEl.title = account.cwd ?? "";
   startedEl.textContent = shortTime(started.started_at);
   showWindowSize();
 
@@ -578,6 +670,9 @@ async function followSession(
     sessionStateEl.dataset.kind = "error";
     status(`${name} が終了しました（${detail}）。診断を確認してください。`, "error");
     activePtyId = null;
+    // The seat this account held is free the moment its session ends, so the
+    // panel says 未起動 again and the account can be started once more.
+    void refreshSeats();
     revealDiagnostics();
   });
 
@@ -588,23 +683,29 @@ async function followSession(
 }
 
 async function startSession(): Promise<void> {
-  const tab = tabs.find((candidate) => candidate.id === tabEl.value);
-  if (!tab) {
-    status("起動するセッションが選ばれていません。", "error");
+  const account = selectedAccount();
+  if (!account) {
+    status("起動するアカウントが選ばれていません。", "error");
     return;
   }
 
-  // The identity this session joins under. Refused rather than defaulted: an
-  // unnamed session is the state this whole surface exists to end, and quietly
-  // falling back to the tab's label is how every session came to answer to
-  // `Claude Code` (#40).
-  const name = sessionName();
+  const name = account.name.trim();
   if (!name) {
-    status("セッションの名前を入力してください。部屋での名乗りになります。", "error");
-    sessionNameEl.focus();
+    status("アカウントの名前を入力してください。部屋での名乗りになります。", "error");
+    accountNameEl.focus();
     return;
   }
-  const hue = declaredHue(sessionHueEl);
+
+  // One account, one seat per room. Said here so the reason is on screen in the
+  // language it is read in; the app refuses it as well, and that refusal is the
+  // authority — this check only gets there first (#53).
+  if (seated.has(account.id)) {
+    status(
+      `「${name}」は既にこの部屋に居ます。一つのアカウントが持てる席は一つの部屋につき一つです。起動中のセッションを終了してから、もう一度起動してください。`,
+      "error",
+    );
+    return;
+  }
 
   const cwd = cwdEl.value.trim();
   if (!cwd) {
@@ -612,11 +713,12 @@ async function startSession(): Promise<void> {
     cwdEl.focus();
     return;
   }
-  // The directory is the person's choice, so it is carried on the tab and
-  // saved. Falling back to whatever directory the app process happens to sit
-  // in is what put a session in src-tauri (#20).
-  const args = await invoke<string[]>("parse_launch_options", { text: optionsEl.value });
-  const launching: TabConfig = { ...tab, cwd, args };
+  // The directory and the options are the person's choice, so they are the
+  // account's own and are saved. Falling back to whatever directory the app
+  // process happens to sit in is what put a session in src-tauri (#20).
+  account.cwd = cwd;
+  account.args = await invoke<string[]>("parse_launch_options", { text: optionsEl.value });
+  saveAccounts();
 
   // Size the PTY to the terminal that will display it, so the CLI's first
   // paint is not laid out for a window it does not have.
@@ -627,34 +729,130 @@ async function startSession(): Promise<void> {
   status(`${name} を起動しています…`);
   try {
     const started = await invoke<StartedSession>("start_session", {
-      tab: launching,
-      name,
-      hue,
+      account,
       cols: terminal.cols,
       rows: terminal.rows,
     });
-    tab.cwd = cwd;
-    tab.args = args;
-    void invoke("save_config", { config: { tabs } }).catch(() => {
-      // A directory that fails to persist is worth one line, not a failed
-      // launch: the session is already up.
-      status("作業ディレクトリを保存できませんでした。", "error");
-    });
-    // Remembered next to this screen's own name and colour, and in the same
-    // place — the identity a launch declares is not a property of the tab, and
-    // storing it there is what fixed every launch to one name.
-    localStorage.setItem(SESSION_NAME_KEY, name);
-    localStorage.setItem(SESSION_HUE_KEY, sessionHueEl.value);
     status(`${name} を起動しました。${started.mcp_config} に登録済み。`);
-    await followSession(tab, name, started);
+    await refreshSeats();
+    await followSession(account, started);
   } catch (err) {
     status(`${name} を起動できませんでした: ${err}`, "error");
     sessionStateEl.textContent = `${name} 起動失敗`;
     sessionStateEl.dataset.kind = "error";
+    // A launch that failed after the app claimed the seat releases it there;
+    // this keeps the panel in step with that.
+    await refreshSeats();
     revealDiagnostics();
   } finally {
     startEl.disabled = false;
   }
+}
+
+/**
+ * A default name for a new account that no existing account already answers to.
+ *
+ * A constant default would put every new account on one name, which is the
+ * defect #40 removed — two participants answering alike, neither addressable.
+ * The identity is the id and would survive that, but being able to name one of
+ * them is the point of a name, so the default counts up past whatever is taken.
+ * It is a starting point in an editable field, not a value anyone is stuck with.
+ */
+function unusedAccountName(): string {
+  const taken = new Set(accounts.map((account) => account.name.trim()));
+  for (let n = accounts.length + 1; ; n += 1) {
+    const candidate = `アカウント ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** Fill the account picker, keeping `selected` selected when it still exists. */
+function renderAccountOptions(selected: string): void {
+  accountEl.replaceChildren();
+  for (const account of accounts) {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.name || "（名前未設定）";
+    accountEl.appendChild(option);
+  }
+  accountEl.value = accounts.some((account) => account.id === selected)
+    ? selected
+    : (accounts[0]?.id ?? "");
+}
+
+/**
+ * Show the selected account's own values in the row that edits them.
+ *
+ * `homeDir` prefills a working directory an account has never had one for. A
+ * prefill, not a default: the app launches nothing in a directory the person
+ * has not seen on screen (#20).
+ */
+function showAccount(): void {
+  const account = selectedAccount();
+  accountNameEl.value = account?.name ?? "";
+  accountHueEl.value = account?.hue === null || account === null ? "" : String(account.hue);
+  cwdEl.value = account?.cwd ?? homeDir;
+  optionsEl.value = joinArgs(account?.args ?? []);
+  const missing = account === null;
+  accountNameEl.disabled = missing;
+  accountHueEl.disabled = missing;
+  cwdEl.disabled = missing;
+  optionsEl.disabled = missing;
+  accountDeleteEl.disabled = missing;
+  startEl.disabled = missing;
+  void refreshPreview();
+}
+
+/** Make an account, select it, and leave the cursor in its name. */
+function newAccount(): void {
+  const account: Account = {
+    // Opaque and minted once. Nothing reads a name out of it — the key in
+    // `.mcp.json` derives from it precisely so that renaming is free (#53).
+    id: crypto.randomUUID(),
+    name: unusedAccountName(),
+    // The one vendor the room is built on. See src-tauri/src/config.rs.
+    command: "claude",
+    args: [],
+    cwd: homeDir || null,
+    hue: null,
+  };
+  accounts.push(account);
+  renderAccountOptions(account.id);
+  showAccount();
+  saveAccounts();
+  renderPanel();
+  accountNameEl.focus();
+  accountNameEl.select();
+}
+
+/**
+ * Remove the selected account.
+ *
+ * Refused while it is running: the session in the room belongs to this account,
+ * and deleting the account under it would leave a participant on the roster
+ * that nothing on this screen can name or account for.
+ */
+function deleteAccount(): void {
+  const account = selectedAccount();
+  if (!account) return;
+  if (seated.has(account.id)) {
+    status(
+      `「${account.name}」は起動中です。セッションを終了してから削除してください。`,
+      "error",
+    );
+    return;
+  }
+  // Only an explicit cancel stops this. A host that answers nothing would
+  // otherwise make the button silently do nothing at all.
+  if (window.confirm(`アカウント「${account.name}」を削除します。よろしいですか。`) === false) {
+    return;
+  }
+  accounts = accounts.filter((candidate) => candidate.id !== account.id);
+  renderAccountOptions(accounts[0]?.id ?? "");
+  showAccount();
+  saveAccounts();
+  renderPanel();
+  status(`アカウント「${account.name}」を削除しました。`);
 }
 
 function renderSocket(port: number | null, error?: string): void {
@@ -716,7 +914,9 @@ async function main(): Promise<void> {
 
   nameEl.value = localStorage.getItem(NAME_KEY) ?? "human";
   fillHues(hueEl, localStorage.getItem(HUE_KEY));
-  fillHues(sessionHueEl, localStorage.getItem(SESSION_HUE_KEY));
+  // The account's colour is the account's, so nothing is restored into this
+  // picker — `showAccount` fills it from whichever account is selected.
+  fillHues(accountHueEl, null);
 
   // One handler for both halves of the declaration: a rename and a recolour are
   // the same act on the same seat, and the room takes them together.
@@ -754,50 +954,68 @@ async function main(): Promise<void> {
   });
   startEl.addEventListener("click", () => void startSession());
 
-  let home = "";
   try {
-    home = await invoke<string>("home_dir");
+    homeDir = await invoke<string>("home_dir");
   } catch {
     // Only the prefill is lost; the field is still typed into by hand.
   }
 
-  const showTab = (): void => {
-    const tab = tabs.find((candidate) => candidate.id === tabEl.value);
-    cwdEl.value = tab?.cwd ?? home;
-    optionsEl.value = joinArgs(tab?.args ?? []);
-    void refreshPreview();
-  };
+  // Every field in this row edits the selected account. The name is written
+  // through as it is typed so the picker's label follows it, and persisted when
+  // the field is left — a rename is free, because the account's id is what the
+  // registration key and the seat are both keyed on (#53).
+  accountNameEl.addEventListener("input", () => {
+    const account = selectedAccount();
+    if (!account) return;
+    account.name = accountNameEl.value;
+    const option = accountEl.selectedOptions[0];
+    if (option) option.textContent = account.name || "（名前未設定）";
+    renderPanel();
+  });
+  accountNameEl.addEventListener("change", () => saveAccounts());
+  accountHueEl.addEventListener("change", () => {
+    const account = selectedAccount();
+    if (!account) return;
+    account.hue = declaredHue(accountHueEl);
+    saveAccounts();
+    renderPanel();
+  });
+  cwdEl.addEventListener("change", () => {
+    const account = selectedAccount();
+    if (!account) return;
+    account.cwd = cwdEl.value.trim() || null;
+    saveAccounts();
+  });
   optionsEl.addEventListener("input", () => void refreshPreview());
-  // The launched line carries this session's own channel entry, which follows
-  // the name, so the preview has to follow it too.
-  sessionNameEl.addEventListener("input", () => void refreshPreview());
+  optionsEl.addEventListener("change", () => {
+    const account = selectedAccount();
+    if (!account) return;
+    void invoke<string[]>("parse_launch_options", { text: optionsEl.value }).then((args) => {
+      account.args = args;
+      saveAccounts();
+    });
+  });
+  accountEl.addEventListener("change", showAccount);
+  accountNewEl.addEventListener("click", () => newAccount());
+  accountDeleteEl.addEventListener("click", () => deleteAccount());
 
   try {
     const config = await invoke<AppConfig>("load_config");
-    tabs = config.tabs;
-    for (const tab of tabs) {
-      const option = document.createElement("option");
-      option.value = tab.id;
-      option.textContent = tab.name;
-      tabEl.appendChild(option);
-    }
-    // A prefill, not a default. The tab's label is a legible starting point for
-    // the first launch; what makes it safe is that it is sitting in an editable
-    // field on screen, which is exactly what it was not before (#40).
-    sessionNameEl.value =
-      localStorage.getItem(SESSION_NAME_KEY) ?? tabs[0]?.name ?? "";
-    showTab();
-    tabEl.addEventListener("change", showTab);
+    accounts = config.accounts;
+    renderAccountOptions(accounts[0]?.id ?? "");
+    showAccount();
   } catch (err) {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
 
   try {
     await join();
-    renderRoster(await invoke<Participant[]>("room_participants"));
+    participants = await invoke<Participant[]>("room_participants");
+    await refreshSeats();
     const port = await invoke<number | null>("room_port");
     if (port !== null) renderSocket(port);
   } catch (err) {
+    renderPanel();
     renderSocket(null, `取得できませんでした: ${err}`);
   }
 }

@@ -26,6 +26,18 @@ impl PtyState {
             procs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
+
+    /// Whether the session on `id` is still running.
+    ///
+    /// Membership is liveness, not history: a session is taken out of the map
+    /// by its own reader thread the moment it is reaped. That is what lets a
+    /// seat in the room release itself (`session::RoomSeats`) instead of
+    /// depending on someone remembering to call for its release — a release
+    /// that never came would lock an account out of the room for the rest of
+    /// the run, with no way back short of restarting the app.
+    pub fn is_running(&self, id: &str) -> bool {
+        self.procs.lock().contains_key(id)
+    }
 }
 
 #[tauri::command]
@@ -109,14 +121,25 @@ pub fn spawn_pty(
                 Err(_) => break,
             }
         }
-        // Collect exit code before emitting exit event
-        let exit_code: Option<u32> = {
-            let mut map = ptys_clone.lock();
-            if let Some(pty) = map.get_mut(&id_clone) {
-                pty.child.wait().ok().map(|status| status.exit_code())
-            } else {
-                None
-            }
+        // Collect exit code before emitting exit event.
+        //
+        // Taken out of the map first, for two reasons. The map is what says a
+        // session is running, and a session that has ended must stop saying so
+        // — a seat in the room is held for exactly as long as this entry is
+        // here. And the wait happens outside the lock, so a child that is slow
+        // to be reaped no longer blocks every other session's input.
+        //
+        // The instance is dropped after the wait, never before: dropping the
+        // master closes the PTY, and closing it under a child that has not been
+        // reaped is how an exit code goes missing.
+        // Bound before the match: a guard held in the scrutinee lives as long
+        // as the match does, which would put the wait back inside the lock.
+        let ended = ptys_clone.lock().remove(&id_clone);
+        let exit_code: Option<u32> = match ended {
+            Some(mut pty) => pty.child.wait().ok().map(|status| status.exit_code()),
+            // Already removed: `kill_pty` took it. The exit is this thread's to
+            // announce either way; the code is not knowable from here.
+            None => None,
         };
         // Emit exit event with exit code payload (None if killed by signal/unknown)
         let _ = app_clone.emit(&format!("pty-exit-{}", id_clone), exit_code);
