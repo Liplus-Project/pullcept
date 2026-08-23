@@ -2139,6 +2139,7 @@ dependencies = [
  "mcp-config",
  "parking_lot",
  "portable-pty",
+ "room-floor",
  "serde",
  "serde_json",
  "tauri",
@@ -3094,6 +3095,13 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "room-floor"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

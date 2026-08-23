@@ -7,7 +7,9 @@
 //! Frames on the wire are the room protocol:
 //!
 //!   sidecar -> room : { type: "hello", protocol, name, hue? }
-//!   both ways       : { type: "post", message_id, speaker, content, to?, ts }
+//!   both ways       : { type: "post", message_id, speaker, content, to?, ts,
+//!                       last_seen? }
+//!   room -> sidecar : { type: "post_result", message_id, delivered, missed }
 //!
 //! One frame kind carries speech, whoever produced it. A person and a session
 //! are both participants; what separates them is a name, not a frame. The
@@ -34,11 +36,32 @@
 //! to one name; they are still two, and one of them leaving must not take the
 //! other off the roster (#40).
 //!
+//! `last_seen` on a post is the speaker's watermark: the `message_id` of the
+//! newest post they had actually seen when they composed. The room checks it
+//! against the floor (`room_floor::Floor`) and refuses the post outright when
+//! anything is behind it, handing those posts back as `missed` instead of
+//! delivering. The room knows what it handed to each connection, but delivery
+//! is not reading — whether a post entered a participant's context depends on
+//! where their next tool-result boundary fell, which the room cannot see. Only
+//! the speaker knows, so the speaker declares (#47).
+//!
+//! The check and the stamp share one acquisition of the room's lock. That is
+//! what gives two participants speaking at once an order: the first one's post
+//! is on the floor before the second one's check reads it. Splitting them —
+//! checking, then delivering — hands both of them the floor as it stood before
+//! either spoke, which is the case the whole mechanism exists to close.
+//!
+//! `post_result` is the answer, and it goes back only to the connection that
+//! posted. It is the reason a reply needing no other tool no longer misses
+//! what arrived while it was composed: the call is itself the boundary, and
+//! the refusal arrives on it.
+//!
 //! Everything the frontend needs arrives as a `room-message` event. The room
 //! never reads a CLI's terminal output; that is not a message source.
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
+use room_floor::{Admission, Floor, Missed, Post};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -54,7 +77,9 @@ use uuid::Uuid;
 ///
 /// 2: `say` and `reply` collapsed into one `post` frame; `agent` became `name`.
 /// 3: `hello` carries the declared `hue` beside the name.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: `post` carries the speaker's `last_seen` watermark, and the room answers
+///    every post with `post_result` (#47).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -95,16 +120,26 @@ pub struct Participant {
     pub own: bool,
 }
 
-/// A post as it happened, before any viewer-relative framing.
-struct Post {
-    message_id: String,
-    speaker: String,
-    content: String,
-    to: Option<String>,
-    ts: String,
+/// What the room did with a post, as the participant who submitted it sees it.
+///
+/// One shape for both callers, because there is one path. Refused is not an
+/// error: the participant asked to speak and was told what they had not seen,
+/// and deciding not to speak after reading it is a legitimate answer.
+///
+/// Widening this to carry a place in a queue as well as the posts that were
+/// missed adds a field here and changes no signature (#47).
+#[derive(Debug, Clone, Serialize)]
+pub struct PostOutcome {
+    /// True when the post went into the room.
+    pub delivered: bool,
+    /// The id the post is filed under, or `None` when it was refused. A
+    /// refused post has no id in the room because it is not in the room.
+    pub message_id: Option<String>,
+    /// What the speaker had not seen, oldest first. Empty when `delivered`.
+    pub missed: Vec<Missed>,
 }
 
-/// A post on its way out, tagged with the connection that produced it.
+/// A frame on its way out, tagged with the connection that produced it.
 ///
 /// The tag rides beside the frame, never inside it: it is never serialised, so
 /// no sender can supply one and no sender can forge one. Suppression is a
@@ -113,6 +148,10 @@ struct Post {
 #[derive(Clone)]
 struct Fanout {
     origin: String,
+    /// Set when this frame is for one connection only — a `post_result` is the
+    /// room answering the participant who posted, not something the room says.
+    /// `None` is the fan-out proper: everyone but `origin`.
+    target: Option<String>,
     frame: String,
 }
 
@@ -126,6 +165,7 @@ struct IncomingFrame {
     content: Option<String>,
     to: Option<String>,
     ts: Option<String>,
+    last_seen: Option<String>,
     protocol: Option<u32>,
 }
 
@@ -134,6 +174,12 @@ struct IncomingFrame {
 struct Seat {
     name: String,
     hue: Option<f64>,
+    /// Where the floor stood when this connection took its seat. It is the
+    /// watermark of a participant who declares none: what predates the seat
+    /// was never delivered to them, so it is not theirs to have missed.
+    /// Preserved across a rename — that is the same participant, still having
+    /// seen what they saw.
+    since: u64,
 }
 
 struct RoomInner {
@@ -144,6 +190,10 @@ struct RoomInner {
     /// `Claude Code` were one entry, and either of them disconnecting removed
     /// both (#40).
     participants: BTreeMap<String, Seat>,
+    /// What has been said, and the order the room put it in. Lives here rather
+    /// than beside the lock so the check and the stamp are one critical
+    /// section (#47).
+    floor: Floor,
 }
 
 /// Shared handle to the room socket. Cloneable; all clones share one room.
@@ -167,6 +217,7 @@ impl RoomState {
             inner: Arc::new(Mutex::new(RoomInner {
                 port: None,
                 participants: BTreeMap::new(),
+                floor: Floor::new(),
             })),
             to_participants,
             token: Uuid::new_v4().to_string(),
@@ -221,17 +272,32 @@ impl RoomState {
     /// nothing new does not emit a roster event.
     fn seat(&self, origin: &str, name: &str, hue: Option<f64>) -> bool {
         let mut inner = self.inner.lock();
-        let seat = Seat {
-            name: name.to_string(),
-            hue,
-        };
-        match inner.participants.get(origin) {
-            Some(current) if current.name == seat.name && current.hue == seat.hue => false,
-            _ => {
-                inner.participants.insert(origin.to_string(), seat);
-                true
+        let current = inner
+            .participants
+            .get(origin)
+            .map(|seat| (seat.name.clone(), seat.hue, seat.since));
+        if let Some((current_name, current_hue, _)) = &current {
+            if current_name == name && *current_hue == hue {
+                return false;
             }
         }
+        // A seat taken now starts from the floor as it stands: this connection
+        // was not there for what came before and was never handed it. A seat
+        // being replaced keeps the position it started from — renaming does
+        // not make a participant newly arrived.
+        let since = match &current {
+            Some((_, _, since)) => *since,
+            None => inner.floor.seq(),
+        };
+        inner.participants.insert(
+            origin.to_string(),
+            Seat {
+                name: name.to_string(),
+                hue,
+                since,
+            },
+        );
+        true
     }
 
     fn unseat(&self, origin: &str) {
@@ -292,14 +358,53 @@ pub fn now_iso() -> String {
     )
 }
 
-/// Put one post into the room.
+/// Put one post into the room, if the speaker has seen the floor.
 ///
 /// The single path every utterance takes, whoever spoke. `origin` is the
 /// connection it arrived on: the fan-out skips that connection, and the screen
 /// reads it to know whether the line is its own. Two callers reach here — the
 /// socket loop and the screen's own command — and neither has a path of its
-/// own past this point.
-fn deliver(app: &AppHandle, room: &RoomState, origin: &str, post: Post) {
+/// own past this point. The gate is here for that reason, and applies to both:
+/// a participant is a participant, and a post from the screen is not a
+/// different act (#39).
+///
+/// `last_seen` is the speaker's own account of the newest post they had seen.
+/// When anything on the floor is behind it, nothing is delivered and those
+/// posts come back in the outcome. Accepting the post and mentioning the miss
+/// afterwards would be detection without the interruption that makes detection
+/// worth anything (#47).
+fn deliver(
+    app: &AppHandle,
+    room: &RoomState,
+    origin: &str,
+    post: Post,
+    last_seen: Option<&str>,
+) -> PostOutcome {
+    let message_id = post.message_id.clone();
+
+    // One acquisition, both halves. Concurrent speakers serialise here, so the
+    // loser's check runs against a floor the winner has already changed.
+    let (admission, hue) = {
+        let mut inner = room.inner.lock();
+        let (since, hue) = match inner.participants.get(origin) {
+            Some(seat) => (seat.since, seat.hue),
+            // Unseated: nothing was ever delivered here, so nothing is
+            // presumed read. Speaking seats a participant, and the screen's
+            // command does that before it reaches this point.
+            None => (0, None),
+        };
+        let admission = inner.floor.admit(origin, since, last_seen, post.clone());
+        (admission, hue)
+    };
+
+    if let Admission::Unseen(missed) = admission {
+        return PostOutcome {
+            delivered: false,
+            message_id: None,
+            missed,
+        };
+    }
+
     let mut frame = serde_json::json!({
         "type": "post",
         "message_id": post.message_id,
@@ -316,6 +421,7 @@ fn deliver(app: &AppHandle, room: &RoomState, origin: &str, post: Post) {
     // the room accepts what is said in it; a later joiner simply missed it.
     let _ = room.to_participants.send(Fanout {
         origin: origin.to_string(),
+        target: None,
         frame: frame.to_string(),
     });
 
@@ -326,13 +432,21 @@ fn deliver(app: &AppHandle, room: &RoomState, origin: &str, post: Post) {
             speaker: post.speaker,
             // Read off the seat on this connection, so the colour of a line and
             // the colour of its author's roster entry are the one declaration.
-            hue: room.hue_of(origin),
+            // Read inside the critical section above, with the same lock the
+            // floor was judged under.
+            hue,
             content: post.content,
             to: post.to,
             ts: post.ts,
             own: origin == room.local_origin,
         },
     );
+
+    PostOutcome {
+        delivered: true,
+        message_id: Some(message_id),
+        missed: Vec::new(),
+    }
 }
 
 /// Bind the room socket and start accepting sidecars.
@@ -410,11 +524,17 @@ async fn serve_participant(
     let own_origin = origin.clone();
     let pump = tokio::spawn(async move {
         while let Ok(fanout) = from_room.recv().await {
-            // A participant does not receive their own post. Decided on the
-            // connection, never on the name: while two participants share a
-            // name, a name test drops the other one's posts too (#40).
-            if fanout.origin == own_origin {
-                continue;
+            match &fanout.target {
+                // Addressed to one connection: the room answering whoever
+                // posted. Everyone else's socket is not part of that exchange.
+                Some(target) if *target != own_origin => continue,
+                Some(_) => {}
+                // A participant does not receive their own post. Decided on
+                // the connection, never on the name: while two participants
+                // share a name, a name test drops the other one's posts too
+                // (#40).
+                None if fanout.origin == own_origin => continue,
+                None => {}
             }
             if sink.send(Message::Text(fanout.frame.into())).await.is_err() {
                 break;
@@ -452,20 +572,40 @@ async fn serve_participant(
                 // Attribution comes from the connection, not from the frame. A
                 // sender may name an addressee; it may not name itself.
                 let speaker = joined_as.clone().unwrap_or_else(|| "session".to_string());
-                deliver(
+                let message_id = frame
+                    .message_id
+                    .unwrap_or_else(|| Uuid::new_v4().to_string());
+                // `last_seen` is not a claim about identity, so nothing is
+                // verified here. A participant who declares a false watermark
+                // spends its own round trips; nobody else's post moves.
+                let outcome = deliver(
                     &app,
                     &room,
                     &origin,
                     Post {
-                        message_id: frame
-                            .message_id
-                            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                        message_id: message_id.clone(),
                         speaker,
                         content: frame.content.unwrap_or_default(),
                         to: normalize_to(frame.to),
                         ts: frame.ts.unwrap_or_else(now_iso),
                     },
+                    frame.last_seen.as_deref(),
                 );
+                // Answered on the connection that posted, always — a refusal
+                // that says nothing is indistinguishable from a delivery, and
+                // this answer is the boundary at which a reply needing no
+                // other tool finally gets to read what it missed.
+                let receipt = serde_json::json!({
+                    "type": "post_result",
+                    "message_id": message_id,
+                    "delivered": outcome.delivered,
+                    "missed": outcome.missed,
+                });
+                let _ = room.to_participants.send(Fanout {
+                    origin: origin.clone(),
+                    target: Some(origin.clone()),
+                    frame: receipt.to_string(),
+                });
             }
             _ => {}
         }
@@ -524,8 +664,15 @@ pub fn room_join(
 /// Post this screen's person's utterance into the room.
 ///
 /// Goes through `deliver` like every other post: same frame, same fan-out,
-/// same event. The screen does not append locally on send, so the room keeps
-/// one ordering authority rather than two.
+/// same event, same floor check. The screen does not append locally on send,
+/// so the room keeps one ordering authority rather than two.
+///
+/// `last_seen` is the newest post the screen has drawn. The person at the
+/// keyboard is a participant like any other and is refused on the same terms;
+/// exempting them would be the room deciding by participant class, which is
+/// the distinction the protocol stopped carrying (#39). What differs is only
+/// how easily the watermark is known: the screen renders what it is handed, so
+/// it always has one.
 #[tauri::command]
 pub fn room_post(
     app: AppHandle,
@@ -533,7 +680,8 @@ pub fn room_post(
     speaker: String,
     content: String,
     to: Option<String>,
-) -> Result<String, String> {
+    last_seen: Option<String>,
+) -> Result<PostOutcome, String> {
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("content is empty".to_string());
@@ -554,18 +702,17 @@ pub fn room_post(
     }
 
     let message_id = Uuid::new_v4().to_string();
-    deliver(
+    Ok(deliver(
         &app,
         &state,
         &local_origin,
         Post {
-            message_id: message_id.clone(),
+            message_id,
             speaker,
             content,
             to: normalize_to(to),
             ts: now_iso(),
         },
-    );
-
-    Ok(message_id)
+        last_seen.as_deref(),
+    ))
 }
