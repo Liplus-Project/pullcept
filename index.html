@@ -80,6 +80,10 @@
                than watched — the socket, the session, how it was launched —
                moved to the participant panel, where they are on screen without
                opening anything. -->
+          <!-- One frame, holding a terminal per running account. All but the
+               selected one are hidden rather than closed, so a session keeps
+               running and keeps filling its own scrollback while another is
+               being watched (#57). -->
           <aside id="diagnostics" hidden>
             <div id="terminal" aria-label="セッションの端末"></div>
           </aside>
@@ -126,6 +130,29 @@
             <li class="empty">参加者なし</li>
           </ul>
 
+          <!-- The terminals this screen is holding, one row per account. Not
+               the roster above and not a second copy of it: that list answers
+               who is in the room and is keyed on each participant's
+               connection, while this one answers which sessions have a pane
+               here and is keyed on the account id. The memberships differ — a
+               participant who joined from elsewhere has no terminal here, and a
+               session that has just exited has a terminal and no seat.
+
+               Keying on the account id is what lets a row carry an operation:
+               the pane, the input and the 終了 all act on one account, and a
+               name match would tie the wrong one as soon as two accounts
+               answer to one name (#53). Hidden entirely until something has
+               been launched — an account with no session has no terminal to
+               show or end (#57). -->
+          <section id="terminals-section" class="terminals-section" hidden>
+            <h2 class="panel-title">端末</h2>
+            <ul id="terminals" class="terminals"></ul>
+          </section>
+
+          <!-- What the terminal on the glass was launched from. The values
+               follow the row that is selected above, so they answer for the
+               pane being looked at rather than for whichever session started
+               last. 部屋ソケット is the exception and is the room's own. -->
           <dl class="facts">
             <dt>部屋ソケット</dt>
             <dd id="socket-state">確認中</dd>
