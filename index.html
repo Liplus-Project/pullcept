@@ -21,6 +21,21 @@
              account's do: in the dialog their row in the participant list
              opens. Two surfaces editing one pair is the split this issue is
              closing, in miniature. -->
+        <!-- The conversation's text size. The keyboard is the main way in
+             (Ctrl + = / - / 0); this is here because of what the default is.
+             The default is deliberately the size that was called too large, so
+             what an untouched screen shows is the thing being complained
+             about, and a control reachable only by keys would leave that
+             fixable only by whoever already knew the keys.
+
+             It reaches the conversation alone. The panel, the diagnostics
+             pane, the terminal and the composer keep their own sizes — see the
+             `#room` block in src/styles.css for why the scope holds. -->
+        <select
+          id="room-font-size"
+          aria-label="会話の文字サイズ"
+          title="会話の文字サイズ（Ctrl + = / - / 0）"
+        ></select>
         <button id="toggle-diagnostics" type="button" aria-expanded="false">診断</button>
       </header>
 
