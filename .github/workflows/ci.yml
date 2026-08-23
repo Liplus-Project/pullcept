@@ -30,6 +30,7 @@ jobs:
             ~/.cargo/git
             src-tauri/target
             crates/mcp-config/target
+            crates/room-floor/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -59,6 +60,10 @@ jobs:
       # reason. See docs/0-requirements.md.
       - name: Test the mcp-config crate
         working-directory: crates/mcp-config
+        run: cargo test
+
+      - name: Test the room-floor crate
+        working-directory: crates/room-floor
         run: cargo test
 
   # Gate job: single Required status check for branch protection.

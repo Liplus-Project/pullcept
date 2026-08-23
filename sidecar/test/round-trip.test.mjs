@@ -5,6 +5,10 @@
 // isolation harness for the round trip — when the real app stops delivering,
 // running this says whether the sidecar or the app side moved.
 //
+// The fake room answers posts, because the real one does: since #47 a post is
+// a request the room replies to with `post_result`, and a room that never
+// answers is a room the sidecar reports as unconfirmed.
+//
 // Run: npm run sidecar:test
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,6 +23,46 @@ const ENTRY = join(HERE, "..", "src", "index.ts");
 const REPO = join(HERE, "..", "..");
 
 const TIMEOUT = 20_000;
+
+// The manners, whole.
+//
+// Asserted as complete literals rather than by a regex on the opening clause.
+// The head-only form was checked here before and did not hold: both turn-taking
+// assertions matched only up to the first comma, so every sentence after it —
+// including the one being rewritten — could be deleted with CI still green
+// (#47). A test that stops at the first clause is testing that a heading
+// exists. What these paragraphs claim is in the tail.
+const TURN_TAKING = [
+  "- 先に誰かが答えていたら、その発言を読んでから自分の発言を決めてください。",
+  "  全体宛の問いに、全員が答える必要はありません。",
+  "- 送る直前に、届いている発言をもう一度見てください。組み立てている間にも",
+  "  発言は届きます。言おうとしていたことが既に言われていたら送らず、",
+  "  足りないことがあるときだけ足してください。",
+].join("\n");
+
+const SEE_THE_FLOOR = [
+  "床を見てから送る:",
+  "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
+  "  いちばん新しい発言の meta.message_id です。まだ何も見ていないときだけ",
+  "  省いてください。",
+  "- 組み立てている間に届いた発言があると、部屋はあなたの発言を配りません。",
+  "  代わりに、あなたが見ていなかった発言を返します。あなたの発言は部屋に",
+  "  載っていません。",
+  "- 返ってきた発言を読んでから、もう一度決めてください。言おうとしていた",
+  "  ことが既に言われていたら送らないでください。送らない判断は正当です。",
+  "- それでも足すことがあるときは、返ってきたうちいちばん新しい message_id を",
+  "  last_seen に入れて、もう一度 say_to_room を呼んでください。",
+  "- 弾かれるのは、あなたの注意が足りなかったからではありません。二人が同時に",
+  "  書き始めたとき、順序を付けられるのは部屋だけです。これはその順序です。",
+].join("\n");
+
+/** Whole-literal containment, with both sides shown when it fails. */
+function assertContains(haystack, needle, message) {
+  assert.ok(
+    haystack.includes(needle),
+    `${message}\n--- expected to contain ---\n${needle}\n--- actual ---\n${haystack}`,
+  );
+}
 
 function deferred() {
   let resolve;
@@ -48,8 +92,31 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
 
   const connected = deferred();
   const helloSeen = deferred();
-  const postSeen = deferred();
+  const postFrames = [];
+  const postWaiters = [];
   let roomSocket = null;
+
+  // How the fake room answers the next post. "deliver" takes it, "refuse"
+  // hands back what the speaker had not seen, "silent" answers nothing.
+  let answer = "deliver";
+
+  // What a refusal carries. Two posts, one of them addressed elsewhere: the
+  // room does not narrow the refusal by addressee, so both come back.
+  const MISSED = [
+    {
+      message_id: "m-9",
+      speaker: "Claude Lay",
+      content: "先に答えました",
+      ts: "2026-08-21T00:00:04.000Z",
+    },
+    {
+      message_id: "m-10",
+      speaker: "Master",
+      content: "レイに任せる",
+      to: "Claude Lay",
+      ts: "2026-08-21T00:00:05.000Z",
+    },
+  ];
 
   wss.on("connection", (socket) => {
     roomSocket = socket;
@@ -57,9 +124,59 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
-      if (frame.type === "post") postSeen.resolve(frame);
+      if (frame.type !== "post") return;
+
+      postFrames.push(frame);
+      for (const waiter of postWaiters.splice(0)) waiter();
+
+      if (answer === "silent") return;
+      if (answer === "refuse") {
+        // A verdict for a post nobody made, sent first and saying delivered.
+        // The call must not settle on it: answers are correlated by
+        // message_id, not by arrival order.
+        socket.send(
+          JSON.stringify({
+            type: "post_result",
+            message_id: "not-this-post",
+            delivered: true,
+            missed: [],
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: "post_result",
+            message_id: frame.message_id,
+            delivered: false,
+            missed: MISSED,
+          }),
+        );
+        return;
+      }
+      socket.send(
+        JSON.stringify({
+          type: "post_result",
+          message_id: frame.message_id,
+          delivered: true,
+          missed: [],
+        }),
+      );
     });
   });
+
+  /** The `index`-th post frame the room received, awaited if not yet there. */
+  function nextPost(index = 0) {
+    if (postFrames.length > index) return Promise.resolve(postFrames[index]);
+    return withTimeout(
+      new Promise((resolve) => {
+        const waiter = () => {
+          if (postFrames.length > index) resolve(postFrames[index]);
+          else postWaiters.push(waiter);
+        };
+        postWaiters.push(waiter);
+      }),
+      `post frame #${index}`,
+    );
+  }
 
   // ── sidecar, spawned the way the CLI would ─────────────────────────────────
   const child = spawn(
@@ -83,8 +200,10 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
 
   t.after(() => {
     child.kill();
-    wss.close();
-    http.close();
+    // Callbacks, because the body closes these too: a bare close on a server
+    // already shut down emits an unhandled error event.
+    wss.close(() => {});
+    http.close(() => {});
   });
 
   // ── MCP stdio plumbing: one JSON-RPC message per line ──────────────────────
@@ -150,22 +269,19 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     init.result.capabilities.experimental?.["claude/channel"],
     "server must declare the claude/channel experimental capability",
   );
-  assert.match(
-    init.result.instructions ?? "",
-    /say_to_room/,
-    "instructions must name the posting tool",
-  );
+  const instructions = init.result.instructions ?? "";
+  assert.match(instructions, /say_to_room/, "instructions must name the posting tool");
   // The manners and the material they are judged on ship together. Manners
   // that say "answer what is addressed to you" without naming where the
   // addressee is, or without naming what this agent is called, ask for a
   // judgment the agent has nothing to make.
   assert.match(
-    init.result.instructions ?? "",
+    instructions,
     /meta\.to/,
     "instructions must name the addressee as judgment material",
   );
   assert.match(
-    init.result.instructions ?? "",
+    instructions,
     /test-agent/,
     "instructions must tell the agent the name it answers to",
   );
@@ -173,7 +289,7 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // answer "the human" would be reading a distinction the protocol no longer
   // carries (#39).
   assert.match(
-    init.result.instructions ?? "",
+    instructions,
     /人間と AI を区別しません/,
     "instructions must state that participants are not split into human and AI",
   );
@@ -182,20 +298,20 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // the earlier answer before deciding, and look again at what arrived while
   // the message was being composed, since the composing agent cannot see the
   // floor and the arrivals are all it has to look at (#49).
-  assert.match(
-    init.result.instructions ?? "",
-    /先に誰かが答えていたら、その発言を読んでから自分の発言を決めて/,
-    "instructions must tell the agent to read an earlier answer before deciding its own",
+  assertContains(
+    instructions,
+    TURN_TAKING,
+    "instructions must carry the turn-taking manners in full, tail included",
   );
-  assert.match(
-    init.result.instructions ?? "",
-    /送る直前に、届いている発言をもう一度見て/,
-    "instructions must tell the agent to re-read what arrived just before sending",
-  );
-  assert.match(
-    init.result.instructions ?? "",
-    /全員が答える必要はありません/,
-    "instructions must state that a room-wide question needs no answer from everyone",
+  // Seeing the floor. These are not advice: `last_seen` is what the room
+  // judges the post on, and a refusal is a state the agent has to know how to
+  // leave. An agent that does not know to send the watermark is refused on
+  // every post after its first; one that does not know a refusal means "not
+  // posted" repeats itself blind (#47).
+  assertContains(
+    instructions,
+    SEE_THE_FLOOR,
+    "instructions must carry the floor manners in full, tail included",
   );
 
   notify("notifications/initialized", {});
@@ -205,6 +321,20 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     tools.result.tools.map((tool) => tool.name),
     ["say_to_room"],
     "exactly one posting tool is exposed",
+  );
+  // Seeing the floor is an argument of the one tool, not a second tool. A
+  // separate read call would put "which one do I speak through" back on the
+  // agent, which is the reason there is one (docs/0-requirements.md).
+  const schema = tools.result.tools[0].inputSchema;
+  assert.deepEqual(
+    Object.keys(schema.properties).sort(),
+    ["content", "last_seen", "to"],
+    "the watermark rides on say_to_room rather than adding a tool",
+  );
+  assert.deepEqual(
+    schema.required,
+    ["content"],
+    "the watermark is optional: a participant that has seen nothing must still be able to speak",
   );
 
   // ── room -> agent ──────────────────────────────────────────────────────────
@@ -216,7 +346,7 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // the same name (#40).
   assert.equal(hello.name, "test-agent");
   assert.equal(hello.hue, 145);
-  assert.equal(hello.protocol, 3);
+  assert.equal(hello.protocol, 4);
 
   roomSocket.send(
     JSON.stringify({
@@ -280,15 +410,24 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // ── this participant -> room ───────────────────────────────────────────────
   const call = await request("tools/call", {
     name: "say_to_room",
-    arguments: { content: "聞こえてるわ", to: "Master" },
+    arguments: { content: "聞こえてるわ", to: "Master", last_seen: "m-3" },
   });
   assert.ok(!call.result.isError, `tool call failed: ${JSON.stringify(call.result)}`);
+  assert.equal(
+    call.result.content[0].text,
+    "Delivered to the room.",
+    "a post the room admits reads as delivered and says nothing else",
+  );
 
-  const post = await withTimeout(postSeen.promise, "post frame");
+  const post = await nextPost(0);
   assert.equal(post.type, "post");
   assert.equal(post.content, "聞こえてるわ");
   // A person is addressed exactly like a session. One vocabulary, one frame.
   assert.equal(post.to, "Master");
+  // The watermark the agent declared, carried through unchanged. This side
+  // cannot check it and must not invent it: what the agent saw is the one
+  // thing only the agent knows (#47).
+  assert.equal(post.last_seen, "m-3");
   // Attribution belongs to the room, stamped from the connection. A sender
   // that could name itself could name somebody else.
   assert.equal(
@@ -297,27 +436,111 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     "a posting participant must not name itself; the room stamps the speaker",
   );
 
-  // ── suppression is the room's, and is not decided by name ─────────────────
-  // The room drops a post on the connection that produced it, so this side
-  // never has to recognise itself. It must not second-guess that with a name
-  // test: while two participants share a name, a name test here would swallow
-  // the other one's posts too (#40).
-  roomSocket.send(
-    JSON.stringify({
-      type: "post",
-      message_id: "m-4",
-      speaker: "test-agent",
-      content: "同じ名前の別参加者",
-      ts: "2026-08-21T00:00:03.000Z",
-    }),
+  // ── a participant that has seen nothing omits the key ──────────────────────
+  // No key rather than an empty one, for the same reason `to` and `hue` omit:
+  // the room reads a value it cannot resolve as having seen nothing, and ""
+  // is such a value. Sending it would refuse a first post that should pass.
+  const first = await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "はじめまして" },
+  });
+  assert.ok(!first.result.isError, `tool call failed: ${JSON.stringify(first.result)}`);
+  const firstPost = await nextPost(1);
+  assert.equal(
+    "last_seen" in firstPost,
+    false,
+    "an undeclared watermark must carry no key",
   );
 
-  const sameName = await nextNotification("notifications/claude/channel", 3);
-  assert.equal(sameName.params.meta.message_id, "m-4");
-  assert.equal(sameName.params.meta.user, "test-agent");
+  // ── the room refuses, and the refusal carries what was missed ──────────────
+  answer = "refuse";
+  const refused = await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "私も答えます", last_seen: "m-1" },
+  });
+  assert.ok(
+    refused.result.isError,
+    `a refused post must not read as delivered: ${JSON.stringify(refused.result)}`,
+  );
+  const refusal = refused.result.content[0].text;
+  // Correlation held: the bogus `delivered: true` for another post arrived
+  // first and did not settle this call.
+  assertContains(
+    refusal,
+    "Not delivered.",
+    "a refusal must say the post did not go into the room",
+  );
+  assertContains(
+    refusal,
+    "Your message was not posted.",
+    "the refusal must be unambiguous that nothing was said, not a note attached to a delivery",
+  );
+  // Every field of every missed post, not just the first line. The condition
+  // is that the return value carries the posts the speaker had not seen — a
+  // check on the opening sentence passes on a report that dropped all of them.
+  for (const missed of MISSED) {
+    assertContains(refusal, missed.message_id, "each missed post must carry its id");
+    assertContains(refusal, missed.speaker, "each missed post must name its speaker");
+    assertContains(refusal, missed.content, "each missed post must carry what was said");
+  }
+  // The addressee, as an addressee. Checking for the bare name would pass on
+  // this post's speaker alone, which is a different field.
+  assertContains(
+    refusal,
+    "Master -> Claude Lay:",
+    "a missed post addressed elsewhere comes back carrying who it was for; the room does not narrow by addressee",
+  );
+  // The way out of the refusal, named concretely. Being told to try again with
+  // "the newest id" and left to work out which is which is the shape that goes
+  // unread.
+  assertContains(
+    refusal,
+    'last_seen: "m-10"',
+    "the refusal must name the watermark to declare on the next attempt",
+  );
+
+  // ── an unanswered post is unconfirmed, not delivered and not refused ───────
+  // The frame may well have landed. Reporting either verdict would be a guess
+  // the agent then acts on: "delivered" lets it believe it spoke, "refused"
+  // invites it to say the same thing twice.
+  answer = "silent";
+  const unanswered = request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "届いてる？", last_seen: "m-1" },
+  });
+  await nextPost(3);
+  // The call is itself the boundary, which is what removes the reply that has
+  // none. The frame is on the wire and the call has still not resolved: what
+  // the room hands back arrives inside this call, not after the turn is over.
+  // Resolving on send instead is the zero-tool shape — the send is the first
+  // boundary, and anything that arrived while composing is unreadable until
+  // too late (#47 type 2).
+  const settled = await Promise.race([
+    unanswered.then(() => "resolved"),
+    new Promise((r) => setTimeout(() => r("still waiting"), 200)),
+  ]);
+  assert.equal(
+    settled,
+    "still waiting",
+    "say_to_room must not resolve before the room answers; a call that returns on send is not a boundary",
+  );
+  roomSocket.close();
+  const unconfirmed = await unanswered;
+  assert.ok(
+    unconfirmed.result.isError,
+    `an unanswered post must not read as delivered: ${JSON.stringify(unconfirmed.result)}`,
+  );
+  assertContains(
+    unconfirmed.result.content[0].text,
+    "Not confirmed",
+    "a post the room never answered must read as unconfirmed, not as either verdict",
+  );
 
   // ── a dropped frame must not read as delivered ─────────────────────────────
-  roomSocket.close();
+  // The room is taken down so the sidecar's retry cannot reconnect underneath
+  // this assertion.
+  wss.close(() => {});
+  http.close(() => {});
   await new Promise((r) => setTimeout(r, 500));
 
   const offline = await request("tools/call", {
@@ -327,6 +550,11 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   assert.ok(
     offline.result.isError,
     "a send with no room attached must report failure, not silence",
+  );
+  assertContains(
+    offline.result.content[0].text,
+    "Not delivered: the room socket is not connected",
+    "a send with no socket must say so rather than wait out the answer it will never get",
   );
 });
 
@@ -370,8 +598,8 @@ test("a session launched without a declared hue says so by omission", async (t) 
 
   t.after(() => {
     child.kill();
-    wss.close();
-    http.close();
+    wss.close(() => {});
+    http.close(() => {});
   });
 
   const hello = await withTimeout(helloSeen.promise, "hello frame");
