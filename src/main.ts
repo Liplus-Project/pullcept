@@ -214,6 +214,15 @@ const TERMINAL_OPTIONS = {
 
 /** How long a 終了 stays armed before it falls back to its resting state. */
 const END_ARM_MS = 4000;
+/**
+ * How long an armed 終了 refuses to act.
+ *
+ * The armed button is wider than the resting one and grows under the pointer,
+ * so a double-click lands both clicks on it: without this, one slip of the
+ * finger arms and ends in a single gesture, which is the shape the two clicks
+ * exist to rule out. Short enough that a deliberate second click never waits.
+ */
+const END_SETTLE_MS = 400;
 
 /**
  * One account's terminal: the session's output, its scrollback, and the way in.
@@ -250,6 +259,7 @@ let shownAccount: string | null = null;
 /** The account whose 終了 is armed. Its next click is the one that ends it. */
 let armedEnd: string | null = null;
 let armedTimer = 0;
+let armedAt = 0;
 
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
@@ -817,11 +827,14 @@ function endButton(view: SessionView, name: string): HTMLButtonElement {
     ? `もう一度押すと ${name} のセッションを終了します。`
     : `${name} のセッションを終了する`;
   end.addEventListener("click", () => {
-    if (armed) {
-      void endSession(view);
-    } else {
+    if (!armed) {
       armEnd(view.accountId);
+      return;
     }
+    // A click that arrives inside the settle window is the tail of the gesture
+    // that armed it, not an answer to it. Ignored, arm left standing.
+    if (Date.now() - armedAt < END_SETTLE_MS) return;
+    void endSession(view);
   });
   return end;
 }
@@ -830,6 +843,7 @@ function endButton(view: SessionView, name: string): HTMLButtonElement {
 function armEnd(accountId: string): void {
   window.clearTimeout(armedTimer);
   armedEnd = accountId;
+  armedAt = Date.now();
   // The arm expires on its own. A button left saying 「本当に終了」 for the rest
   // of a session is one that an unrelated click, minutes later, fires.
   armedTimer = window.setTimeout(() => {
@@ -977,6 +991,12 @@ function showView(accountId: string | null): void {
   renderTerminalList();
   renderSessionFacts();
   fitShown();
+  // A pane that was `display: none` kept filling its buffer and painted
+  // nothing, so coming back to it has to repaint from the buffer. The fit above
+  // does that only when the measured size changed, and returning to a pane the
+  // same size as the one just left is exactly when it did not.
+  const shown = shownView();
+  if (shown) shown.term.refresh(0, shown.term.rows - 1);
 }
 
 /**
