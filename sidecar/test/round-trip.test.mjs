@@ -483,10 +483,12 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     assertContains(refusal, missed.speaker, "each missed post must name its speaker");
     assertContains(refusal, missed.content, "each missed post must carry what was said");
   }
+  // The addressee, as an addressee. Checking for the bare name would pass on
+  // this post's speaker alone, which is a different field.
   assertContains(
     refusal,
-    "Claude Lay",
-    "a missed post addressed elsewhere still comes back; the room does not narrow by addressee",
+    "Master -> Claude Lay:",
+    "a missed post addressed elsewhere comes back carrying who it was for; the room does not narrow by addressee",
   );
   // The way out of the refusal, named concretely. Being told to try again with
   // "the newest id" and left to work out which is which is the shape that goes
