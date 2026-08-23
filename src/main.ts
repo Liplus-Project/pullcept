@@ -1087,6 +1087,10 @@ async function startSession(): Promise<void> {
   // Size the PTY to the terminal that will display it, so the CLI's first
   // paint is not laid out for a window it does not have. The pane is revealed
   // first because a hidden container has no size to measure.
+  //
+  // What was on the glass is kept, so a launch that fails can put it back
+  // rather than leaving a blank pane where a running session had been.
+  const previous = shownAccount;
   revealDiagnostics();
   const view = openView(account);
 
@@ -1106,7 +1110,7 @@ async function startSession(): Promise<void> {
     // to end. It goes, and the failure stands in the status line, which carries
     // the app's own reason rather than the word 起動失敗.
     discardView(view);
-    showView(null);
+    showView(previous !== null && views.has(previous) ? previous : ([...views.keys()].pop() ?? null));
     status(`${name} を起動できませんでした: ${err}`, "error");
     // A launch that failed after the app claimed the seat releases it there;
     // this keeps the panel in step with that.
