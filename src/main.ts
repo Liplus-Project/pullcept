@@ -33,6 +33,28 @@ interface RoomMessage {
 }
 
 /**
+ * What the room did with a post from this screen.
+ *
+ * The room refuses a post whose speaker had not seen everything on the floor,
+ * and hands back what they missed instead of delivering (#47). Not an error:
+ * being told what arrived while the message was being typed, and deciding
+ * again, is the point.
+ */
+interface PostOutcome {
+  delivered: boolean;
+  /** The id the post is filed under, or null when it was refused. */
+  message_id: string | null;
+  /** What this screen had not seen, oldest first. Empty when delivered. */
+  missed: {
+    message_id: string;
+    speaker: string;
+    content: string;
+    to: string | null;
+    ts: string;
+  }[];
+}
+
+/**
  * One participant of the room, as the roster lists them.
  *
  * `id` is the connection they are in the room on, and it is the identity. The
@@ -138,6 +160,17 @@ let tabs: TabConfig[] = [];
 let participants: Participant[] = [];
 /** The session the terminal is attached to, once one is running. */
 let activePtyId: string | null = null;
+/**
+ * The newest post this screen has drawn, declared as `last_seen` when posting.
+ *
+ * Drawn, not read — the screen can only speak for what it put on the glass. It
+ * is an honest watermark all the same: a line is drawn only after the room has
+ * admitted it, so a post arriving in the same instant as a send is either
+ * already on screen or genuinely behind this value, and the room orders the
+ * two. A person who leaves a message unread on screen is a gap the room cannot
+ * see and does not pretend to (#47).
+ */
+let lastSeenId: string | null = null;
 
 const terminal = new Terminal({
   cursorBlink: true,
@@ -346,6 +379,10 @@ function appendMessage(message: RoomMessage): void {
 
   line.append(head, body);
   roomEl.appendChild(line);
+  // On the glass, so it is what this screen can declare having seen. Own posts
+  // included: the room does not hold a speaker's own posts against them, and
+  // carrying the newest id either way keeps this one value rather than two.
+  lastSeenId = message.message_id;
 
   if (atBottom) roomEl.scrollTop = roomEl.scrollHeight;
 }
@@ -475,9 +512,29 @@ async function send(): Promise<void> {
   // Empty means the room as a whole. The app still delivers to everyone; the
   // addressee is judgment material for the participants, not a delivery filter.
   const to = toEl.value || null;
+  // Read before the await: what the screen had drawn when this was sent is the
+  // watermark, and an arrival during the round trip must not be folded into it.
+  const lastSeen = lastSeenId;
   inputEl.value = "";
   try {
-    await invoke<string>("room_post", { speaker, content, to });
+    const outcome = await invoke<PostOutcome>("room_post", {
+      speaker,
+      content,
+      to,
+      lastSeen,
+    });
+    if (!outcome.delivered) {
+      // Refused, not failed. The missed posts are already on screen — the room
+      // drew them through the same event — so the report names who spoke and
+      // leaves the reading where it belongs.
+      inputEl.value = content;
+      const speakers = [...new Set(outcome.missed.map((one) => one.speaker))];
+      status(
+        `送っていません。書いている間に届いた発言が ${outcome.missed.length} 件あります（${speakers.join("、")}）。読んでから送るか決めてください。`,
+        "error",
+      );
+      return;
+    }
     status("");
   } catch (err) {
     // Put the text back rather than losing what was typed.
