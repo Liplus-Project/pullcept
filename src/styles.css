@@ -400,8 +400,16 @@ body {
   border-color: var(--line);
 }
 
+/* Dimmed, and the dot goes from filled to outline — the same pair the roster
+   uses for an account that is not in the room. A session that has ended is not
+   in it either; the row is still here only for what it printed. */
 #participants .term-row.ended .who {
   color: var(--muted);
+}
+
+#participants .term-row.ended .dot {
+  background: none;
+  border: 1px solid var(--speaker, var(--line));
 }
 
 /* Its resting state is a quiet outline in the danger colour: this is the one
