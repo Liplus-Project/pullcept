@@ -24,16 +24,6 @@
         <button id="toggle-diagnostics" type="button" aria-expanded="false">診断</button>
       </header>
 
-      <!-- Which account joins, and the join. Nothing else: choosing who to
-           join as and editing what that account is are two acts, and the row
-           that did both had to grow a field per attribute (#59). The
-           attributes are in the dialog; making an account is the ＋ beside the
-           list it appears in. -->
-      <div id="launcher">
-        <select id="account-select" aria-label="参加するアカウント"></select>
-        <button id="start-session" type="button">セッション参加</button>
-      </div>
-
       <div id="body">
         <div id="conversation">
           <main id="room" aria-live="polite"></main>
@@ -92,7 +82,13 @@
              Grouped by the kind declared when the account was made. An account
              that is not running is still someone, so it is listed dimmed rather
              than left out (#53); it is still not offered as an addressee,
-             because a name that cannot be reached is not one worth naming. -->
+             because a name that cannot be reached is not one worth naming.
+
+             The row carries the session's whole lifecycle. 開始 was on a row of
+             its own above the conversation until #62, which put the two ends of
+             one thing on two surfaces; 終了 had already moved here (#57). The
+             row is two fixed columns after the name — the lifecycle, then 編集 —
+             so neither moves when a session starts or ends. -->
         <aside id="participants" aria-label="参加者">
           <div class="panel-head">
             <h2 class="panel-title">参加者</h2>

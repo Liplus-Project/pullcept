@@ -338,18 +338,33 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* Three columns. The name takes the slack; the session's lifecycle and 編集 sit
+   in tracks after it, so 開始 and 終了 are in one place on every row and 編集 is
+   in one place on every row (#62). A track has its width whether or not
+   anything is in it, which is what keeps a row with no lifecycle — a person,
+   who is not launched — from closing the column and sliding its 編集 left of
+   everyone else's.
+
+   The lifecycle track has a floor rather than a fixed width: 本当に終了 is wider
+   than the 終了 it replaces, and it is meant to be. It grows leftward into the
+   name, because its own track's right edge is where 編集 begins and that does
+   not move. Fixing the track to the armed width instead would spend that width
+   on every row of the list to hold four seconds of one of them, and the panel
+   is 16.5rem wide — measured, it leaves 「マスター（あなた）」 with no room for
+   the name. */
 #participants .member {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(3.2rem, auto) 3rem;
   align-items: center;
   gap: 0.3rem;
 }
 
-/* The name is the control that picks this account's terminal, so it takes the
-   width of the row: choosing which session to watch is a click on the session
-   itself. A row whose account has no terminal here is the same shape without
-   the button — the layout must not move when a session starts or ends. */
+/* The name is the control that picks this account's terminal, and it is the
+   column that takes the row's slack: choosing which session to watch is a click
+   on the session itself. A row whose account has no terminal here is the same
+   shape without the button — the layout must not move when a session starts or
+   ends. */
 #participants .member .pick {
-  flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -401,6 +416,13 @@ body {
   color: var(--muted);
 }
 
+/* 起動失敗. The status line carries the app's own reason and this carries the
+   fact, on the row that was pressed — a launch that failed discards its
+   terminal, so the row is the only thing left that the press happened to. */
+#participants .note[data-kind="error"] {
+  color: var(--danger);
+}
+
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
    is still someone, and this list is where the person reads who they have
    (#53). Dimmed rather than greyed — the colour carries the account's identity,
@@ -424,21 +446,49 @@ body {
 
 /* The account's own operations, riding on its row. This is what one list buys:
    the row is keyed on the account id, so these act on one account and cannot be
-   tied to the wrong one by a shared name (#53, #59). */
+   tied to the wrong one by a shared name (#53, #59).
+
+   Each fills its track, so the button is the column: 開始 and 終了 are one width
+   in one place, and which of them a row has is read off the button rather than
+   off where the row's controls have slid to (#62). */
 #participants .member .edit,
+#participants .member .start,
 #participants .member .end {
-  flex: none;
+  width: 100%;
   font: inherit;
   font-size: 0.72rem;
   background: none;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.2rem 0.4rem;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+/* The lifecycle column. Emitted whether or not it holds a button — an empty one
+   is what keeps 編集 in place on the row of someone who is not launched. A box
+   rather than nothing, so the button inside it fills the track: left inline, a
+   button takes its own width and sits at the track's left edge, which puts 開始
+   and 終了 a different distance from 編集 than the track they are in. */
+#participants .member .lifecycle {
+  display: flex;
 }
 
 #participants .member .edit {
   color: var(--muted);
+}
+
+/* One click, unlike the 終了 that replaces it: a session started by mistake is
+   ended by that button, and an arm here would charge every deliberate start a
+   second click. Dead while the launch is out; what the row is doing meanwhile
+   is the 起動中 beside the name (src/main.ts). */
+#participants .member .start {
+  color: var(--fg);
+}
+
+#participants .member .start:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 /* Its resting state is a quiet outline in the danger colour: this is the one
@@ -497,46 +547,10 @@ body {
   color: var(--danger);
 }
 
+/* ── terminal ────────────────────────────────────────────────────────────── */
 
-
-/* ── launcher ────────────────────────────────────────────────────────────── */
-
-/* Which account joins, and the join. It used to carry a field per attribute of
-   the selected account as well; those are in the dialog now, because choosing
-   who to join as and editing what that account is are two acts (#59). */
-#launcher {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  border-bottom: 1px solid var(--line);
-  padding: 0.4rem 0.9rem;
-  font-size: 0.8rem;
-}
-
-#launcher select,
-#launcher button {
-  font: inherit;
-  color: var(--fg);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.25rem 0.45rem;
-}
-
-#launcher select {
-  min-width: 12rem;
-}
-
-#launcher button {
-  cursor: pointer;
-}
-
-#launcher select:disabled,
-#launcher button:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
+/* The frame on the diagnostics pane. It stood after the launcher's own rules
+   until #62 removed them, under a heading that was never about it. */
 #terminal {
   flex: 1;
   min-height: 18rem;
