@@ -181,9 +181,7 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
-const accountEl = document.getElementById("account-select") as HTMLSelectElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
-const startEl = document.getElementById("start-session") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const toEl = document.getElementById("to-select") as HTMLSelectElement;
@@ -309,6 +307,16 @@ interface SessionView {
 const views = new Map<string, SessionView>();
 /** The account whose terminal is on the glass, or null when none is. */
 let shownAccount: string | null = null;
+/**
+ * Why an account's last launch failed, by account id, until it is tried again.
+ *
+ * The status line carries the app's own reason and is the full account of it,
+ * but it is one line for the whole screen and the next thing written takes it.
+ * A launch that failed leaves nothing else behind — its terminal is discarded,
+ * there being no session under it — so without this the row that was pressed
+ * goes back to reading 未起動, as though it never had been.
+ */
+const launchFailures = new Map<string, string>();
 /** The account whose 終了 is armed. Its next click is the one that ends it. */
 let armedEnd: string | null = null;
 let armedTimer = 0;
@@ -376,23 +384,6 @@ function showWindowSize(): void {
 /** Render saved arguments back into an editable line. */
 function joinArgs(args: string[]): string {
   return args.map((arg) => (arg === "" || arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
-}
-
-/**
- * The accounts the launcher can start: the AI ones.
- *
- * A `user` account is a person, and there is no CLI under a person to spawn.
- * The app refuses one as well and that refusal is the authority
- * (`start_session`); leaving it out of the picker only means the refusal is
- * never the way the person finds out (#59).
- */
-function launchableAccounts(): Account[] {
-  return accounts.filter((account) => account.kind === "ai");
-}
-
-/** The account the launcher is pointed at, or null when there is none. */
-function selectedAccount(): Account | null {
-  return accounts.find((candidate) => candidate.id === accountEl.value) ?? null;
 }
 
 /** The account the person at this screen is, or null before it is resolved. */
@@ -642,12 +633,23 @@ function memberRow(row: Member): HTMLLIElement {
   who.textContent = name;
   who.title = name;
 
+  // Asked for and not back yet. The view exists from the moment 開始 is pressed
+  // and its pty id arrives with the session, so this pair is exactly that
+  // window (`startSession`).
+  const launching = view != null && view.ended === null && view.ptyId === "";
+  const failure = row.account ? launchFailures.get(row.account.id) : undefined;
+
   // What this line says about itself beyond the name. Someone present and not
   // oneself says nothing: being in the list is what it would have said.
   let noteText = "";
+  let noteKind = "";
   if (own) noteText = "（あなた）";
+  else if (launching) noteText = "起動中";
   else if (row.participant) noteText = "";
-  else if (view?.ended != null) noteText = "終了";
+  else if (failure) {
+    noteText = "起動失敗";
+    noteKind = "error";
+  } else if (view?.ended != null) noteText = "終了";
   else if (row.account) noteText = "未起動";
 
   // A row whose account has a terminal here picks that terminal; the whole line
@@ -678,20 +680,69 @@ function memberRow(row: Member): HTMLLIElement {
     const note = document.createElement("span");
     note.className = "note";
     note.textContent = noteText;
+    if (noteKind) note.dataset.kind = noteKind;
+    // The app's own reason, on the row carrying the word. The status line has
+    // it in full; this is so a row saying 起動失敗 is not a dead end.
+    if (failure) note.title = failure;
     pick.appendChild(note);
   }
   entry.appendChild(pick);
 
   // The account's own operations ride on its row, which is what one list buys:
-  // the row is keyed on the account id, so 編集 and 終了 act on one account and
-  // cannot be tied to the wrong one by a shared name (#53, #59).
+  // the row is keyed on the account id, so these act on one account and cannot
+  // be tied to the wrong one by a shared name (#53, #59).
+  //
+  // Two fixed columns: the session's lifecycle, then 編集. 開始 and 終了 are the
+  // two ends of one thing and belong in one place — 開始 was on a launcher row
+  // above the conversation until #62, a screen away from the 終了 that #57 had
+  // already put here. The slot is emitted whether or not it holds a button, so
+  // a row with no lifecycle keeps the column open rather than sliding its 編集
+  // left of every other row's.
+  const lifecycle = document.createElement("span");
+  lifecycle.className = "lifecycle";
+  if (view && view.ended === null && view.ptyId !== "") {
+    // No 終了 before the launch has returned an id: there is no session to end
+    // yet, and a kill aimed at an empty id reports success having done nothing
+    // (#57).
+    lifecycle.appendChild(endButton(view, name));
+  } else if (row.account?.kind === "ai") {
+    // Kind `ai` only. A `user` account is a person and there is no CLI under a
+    // person to spawn; `start_session` refuses one and that refusal is the
+    // authority, but a refusal is the wrong way for the person to find out
+    // (#59). Their row keeps the empty column, and their 編集 with it.
+    lifecycle.appendChild(startButton(row.account, launching));
+  }
+  entry.appendChild(lifecycle);
   if (row.account) entry.appendChild(editButton(row.account));
-  // No 終了 before the launch has returned an id: there is no session to end
-  // yet, and a kill aimed at an empty id reports success having done nothing.
-  // None for an account that is not running either (#57).
-  if (view && view.ended === null && view.ptyId !== "") entry.appendChild(endButton(view, name));
 
   return entry;
+}
+
+/**
+ * The control that starts one account's session.
+ *
+ * One click, where 終了 beside it takes two. The asymmetry is the difference
+ * between the two acts: ending a session cannot be taken back, and starting one
+ * is undone by the button that replaces this one. An arm here would charge
+ * every deliberate start a second click to guard a mistake that undoes itself.
+ *
+ * It carries its own launch. Pressed, it goes dead until the launch comes back,
+ * on the row that was pressed — the launcher's button held that state for
+ * whichever account its picker was on, and could not say which one (#62). What
+ * the state *is* stays in the note beside the name, where 未起動 and 終了 and
+ * 起動失敗 are: the button says what can be done, the note says what is so.
+ */
+function startButton(account: Account, launching: boolean): HTMLButtonElement {
+  const start = document.createElement("button");
+  start.type = "button";
+  start.className = "start";
+  start.textContent = "開始";
+  start.disabled = launching;
+  start.title = launching
+    ? `${account.name} を起動しています`
+    : `${account.name} のセッションを開始する`;
+  start.addEventListener("click", () => void startSession(account));
+  return start;
 }
 
 /** The control that opens one account's form. */
@@ -1211,13 +1262,13 @@ async function followSession(view: SessionView, started: StartedSession): Promis
   if (shownAccount === view.accountId) view.term.focus();
 }
 
-async function startSession(): Promise<void> {
-  const account = selectedAccount();
-  if (!account) {
-    status("起動するアカウントが選ばれていません。", "error");
-    return;
-  }
-
+/**
+ * Start one account's session: the row's half of the lifecycle 終了 closes.
+ *
+ * Takes the account rather than reading a picker. There is no picker — which
+ * account this is, is which row was pressed (#62).
+ */
+async function startSession(account: Account): Promise<void> {
   const name = account.name.trim();
   if (!name) {
     status(
@@ -1260,9 +1311,14 @@ async function startSession(): Promise<void> {
   // rather than leaving a blank pane where a running session had been.
   const previous = shownAccount;
   revealDiagnostics();
+  // Cleared as the attempt starts rather than as it fails: 起動失敗 stands on
+  // the row until this account is asked again, and this is that moment.
+  launchFailures.delete(account.id);
+  // From here the row carries the launch. The view exists and has no pty id
+  // yet, which is what puts its 開始 into 起動中; `openView` redraws through
+  // `showView`.
   const view = openView(account);
 
-  startEl.disabled = true;
   status(`${name} を起動しています…`);
   try {
     const started = await invoke<StartedSession>("start_session", {
@@ -1275,8 +1331,12 @@ async function startSession(): Promise<void> {
     await followSession(view, started);
   } catch (err) {
     // Nothing was spawned, so this terminal has nothing to show and no session
-    // to end. It goes, and the failure stands in the status line, which carries
-    // the app's own reason rather than the word 起動失敗.
+    // to end. It goes, and the app's own reason stands in the status line —
+    // recorded against the account first, because the pane going is what would
+    // otherwise leave the row reading 未起動 as though it had never been
+    // pressed. The row says 起動失敗 and holds the reason; the status line has
+    // it in full.
+    launchFailures.set(account.id, String(err));
     discardView(view);
     showView(previous !== null && views.has(previous) ? previous : ([...views.keys()].pop() ?? null));
     status(`${name} を起動できませんでした: ${err}`, "error");
@@ -1284,7 +1344,9 @@ async function startSession(): Promise<void> {
     // this keeps the panel in step with that.
     await refreshSeats();
   } finally {
-    startEl.disabled = false;
+    // Both paths above redraw already. This is so that no path can leave a row
+    // saying 起動中 for a launch that is over.
+    renderPanel();
   }
 }
 
@@ -1303,29 +1365,6 @@ function unusedAccountName(): string {
     const candidate = `アカウント ${n}`;
     if (!taken.has(candidate)) return candidate;
   }
-}
-
-/**
- * Fill the launcher's picker, keeping `selected` selected when it still exists.
- *
- * AI accounts only (`launchableAccounts`). The row's one question is which
- * session to start, and a person is not one.
- */
-function renderAccountOptions(selected: string): void {
-  const launchable = launchableAccounts();
-  accountEl.replaceChildren();
-  for (const account of launchable) {
-    const option = document.createElement("option");
-    option.value = account.id;
-    option.textContent = account.name || "（名前未設定）";
-    accountEl.appendChild(option);
-  }
-  accountEl.value = launchable.some((account) => account.id === selected)
-    ? selected
-    : (launchable[0]?.id ?? "");
-  const none = launchable.length === 0;
-  accountEl.disabled = none;
-  startEl.disabled = none;
 }
 
 // ── the account dialog ───────────────────────────────────────────────────────
@@ -1497,7 +1536,6 @@ async function commitAccountDialog(): Promise<boolean> {
   }
   saveAccounts();
 
-  renderAccountOptions(target ? accountEl.value : settled.id);
   renderPanel();
   renderSessionFacts();
   // The room holds this screen's person's name and colour on its seat, so a
@@ -1552,7 +1590,6 @@ function deleteFromDialog(): void {
   discardView(views.get(account.id));
   saveAccounts();
   closeAccountDialog();
-  renderAccountOptions(accountEl.value);
   renderPanel();
   renderSessionFacts();
   status(`アカウント「${account.name}」を削除しました。`);
@@ -1624,8 +1661,6 @@ async function main(): Promise<void> {
       void send();
     }
   });
-  startEl.addEventListener("click", () => void startSession());
-
   try {
     homeDir = await invoke<string>("home_dir");
   } catch {
@@ -1669,7 +1704,6 @@ async function main(): Promise<void> {
     // Before the join below: the id this resolves goes into it, and an account
     // may have to be made here for it (#59).
     resolveLocalAccount();
-    renderAccountOptions("");
     // Drawn here, off the config alone. An account that is not running is
     // listed from the moment the app opens rather than once the room has
     // answered — being listed is not conditional on ever having been started
