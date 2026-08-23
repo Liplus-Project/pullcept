@@ -1465,6 +1465,13 @@ async function commitAccountDialog(): Promise<boolean> {
     dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
     return false;
   }
+  // The person at this screen is a person. Turning their account into an `ai`
+  // would list them under the wrong heading and offer to launch a CLI under
+  // their name, which is not a thing there is one of.
+  if (target && target.id === localAccountId && kind !== "user") {
+    dialogError("この画面の本人のアカウントは種別 user のままです。");
+    return false;
+  }
   const cwd = dialogCwdEl.value.trim();
   // Only for a session. A person's working directory and options would be two
   // values nothing ever reads, kept alive by an edit that once set them.
