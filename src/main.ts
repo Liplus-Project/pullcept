@@ -1371,7 +1371,7 @@ async function followSession(view: SessionView, started: StartedSession): Promis
       for (const off of view.unlisten) off();
       view.unlisten = [];
       const name = viewName(view);
-      status(`${name} が終了しました（${detail}）。診断を確認してください。`, "error");
+      status(`${name} が終了しました（${detail}）。端末を確認してください。`, "error");
       // The seat this account held is free the moment its session ends, so the
       // panel says 未起動 again and the account can be started once more.
       void refreshSeats();
