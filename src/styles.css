@@ -454,6 +454,7 @@ body {
 #participants .member .edit,
 #participants .member .start,
 #participants .member .end {
+  width: 100%;
   font: inherit;
   font-size: 0.72rem;
   background: none;
@@ -465,21 +466,15 @@ body {
 }
 
 /* The lifecycle column. Emitted whether or not it holds a button — an empty one
-   is what keeps 編集 in place on the row of someone who is not launched.
-
-   The button grows to the track rather than being given the track's width: a
-   percentage width feeds back into how the track is measured, and the track
-   then comes out narrower than 本当に終了 and clips it (measured). */
+   is what keeps 編集 in place on the row of someone who is not launched. A box
+   rather than nothing, so the button inside it fills the track: left inline, a
+   button takes its own width and sits at the track's left edge, which puts 開始
+   and 終了 a different distance from 編集 than the track they are in. */
 #participants .member .lifecycle {
   display: flex;
 }
 
-#participants .member .lifecycle > button {
-  flex: 1;
-}
-
 #participants .member .edit {
-  width: 100%;
   color: var(--muted);
 }
 
