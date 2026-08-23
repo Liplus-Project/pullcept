@@ -146,6 +146,63 @@ const HUE_KEY = "pullcept.display-hue";
 const LOCAL_KEY = "pullcept.local-account";
 
 /**
+ * How large the conversation is drawn, in `rem`.
+ *
+ * In `localStorage` beside the key above, and for the same reason: this is a
+ * property of the screen being read from, not of anybody in the room. Two
+ * people reading one conversation do not have to want the same size, and a
+ * size carried on a participant would make the answer travel with whoever
+ * declared it. It is the shape #40 settled for a screen's own settings.
+ *
+ * Not a participant attribute in the other sense either: nothing here is
+ * written per speaker. Every line in the room is drawn at one size, whoever
+ * said it (#39).
+ */
+const ROOM_FONT_SIZE_KEY = "pullcept.room-font-size";
+
+/**
+ * The sizes the conversation can be set to, in `rem`.
+ *
+ * A list rather than a continuous range, like the hues below: what this has to
+ * buy is a readable size that fits, and a ladder buys it without asking anyone
+ * to judge fractions of a millimetre. The ends of the list are the bounds —
+ * there is no size off the ladder to clamp, so nothing separate enforces them.
+ *
+ * The rungs are dense below the default and sparse above it. The observation
+ * this comes from is that the room reads large (#60), so the direction that
+ * gets used is downward and the steps there are the ones worth being fine.
+ */
+const ROOM_FONT_SIZES = [0.7, 0.75, 0.8, 0.85, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
+
+/**
+ * Where a screen that has never chosen sits.
+ *
+ * `1rem`, which is what the room already rendered at: `.message .body` is
+ * given no size and inherits none, so the surface has been showing the user
+ * agent's default. Keeping it is a completion condition of #60 — this change
+ * adds the means to move, and moves nobody.
+ */
+const DEFAULT_ROOM_FONT_SIZE = 1;
+
+/**
+ * The keys that move along the ladder, and by how far.
+ *
+ * `Ctrl` with `=` / `-` / `0`, the combination browsers and editors have
+ * trained. Both faces of the shifted keys are listed because a keyboard that
+ * needs `Shift` for `+` reports `+`, and one that does not reports `=`; the
+ * person pressing them is doing the same thing either way. `0` is the reset
+ * and carries a step of zero, so the lookup below tests for `undefined` rather
+ * than for falsity.
+ */
+const ROOM_FONT_SIZE_KEYS: Record<string, number> = {
+  "=": 1,
+  "+": 1,
+  "-": -1,
+  _: -1,
+  "0": 0,
+};
+
+/**
  * The hues a participant can declare.
  *
  * Hue only. Lightness and chroma stay the accent's in whichever theme is
@@ -188,6 +245,7 @@ const toEl = document.getElementById("to-select") as HTMLSelectElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
+const fontSizeEl = document.getElementById("room-font-size") as HTMLSelectElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
 const sessionStateEl = document.getElementById("session-state") as HTMLElement;
 const transportEl = document.getElementById("session-transport") as HTMLElement;
@@ -244,6 +302,8 @@ let homeDir = "";
  * see and does not pretend to (#47).
  */
 let lastSeenId: string | null = null;
+/** The size the conversation is currently drawn at, in `rem`. */
+let roomFontSize = DEFAULT_ROOM_FONT_SIZE;
 
 /**
  * The emulator options every session's terminal is opened with.
@@ -404,6 +464,73 @@ function saveAccounts(): void {
   void invoke("save_config", { config: { accounts } }).catch(() => {
     status("アカウントを保存できませんでした。", "error");
   });
+}
+
+/**
+ * Fill the text size picker.
+ *
+ * Labelled as a proportion of the default rather than in `rem`, because the
+ * choice being made is "larger or smaller than what I have", and the unit the
+ * size happens to be held in answers a question nobody is asking.
+ */
+function fillRoomFontSizes(): void {
+  for (const size of ROOM_FONT_SIZES) {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = `${Math.round((size / DEFAULT_ROOM_FONT_SIZE) * 100)}%`;
+    fontSizeEl.appendChild(option);
+  }
+}
+
+/**
+ * The stored size, or the default.
+ *
+ * Only a size that is on the ladder is honoured. What is in `localStorage` was
+ * written by some version of this app and can be anything — a rung that a
+ * later version dropped, a value left by hand, or nothing at all — and the
+ * failure it would cause is silent: a size off the ladder cannot be stepped
+ * from, so the keys and the picker would both stop working with nothing on
+ * screen saying why.
+ */
+function storedRoomFontSize(): number {
+  const stored = Number(localStorage.getItem(ROOM_FONT_SIZE_KEY));
+  return ROOM_FONT_SIZES.includes(stored) ? stored : DEFAULT_ROOM_FONT_SIZE;
+}
+
+/**
+ * Draw the conversation at `size`, and remember it if it was chosen.
+ *
+ * The property goes on `#room` itself, which is what keeps this off everything
+ * else: the panel, the diagnostics pane, the terminal and the composer are
+ * elsewhere in the tree and inherit nothing from here. Setting it on the root
+ * would reach all four, and the terminal computes its columns and rows from
+ * its own size.
+ *
+ * `save` is false for the restore at startup. Writing the value back there
+ * would put a size in storage for a screen that never chose one, which is the
+ * one state this is supposed to leave alone.
+ */
+function applyRoomFontSize(size: number, save: boolean): void {
+  roomFontSize = size;
+  roomEl.style.setProperty("--room-font-size", `${size}rem`);
+  fontSizeEl.value = String(size);
+  if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
+}
+
+/**
+ * Move one rung, or back to the default when `step` is zero.
+ *
+ * The ends hold: stepping past either one lands on it again, so there is no
+ * size to reach that cannot be read or does not fit.
+ */
+function stepRoomFontSize(step: number): void {
+  if (step === 0) {
+    applyRoomFontSize(DEFAULT_ROOM_FONT_SIZE, true);
+    return;
+  }
+  const at = ROOM_FONT_SIZES.indexOf(roomFontSize);
+  const next = Math.min(Math.max(at + step, 0), ROOM_FONT_SIZES.length - 1);
+  applyRoomFontSize(ROOM_FONT_SIZES[next], true);
 }
 
 /**
@@ -1638,6 +1765,27 @@ async function main(): Promise<void> {
   // The account's colour is the account's, so nothing is restored into this
   // picker — the form fills it from whichever account it was opened on.
   fillHues(dialogHueEl, null);
+
+  // Restored before anything is drawn, so the first line to arrive is already
+  // at the size this screen reads at rather than jumping once it lands.
+  fillRoomFontSizes();
+  applyRoomFontSize(storedRoomFontSize(), false);
+  fontSizeEl.addEventListener("change", () => {
+    applyRoomFontSize(Number(fontSizeEl.value), true);
+  });
+  // On the window rather than on the room: the keys are meant to work while
+  // something is being typed, and the room is not what holds focus then.
+  window.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || event.altKey || event.isComposing) return;
+    const step = ROOM_FONT_SIZE_KEYS[event.key];
+    if (step === undefined) return;
+    // Load-bearing, not tidiness: the webview answers these same keys with its
+    // own zoom, which takes the terminal, the panel and the composer with it.
+    // Scaling those four is the one thing this control may not do, so the
+    // default has to be stopped for the scoped version to be what happens.
+    event.preventDefault();
+    stepRoomFontSize(step);
+  });
 
   toggleEl.addEventListener("click", () => {
     if (diagnosticsEl.hidden) {

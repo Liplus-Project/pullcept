@@ -129,7 +129,25 @@ body {
 
 /* ── room ────────────────────────────────────────────────────────────────── */
 
+/* The conversation's own text size, declared here and nowhere else.
+
+   On `#room` rather than on `:root` because that placement is what the scope
+   is made of: the participant panel, the diagnostics pane, the terminal and
+   the composer are not descendants of this element, so no size set here can
+   reach them. The terminal is the one that would hurt — xterm.js carries its
+   own size and computes columns and rows from it, and a size arriving from
+   above would shift both (#60).
+
+   `1rem` is what this surface has always rendered at. No `font-size` is
+   written on `body`, on `html` or on `:root`, so the room has been showing the
+   user agent's default while everything around it was given a size. That is
+   where "the text is large" came from, and keeping the default here is what
+   makes a screen that has set nothing look exactly as it did. Levelling the
+   surfaces against each other is a separate question and not this one's.
+
+   src/main.ts overrides this on the element when a size has been stored. */
 #room {
+  --room-font-size: 1rem;
   flex: 1;
   overflow-y: auto;
   padding: 1rem;
@@ -150,8 +168,17 @@ body {
    name. The derived hues leave a gap around the accent so that colour still
    reads as one's own; a declared one is free of that gap, because it was
    chosen. */
+/* The size lands on the whole line, not on its text alone: a name and a time
+   that stayed put while the words under them grew would read as a different
+   surface from the one they label. `em` below carries them along, and at the
+   default they resolve to exactly the sizes they were written at.
+   `max-width` is in `em` for the same reason — a measure fixed in `rem` would
+   hold the column still and shorten every line as the text grew, so the number
+   of characters to a line, which is what a measure is for, would change with
+   the size. */
 .message {
-  max-width: 46rem;
+  font-size: var(--room-font-size);
+  max-width: 46em;
   border-left: 3px solid var(--speaker, var(--line));
   padding-left: 0.7rem;
 }
@@ -160,7 +187,7 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.78rem;
+  font-size: 0.78em;
   color: var(--muted);
 }
 
