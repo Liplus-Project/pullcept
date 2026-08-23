@@ -11,7 +11,7 @@
 //!     registers the same server twice and takes the whole room down.
 //!
 //! This crate holds no tauri: it writes into the user's own project directory,
-//! which is the part of liplus-chat that most needs test coverage, and a test
+//! which is the part of Pullcept that most needs test coverage, and a test
 //! binary linking the tauri tree does not load on the GNU target.
 
 use serde_json::{json, Map, Value};
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// a single key means the second launch overwrites the first one's name, hue
 /// and room address — the identity the first session was launched with is gone
 /// while that session is still running (#40).
-pub const SERVER_PREFIX: &str = "liplus-chat-room";
+pub const SERVER_PREFIX: &str = "pullcept-room";
 
 /// The `.mcp.json` key, and the `server:<name>` tag, for one account.
 ///
@@ -41,7 +41,7 @@ pub const SERVER_PREFIX: &str = "liplus-chat-room";
 /// The slug half is legibility and the hash half is what makes the key total,
 /// as it was under the name. An id is opaque, so the slug reads less well than
 /// a name did; which account an entry belongs to is read from
-/// `LIPLUS_AGENT_NAME` in its own env instead. Legibility loses to identity
+/// `PULLCEPT_AGENT_NAME` in its own env instead. Legibility loses to identity
 /// here — a key that reads oddly costs one lookup, and a key that moves is a
 /// registration nobody can find.
 pub fn server_name_for(account_id: &str) -> String {
@@ -204,7 +204,7 @@ pub fn split_launch_options(text: &str) -> Vec<String> {
 ///
 /// Absolute paths and nothing to resolve. The CLI spawns this from the user's
 /// own project directory, so anything looked up by name is looked up there:
-/// `npx tsx` searched for a package that lives in liplus-chat and asked to
+/// `npx tsx` searched for a package that lives in Pullcept and asked to
 /// install it, from a process with no way to answer (#22). `node` is an
 /// executable rather than a shell script, so no shell wrapper is needed either.
 fn spawn_form(runner: &Path, entry: &Path) -> (&'static str, Vec<String>) {
@@ -261,26 +261,26 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     // retries nothing forever, and the file would grow by one key per account
     // ever launched here. Entries carrying the current address are live
     // siblings — the other sessions of this run — and stay. Entries with no
-    // `LIPLUS_ROOM_URL` at all are not ours to judge, whatever they are named.
+    // `PULLCEPT_ROOM_URL` at all are not ours to judge, whatever they are named.
     servers.retain(|name, entry| {
         if !name.starts_with(SERVER_PREFIX) {
             return true;
         }
-        match entry.get("env").and_then(|env| env.get("LIPLUS_ROOM_URL")) {
+        match entry.get("env").and_then(|env| env.get("PULLCEPT_ROOM_URL")) {
             Some(Value::String(url)) => url == room.room_url,
             _ => true,
         }
     });
 
     let mut env = Map::new();
-    env.insert("LIPLUS_ROOM_URL".into(), json!(room.room_url));
-    env.insert("LIPLUS_ROOM_TOKEN".into(), json!(room.token));
-    env.insert("LIPLUS_AGENT_NAME".into(), json!(room.agent_name));
-    env.insert("LIPLUS_ROOM_ID".into(), json!("liplus-chat"));
+    env.insert("PULLCEPT_ROOM_URL".into(), json!(room.room_url));
+    env.insert("PULLCEPT_ROOM_TOKEN".into(), json!(room.token));
+    env.insert("PULLCEPT_AGENT_NAME".into(), json!(room.agent_name));
+    env.insert("PULLCEPT_ROOM_ID".into(), json!("pullcept"));
     // Only when declared. An undeclared participant is a participant the room
     // derives a hue for, which is not the same state as one who chose that hue.
     if let Some(hue) = room.agent_hue {
-        env.insert("LIPLUS_AGENT_HUE".into(), json!(format!("{hue:.1}")));
+        env.insert("PULLCEPT_AGENT_HUE".into(), json!(format!("{hue:.1}")));
     }
 
     servers.insert(
@@ -308,7 +308,7 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("liplus-chat-test-{}", Uuid::new_v4()));
+            let dir = std::env::temp_dir().join(format!("pullcept-test-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).expect("scratch dir");
             Scratch(dir)
         }
@@ -323,8 +323,8 @@ mod tests {
         }
     }
 
-    const ENTRY: &str = "C:/liplus-chat/sidecar/src/index.ts";
-    const RUNNER: &str = "C:/liplus-chat/node_modules/tsx/dist/cli.mjs";
+    const ENTRY: &str = "C:/pullcept/sidecar/src/index.ts";
+    const RUNNER: &str = "C:/pullcept/node_modules/tsx/dist/cli.mjs";
     /// The account `Lin` is launched from. Opaque here as it is in the app: a
     /// test that read a name out of it would be testing the wrong key.
     const LIN: &str = "8f14e45f-ceea-467a-b160-6f14e45fceea";
@@ -356,17 +356,17 @@ mod tests {
 
         let json = read(&path);
         let server = &json["mcpServers"][server_name_for(LIN)];
-        assert_eq!(server["env"]["LIPLUS_ROOM_URL"], "ws://127.0.0.1:1234");
-        assert_eq!(server["env"]["LIPLUS_ROOM_TOKEN"], "tok");
-        assert_eq!(server["env"]["LIPLUS_AGENT_NAME"], "Lin");
-        assert_eq!(server["env"]["LIPLUS_ROOM_ID"], "liplus-chat");
+        assert_eq!(server["env"]["PULLCEPT_ROOM_URL"], "ws://127.0.0.1:1234");
+        assert_eq!(server["env"]["PULLCEPT_ROOM_TOKEN"], "tok");
+        assert_eq!(server["env"]["PULLCEPT_AGENT_NAME"], "Lin");
+        assert_eq!(server["env"]["PULLCEPT_ROOM_ID"], "pullcept");
         // Undeclared is the key absent, not a default value: a hue written here
         // would be a declaration this participant never made.
         assert!(
             !server["env"]
                 .as_object()
                 .expect("env")
-                .contains_key("LIPLUS_AGENT_HUE"),
+                .contains_key("PULLCEPT_AGENT_HUE"),
             "an undeclared hue must leave no key behind"
         );
 
@@ -425,8 +425,8 @@ mod tests {
 
         let json = read(&path);
         let server = &json["mcpServers"][server_name_for(LIN)];
-        assert_eq!(server["env"]["LIPLUS_ROOM_TOKEN"], "tok2");
-        assert_eq!(server["env"]["LIPLUS_AGENT_HUE"], "145.0");
+        assert_eq!(server["env"]["PULLCEPT_ROOM_TOKEN"], "tok2");
+        assert_eq!(server["env"]["PULLCEPT_AGENT_HUE"], "145.0");
         assert_eq!(
             json["mcpServers"].as_object().expect("servers").len(),
             1,
@@ -461,7 +461,7 @@ mod tests {
         let servers = json["mcpServers"].as_object().expect("servers");
         assert_eq!(servers.len(), 1, "a rename must not open a second entry");
         assert_eq!(
-            json["mcpServers"][server_name_for(LIN)]["env"]["LIPLUS_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_AGENT_NAME"],
             "リン",
             "the new name belongs in the entry the id already had"
         );
@@ -491,12 +491,12 @@ mod tests {
 
         let json = read(&path);
         assert_eq!(
-            json["mcpServers"][server_name_for(LIN)]["env"]["LIPLUS_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_AGENT_NAME"],
             "Lin",
             "the first session's identity must survive the second launch"
         );
         assert_eq!(
-            json["mcpServers"][server_name_for(LAY)]["env"]["LIPLUS_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LAY)]["env"]["PULLCEPT_AGENT_NAME"],
             "Lay"
         );
         assert_eq!(json["mcpServers"].as_object().expect("servers").len(), 2);
@@ -512,9 +512,9 @@ mod tests {
         std::fs::write(
             scratch.path().join(".mcp.json"),
             r#"{"mcpServers":{
-                 "liplus-chat-room": {"env":{"LIPLUS_ROOM_URL":"ws://127.0.0.1:1"}},
-                 "liplus-chat-room-lay-00000000": {"env":{"LIPLUS_ROOM_URL":"ws://127.0.0.1:1234"}},
-                 "liplus-chat-room-theirs": {"command":"not-ours"},
+                 "pullcept-room": {"env":{"PULLCEPT_ROOM_URL":"ws://127.0.0.1:1"}},
+                 "pullcept-room-lay-00000000": {"env":{"PULLCEPT_ROOM_URL":"ws://127.0.0.1:1234"}},
+                 "pullcept-room-theirs": {"command":"not-ours"},
                  "theirs": {"command":"their-server"}
                }}"#,
         )
@@ -528,15 +528,15 @@ mod tests {
         let json = read(&path);
         let servers = json["mcpServers"].as_object().expect("servers");
         assert!(
-            !servers.contains_key("liplus-chat-room"),
+            !servers.contains_key("pullcept-room"),
             "an entry from a previous run must go"
         );
         assert!(
-            servers.contains_key("liplus-chat-room-lay-00000000"),
+            servers.contains_key("pullcept-room-lay-00000000"),
             "a live sibling of this run must stay"
         );
         assert!(
-            servers.contains_key("liplus-chat-room-theirs"),
+            servers.contains_key("pullcept-room-theirs"),
             "an entry with no room address of ours is not ours to remove"
         );
         assert!(servers.contains_key("theirs"));
@@ -552,7 +552,7 @@ mod tests {
         // input that slugs to nothing still gets a key of its own, and two that
         // slug alike still get two. The uniqueness lives in the hash, and the
         // ids the app mints do not lean on the slug for it.
-        assert!(server_name_for("マスター").starts_with("liplus-chat-room-"));
+        assert!(server_name_for("マスター").starts_with("pullcept-room-"));
         assert_ne!(server_name_for("マスター"), server_name_for("ますたー"));
         assert_ne!(server_name_for("Lin"), server_name_for("lin!"));
         // Nothing outside the set a console and a JSON key both leave alone.

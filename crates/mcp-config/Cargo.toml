@@ -1,13 +1,13 @@
 [package]
 name = "mcp-config"
 version = "0.1.0"
-description = "Registration of the liplus-chat room sidecar in a project's .mcp.json"
+description = "Registration of the Pullcept room sidecar in a project's .mcp.json"
 authors = ["Liplus Project Contributors"]
 license = "Apache-2.0"
 edition = "2021"
 
 # Deliberately free of tauri. This crate writes into the user's own project
-# directory, which is the part of liplus-chat that most needs test coverage,
+# directory, which is the part of Pullcept that most needs test coverage,
 # and a test binary that links the tauri dependency tree does not load on the
 # GNU target (see the CI note in docs/0-requirements.md).
 

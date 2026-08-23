@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "liplus-chat",
+  "productName": "pullcept",
   "version": "0.1.0",
-  "identifier": "org.liplus-project.liplus-chat",
+  "identifier": "org.liplus-project.pullcept",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Li+ Chat",
+        "title": "Pullcept",
         "width": 1200,
         "height": 800
       }

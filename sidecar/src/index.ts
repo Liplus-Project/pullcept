@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * liplus-chat room sidecar
+ * Pullcept room sidecar
  *
  * A stdio MCP server that puts one CLI session into the room.
  *
@@ -33,10 +33,10 @@ import {
 import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
 
-const ROOM_URL = process.env.LIPLUS_ROOM_URL ?? "";
-const AGENT_NAME = process.env.LIPLUS_AGENT_NAME ?? "session";
-const ROOM_TOKEN = process.env.LIPLUS_ROOM_TOKEN ?? "";
-const CHAT_ID = process.env.LIPLUS_ROOM_ID ?? "liplus-chat";
+const ROOM_URL = process.env.PULLCEPT_ROOM_URL ?? "";
+const AGENT_NAME = process.env.PULLCEPT_AGENT_NAME ?? "session";
+const ROOM_TOKEN = process.env.PULLCEPT_ROOM_TOKEN ?? "";
+const CHAT_ID = process.env.PULLCEPT_ROOM_ID ?? "pullcept";
 
 /**
  * The hue this session was launched under, in oklch degrees, or null when it
@@ -46,7 +46,7 @@ const CHAT_ID = process.env.LIPLUS_ROOM_ID ?? "liplus-chat";
  * a colour for from their name, and a number invented here would be indelible:
  * the room cannot tell a declaration from a fallback once it is on the wire.
  */
-const AGENT_HUE = readHue(process.env.LIPLUS_AGENT_HUE);
+const AGENT_HUE = readHue(process.env.PULLCEPT_AGENT_HUE);
 
 function readHue(raw: string | undefined): number | null {
   if (raw === undefined || raw.trim() === "") return null;
@@ -67,7 +67,7 @@ const PROTOCOL_VERSION = 4;
 const POST_RESULT_TIMEOUT = 15_000;
 
 function log(line: string): void {
-  process.stderr.write(`[liplus-chat sidecar] ${line}\n`);
+  process.stderr.write(`[pullcept sidecar] ${line}\n`);
 }
 
 // ── Room frames ──────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ function log(line: string): void {
 //
 // `hello` is where this session says who it is: the name it answers to and,
 // when it was launched with one, the hue it is drawn in. Both arrive from the
-// launch (`LIPLUS_AGENT_NAME` / `LIPLUS_AGENT_HUE`) rather than from anything
+// launch (`PULLCEPT_AGENT_NAME` / `PULLCEPT_AGENT_HUE`) rather than from anything
 // this file decides, because both are the person's declaration, made at the
 // moment of joining.
 //
@@ -144,14 +144,14 @@ interface PostResultFrame {
 // ── MCP server ───────────────────────────────────────────────────────────────
 
 const INSTRUCTIONS = [
-  "あなたは liplus-chat の部屋に参加しています。",
+  "あなたは Pullcept の部屋に参加しています。",
   `この部屋でのあなたの名前は「${AGENT_NAME}」です。`,
   "",
   "この部屋は、人間と AI を区別しません。参加者は全員が同じ参加者であり、",
   "違いは名前だけです。発言もひとつの行為で、誰が出しても同じ形で届きます。",
   "相手が人間か別のセッションかを気にする必要はありません。",
   "",
-  '部屋の発言は <channel source="liplus-chat" ...> として届きます。',
+  '部屋の発言は <channel source="pullcept" ...> として届きます。',
   "発言するときは say_to_room ツールを呼んでください。ターミナルへの出力は",
   "部屋には届きません。",
   "",
@@ -192,7 +192,7 @@ const INSTRUCTIONS = [
 ].join("\n");
 
 const mcp = new Server(
-  { name: "liplus-chat-room", version: "0.1.0" },
+  { name: "pullcept-room", version: "0.1.0" },
   {
     capabilities: {
       tools: {},
@@ -206,7 +206,7 @@ const TOOLS = [
   {
     name: "say_to_room",
     description:
-      "Post a message to the liplus-chat room. This is the only way to be heard " +
+      "Post a message to the Pullcept room. This is the only way to be heard " +
       "by the room; terminal output is not read by anyone.",
     inputSchema: {
       type: "object" as const,
@@ -360,7 +360,7 @@ const MAX_RETRY_DELAY = 30_000;
 const PING_INTERVAL = 25_000;
 
 function roomStatus(): string {
-  if (!ROOM_URL) return "LIPLUS_ROOM_URL is not set";
+  if (!ROOM_URL) return "PULLCEPT_ROOM_URL is not set";
   if (ws && ws.readyState === WebSocket.OPEN) return "connected";
   return lastError ? `disconnected: ${lastError}` : "disconnected";
 }
@@ -524,5 +524,5 @@ if (ROOM_URL) {
   // Serving MCP without a room is a degraded but legible state: the agent can
   // still call the tool and gets told why nothing was delivered. Exiting here
   // would surface to the user as a bare MCP connection failure instead.
-  log("room socket: LIPLUS_ROOM_URL is not set, staying offline");
+  log("room socket: PULLCEPT_ROOM_URL is not set, staying offline");
 }

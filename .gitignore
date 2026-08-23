@@ -29,4 +29,4 @@ src-tauri/gen/
 # Machine-local cargo override (see src-tauri/.cargo/config.toml.example)
 src-tauri/.cargo/config.toml
 # Seeded design canvas — 2.2MB of editor payload, regenerated from design/*.dc.html
-design/liplus-chat-ui.html
+design/pullcept-ui.html
