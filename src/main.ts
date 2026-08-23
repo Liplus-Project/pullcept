@@ -775,8 +775,8 @@ async function refreshSeats(): Promise<void> {
     seated = new Set(await invoke<string[]>("seated_accounts"));
   } catch {
     // The panel keeps the last answer rather than declaring everyone offline
-    // on a failed read.
-    return;
+    // on a failed read. It still redraws: what failed is this one value, and
+    // whatever else moved since the last draw is not held back by it.
   }
   renderPanel();
 }
@@ -1663,6 +1663,11 @@ async function main(): Promise<void> {
     // may have to be made here for it (#59).
     resolveLocalAccount();
     renderAccountOptions("");
+    // Drawn here, off the config alone. An account that is not running is
+    // listed from the moment the app opens rather than once the room has
+    // answered — being listed is not conditional on ever having been started
+    // (#59).
+    renderPanel();
   } catch (err) {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
