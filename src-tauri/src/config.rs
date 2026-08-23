@@ -139,9 +139,9 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     // nothing left for one to do — the person's own working directory and
     // launch options are what would have been lost, and they carry over.
     //
-    // No path exists for anything older than that. liplus-chat has never
+    // No path exists for anything older than that. Pullcept has never
     // shipped a release, and its app data directory is keyed to its own
-    // identifier (org.liplus-project.liplus-chat), so no config in the older
+    // identifier (org.liplus-project.pullcept), so no config in the older
     // left/right pane format from liplus-desktop can reach this app.
     serde_json::from_str::<AppConfig>(&content)
         .map_err(|e| format!("Failed to parse config: {e}"))

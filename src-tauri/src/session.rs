@@ -45,8 +45,8 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
         }
     }
 
-    let entry_override = from_env("LIPLUS_SIDECAR_ENTRY")?;
-    let runner_override = from_env("LIPLUS_SIDECAR_RUNNER")?;
+    let entry_override = from_env("PULLCEPT_SIDECAR_ENTRY")?;
+    let runner_override = from_env("PULLCEPT_SIDECAR_RUNNER")?;
     if let (Some(entry), Some(runner)) = (&entry_override, &runner_override) {
         return Ok((entry.clone(), runner.clone()));
     }
@@ -71,7 +71,7 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
         }
     }
     Err("Could not find sidecar/src/index.ts next to node_modules/tsx. \
-         Run npm install, or set LIPLUS_SIDECAR_ENTRY and LIPLUS_SIDECAR_RUNNER."
+         Run npm install, or set PULLCEPT_SIDECAR_ENTRY and PULLCEPT_SIDECAR_RUNNER."
         .to_string())
 }
 
@@ -83,7 +83,7 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
 /// name would have two places to land.
 ///
 /// The rule is scoped to the room, not to the account. There is one room today
-/// — the sidecar's `LIPLUS_ROOM_ID` is fixed to `liplus-chat` — so this map
+/// — the sidecar's `PULLCEPT_ROOM_ID` is fixed to `pullcept` — so this map
 /// needs no room in its key yet, and with one room the refusal is
 /// indistinguishable from "an account runs once". They are not the same rule.
 /// Rooms are meant to become plural (`design/Vision.dc.html`), and one account

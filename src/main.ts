@@ -100,8 +100,8 @@ interface StartedSession {
   started_at: string;
 }
 
-const NAME_KEY = "liplus-chat.display-name";
-const HUE_KEY = "liplus-chat.display-hue";
+const NAME_KEY = "pullcept.display-name";
+const HUE_KEY = "pullcept.display-hue";
 
 /**
  * The hues a participant can declare.

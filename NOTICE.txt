@@ -1,2 +1,2 @@
-liplus-chat
+Pullcept
 Copyright 2026 Yoshiharu Uematsu
