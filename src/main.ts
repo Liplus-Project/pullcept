@@ -1661,6 +1661,7 @@ async function main(): Promise<void> {
       void send();
     }
   });
+
   try {
     homeDir = await invoke<string>("home_dir");
   } catch {
