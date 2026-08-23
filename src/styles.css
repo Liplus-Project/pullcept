@@ -168,6 +168,7 @@ body {
    name. The derived hues leave a gap around the accent so that colour still
    reads as one's own; a declared one is free of that gap, because it was
    chosen. */
+
 /* The size lands on the whole line, not on its text alone: a name and a time
    that stayed put while the words under them grew would read as a different
    surface from the one they label. `em` below carries them along, and at the

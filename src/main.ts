@@ -198,7 +198,7 @@ const ROOM_FONT_SIZE_KEYS: Record<string, number> = {
   "=": 1,
   "+": 1,
   "-": -1,
-  _: -1,
+  "_": -1,
   "0": 0,
 };
 
