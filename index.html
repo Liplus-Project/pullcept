@@ -30,19 +30,22 @@
         <button id="toggle-diagnostics" type="button" aria-expanded="false">診断</button>
       </header>
 
+      <!-- The accounts. An account exists whether or not it is running, so
+           this row is where one is made, named, coloured and pointed at a
+           working directory — not where a launch declares those (#53). Editing
+           any field here edits the account; the launch button starts the one
+           selected. -->
       <div id="launcher">
-        <select id="tab-select" aria-label="起動するセッション"></select>
-        <!-- The name and colour this session joins under. Not the tab's: the
-             tab says which CLI to run, and every launch off one tab used to
-             answer to that one name, which left two sessions indistinguishable
-             and unaddressable (#40). -->
+        <select id="account-select" aria-label="アカウント"></select>
+        <button id="account-new" type="button" title="アカウントを追加">＋</button>
+        <button id="account-delete" type="button" title="選択中のアカウントを削除">−</button>
         <label class="who">
           名前
-          <input id="session-name" type="text" spellcheck="false" />
+          <input id="account-name" type="text" spellcheck="false" />
         </label>
         <label class="who">
           色
-          <select id="session-hue"></select>
+          <select id="account-hue"></select>
         </label>
         <label class="cwd">
           作業ディレクトリ
@@ -107,7 +110,13 @@
         <!-- Who is in the room, and what the session under it was launched
              from. The values were all reachable before this panel existed;
              what was missing was a place that shows them without being
-             opened. -->
+             opened.
+
+             The list is the room's roster and the accounts that are not in it,
+             joined on the account id. An account that is not running is still
+             someone, so it is listed and marked offline rather than left out
+             (#53); it is not offered as an addressee, because a name that
+             cannot be reached is not one worth naming. -->
         <aside id="participants" aria-label="参加者">
           <h2 class="panel-title">参加者</h2>
           <!-- Seeded, because the roster only arrives once the room answers:
