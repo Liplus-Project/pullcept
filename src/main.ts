@@ -65,8 +65,30 @@ interface Participant {
   id: string;
   name: string;
   hue: number | null;
+  /**
+   * The account this participant joined as, or null when they joined with
+   * none. What the panel joins its own account list against (#59).
+   *
+   * Not the identity, and not what anything here decides on. `id` above is the
+   * identity, `own` below is the room's answer to self/other, and both are the
+   * connection. An account id looks like the more stable of the two and is not
+   * the one that was chosen: two connections could carry one account id — from
+   * somewhere this app did not launch — and they would still be two
+   * participants (#39 / #40 / #47).
+   */
+  account: string | null;
   own: boolean;
 }
+
+/**
+ * What kind of participant an account is, declared when it is made.
+ *
+ * Never inferred from the connection: the room sees only what kind of
+ * connection someone arrived on, and a person joining from another client
+ * arrives the same way a session does. The account form is the one moment
+ * anyone can say which this is (#59).
+ */
+type AccountKind = "user" | "ai";
 
 /**
  * One account: someone who exists whether or not they are running.
@@ -87,6 +109,9 @@ interface Account {
   /** The hue chosen for this account, or null when none was — the derived one
    *  from the name is used then. */
   hue: number | null;
+  /** Declared when the account was made. What the participant list groups on,
+   *  and nothing else — the room still has one kind of participant. */
+  kind: AccountKind;
 }
 
 interface AppConfig {
@@ -100,8 +125,25 @@ interface StartedSession {
   started_at: string;
 }
 
+/**
+ * Where the name and hue of this screen's person used to live, and the only
+ * thing still read out of them: the values to make their account from, once.
+ *
+ * They were the person's whole identity here while a person was not an account
+ * (#53 left that open). They are an account now (#59), so these two keys are a
+ * migration source and are not written to again.
+ */
 const NAME_KEY = "pullcept.display-name";
 const HUE_KEY = "pullcept.display-hue";
+/**
+ * Which account is the person at this screen.
+ *
+ * Held here rather than in the config, because it is a property of this screen
+ * rather than of the account list: the same config opened elsewhere would have
+ * a different person at it. The account itself is in the config like every
+ * other.
+ */
+const LOCAL_KEY = "pullcept.local-account";
 
 /**
  * The hues a participant can declare.
@@ -139,13 +181,8 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
-const nameEl = document.getElementById("display-name") as HTMLInputElement;
-const hueEl = document.getElementById("display-hue") as HTMLSelectElement;
 const accountEl = document.getElementById("account-select") as HTMLSelectElement;
-const accountNameEl = document.getElementById("account-name") as HTMLInputElement;
-const accountHueEl = document.getElementById("account-hue") as HTMLSelectElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
-const accountDeleteEl = document.getElementById("account-delete") as HTMLButtonElement;
 const startEl = document.getElementById("start-session") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
@@ -161,11 +198,19 @@ const dirEl = document.getElementById("session-dir") as HTMLElement;
 const startedEl = document.getElementById("session-started") as HTMLElement;
 const windowEl = document.getElementById("session-window") as HTMLElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
-const terminalsEl = document.getElementById("terminals") as HTMLElement;
-const terminalsSectionEl = document.getElementById("terminals-section") as HTMLElement;
-const cwdEl = document.getElementById("session-cwd") as HTMLInputElement;
-const optionsEl = document.getElementById("launch-options") as HTMLInputElement;
-const previewEl = document.getElementById("launch-preview") as HTMLElement;
+const dialogEl = document.getElementById("account-dialog") as HTMLDialogElement;
+const dialogFormEl = document.getElementById("account-form") as HTMLFormElement;
+const dialogTitleEl = document.getElementById("account-dialog-title") as HTMLElement;
+const dialogNameEl = document.getElementById("dialog-name") as HTMLInputElement;
+const dialogKindEl = document.getElementById("dialog-kind") as HTMLSelectElement;
+const dialogHueEl = document.getElementById("dialog-hue") as HTMLSelectElement;
+const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
+const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
+const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
+const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
+const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
+const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
+const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
 
 let accounts: Account[] = [];
 /**
@@ -180,6 +225,14 @@ let accounts: Account[] = [];
 let seated = new Set<string>();
 /** Everyone in the room, this screen's person included. */
 let participants: Participant[] = [];
+/**
+ * The account the person at this screen is, or "" before it is resolved.
+ *
+ * They are an account like every other one — that is what #53 left open and
+ * this settles (#59). What is theirs alone is being the one at the keyboard,
+ * which is why the id is here and in `localStorage`, not a flag on the account.
+ */
+let localAccountId = "";
 /** Prefill for an account that has never been given a working directory. */
 let homeDir = "";
 /**
@@ -325,51 +378,41 @@ function joinArgs(args: string[]): string {
   return args.map((arg) => (arg === "" || arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
 }
 
+/**
+ * The accounts the launcher can start: the AI ones.
+ *
+ * A `user` account is a person, and there is no CLI under a person to spawn.
+ * The app refuses one as well and that refusal is the authority
+ * (`start_session`); leaving it out of the picker only means the refusal is
+ * never the way the person finds out (#59).
+ */
+function launchableAccounts(): Account[] {
+  return accounts.filter((account) => account.kind === "ai");
+}
+
 /** The account the launcher is pointed at, or null when there is none. */
 function selectedAccount(): Account | null {
   return accounts.find((candidate) => candidate.id === accountEl.value) ?? null;
 }
 
+/** The account the person at this screen is, or null before it is resolved. */
+function localAccount(): Account | null {
+  return accounts.find((account) => account.id === localAccountId) ?? null;
+}
+
 /**
  * Write the account list back to disk.
  *
- * Every edit persists as it is made rather than at the next launch: an account
- * is a thing that exists whether or not it runs, so a name typed and never
- * launched is not a draft (#53).
+ * Called when an account is decided, deleted, or created for the person at this
+ * screen — never from a field losing focus. An account is a thing that exists
+ * whether or not it runs (#53), and the field-by-field save made every keystroke
+ * on the way to a name into a state that existed: pressing ＋ created an
+ * account, and from there the only way out was to delete it (#59).
  */
 function saveAccounts(): void {
   void invoke("save_config", { config: { accounts } }).catch(() => {
     status("アカウントを保存できませんでした。", "error");
   });
-}
-
-/**
- * Show the command that will actually run.
- *
- * The app merges its own channel entry into whatever is typed here, so the
- * line the person wrote is not the line that launches. Showing the result is
- * cheaper than explaining the merge.
- */
-async function refreshPreview(): Promise<void> {
-  const account = selectedAccount();
-  if (!account) {
-    previewEl.textContent = "";
-    return;
-  }
-  try {
-    const parsed = await invoke<string[]>("parse_launch_options", { text: optionsEl.value });
-    // The channel entry names this account's own server, which follows the
-    // account id. So the preview changes when another account is selected and
-    // holds still while this one is renamed — the identity being launched is
-    // the account, and renaming it does not make it something else (#53).
-    const merged = await invoke<string[]>("preview_launch_args", {
-      args: parsed,
-      accountId: account.id,
-    });
-    previewEl.textContent = `${account.command} ${joinArgs(merged)}`;
-  } catch {
-    previewEl.textContent = "";
-  }
 }
 
 /**
@@ -502,15 +545,94 @@ function appendMessage(message: RoomMessage): void {
 }
 
 /**
- * Draw one line of the panel's list.
+ * One line of the participant list: an account, whoever is in the room as it,
+ * or both.
+ *
+ * Both halves are optional, and each absence is a real state rather than a
+ * defect. An account with no participant is someone who exists and is not
+ * running (#53). A participant with no account is a connection that declared
+ * none — the room does not presume one exists, and something joining from
+ * outside this app has none to declare (#59).
+ */
+interface Member {
+  account: Account | null;
+  participant: Participant | null;
+}
+
+/** Which group a row falls in, and the heading it is drawn under. */
+const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
+  { kind: "user", label: "user" },
+  { kind: "ai", label: "AI" },
+  // Not a kind: the absence of one. A connection carrying no account has
+  // declared nothing, and inferring a kind from how it arrived is the mistake
+  // the declaration exists to avoid (#59).
+  { kind: "guest", label: "ゲスト" },
+];
+
+/**
+ * Join the room's roster against this app's accounts, into one list.
+ *
+ * **On the account id**, which the room now carries on every seat (#59). Never
+ * on the name: a name is an editable attribute, two accounts may answer to one,
+ * and a running account may have been renamed since it joined — matching by
+ * name ties the wrong pair in all three cases, which is the failure #40 was
+ * about in another shape and the reason #53 refused it.
+ *
+ * The room's roster is the whole of the live half. The screen keeps no second
+ * list of who is present, so a name on a live row is a name a post can be
+ * addressed to.
+ */
+function members(): Member[] {
+  const rows: Member[] = [];
+  const placed = new Set<string>();
+
+  for (const account of accounts) {
+    // Plural on purpose. One account holding two seats is refused by the app
+    // that launches it (`RoomSeats`), and this list is not the place to enforce
+    // that: something joining from elsewhere could carry the same id, and
+    // dropping the second one would hide a participant who is genuinely there.
+    const matches = participants.filter((one) => one.account === account.id);
+    for (const participant of matches) {
+      placed.add(participant.id);
+      rows.push({ account, participant });
+    }
+    if (!matches.length) rows.push({ account, participant: null });
+  }
+
+  for (const participant of participants) {
+    if (!placed.has(participant.id)) rows.push({ account: null, participant });
+  }
+  return rows;
+}
+
+/** What a row is called: the room's name while it is in the room. */
+function memberName(row: Member): string {
+  return row.participant?.name ?? row.account?.name ?? "";
+}
+
+/**
+ * Draw one line of the participant list.
  *
  * The colour is the one that participant's lines carry in the room, which is
  * what makes the panel a legend for the conversation rather than a second copy
- * of the same names.
+ * of the same names. It is on the name itself here, not only on the dot.
+ *
+ * An offline row keeps its colour and is dimmed; it does not fall to grey. The
+ * colour carries the account's identity, and someone merely absent must not
+ * read as someone else (#59).
  */
-function rosterEntry(name: string, hue: number | null, own: boolean, note?: string): HTMLLIElement {
+function memberRow(row: Member): HTMLLIElement {
+  const name = memberName(row);
+  const hue = row.participant ? row.participant.hue : (row.account?.hue ?? null);
+  // From the room, decided on the connection. A name test here would mark every
+  // participant answering to this screen's name as oneself (#40).
+  const own = row.participant?.own ?? false;
+  const view = row.account ? views.get(row.account.id) : undefined;
+
   const entry = document.createElement("li");
+  entry.className = "member";
   entry.style.setProperty("--speaker", speakerColor(name, hue, own));
+  if (!row.participant) entry.classList.add("offline");
 
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -520,28 +642,82 @@ function rosterEntry(name: string, hue: number | null, own: boolean, note?: stri
   who.textContent = name;
   who.title = name;
 
-  entry.append(dot, who);
-  if (note) {
-    const tag = document.createElement("span");
-    tag.className = "note";
-    tag.textContent = note;
-    entry.appendChild(tag);
+  // What this line says about itself beyond the name. Someone present and not
+  // oneself says nothing: being in the list is what it would have said.
+  let noteText = "";
+  if (own) noteText = "（あなた）";
+  else if (row.participant) noteText = "";
+  else if (view?.ended != null) noteText = "終了";
+  else if (row.account) noteText = "未起動";
+
+  // A row whose account has a terminal here picks that terminal; the whole line
+  // is the control, so choosing which session to watch is one click on the
+  // session rather than on something beside it. A row with no terminal is not a
+  // button at all — a disabled one would grey out a name whose colour is
+  // load-bearing.
+  let pick: HTMLElement;
+  if (view) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pick";
+    button.setAttribute("aria-pressed", String(view.accountId === shownAccount));
+    button.title = `${name} の端末を見る`;
+    button.addEventListener("click", () => {
+      revealDiagnostics();
+      showView(view.accountId);
+      view.term.focus();
+    });
+    if (view.accountId === shownAccount) entry.classList.add("shown");
+    pick = button;
+  } else {
+    pick = document.createElement("div");
+    pick.className = "pick static";
   }
+  pick.append(dot, who);
+  if (noteText) {
+    const note = document.createElement("span");
+    note.className = "note";
+    note.textContent = noteText;
+    pick.appendChild(note);
+  }
+  entry.appendChild(pick);
+
+  // The account's own operations ride on its row, which is what one list buys:
+  // the row is keyed on the account id, so 編集 and 終了 act on one account and
+  // cannot be tied to the wrong one by a shared name (#53, #59).
+  if (row.account) entry.appendChild(editButton(row.account));
+  // No 終了 before the launch has returned an id: there is no session to end
+  // yet, and a kill aimed at an empty id reports success having done nothing.
+  // None for an account that is not running either (#57).
+  if (view && view.ended === null && view.ptyId !== "") entry.appendChild(endButton(view, name));
+
   return entry;
 }
 
+/** The control that opens one account's form. */
+function editButton(account: Account): HTMLButtonElement {
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "edit";
+  edit.textContent = "編集";
+  edit.title = `${account.name} の設定`;
+  edit.addEventListener("click", () => openAccountDialog(account));
+  return edit;
+}
+
 /**
- * Draw the panel's list: who is in the room, and who exists but is not.
+ * Draw the participant list: everyone who is here, and everyone who exists.
  *
- * The two halves are joined **on the account id**. The live half is the room's
- * roster verbatim — the screen keeps no second list of who is present, so a
- * name on a live line is a name a post can be addressed to. The offline half is
- * every account with no seat, which the app answers by id (`seated_accounts`).
+ * One list. It was two — a roster keyed on the connection and a terminal list
+ * keyed on the account id — because a `Participant` carried no account id and
+ * the only join available was on the name, which #40 and #53 had ruled out
+ * (#57). The room carries the id now, so the two questions ("who is here" and
+ * "what can I do with them") are answered on one row.
  *
- * By id and never by name. A name is an editable attribute now, so two accounts
- * may answer to one name and a running account may have been renamed since it
- * joined; matching the two halves by name would tie the wrong pair in both
- * cases, which is the failure #40 was about in another shape.
+ * Grouped by the kind declared at creation, with the count in the heading. A
+ * participant with no account has declared no kind and is grouped as such;
+ * guessing one from the connection would mistake a person who joined from
+ * another client for a session (#59).
  *
  * An account that is not running is still someone, so it is listed rather than
  * left out — that is the whole point of an account existing while it is off
@@ -550,32 +726,31 @@ function rosterEntry(name: string, hue: number | null, own: boolean, note?: stri
  */
 function renderPanel(): void {
   rosterEl.replaceChildren();
+  const rows = members();
 
-  const offline = accounts.filter((account) => !seated.has(account.id));
-  if (!participants.length && !offline.length) {
+  if (!rows.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
     empty.textContent = "参加者なし";
     rosterEl.appendChild(empty);
+    renderAddressees();
+    return;
   }
 
-  for (const participant of participants) {
-    // `own` comes from the room, decided on the connection. A name test here
-    // would mark every participant answering to this screen's name as oneself.
-    rosterEl.appendChild(
-      rosterEntry(
-        participant.name,
-        participant.hue,
-        participant.own,
-        participant.own ? "（あなた）" : undefined,
-      ),
-    );
-  }
+  for (const group of GROUPS) {
+    const inGroup = rows
+      .filter((row) => (row.account?.kind ?? "guest") === group.kind)
+      .sort((a, b) => memberName(a).localeCompare(memberName(b)));
+    if (!inGroup.length) continue;
 
-  for (const account of offline) {
-    const entry = rosterEntry(account.name, account.hue, false, "未起動");
-    entry.classList.add("offline");
-    rosterEl.appendChild(entry);
+    const heading = document.createElement("li");
+    heading.className = "group";
+    // Name and count, joined by an em dash. The count is what a heading buys
+    // over a divider: how many of this kind are here is read without counting.
+    heading.textContent = `${group.label} — ${inGroup.length}`;
+    rosterEl.appendChild(heading);
+
+    for (const row of inGroup) rosterEl.appendChild(memberRow(row));
   }
 
   renderAddressees();
@@ -608,27 +783,76 @@ async function refreshSeats(): Promise<void> {
 
 /** The name this screen posts under, and is listed in the roster under. */
 function localName(): string {
-  return nameEl.value.trim() || "human";
+  return localAccount()?.name.trim() || "human";
 }
 
 /**
- * Take a seat in the room under the current name and colour.
+ * Take a seat in the room as the account this screen's person is.
  *
  * Being in the room is not the same as having spoken in it: without this the
  * roster would list only the sessions, and nobody could address someone who
  * had not spoken yet.
  *
- * The colour goes with the name because they are one declaration, and because
- * a seat carries both — sending the name alone on a rename would withdraw a
- * colour nobody withdrew.
+ * All three go together because a seat carries all three, and sending fewer
+ * would withdraw a declaration nobody withdrew. The account id rides for the
+ * same reason a session's does — so this screen's own row in the list is joined
+ * by id like every other, rather than by the name that #40 ruled out. It is not
+ * what makes this participant oneself: the room decides that on the connection,
+ * and `Participant.own` is its answer (#59).
  */
 async function join(): Promise<void> {
+  const account = localAccount();
   try {
-    await invoke("room_join", { name: localName(), hue: declaredHue(hueEl) });
+    await invoke("room_join", {
+      name: localName(),
+      hue: account?.hue ?? null,
+      accountId: account?.id ?? null,
+    });
   } catch {
     // Failing to seat is not worth interrupting anything: the first post
     // seats the name anyway.
   }
+}
+
+/**
+ * Find or make the account the person at this screen is.
+ *
+ * #53 left "is a human an account" open, and the two lists in the panel were
+ * one consequence: the person was a name and a colour in `localStorage`, so
+ * they had no row of the kind everyone else had. They are an account now, of
+ * kind `user`, and the migration is the obvious one — the name and colour they
+ * had been joining under become that account's (#59).
+ *
+ * Resolved before the room is joined, because the id goes into the join.
+ */
+function resolveLocalAccount(): void {
+  const stored = localStorage.getItem(LOCAL_KEY);
+  let account =
+    accounts.find((one) => one.id === stored && one.kind === "user") ??
+    accounts.find((one) => one.kind === "user") ??
+    null;
+
+  if (!account) {
+    const savedHue = localStorage.getItem(HUE_KEY);
+    account = {
+      id: crypto.randomUUID(),
+      name: (localStorage.getItem(NAME_KEY) ?? "").trim() || "human",
+      // Carried so the shape of an account is one shape. Nothing launches a
+      // person, and `start_session` refuses a `user` account outright.
+      command: "claude",
+      args: [],
+      cwd: null,
+      hue: savedHue !== null && HUES.some(({ hue }) => String(hue) === savedHue)
+        ? Number(savedHue)
+        : null,
+      kind: "user",
+    };
+    accounts.push(account);
+    saveAccounts();
+  }
+
+  localAccountId = account.id;
+  localStorage.setItem(LOCAL_KEY, account.id);
 }
 
 /**
@@ -743,65 +967,6 @@ function renderSessionFacts(): void {
 }
 
 /**
- * Draw the panel's terminal list.
- *
- * Not the roster, and not a second copy of it. The roster answers who is in the
- * room and is keyed on the connection each participant arrived on; this answers
- * which sessions this screen is holding a terminal for, and is keyed on the
- * account id. The two memberships genuinely differ: a participant who joined
- * from somewhere else has no terminal here, and a session that has just exited
- * has a terminal and no seat. Keying this list on the account id is also what
- * lets a row carry an operation at all — a name match would tie the wrong row
- * as soon as two accounts answer to one name (#53).
- */
-function renderTerminalList(): void {
-  terminalsEl.replaceChildren();
-  terminalsSectionEl.hidden = views.size === 0;
-
-  for (const view of views.values()) {
-    const account = accounts.find((candidate) => candidate.id === view.accountId);
-    const name = viewName(view);
-    const row = document.createElement("li");
-    row.className = "term-row";
-    row.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
-    if (view.accountId === shownAccount) row.classList.add("shown");
-    if (view.ended !== null) row.classList.add("ended");
-
-    // The whole line picks the terminal, so choosing which session to watch is
-    // one click on the name of it rather than a control beside the name.
-    const pick = document.createElement("button");
-    pick.type = "button";
-    pick.className = "pick";
-    pick.setAttribute("aria-pressed", String(view.accountId === shownAccount));
-
-    const dot = document.createElement("span");
-    dot.className = "dot";
-
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = name;
-    who.title = name;
-
-    const note = document.createElement("span");
-    note.className = "note";
-    note.textContent = view.ended === null ? "稼働中" : "終了";
-
-    pick.append(dot, who, note);
-    pick.addEventListener("click", () => {
-      revealDiagnostics();
-      showView(view.accountId);
-      view.term.focus();
-    });
-    row.appendChild(pick);
-
-    // No 終了 before the launch has returned an id: there is no session to end
-    // yet, and a kill aimed at an empty id reports success having done nothing.
-    if (view.ended === null && view.ptyId !== "") row.appendChild(endButton(view, name));
-    terminalsEl.appendChild(row);
-  }
-}
-
-/**
  * The 終了 control, which takes two clicks.
  *
  * Ending a session cannot be undone, and this control sits in a list whose
@@ -848,9 +1013,9 @@ function armEnd(accountId: string): void {
   // of a session is one that an unrelated click, minutes later, fires.
   armedTimer = window.setTimeout(() => {
     armedEnd = null;
-    renderTerminalList();
+    renderPanel();
   }, END_ARM_MS);
-  renderTerminalList();
+  renderPanel();
 }
 
 function disarmEnd(): void {
@@ -872,7 +1037,7 @@ async function endSession(view: SessionView): Promise<void> {
   try {
     await invoke("kill_pty", { id: view.ptyId });
   } catch (err) {
-    renderTerminalList();
+    renderPanel();
     status(`${name} を終了できませんでした: ${err}`, "error");
     return;
   }
@@ -880,7 +1045,7 @@ async function endSession(view: SessionView): Promise<void> {
   // The exit event marks the view ended and redraws the row; this call only
   // says the kill was delivered.
   await refreshSeats();
-  renderTerminalList();
+  renderPanel();
 }
 
 /**
@@ -988,7 +1153,7 @@ function showView(accountId: string | null): void {
   for (const view of views.values()) {
     view.host.hidden = view.accountId !== accountId;
   }
-  renderTerminalList();
+  renderPanel();
   renderSessionFacts();
   fitShown();
   // A pane that was `display: none` kept filling its buffer and painted
@@ -1009,7 +1174,7 @@ function showView(accountId: string | null): void {
 async function followSession(view: SessionView, started: StartedSession): Promise<void> {
   view.ptyId = started.pty_id;
   view.startedAt = started.started_at;
-  renderTerminalList();
+  renderPanel();
   renderSessionFacts();
 
   // Both listeners are this view's, and are dropped with it. The shared
@@ -1032,7 +1197,7 @@ async function followSession(view: SessionView, started: StartedSession): Promis
       // The seat this account held is free the moment its session ends, so the
       // panel says 未起動 again and the account can be started once more.
       void refreshSeats();
-      renderTerminalList();
+      renderPanel();
       if (shownAccount === view.accountId) {
         renderSessionFacts();
         revealDiagnostics();
@@ -1055,8 +1220,11 @@ async function startSession(): Promise<void> {
 
   const name = account.name.trim();
   if (!name) {
-    status("アカウントの名前を入力してください。部屋での名乗りになります。", "error");
-    accountNameEl.focus();
+    status(
+      "アカウントの名前を入力してください。部屋での名乗りになります。",
+      "error",
+    );
+    openAccountDialog(account);
     return;
   }
 
@@ -1071,18 +1239,18 @@ async function startSession(): Promise<void> {
     return;
   }
 
-  const cwd = cwdEl.value.trim();
-  if (!cwd) {
-    status("作業ディレクトリを入力してください。", "error");
-    cwdEl.focus();
+  // Read off the account, which is where the person set it — this row no longer
+  // carries a field of its own to read it out of (#59). Not defaulted to
+  // whatever directory the app process happens to sit in: that is what put a
+  // session in src-tauri (#20).
+  if (!(account.cwd ?? "").trim()) {
+    status(
+      `「${name}」に作業ディレクトリがありません。編集から設定してください。`,
+      "error",
+    );
+    openAccountDialog(account);
     return;
   }
-  // The directory and the options are the person's choice, so they are the
-  // account's own and are saved. Falling back to whatever directory the app
-  // process happens to sit in is what put a session in src-tauri (#20).
-  account.cwd = cwd;
-  account.args = await invoke<string[]>("parse_launch_options", { text: optionsEl.value });
-  saveAccounts();
 
   // Size the PTY to the terminal that will display it, so the CLI's first
   // paint is not laid out for a window it does not have. The pane is revealed
@@ -1137,98 +1305,258 @@ function unusedAccountName(): string {
   }
 }
 
-/** Fill the account picker, keeping `selected` selected when it still exists. */
+/**
+ * Fill the launcher's picker, keeping `selected` selected when it still exists.
+ *
+ * AI accounts only (`launchableAccounts`). The row's one question is which
+ * session to start, and a person is not one.
+ */
 function renderAccountOptions(selected: string): void {
+  const launchable = launchableAccounts();
   accountEl.replaceChildren();
-  for (const account of accounts) {
+  for (const account of launchable) {
     const option = document.createElement("option");
     option.value = account.id;
     option.textContent = account.name || "（名前未設定）";
     accountEl.appendChild(option);
   }
-  accountEl.value = accounts.some((account) => account.id === selected)
+  accountEl.value = launchable.some((account) => account.id === selected)
     ? selected
-    : (accounts[0]?.id ?? "");
+    : (launchable[0]?.id ?? "");
+  const none = launchable.length === 0;
+  accountEl.disabled = none;
+  startEl.disabled = none;
+}
+
+// ── the account dialog ───────────────────────────────────────────────────────
+//
+// One form for making, editing and deleting an account. It holds a draft and
+// writes nothing until 決定; 取消 leaves nothing behind, for a new account as
+// much as for an edit. The fields used to save on `change`, which meant ＋
+// created an account the instant it was pressed and every keystroke on the way
+// to a name was a state that had existed — there was no deciding and no undoing
+// (#59).
+
+/** The account being edited, or null while the form is making a new one. */
+let editing: Account | null = null;
+/** The draft the form is filling in. Never the account itself. */
+let draft: Account | null = null;
+/** True once 削除 has been armed, in the same shape 終了 uses. */
+let deleteArmed = false;
+
+/** Say why the form cannot be decided yet, or clear that. */
+function dialogError(text: string): void {
+  dialogErrorEl.textContent = text;
+}
+
+/** Put 削除 back to resting. */
+function disarmDelete(): void {
+  deleteArmed = false;
+  dialogDeleteEl.textContent = "削除";
+  dialogDeleteEl.classList.remove("armed");
 }
 
 /**
- * Show the selected account's own values in the row that edits them.
+ * Show only the fields that mean something for the kind being declared.
  *
- * `homeDir` prefills a working directory an account has never had one for. A
- * prefill, not a default: the app launches nothing in a directory the person
- * has not seen on screen (#20).
+ * A person has no command under them, so a working directory and launch options
+ * would be two fields that never do anything.
  */
-function showAccount(): void {
-  const account = selectedAccount();
-  accountNameEl.value = account?.name ?? "";
-  accountHueEl.value = account?.hue === null || account === null ? "" : String(account.hue);
-  cwdEl.value = account?.cwd ?? homeDir;
-  optionsEl.value = joinArgs(account?.args ?? []);
-  const missing = account === null;
-  accountNameEl.disabled = missing;
-  accountHueEl.disabled = missing;
-  cwdEl.disabled = missing;
-  optionsEl.disabled = missing;
-  accountDeleteEl.disabled = missing;
-  startEl.disabled = missing;
-  void refreshPreview();
-}
-
-/** Make an account, select it, and leave the cursor in its name. */
-function newAccount(): void {
-  const account: Account = {
-    // Opaque and minted once. Nothing reads a name out of it — the key in
-    // `.mcp.json` derives from it precisely so that renaming is free (#53).
-    id: crypto.randomUUID(),
-    name: unusedAccountName(),
-    // The one vendor the room is built on. See src-tauri/src/config.rs.
-    command: "claude",
-    args: [],
-    cwd: homeDir || null,
-    hue: null,
-  };
-  accounts.push(account);
-  renderAccountOptions(account.id);
-  showAccount();
-  saveAccounts();
-  renderPanel();
-  accountNameEl.focus();
-  accountNameEl.select();
+function showDialogKind(): void {
+  const kind = dialogKindEl.value as AccountKind;
+  dialogLaunchEl.hidden = kind !== "ai";
+  if (kind === "ai") void refreshDialogPreview();
 }
 
 /**
- * Remove the selected account.
+ * Show the command this account's launch would actually run.
+ *
+ * The app merges its own channel entry into whatever is typed, so the line
+ * written here is not the line that launches; showing the result is cheaper
+ * than explaining the merge. The entry names this account's own server, which
+ * follows the account id — so the preview holds still while the name in the
+ * field above it is edited. Holding still is the point: the identity being
+ * launched is the account, and renaming it does not make it something else
+ * (#53).
+ */
+async function refreshDialogPreview(): Promise<void> {
+  if (!draft) return;
+  const id = draft.id;
+  try {
+    const parsed = await invoke<string[]>("parse_launch_options", {
+      text: dialogOptionsEl.value,
+    });
+    const merged = await invoke<string[]>("preview_launch_args", { args: parsed, accountId: id });
+    // The form may have been closed or reopened during the round trip.
+    if (draft?.id !== id) return;
+    dialogPreviewEl.textContent = `${draft.command} ${joinArgs(merged)}`;
+  } catch {
+    dialogPreviewEl.textContent = "";
+  }
+}
+
+/**
+ * Open the form on one account, or on a new one when given none.
+ *
+ * A new account's id is minted here so the launch preview has something to name
+ * a server after. That is all it is until 決定 — nothing is pushed into the
+ * account list, so 取消 leaves no account behind and no id in use.
+ */
+function openAccountDialog(account: Account | null): void {
+  editing = account;
+  draft = account
+    ? { ...account, args: [...account.args] }
+    : {
+        // Opaque and minted once. Nothing reads a name out of it — the key in
+        // `.mcp.json` derives from it precisely so renaming is free (#53).
+        id: crypto.randomUUID(),
+        name: unusedAccountName(),
+        // The one vendor the room is built on. See src-tauri/src/config.rs.
+        command: "claude",
+        args: [],
+        // A prefill, not a default: the app launches nothing in a directory the
+        // person has not seen on screen (#20).
+        cwd: homeDir || null,
+        hue: null,
+        kind: "ai",
+      };
+
+  dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
+  dialogNameEl.value = draft.name;
+  dialogKindEl.value = draft.kind;
+  dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
+  dialogCwdEl.value = draft.cwd ?? "";
+  dialogOptionsEl.value = joinArgs(draft.args);
+  dialogDeleteEl.hidden = account === null;
+  disarmDelete();
+  dialogError("");
+  showDialogKind();
+  dialogEl.showModal();
+  dialogNameEl.focus();
+  dialogNameEl.select();
+}
+
+/**
+ * Take what the form holds and put it into the account list.
+ *
+ * The one moment anything here reaches the list. Returns false when the form
+ * cannot be decided yet, so the dialog stays open on its own reason.
+ */
+async function commitAccountDialog(): Promise<boolean> {
+  if (!draft) return false;
+  // Read before the await below. Escape closes the dialog on its own, and the
+  // close handler clears both — reading them afterwards would push a second
+  // copy of an account that was being edited.
+  const target = editing;
+  const settling = draft;
+
+  const name = dialogNameEl.value.trim();
+  if (!name) {
+    dialogError("名前を入力してください。部屋での名乗りになります。");
+    dialogNameEl.focus();
+    return false;
+  }
+
+  const kind = dialogKindEl.value as AccountKind;
+  // A running account cannot change kind. Its session is in the room under this
+  // account, and turning it into a person would drop the working directory and
+  // options that session was launched from while it is still running.
+  if (target && kind !== target.kind && seated.has(target.id)) {
+    dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
+    return false;
+  }
+  const cwd = dialogCwdEl.value.trim();
+  // Only for a session. A person's working directory and options would be two
+  // values nothing ever reads, kept alive by an edit that once set them.
+  const args =
+    kind === "ai"
+      ? await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value })
+      : [];
+
+  const settled: Account = {
+    ...settling,
+    name,
+    kind,
+    hue: declaredHue(dialogHueEl),
+    cwd: kind === "ai" ? cwd || null : null,
+    args,
+  };
+
+  if (target) {
+    const at = accounts.findIndex((one) => one.id === target.id);
+    if (at >= 0) accounts[at] = settled;
+  } else {
+    accounts.push(settled);
+  }
+  saveAccounts();
+
+  renderAccountOptions(target ? accountEl.value : settled.id);
+  renderPanel();
+  renderSessionFacts();
+  // The room holds this screen's person's name and colour on its seat, so a
+  // rename here has to be re-declared or the roster keeps the old pair.
+  if (settled.id === localAccountId) await join();
+  status(
+    target
+      ? `アカウント「${settled.name}」を保存しました。`
+      : `アカウント「${settled.name}」を追加しました。`,
+  );
+  return true;
+}
+
+/**
+ * Delete the account the form is open on, on the second click.
+ *
+ * Two clicks rather than `window.confirm`, for the reason 終了 does not use one
+ * either: a host that answers nothing makes the button either silently dead or
+ * — the bias `confirm` defaults to — destructive on one click (#57).
  *
  * Refused while it is running: the session in the room belongs to this account,
  * and deleting the account under it would leave a participant on the roster
- * that nothing on this screen can name or account for.
+ * that nothing on this screen can name or account for. Refused for the person
+ * at this screen too — they are in the room by being here, and there would be
+ * nothing left to be here as.
  */
-function deleteAccount(): void {
-  const account = selectedAccount();
+function deleteFromDialog(): void {
+  const account = editing;
   if (!account) return;
+
   if (seated.has(account.id)) {
-    status(
-      `「${account.name}」は起動中です。セッションを終了してから削除してください。`,
-      "error",
-    );
+    dialogError(`「${account.name}」は起動中です。セッションを終了してから削除してください。`);
+    disarmDelete();
     return;
   }
-  // Only an explicit cancel stops this. A host that answers nothing would
-  // otherwise make the button silently do nothing at all.
-  if (window.confirm(`アカウント「${account.name}」を削除します。よろしいですか。`) === false) {
+  if (account.id === localAccountId) {
+    dialogError("この画面の本人のアカウントは削除できません。");
+    disarmDelete();
     return;
   }
+  if (!deleteArmed) {
+    deleteArmed = true;
+    dialogDeleteEl.textContent = "本当に削除";
+    dialogDeleteEl.classList.add("armed");
+    dialogError("もう一度押すと削除します。");
+    return;
+  }
+
   accounts = accounts.filter((candidate) => candidate.id !== account.id);
   // Its terminal goes with it. An account that no longer exists cannot be named
   // in the panel, and the row is the only way that pane could be reached.
   discardView(views.get(account.id));
-  renderTerminalList();
-  renderSessionFacts();
-  renderAccountOptions(accounts[0]?.id ?? "");
-  showAccount();
   saveAccounts();
+  closeAccountDialog();
+  renderAccountOptions(accountEl.value);
   renderPanel();
+  renderSessionFacts();
   status(`アカウント「${account.name}」を削除しました。`);
+}
+
+/** Drop the draft and close. Nothing it held reached the account list. */
+function closeAccountDialog(): void {
+  editing = null;
+  draft = null;
+  disarmDelete();
+  if (dialogEl.open) dialogEl.close();
 }
 
 function renderSocket(port: number | null, error?: string): void {
@@ -1263,23 +1591,9 @@ async function main(): Promise<void> {
   new ResizeObserver(() => fitShown()).observe(terminalEl);
   renderSessionFacts();
 
-  nameEl.value = localStorage.getItem(NAME_KEY) ?? "human";
-  fillHues(hueEl, localStorage.getItem(HUE_KEY));
   // The account's colour is the account's, so nothing is restored into this
-  // picker — `showAccount` fills it from whichever account is selected.
-  fillHues(accountHueEl, null);
-
-  // One handler for both halves of the declaration: a rename and a recolour are
-  // the same act on the same seat, and the room takes them together.
-  const redeclare = (): void => {
-    localStorage.setItem(NAME_KEY, localName());
-    localStorage.setItem(HUE_KEY, hueEl.value);
-    // The roster entry follows the name, and the addressee list follows the
-    // roster: a rename must not leave the old name sitting in either.
-    void join().then(() => renderAddressees());
-  };
-  nameEl.addEventListener("change", redeclare);
-  hueEl.addEventListener("change", redeclare);
+  // picker — the form fills it from whichever account it was opened on.
+  fillHues(dialogHueEl, null);
 
   toggleEl.addEventListener("click", () => {
     if (diagnosticsEl.hidden) {
@@ -1311,56 +1625,44 @@ async function main(): Promise<void> {
     // Only the prefill is lost; the field is still typed into by hand.
   }
 
-  // Every field in this row edits the selected account. The name is written
-  // through as it is typed so the picker's label follows it, and persisted when
-  // the field is left — a rename is free, because the account's id is what the
-  // registration key and the seat are both keyed on (#53).
-  accountNameEl.addEventListener("input", () => {
-    const account = selectedAccount();
-    if (!account) return;
-    account.name = accountNameEl.value;
-    const option = accountEl.selectedOptions[0];
-    if (option) option.textContent = account.name || "（名前未設定）";
-    renderPanel();
-    // The terminal list is drawn from the account list, so a rename follows the
-    // pane it belongs to: the row is keyed on the id, and the name is only what
-    // it is called (#53).
-    renderTerminalList();
-    renderSessionFacts();
+  // ── the account form ───────────────────────────────────────────────────────
+  //
+  // Nothing here writes to an account. Every field edits the form's own draft,
+  // and only 決定 puts that draft into the list.
+  accountNewEl.addEventListener("click", () => openAccountDialog(null));
+  dialogKindEl.addEventListener("change", () => showDialogKind());
+  dialogOptionsEl.addEventListener("input", () => void refreshDialogPreview());
+  // Anything but the second click of 削除 disarms it: an arm left standing is
+  // one that an unrelated click fires later.
+  for (const field of [dialogNameEl, dialogKindEl, dialogHueEl, dialogCwdEl, dialogOptionsEl]) {
+    field.addEventListener("input", () => disarmDelete());
+  }
+  dialogDeleteEl.addEventListener("click", () => deleteFromDialog());
+  dialogCancelEl.addEventListener("click", () => closeAccountDialog());
+  // Escape closes the dialog itself, and it means 取消: the draft is dropped by
+  // the close handler below, so there is no path out of this form that leaves
+  // half of it applied.
+  dialogEl.addEventListener("close", () => {
+    editing = null;
+    draft = null;
+    disarmDelete();
   });
-  accountNameEl.addEventListener("change", () => saveAccounts());
-  accountHueEl.addEventListener("change", () => {
-    const account = selectedAccount();
-    if (!account) return;
-    account.hue = declaredHue(accountHueEl);
-    saveAccounts();
-    renderPanel();
-    renderTerminalList();
-  });
-  cwdEl.addEventListener("change", () => {
-    const account = selectedAccount();
-    if (!account) return;
-    account.cwd = cwdEl.value.trim() || null;
-    saveAccounts();
-  });
-  optionsEl.addEventListener("input", () => void refreshPreview());
-  optionsEl.addEventListener("change", () => {
-    const account = selectedAccount();
-    if (!account) return;
-    void invoke<string[]>("parse_launch_options", { text: optionsEl.value }).then((args) => {
-      account.args = args;
-      saveAccounts();
+  dialogFormEl.addEventListener("submit", (event) => {
+    // Always prevented: `method="dialog"` would close on submit, and the form
+    // may not be decidable yet. The commit closes it once it has succeeded.
+    event.preventDefault();
+    void commitAccountDialog().then((done) => {
+      if (done) closeAccountDialog();
     });
   });
-  accountEl.addEventListener("change", showAccount);
-  accountNewEl.addEventListener("click", () => newAccount());
-  accountDeleteEl.addEventListener("click", () => deleteAccount());
 
   try {
     const config = await invoke<AppConfig>("load_config");
     accounts = config.accounts;
-    renderAccountOptions(accounts[0]?.id ?? "");
-    showAccount();
+    // Before the join below: the id this resolves goes into it, and an account
+    // may have to be made here for it (#59).
+    resolveLocalAccount();
+    renderAccountOptions("");
   } catch (err) {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
