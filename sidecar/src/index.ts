@@ -54,7 +54,17 @@ function readHue(raw: string | undefined): number | null {
   return Number.isFinite(hue) ? hue : null;
 }
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
+
+/**
+ * How long a post waits for the room to answer it.
+ *
+ * The room answers every post, so silence past this is the room having gone
+ * away mid-post rather than a slow decision. Reported as unconfirmed, never as
+ * delivered: the frame may well have landed, and claiming either way would be
+ * a guess the agent then acts on.
+ */
+const POST_RESULT_TIMEOUT = 15_000;
 
 function log(line: string): void {
   process.stderr.write(`[liplus-chat sidecar] ${line}\n`);
@@ -64,9 +74,10 @@ function log(line: string): void {
 //
 // Sidecar -> room:
 //   { type: "hello", protocol, name, hue? }
-//   { type: "post",  message_id, content, to?, ts }
+//   { type: "post",  message_id, content, to?, ts, last_seen? }
 // Room -> sidecar:
 //   { type: "post",  message_id, speaker, content, to?, ts }
+//   { type: "post_result", message_id, delivered, missed }
 //
 // One frame kind carries speech, whoever produced it. The room stamps
 // `speaker` from the connection the frame arrived on, so this side does not
@@ -88,6 +99,20 @@ function log(line: string): void {
 // itself — and a name collision cannot make this side swallow someone else's
 // post (#40).
 //
+// `last_seen` is the agent's own account of the newest post it had actually
+// seen. It rides on the post because the room refuses one whose speaker was
+// behind the floor, and only the speaker can supply it: this process receives
+// every post, but whether one reached the agent's context is decided by where
+// the agent's next tool-result boundary fell, which nothing here can observe
+// (#47).
+//
+// `post_result` is the room's answer to a post, correlated by the
+// `message_id` the post was sent under. It arrives on this connection only.
+// Waiting for it is what makes the tool call a boundary: a reply that needs no
+// other tool used to have none before its own send, so anything arriving while
+// it was composed was unreadable until too late. Now the send itself is where
+// the room hands that back.
+//
 // Frames whose `type` is unknown are ignored rather than rejected, so the room
 // can add frame kinds without breaking a sidecar built against this revision.
 
@@ -98,6 +123,22 @@ interface PostFrame {
   content?: string;
   to?: string;
   ts?: string;
+}
+
+/** One post the room says this agent had not seen when it tried to speak. */
+interface MissedPost {
+  message_id?: string;
+  speaker?: string;
+  content?: string;
+  to?: string;
+  ts?: string;
+}
+
+interface PostResultFrame {
+  type: "post_result";
+  message_id?: string;
+  delivered?: boolean;
+  missed?: MissedPost[];
 }
 
 // ── MCP server ───────────────────────────────────────────────────────────────
@@ -134,6 +175,20 @@ const INSTRUCTIONS = [
   "- 送る直前に、届いている発言をもう一度見てください。組み立てている間にも",
   "  発言は届きます。言おうとしていたことが既に言われていたら送らず、",
   "  足りないことがあるときだけ足してください。",
+  "",
+  "床を見てから送る:",
+  "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
+  "  いちばん新しい発言の meta.message_id です。まだ何も見ていないときだけ",
+  "  省いてください。",
+  "- 組み立てている間に届いた発言があると、部屋はあなたの発言を配りません。",
+  "  代わりに、あなたが見ていなかった発言を返します。あなたの発言は部屋に",
+  "  載っていません。",
+  "- 返ってきた発言を読んでから、もう一度決めてください。言おうとしていた",
+  "  ことが既に言われていたら送らないでください。送らない判断は正当です。",
+  "- それでも足すことがあるときは、返ってきたうちいちばん新しい message_id を",
+  "  last_seen に入れて、もう一度 say_to_room を呼んでください。",
+  "- 弾かれるのは、あなたの注意が足りなかったからではありません。二人が同時に",
+  "  書き始めたとき、順序を付けられるのは部屋だけです。これはその順序です。",
 ].join("\n");
 
 const mcp = new Server(
@@ -166,6 +221,16 @@ const TOOLS = [
             "Optional. The participant this message is addressed to. Omit to " +
             "address the room.",
         },
+        last_seen: {
+          type: "string",
+          description:
+            "The meta.message_id of the newest room post you have actually " +
+            "seen. Omit only when you have seen none. If anything reached " +
+            "the room after it, this post is refused and those posts are " +
+            "returned to you instead of being delivered — read them, decide " +
+            "again, and call again with the newest message_id if you still " +
+            "have something to add.",
+        },
       },
       required: ["content"],
     },
@@ -193,19 +258,32 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   const to = typeof args?.to === "string" ? args.to : undefined;
+  // Passed through as given. This process cannot check it and does not try:
+  // the watermark is a statement about the agent's own context, not a claim
+  // about who the agent is, and a false one costs only its author a round trip.
+  const declared = typeof args?.last_seen === "string" ? args.last_seen.trim() : "";
+  const lastSeen = declared || undefined;
+
   // No speaker field: the room stamps that from this connection. Sending one
   // would be a claim about who is speaking, and the room would overwrite it.
+  const messageId = randomUUID();
+  // Registered before the frame goes out, so an answer that comes back inside
+  // the same tick has somewhere to land.
+  const answered = awaitPostResult(messageId);
   const sent = sendToRoom({
     type: "post",
-    message_id: randomUUID(),
+    message_id: messageId,
     content,
     ...(to ? { to } : {}),
+    ...(lastSeen ? { last_seen: lastSeen } : {}),
     ts: new Date().toISOString(),
   });
 
   if (!sent) {
     // The room is the only audience. Reporting success on a dropped frame
     // would let the agent believe it had spoken.
+    abandonPost(messageId);
+    await answered;
     return {
       content: [
         {
@@ -217,8 +295,58 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  const result = await answered;
+
+  if (result === null) {
+    // Unconfirmed, and said as such. "Delivered" here would be a guess the
+    // agent goes on to act on, and so would "not delivered".
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Not confirmed: the room did not answer this post (${roomStatus()}). ` +
+            "It may or may not have been delivered. Do not repeat it blind.",
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  if (result.delivered !== true) {
+    // Refused. An error rather than a quiet note, because the agent's next
+    // move depends on it: nothing was posted, and this is the one moment the
+    // missed posts are in front of it.
+    return {
+      content: [{ type: "text", text: describeRefusal(result.missed ?? []) }],
+      isError: true,
+    };
+  }
+
   return { content: [{ type: "text", text: "Delivered to the room." }] };
 });
+
+/** The room's refusal, written so the next move is unambiguous. */
+function describeRefusal(missed: MissedPost[]): string {
+  const lines = missed.map((one) => {
+    const addressee = one.to ? ` -> ${one.to}` : "";
+    const id = one.message_id ?? "?";
+    return `- [${id}] ${one.speaker ?? "someone"}${addressee}: ${one.content ?? ""}`;
+  });
+  const newest = missed[missed.length - 1]?.message_id;
+  const again = newest
+    ? `call say_to_room again with last_seen: "${newest}"`
+    : "call say_to_room again with last_seen set to the newest message_id above";
+  return [
+    "Not delivered. These posts reached the room while you were composing, " +
+      "and you had not seen them:",
+    ...lines,
+    "",
+    "Your message was not posted. Read the above and decide again. Saying " +
+      "nothing is a valid outcome: if what you were going to say is already " +
+      `there, do not send it. If you still have something to add, ${again}.`,
+  ].join("\n");
+}
 
 // ── Room socket ──────────────────────────────────────────────────────────────
 
@@ -235,6 +363,48 @@ function roomStatus(): string {
   if (!ROOM_URL) return "LIPLUS_ROOM_URL is not set";
   if (ws && ws.readyState === WebSocket.OPEN) return "connected";
   return lastError ? `disconnected: ${lastError}` : "disconnected";
+}
+
+/**
+ * Posts waiting for the room's answer, keyed by the id they were sent under.
+ *
+ * Keyed rather than a single slot: a host may have more than one tool call in
+ * flight, and settling the wrong one would report another post's verdict.
+ */
+const awaitingResult = new Map<string, (result: PostResultFrame | null) => void>();
+
+function awaitPostResult(messageId: string): Promise<PostResultFrame | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      awaitingResult.delete(messageId);
+      resolve(null);
+    }, POST_RESULT_TIMEOUT);
+    // A pending answer must not be the reason this process stays alive.
+    timer.unref?.();
+    awaitingResult.set(messageId, (result) => {
+      clearTimeout(timer);
+      awaitingResult.delete(messageId);
+      resolve(result);
+    });
+  });
+}
+
+/** Settle the post this answer belongs to, and only that one. */
+function settlePostResult(frame: PostResultFrame): void {
+  const id = frame.message_id;
+  if (typeof id !== "string") return;
+  awaitingResult.get(id)?.(frame);
+}
+
+/** Give up on one post's answer: nothing will come for it. */
+function abandonPost(messageId: string): void {
+  awaitingResult.get(messageId)?.(null);
+}
+
+/** The room went away. Everything in flight is unanswerable now, and waiting
+ *  out the timeout would leave the agent blocked for no new information. */
+function abandonPendingPosts(): void {
+  for (const settle of [...awaitingResult.values()]) settle(null);
 }
 
 function sendToRoom(frame: Record<string, unknown>): boolean {
@@ -319,6 +489,10 @@ function connectRoom(): void {
     if (typeof data !== "object" || data === null) return;
     const frame = data as { type?: string };
     if (frame.type === "post") pushToChannel(frame as PostFrame);
+    // The answer to a post this agent made. Not pushed to the channel: it is
+    // the tool call's own result, and putting it in the conversation would
+    // read as somebody having said it.
+    else if (frame.type === "post_result") settlePostResult(frame as PostResultFrame);
     // Unknown frame kinds are ignored on purpose; see the frame comment above.
   });
 
@@ -328,6 +502,7 @@ function connectRoom(): void {
     ws = null;
     lastError = `closed with code ${code}`;
     log(`room socket: ${lastError}`);
+    abandonPendingPosts();
     scheduleRetry();
   });
 
