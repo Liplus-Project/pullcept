@@ -509,6 +509,21 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     arguments: { content: "届いてる？", last_seen: "m-1" },
   });
   await nextPost(3);
+  // The call is itself the boundary, which is what removes the reply that has
+  // none. The frame is on the wire and the call has still not resolved: what
+  // the room hands back arrives inside this call, not after the turn is over.
+  // Resolving on send instead is the zero-tool shape — the send is the first
+  // boundary, and anything that arrived while composing is unreadable until
+  // too late (#47 type 2).
+  const settled = await Promise.race([
+    unanswered.then(() => "resolved"),
+    new Promise((r) => setTimeout(() => r("still waiting"), 200)),
+  ]);
+  assert.equal(
+    settled,
+    "still waiting",
+    "say_to_room must not resolve before the room answers; a call that returns on send is not a boundary",
+  );
   roomSocket.close();
   const unconfirmed = await unanswered;
   assert.ok(
