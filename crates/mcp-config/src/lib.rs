@@ -19,24 +19,34 @@ use std::path::{Path, PathBuf};
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
-/// The full name is per participant (`server_name_for`), not one fixed key. Two
+/// The full name is per account (`server_name_for`), not one fixed key. Two
 /// sessions pointed at the same working directory write into the same file, and
 /// a single key means the second launch overwrites the first one's name, hue
 /// and room address — the identity the first session was launched with is gone
 /// while that session is still running (#40).
 pub const SERVER_PREFIX: &str = "liplus-chat-room";
 
-/// The `.mcp.json` key, and the `server:<name>` tag, for one participant.
+/// The `.mcp.json` key, and the `server:<name>` tag, for one account.
 ///
-/// A function of the declared name alone, so relaunching under the same name
-/// reuses its entry rather than accumulating a new one per launch. The readable
-/// half is a slug of the name; the hash is what makes the key total — a name
-/// with no ASCII in it (`マスター`) slugs to nothing, and two names can slug
-/// alike (`Lin` and `lin!`), and a key that collides is the collision this whole
-/// function exists to remove.
-pub fn server_name_for(agent_name: &str) -> String {
-    let slug = slugify(agent_name);
-    let hash = fnv1a(agent_name);
+/// A function of the account id alone. The id is what an account is; the name
+/// is an attribute of it, and a key derived from the name moved every time the
+/// name was edited — the registration a running session was launched against
+/// would be orphaned under the old key while the CLI holding that session still
+/// names the old tag on its command line (#53). Deriving from the id makes a
+/// rename cost nothing, which is what makes the name editable at all.
+///
+/// Per account rather than per launch: relaunching one account reuses its
+/// entry, rather than growing the user's file by one key per launch.
+///
+/// The slug half is legibility and the hash half is what makes the key total,
+/// as it was under the name. An id is opaque, so the slug reads less well than
+/// a name did; which account an entry belongs to is read from
+/// `LIPLUS_AGENT_NAME` in its own env instead. Legibility loses to identity
+/// here — a key that reads oddly costs one lookup, and a key that moves is a
+/// registration nobody can find.
+pub fn server_name_for(account_id: &str) -> String {
+    let slug = slugify(account_id);
+    let hash = fnv1a(account_id);
     if slug.is_empty() {
         format!("{SERVER_PREFIX}-{hash:08x}")
     } else {
@@ -49,9 +59,9 @@ pub fn server_name_for(agent_name: &str) -> String {
 /// This rides in a command-line flag (`server:<name>`) as well as in JSON, so
 /// it stays inside the character set every shell and console on the way leaves
 /// alone. Legibility only — `server_name_for` carries the uniqueness.
-fn slugify(name: &str) -> String {
+fn slugify(text: &str) -> String {
     let mut out = String::new();
-    for ch in name.chars() {
+    for ch in text.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
         } else if !out.ends_with('-') && !out.is_empty() {
@@ -86,7 +96,12 @@ pub struct RoomRegistration<'a> {
     pub room_url: &'a str,
     /// Bearer token the sidecar must present.
     pub token: &'a str,
-    /// Display name this session speaks under.
+    /// Id of the account being launched. The registration key derives from
+    /// this, so the entry stays put across a rename of the account.
+    pub account_id: &'a str,
+    /// Display name this session speaks under. Written into the env for the
+    /// sidecar to declare in `hello`, and it is what says whose entry this is
+    /// when the file is read by eye. Not the key: see `server_name_for`.
     pub agent_name: &'a str,
     /// Hue this session declared, in oklch degrees, or `None` when it declared
     /// none. Absent rather than a default: the room derives a hue from the name
@@ -118,7 +133,7 @@ pub fn reject_incompatible_flags(args: &[String]) -> Result<(), &'static str> {
 /// The flag that loads channel servers into a session.
 pub const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
 
-/// The launch arguments for a channel-enabled session, given the tab's own.
+/// The launch arguments for a channel-enabled session, given the account's own.
 ///
 /// The room's entry is merged into whatever the person wrote rather than added
 /// as a second flag: `--channels` alongside this one registers a server twice
@@ -126,9 +141,8 @@ pub const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
 /// shape. Merging also means the room's input path cannot be dropped by
 /// configuring a different server — losing it is losing the room.
 ///
-/// `server_name` is this participant's own (`server_name_for`), so the flag and
-/// the `.mcp.json` key stay one fact even though that fact now differs per
-/// session.
+/// `server_name` is this account's own (`server_name_for`), so the flag and the
+/// `.mcp.json` key stay one fact even though that fact differs per account.
 pub fn channel_launch_args(base: &[String], server_name: &str) -> Vec<String> {
     let room = format!("server:{server_name}");
     let mut args = base.to_vec();
@@ -211,7 +225,7 @@ fn spawn_form(runner: &Path, entry: &Path) -> (&'static str, Vec<String>) {
 /// touched; existing servers and unrelated top-level keys survive verbatim.
 pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathBuf, String> {
     let (command, args) = spawn_form(room.sidecar_runner, room.sidecar_entry);
-    let server_name = server_name_for(room.agent_name);
+    let server_name = server_name_for(room.account_id);
 
     let path = dir.join(".mcp.json");
     let mut root: Value = if path.exists() {
@@ -244,10 +258,10 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     // Entries this app wrote in an earlier run can never connect: the room
     // binds a fresh port every run, so their address is dead. Left in place
     // they would have every CLI started in this directory spawn a sidecar that
-    // retries nothing forever, and the file would grow by one key per name ever
-    // used here. Entries carrying the current address are live siblings — the
-    // other sessions of this run — and stay. Entries with no `LIPLUS_ROOM_URL`
-    // at all are not ours to judge, whatever they are named.
+    // retries nothing forever, and the file would grow by one key per account
+    // ever launched here. Entries carrying the current address are live
+    // siblings — the other sessions of this run — and stay. Entries with no
+    // `LIPLUS_ROOM_URL` at all are not ours to judge, whatever they are named.
     servers.retain(|name, entry| {
         if !name.starts_with(SERVER_PREFIX) {
             return true;
@@ -311,11 +325,16 @@ mod tests {
 
     const ENTRY: &str = "C:/liplus-chat/sidecar/src/index.ts";
     const RUNNER: &str = "C:/liplus-chat/node_modules/tsx/dist/cli.mjs";
+    /// The account `Lin` is launched from. Opaque here as it is in the app: a
+    /// test that read a name out of it would be testing the wrong key.
+    const LIN: &str = "8f14e45f-ceea-467a-b160-6f14e45fceea";
+    const LAY: &str = "2b1c9a70-3d4e-4f80-91a2-b3c4d5e6f708";
 
     fn registration<'a>(entry: &'a Path, runner: &'a Path) -> RoomRegistration<'a> {
         RoomRegistration {
             room_url: "ws://127.0.0.1:1234",
             token: "tok",
+            account_id: LIN,
             agent_name: "Lin",
             agent_hue: None,
             sidecar_entry: entry,
@@ -336,7 +355,7 @@ mod tests {
             register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
 
         let json = read(&path);
-        let server = &json["mcpServers"][server_name_for("Lin")];
+        let server = &json["mcpServers"][server_name_for(LIN)];
         assert_eq!(server["env"]["LIPLUS_ROOM_URL"], "ws://127.0.0.1:1234");
         assert_eq!(server["env"]["LIPLUS_ROOM_TOKEN"], "tok");
         assert_eq!(server["env"]["LIPLUS_AGENT_NAME"], "Lin");
@@ -383,11 +402,11 @@ mod tests {
         let json = read(&path);
         assert_eq!(json["mcpServers"]["theirs"]["command"], "their-server");
         assert_eq!(json["unrelated"], 42);
-        assert!(json["mcpServers"][server_name_for("Lin")].is_object());
+        assert!(json["mcpServers"][server_name_for(LIN)].is_object());
     }
 
     #[test]
-    fn re_registering_the_same_name_replaces_its_own_entry() {
+    fn re_registering_the_same_account_replaces_its_own_entry() {
         let scratch = Scratch::new();
         let entry = PathBuf::from(ENTRY);
         let runner = PathBuf::from(RUNNER);
@@ -396,6 +415,7 @@ mod tests {
         let second = RoomRegistration {
             room_url: "ws://127.0.0.1:1234",
             token: "tok2",
+            account_id: LIN,
             agent_name: "Lin",
             agent_hue: Some(145.0),
             sidecar_entry: &entry,
@@ -404,18 +424,51 @@ mod tests {
         let path = register_sidecar(scratch.path(), &second).expect("second");
 
         let json = read(&path);
-        let server = &json["mcpServers"][server_name_for("Lin")];
+        let server = &json["mcpServers"][server_name_for(LIN)];
         assert_eq!(server["env"]["LIPLUS_ROOM_TOKEN"], "tok2");
         assert_eq!(server["env"]["LIPLUS_AGENT_HUE"], "145.0");
         assert_eq!(
             json["mcpServers"].as_object().expect("servers").len(),
             1,
-            "relaunching under one name must not accumulate entries"
+            "relaunching one account must not accumulate entries"
         );
     }
 
     #[test]
-    fn two_participants_in_one_directory_keep_separate_entries() {
+    fn renaming_an_account_leaves_its_registration_where_it_was() {
+        // The reason the key moved off the name (#53). An account's name is
+        // editable, and a key derived from it moved on every edit: the entry
+        // the running session was launched against would be orphaned under the
+        // old key, while the CLI holding that session still names the old
+        // `server:` tag on a command line nothing can go back and change.
+        let scratch = Scratch::new();
+        let entry = PathBuf::from(ENTRY);
+        let runner = PathBuf::from(RUNNER);
+
+        register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("as Lin");
+        let renamed = RoomRegistration {
+            room_url: "ws://127.0.0.1:1234",
+            token: "tok",
+            account_id: LIN,
+            agent_name: "リン",
+            agent_hue: None,
+            sidecar_entry: &entry,
+            sidecar_runner: &runner,
+        };
+        let path = register_sidecar(scratch.path(), &renamed).expect("as リン");
+
+        let json = read(&path);
+        let servers = json["mcpServers"].as_object().expect("servers");
+        assert_eq!(servers.len(), 1, "a rename must not open a second entry");
+        assert_eq!(
+            json["mcpServers"][server_name_for(LIN)]["env"]["LIPLUS_AGENT_NAME"],
+            "リン",
+            "the new name belongs in the entry the id already had"
+        );
+    }
+
+    #[test]
+    fn two_accounts_in_one_directory_keep_separate_entries() {
         // The failure this key scheme exists for: two sessions pointed at the
         // same working directory. Under one fixed key the second launch
         // overwrote the first one's name while that session was still running,
@@ -428,6 +481,7 @@ mod tests {
         let lay = RoomRegistration {
             room_url: "ws://127.0.0.1:1234",
             token: "tok",
+            account_id: LAY,
             agent_name: "Lay",
             agent_hue: Some(25.0),
             sidecar_entry: &entry,
@@ -437,12 +491,12 @@ mod tests {
 
         let json = read(&path);
         assert_eq!(
-            json["mcpServers"][server_name_for("Lin")]["env"]["LIPLUS_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LIN)]["env"]["LIPLUS_AGENT_NAME"],
             "Lin",
             "the first session's identity must survive the second launch"
         );
         assert_eq!(
-            json["mcpServers"][server_name_for("Lay")]["env"]["LIPLUS_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LAY)]["env"]["LIPLUS_AGENT_NAME"],
             "Lay"
         );
         assert_eq!(json["mcpServers"].as_object().expect("servers").len(), 2);
@@ -486,20 +540,20 @@ mod tests {
             "an entry with no room address of ours is not ours to remove"
         );
         assert!(servers.contains_key("theirs"));
-        assert!(servers.contains_key(&server_name_for("Lin")));
+        assert!(servers.contains_key(&server_name_for(LIN)));
     }
 
     #[test]
-    fn a_server_name_is_a_function_of_the_declared_name() {
-        // Readable where the name has ASCII in it, and total where it has none:
-        // a name that slugged to nothing would put every such participant back
-        // on one key, which is the collision this replaces.
-        assert_eq!(server_name_for("Lin"), server_name_for("Lin"));
-        assert_ne!(server_name_for("Lin"), server_name_for("Lay"));
-        assert!(server_name_for("Lin").starts_with("liplus-chat-room-lin-"));
+    fn a_server_name_is_a_function_of_the_account_id() {
+        assert_eq!(server_name_for(LIN), server_name_for(LIN));
+        assert_ne!(server_name_for(LIN), server_name_for(LAY));
+        assert!(server_name_for(LIN).starts_with(SERVER_PREFIX));
+        // Total over whatever an id turns out to be, as it was over a name: an
+        // input that slugs to nothing still gets a key of its own, and two that
+        // slug alike still get two. The uniqueness lives in the hash, and the
+        // ids the app mints do not lean on the slug for it.
         assert!(server_name_for("マスター").starts_with("liplus-chat-room-"));
         assert_ne!(server_name_for("マスター"), server_name_for("ますたー"));
-        // Two names that slug alike are still two entries.
         assert_ne!(server_name_for("Lin"), server_name_for("lin!"));
         // Nothing outside the set a console and a JSON key both leave alone.
         assert!(server_name_for("Lin さん / 2")
@@ -558,7 +612,7 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
 
-        let room = server_name_for("Lin");
+        let room = server_name_for(LIN);
         let merged = channel_launch_args(&base, &room);
         assert_eq!(
             merged,
@@ -578,7 +632,7 @@ mod tests {
 
     #[test]
     fn does_not_add_the_room_twice() {
-        let room = server_name_for("Lin");
+        let room = server_name_for(LIN);
         let base = vec![CHANNEL_FLAG.to_string(), format!("server:{room}")];
         assert_eq!(channel_launch_args(&base, &room), base);
     }
@@ -624,7 +678,7 @@ mod tests {
             .expect("one entry")
             .clone();
 
-        let args = channel_launch_args(&["--verbose".to_string()], &server_name_for("Lin"));
+        let args = channel_launch_args(&["--verbose".to_string()], &server_name_for(LIN));
         assert_eq!(
             args,
             vec![

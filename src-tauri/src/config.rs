@@ -3,24 +3,53 @@ use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
 
+/// One account: someone who exists in this app whether or not they are running.
+///
+/// The identity is `id`, and only `id`. It is minted once and never changes;
+/// everything else here is an attribute the person edits, the name included.
+///
+/// That is the whole of what an account adds over the launch recipe it replaces
+/// (`TabConfig`). A tab was a way of starting something, so the only handle
+/// anyone had on a session was the name it took — and two launches off one tab
+/// took the same name, which left them indistinguishable and unaddressable
+/// (#40). With a structural identity underneath, the name can come down to
+/// being a display attribute: it may be edited, and it may collide, without
+/// anything losing track of who is who.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TabConfig {
+pub struct Account {
+    /// Immutable, and the only identity. The `.mcp.json` registration key
+    /// derives from this rather than from the name, so a rename cannot move the
+    /// key out from under a session already running under it.
     pub id: String,
-    /// The tab's label — which CLI this launches. Not the name a session speaks
-    /// under in the room: that is declared per launch and passed to
-    /// `start_session` beside the tab. A tab is a launch recipe and lives in
-    /// this file; who joins the room is a choice made at the moment of joining,
-    /// and a stored one made every session answer to the same name (#40).
+    /// What the room lists this account under and what a post is addressed to.
+    /// Display and addressing; never identity.
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
-    pub cli_kind: String,
+    /// The hue this account is drawn in, in oklch degrees, or `None` when none
+    /// was chosen — the screen derives one from the name in that case. Absent
+    /// rather than defaulted: chosen and derived are different states (#45).
+    ///
+    /// Stored here rather than declared per launch, which is where #40 put both
+    /// this and the name. #40 was fixing that a session could not be named at
+    /// all, and with no identity to hang a name on, declaring at the moment of
+    /// joining was the way to reach that. There is an identity now, so the pair
+    /// moves onto it and gains what the launch-time form could not have: an
+    /// account is named and coloured while it is not running.
+    #[serde(default)]
+    pub hue: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub tabs: Vec<TabConfig>,
+    /// Also read from `tabs`, the name this key had while an account was a
+    /// launch recipe. That alias is the whole migration: id, name, command,
+    /// args and working directory carry over as they are, `cli_kind` is
+    /// dropped on the floor by serde because nothing is left to read it (#17),
+    /// and a hue is simply not declared yet. The next save writes `accounts`.
+    #[serde(alias = "tabs")]
+    pub accounts: Vec<Account>,
 }
 
 // ---------------------------------------------------------------------------
@@ -53,20 +82,23 @@ impl Default for AppConfig {
         // One vendor, by decision rather than by omission: the room is built
         // on a channel capability only this CLI is known to have, and the
         // spec drops the second vendor to keep that premise out of the
-        // design. Shipping a tab that cannot join the room by default would
-        // present a session that never speaks. See docs/0-requirements.md.
+        // design. Shipping an account that cannot join the room by default
+        // would present a session that never speaks. See
+        // docs/0-requirements.md.
         //
-        // `Claude Code` names the CLI, and that is all it names now. It used to
-        // be the name the session took in the room as well, which is why every
-        // session took that one.
+        // One account, and its name is the CLI's. That is a starting point
+        // sitting in an editable field, not the fixed label it used to be:
+        // every session answered to this one name because there was nowhere to
+        // change it and nothing else to tell two launches apart (#40). A second
+        // account is created on screen and is named there.
         AppConfig {
-            tabs: vec![TabConfig {
-                id: "tab-1".to_string(),
+            accounts: vec![Account {
+                id: "account-1".to_string(),
                 name: "Claude Code".to_string(),
                 command: "claude".to_string(),
                 args: vec![],
                 cwd: None,
-                cli_kind: "claude".to_string(),
+                hue: None,
             }],
         }
     }
@@ -101,9 +133,15 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
 
-    // No legacy migration path exists. liplus-chat has never shipped a
-    // release, and its app data directory is keyed to its own identifier
-    // (org.liplus-project.liplus-chat), so no config in the older
+    // A config written before accounts existed parses here as it stands: the
+    // `tabs` alias on `AppConfig` reads the old key, and `cli_kind` is an
+    // unknown field serde ignores. No migration step runs, because there is
+    // nothing left for one to do — the person's own working directory and
+    // launch options are what would have been lost, and they carry over.
+    //
+    // No path exists for anything older than that. liplus-chat has never
+    // shipped a release, and its app data directory is keyed to its own
+    // identifier (org.liplus-project.liplus-chat), so no config in the older
     // left/right pane format from liplus-desktop can reach this app.
     serde_json::from_str::<AppConfig>(&content)
         .map_err(|e| format!("Failed to parse config: {e}"))
