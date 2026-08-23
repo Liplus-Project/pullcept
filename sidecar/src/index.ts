@@ -54,7 +54,23 @@ function readHue(raw: string | undefined): number | null {
   return Number.isFinite(hue) ? hue : null;
 }
 
-const PROTOCOL_VERSION = 4;
+/**
+ * The account this session was launched as, or null when it was launched
+ * without one.
+ *
+ * Carried into `hello` and nothing else. It is not this session's identity in
+ * the room — the room mints that from the connection and keeps it there (#39 /
+ * #40 / #47) — and nothing in this file reads it to decide anything. It exists
+ * so the screen can say which of its accounts a participant is without
+ * matching on a name, which is the match #40 and #53 ruled out (#59).
+ *
+ * Null is a real state, not a launch that went wrong: a room does not presume
+ * an account exists behind a connection, and something joining from outside
+ * this app has none to declare.
+ */
+const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
+
+const PROTOCOL_VERSION = 5;
 
 /**
  * How long a post waits for the room to answer it.
@@ -73,7 +89,7 @@ function log(line: string): void {
 // ── Room frames ──────────────────────────────────────────────────────────────
 //
 // Sidecar -> room:
-//   { type: "hello", protocol, name, hue? }
+//   { type: "hello", protocol, name, hue?, account_id? }
 //   { type: "post",  message_id, content, to?, ts, last_seen? }
 // Room -> sidecar:
 //   { type: "post",  message_id, speaker, content, to?, ts }
@@ -93,6 +109,15 @@ function log(line: string): void {
 // launch (`PULLCEPT_AGENT_NAME` / `PULLCEPT_AGENT_HUE`) rather than from anything
 // this file decides, because both are the person's declaration, made at the
 // moment of joining.
+//
+// `account_id` rides along on the same frame, and is the one field on it that
+// is not a declaration about how to be shown. It says which account of the app
+// launched this session, so the screen can join its own list against the room's
+// roster by id instead of by name (#59). It is optional in both directions: a
+// connection with no account behind it is a participant like any other, and the
+// room presumes nothing about one. Nothing here or in the room reads it to
+// decide identity, self-suppression or attribution — those stay on the
+// connection (#39 / #40 / #47).
 //
 // A participant never receives its own post. The room drops it on the way out,
 // judged on the connection it arrived on, so nothing here has to recognise
@@ -466,13 +491,16 @@ function connectRoom(): void {
     retryCount = 0;
     lastError = "";
     log(`room socket: connected as "${AGENT_NAME}"`);
-    // The hue key is omitted when none was declared, for the same reason `to`
-    // is: the room must be able to tell "declared nothing" from a value.
+    // The hue and account keys are omitted when there is none, for the same
+    // reason `to` is: the room must be able to tell "declared nothing" from a
+    // value. For the account that distinction is the whole of its optionality
+    // — a connection with no account is still a participant (#59).
     sendToRoom({
       type: "hello",
       protocol: PROTOCOL_VERSION,
       name: AGENT_NAME,
       ...(AGENT_HUE === null ? {} : { hue: AGENT_HUE }),
+      ...(ACCOUNT_ID === null ? {} : { account_id: ACCOUNT_ID }),
     });
     pingTimer = setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.ping();

@@ -98,6 +98,13 @@ pub struct RoomRegistration<'a> {
     pub token: &'a str,
     /// Id of the account being launched. The registration key derives from
     /// this, so the entry stays put across a rename of the account.
+    ///
+    /// It is also handed to the sidecar in the env, so the session can name it
+    /// in `hello` and the room can carry it on the seat. Carried, not consulted:
+    /// the room decides identity, self-suppression and the `speaker` stamp on
+    /// the connection, and an account id changes none of that (#39 / #40 /
+    /// #47). What it buys is the screen being able to say which of its accounts
+    /// a participant is, without matching on a name (#59).
     pub account_id: &'a str,
     /// Display name this session speaks under. Written into the env for the
     /// sidecar to declare in `hello`, and it is what says whose entry this is
@@ -276,6 +283,11 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     env.insert("PULLCEPT_ROOM_URL".into(), json!(room.room_url));
     env.insert("PULLCEPT_ROOM_TOKEN".into(), json!(room.token));
     env.insert("PULLCEPT_AGENT_NAME".into(), json!(room.agent_name));
+    // Unconditional, unlike the hue: a launch always knows which account it is
+    // launching, so an absent key here would mean the launch lost it rather
+    // than that nobody declared one. Absent on the wire stays a real state —
+    // it is what a connection with no account behind it sends (#59).
+    env.insert("PULLCEPT_ACCOUNT_ID".into(), json!(room.account_id));
     env.insert("PULLCEPT_ROOM_ID".into(), json!("pullcept"));
     // Only when declared. An undeclared participant is a participant the room
     // derives a hue for, which is not the same state as one who chose that hue.
@@ -359,6 +371,12 @@ mod tests {
         assert_eq!(server["env"]["PULLCEPT_ROOM_URL"], "ws://127.0.0.1:1234");
         assert_eq!(server["env"]["PULLCEPT_ROOM_TOKEN"], "tok");
         assert_eq!(server["env"]["PULLCEPT_AGENT_NAME"], "Lin");
+        // The id the sidecar declares in `hello`, so the room can carry it on
+        // the seat and the screen can match a participant to one of its
+        // accounts without matching on a name (#59). The id, not the key
+        // derived from it: the key is a `.mcp.json` concern, and the room has
+        // no way back from it to the account.
+        assert_eq!(server["env"]["PULLCEPT_ACCOUNT_ID"], LIN);
         assert_eq!(server["env"]["PULLCEPT_ROOM_ID"], "pullcept");
         // Undeclared is the key absent, not a default value: a hue written here
         // would be a declaration this participant never made.
