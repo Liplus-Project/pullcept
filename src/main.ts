@@ -11,7 +11,7 @@
 // speech. The rejected design is the one where the app parses CLI output to
 // find messages (docs/0-requirements.md); showing the CLI is not that.
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -161,6 +161,8 @@ const dirEl = document.getElementById("session-dir") as HTMLElement;
 const startedEl = document.getElementById("session-started") as HTMLElement;
 const windowEl = document.getElementById("session-window") as HTMLElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
+const terminalsEl = document.getElementById("terminals") as HTMLElement;
+const terminalsSectionEl = document.getElementById("terminals-section") as HTMLElement;
 const cwdEl = document.getElementById("session-cwd") as HTMLInputElement;
 const optionsEl = document.getElementById("launch-options") as HTMLInputElement;
 const previewEl = document.getElementById("launch-preview") as HTMLElement;
@@ -178,8 +180,6 @@ let accounts: Account[] = [];
 let seated = new Set<string>();
 /** Everyone in the room, this screen's person included. */
 let participants: Participant[] = [];
-/** The session the terminal is attached to, once one is running. */
-let activePtyId: string | null = null;
 /** Prefill for an account that has never been given a working directory. */
 let homeDir = "";
 /**
@@ -194,7 +194,14 @@ let homeDir = "";
  */
 let lastSeenId: string | null = null;
 
-const terminal = new Terminal({
+/**
+ * The emulator options every session's terminal is opened with.
+ *
+ * One set for all of them, so that two sessions on this screen are two of the
+ * same kind of thing and a difference between their panes says something about
+ * the sessions rather than about the panes.
+ */
+const TERMINAL_OPTIONS = {
   cursorBlink: true,
   fontSize: 13,
   fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
@@ -203,8 +210,56 @@ const terminal = new Terminal({
   // what the previous line-appending pane did (#24).
   convertEol: false,
   scrollback: 5000,
-});
-const fitAddon = new FitAddon();
+};
+
+/** How long a 終了 stays armed before it falls back to its resting state. */
+const END_ARM_MS = 4000;
+/**
+ * How long an armed 終了 refuses to act.
+ *
+ * The armed button is wider than the resting one and grows under the pointer,
+ * so a double-click lands both clicks on it: without this, one slip of the
+ * finger arms and ends in a single gesture, which is the shape the two clicks
+ * exist to rule out. Short enough that a deliberate second click never waits.
+ */
+const END_SETTLE_MS = 400;
+
+/**
+ * One account's terminal: the session's output, its scrollback, and the way in.
+ *
+ * One per account, never one shared. A shared emulator was handed the output of
+ * every running session at once, and a TUI's repaint cannot be told from
+ * another's after the two have been written into one screen — the panes were
+ * not taking turns, they were overlapping (#57). Separate emulators also decide
+ * where input goes: this view writes to `ptyId` and to nothing else, so what is
+ * typed reaches the session that is being looked at.
+ */
+interface SessionView {
+  /** The account this terminal belongs to. The identity, so a rename is free. */
+  accountId: string;
+  /** Empty until the launch returns; nothing may be written before then. */
+  ptyId: string;
+  /** The name the account had at launch, for a view whose account is gone. */
+  name: string;
+  command: string;
+  cwd: string | null;
+  startedAt: string;
+  term: Terminal;
+  fit: FitAddon;
+  host: HTMLElement;
+  unlisten: UnlistenFn[];
+  /** How the session ended, or null while it is still running. */
+  ended: string | null;
+}
+
+/** The terminals this screen holds, by account id, in launch order. */
+const views = new Map<string, SessionView>();
+/** The account whose terminal is on the glass, or null when none is. */
+let shownAccount: string | null = null;
+/** The account whose 終了 is armed. Its next click is the one that ends it. */
+let armedEnd: string | null = null;
+let armedTimer = 0;
+let armedAt = 0;
 
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
@@ -215,27 +270,43 @@ function revealDiagnostics(): void {
   diagnosticsEl.hidden = false;
   toggleEl.setAttribute("aria-expanded", "true");
   // The container has no size while hidden, so the fit has to wait for layout.
-  requestAnimationFrame(() => fitTerminal());
+  requestAnimationFrame(() => fitShown());
 }
 
-function fitTerminal(): void {
-  if (diagnosticsEl.hidden) return;
+/** The terminal currently on the glass, or null when none is. */
+function shownView(): SessionView | null {
+  return shownAccount === null ? null : (views.get(shownAccount) ?? null);
+}
+
+/** What a view is called now — its account's current name, renames included. */
+function viewName(view: SessionView): string {
+  return accounts.find((account) => account.id === view.accountId)?.name || view.name;
+}
+
+/**
+ * Lay out the terminal that is showing, and tell its session the new size.
+ *
+ * Only that one. A hidden pane has no size to fit against, and a session told
+ * it has zero columns draws for a window it does not have.
+ */
+function fitShown(): void {
+  const view = shownView();
+  if (!view || diagnosticsEl.hidden) return;
   try {
-    fitAddon.fit();
+    view.fit.fit();
   } catch {
     // A fit against a zero-sized container is not worth a message.
     return;
   }
-  if (activePtyId !== null) {
-    showWindowSize();
-    void invoke("resize_pty", {
-      id: activePtyId,
-      cols: terminal.cols,
-      rows: terminal.rows,
-    }).catch(() => {
-      // The session may have exited between the fit and the call.
-    });
-  }
+  showWindowSize();
+  if (view.ptyId === "" || view.ended !== null) return;
+  void invoke("resize_pty", {
+    id: view.ptyId,
+    cols: view.term.cols,
+    rows: view.term.rows,
+  }).catch(() => {
+    // The session may have exited between the fit and the call.
+  });
 }
 
 /**
@@ -245,7 +316,8 @@ function fitTerminal(): void {
  * number it was given is the one thing that says which of the two it is.
  */
 function showWindowSize(): void {
-  windowEl.textContent = `${terminal.cols}×${terminal.rows}`;
+  const view = shownView();
+  windowEl.textContent = view ? `${view.term.cols}×${view.term.rows}` : "—";
 }
 
 /** Render saved arguments back into an editable line. */
@@ -639,47 +711,339 @@ async function send(): Promise<void> {
 }
 
 /**
+ * Show what the terminal on the glass was launched from.
+ *
+ * Read off the shown view rather than written once at launch: with a terminal
+ * per account these values answer "what is this pane", and a pane switched away
+ * from that left its command on screen would be answering for the wrong one.
+ * They survive the session's exit — the question is what ran.
+ */
+function renderSessionFacts(): void {
+  const view = shownView();
+  if (!view) {
+    sessionStateEl.textContent = "未起動";
+    sessionStateEl.dataset.kind = "info";
+    transportEl.textContent = "—";
+    commandEl.textContent = "—";
+    dirEl.textContent = "—";
+    dirEl.title = "";
+    startedEl.textContent = "—";
+    windowEl.textContent = "—";
+    return;
+  }
+  const name = viewName(view);
+  sessionStateEl.textContent = view.ended === null ? `${name} 起動中` : `${name} 終了（${view.ended}）`;
+  sessionStateEl.dataset.kind = view.ended === null ? "ok" : "error";
+  transportEl.textContent = "PTY";
+  commandEl.textContent = view.command;
+  dirEl.textContent = view.cwd ?? "—";
+  dirEl.title = view.cwd ?? "";
+  startedEl.textContent = view.startedAt === "" ? "—" : shortTime(view.startedAt);
+  showWindowSize();
+}
+
+/**
+ * Draw the panel's terminal list.
+ *
+ * Not the roster, and not a second copy of it. The roster answers who is in the
+ * room and is keyed on the connection each participant arrived on; this answers
+ * which sessions this screen is holding a terminal for, and is keyed on the
+ * account id. The two memberships genuinely differ: a participant who joined
+ * from somewhere else has no terminal here, and a session that has just exited
+ * has a terminal and no seat. Keying this list on the account id is also what
+ * lets a row carry an operation at all — a name match would tie the wrong row
+ * as soon as two accounts answer to one name (#53).
+ */
+function renderTerminalList(): void {
+  terminalsEl.replaceChildren();
+  terminalsSectionEl.hidden = views.size === 0;
+
+  for (const view of views.values()) {
+    const account = accounts.find((candidate) => candidate.id === view.accountId);
+    const name = viewName(view);
+    const row = document.createElement("li");
+    row.className = "term-row";
+    row.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
+    if (view.accountId === shownAccount) row.classList.add("shown");
+    if (view.ended !== null) row.classList.add("ended");
+
+    // The whole line picks the terminal, so choosing which session to watch is
+    // one click on the name of it rather than a control beside the name.
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "pick";
+    pick.setAttribute("aria-pressed", String(view.accountId === shownAccount));
+
+    const dot = document.createElement("span");
+    dot.className = "dot";
+
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = name;
+    who.title = name;
+
+    const note = document.createElement("span");
+    note.className = "note";
+    note.textContent = view.ended === null ? "稼働中" : "終了";
+
+    pick.append(dot, who, note);
+    pick.addEventListener("click", () => {
+      revealDiagnostics();
+      showView(view.accountId);
+      view.term.focus();
+    });
+    row.appendChild(pick);
+
+    // No 終了 before the launch has returned an id: there is no session to end
+    // yet, and a kill aimed at an empty id reports success having done nothing.
+    if (view.ended === null && view.ptyId !== "") row.appendChild(endButton(view, name));
+    terminalsEl.appendChild(row);
+  }
+}
+
+/**
+ * The 終了 control, which takes two clicks.
+ *
+ * Ending a session cannot be undone, and this control sits in a list whose
+ * other click merely changes which pane is showing. One plain click away from a
+ * harmless neighbour is how a slip ends a session that was mid-answer, so the
+ * first click only arms: the button changes what it says and how it looks, and
+ * the second click within a few seconds is the one that acts.
+ *
+ * Two clicks rather than `window.confirm`, which the account delete beside this
+ * uses. That dialog answers on the host's terms, and the two ways it can fail
+ * here are both wrong: a host that answers nothing either makes the button
+ * silently dead or — the bias the delete chose — makes a single click destroy.
+ * An arm state held on this side has neither failure, and the button says which
+ * state it is in rather than a modal saying it elsewhere.
+ */
+function endButton(view: SessionView, name: string): HTMLButtonElement {
+  const armed = armedEnd === view.accountId;
+  const end = document.createElement("button");
+  end.type = "button";
+  end.className = armed ? "end armed" : "end";
+  end.textContent = armed ? "本当に終了" : "終了";
+  end.title = armed
+    ? `もう一度押すと ${name} のセッションを終了します。`
+    : `${name} のセッションを終了する`;
+  end.addEventListener("click", () => {
+    if (!armed) {
+      armEnd(view.accountId);
+      return;
+    }
+    // A click that arrives inside the settle window is the tail of the gesture
+    // that armed it, not an answer to it. Ignored, arm left standing.
+    if (Date.now() - armedAt < END_SETTLE_MS) return;
+    void endSession(view);
+  });
+  return end;
+}
+
+/** Put one account's 終了 into its armed state, and let the arm lapse. */
+function armEnd(accountId: string): void {
+  window.clearTimeout(armedTimer);
+  armedEnd = accountId;
+  armedAt = Date.now();
+  // The arm expires on its own. A button left saying 「本当に終了」 for the rest
+  // of a session is one that an unrelated click, minutes later, fires.
+  armedTimer = window.setTimeout(() => {
+    armedEnd = null;
+    renderTerminalList();
+  }, END_ARM_MS);
+  renderTerminalList();
+}
+
+function disarmEnd(): void {
+  window.clearTimeout(armedTimer);
+  armedEnd = null;
+}
+
+/**
+ * End one account's session.
+ *
+ * The seat is released by the session ending, not by this call: `RoomSeats`
+ * reads liveness off the PTY, so the account is offline again and startable the
+ * moment the process is gone (#53). The view stays until another account is
+ * chosen, because what it last printed is the only account of how it ended.
+ */
+async function endSession(view: SessionView): Promise<void> {
+  disarmEnd();
+  const name = viewName(view);
+  try {
+    await invoke("kill_pty", { id: view.ptyId });
+  } catch (err) {
+    renderTerminalList();
+    status(`${name} を終了できませんでした: ${err}`, "error");
+    return;
+  }
+  status(`${name} を終了しました。`);
+  // The exit event marks the view ended and redraws the row; this call only
+  // says the kill was delivered.
+  await refreshSeats();
+  renderTerminalList();
+}
+
+/**
+ * Give an account its own terminal and put it on the glass.
+ *
+ * Made before the launch, because the CLI's first paint is laid out for the
+ * size this pane reports and there is nothing else to measure.
+ */
+function openView(account: Account): SessionView {
+  // A relaunch replaces the previous run's pane. Two panes for one account
+  // would be two rows under one name, and the row is what the operations hang
+  // on; the scrollback that goes with it is the one the person just decided to
+  // start over from.
+  discardView(views.get(account.id));
+
+  const host = document.createElement("div");
+  host.className = "term";
+  terminalEl.appendChild(host);
+
+  const term = new Terminal({ ...TERMINAL_OPTIONS });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  term.options.theme = terminalTheme();
+
+  const view: SessionView = {
+    accountId: account.id,
+    ptyId: "",
+    name: account.name,
+    command: account.command,
+    cwd: account.cwd,
+    startedAt: "",
+    term,
+    fit,
+    host,
+    unlisten: [],
+    ended: null,
+  };
+
+  term.onData((data) => {
+    // This view's own session, never "the session that started last". The
+    // terminal being typed into is the one on the glass, and the two were not
+    // the same thing while one `activePtyId` stood for both (#57).
+    if (view.ptyId === "" || view.ended !== null) return;
+    void invoke("write_pty", { id: view.ptyId, data }).catch((err) => {
+      status(`セッションへ送れませんでした: ${err}`, "error");
+    });
+  });
+
+  // The webview does not deliver a native paste to xterm, so Ctrl+V is bridged
+  // explicitly. preventDefault stops the input arriving twice.
+  term.attachCustomKeyEventHandler((event) => {
+    const isPaste =
+      event.type === "keydown" &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      (event.key === "v" || event.key === "V");
+    if (!isPaste) return true;
+
+    event.preventDefault();
+    void readText().then((text) => {
+      // Same destination as a keystroke: the pasted text goes to this pane's
+      // session, so a paste cannot land in a session that is not on screen.
+      if (text && view.ptyId !== "" && view.ended === null) {
+        void invoke("write_pty", { id: view.ptyId, data: text });
+      }
+    });
+    return false;
+  });
+
+  views.set(account.id, view);
+  showView(account.id);
+  return view;
+}
+
+/** Close one terminal for good: its listeners, its emulator, its scrollback. */
+function discardView(view: SessionView | undefined): void {
+  if (!view) return;
+  for (const off of view.unlisten) off();
+  view.unlisten = [];
+  view.term.dispose();
+  view.host.remove();
+  views.delete(view.accountId);
+  if (shownAccount === view.accountId) shownAccount = null;
+}
+
+/**
+ * Put one account's terminal on the glass, and take the others off it.
+ *
+ * Hidden, not discarded: a session keeps running while another is being
+ * watched, and its output keeps arriving into its own emulator, so switching
+ * back finds the scrollback where it was left.
+ *
+ * A terminal whose session has ended is the exception, and it is discarded here
+ * rather than at the moment it died — what a session printed on its way out is
+ * the only account of why, and choosing another account is the person saying
+ * they have read it (#57).
+ */
+function showView(accountId: string | null): void {
+  disarmEnd();
+  for (const view of [...views.values()]) {
+    if (view.ended !== null && view.accountId !== accountId) discardView(view);
+  }
+  shownAccount = accountId;
+  for (const view of views.values()) {
+    view.host.hidden = view.accountId !== accountId;
+  }
+  renderTerminalList();
+  renderSessionFacts();
+  fitShown();
+  // A pane that was `display: none` kept filling its buffer and painted
+  // nothing, so coming back to it has to repaint from the buffer. The fit above
+  // does that only when the measured size changed, and returning to a pane the
+  // same size as the one just left is exactly when it did not.
+  const shown = shownView();
+  if (shown) shown.term.refresh(0, shown.term.rows - 1);
+}
+
+/**
  * Follow a launched session until it dies.
  *
  * A session that exits on startup is the failure mode with no other witness:
  * the room simply stays empty. Without this the screen is identical whether
  * the CLI is running or was never there.
  */
-async function followSession(account: Account, started: StartedSession): Promise<void> {
-  const name = account.name;
-  sessionStateEl.textContent = `${name} 起動中`;
-  sessionStateEl.dataset.kind = "ok";
-  activePtyId = started.pty_id;
+async function followSession(view: SessionView, started: StartedSession): Promise<void> {
+  view.ptyId = started.pty_id;
+  view.startedAt = started.started_at;
+  renderTerminalList();
+  renderSessionFacts();
 
-  // How this session was launched, on the panel rather than in the person's
-  // memory: a session that is answering nothing is read against the directory
-  // and the command it actually got, not against the ones that were intended.
-  // They stay on screen after the session exits — the question is what ran.
-  transportEl.textContent = "PTY";
-  commandEl.textContent = account.command;
-  dirEl.textContent = account.cwd ?? "—";
-  dirEl.title = account.cwd ?? "";
-  startedEl.textContent = shortTime(started.started_at);
-  showWindowSize();
-
-  await listen<string>(`pty-data-${started.pty_id}`, (event) => terminal.write(event.payload));
-  await listen<number | null>(`pty-exit-${started.pty_id}`, (event) => {
-    const code = event.payload;
-    const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
-    sessionStateEl.textContent = `${name} 終了（${detail}）`;
-    sessionStateEl.dataset.kind = "error";
-    status(`${name} が終了しました（${detail}）。診断を確認してください。`, "error");
-    activePtyId = null;
-    // The seat this account held is free the moment its session ends, so the
-    // panel says 未起動 again and the account can be started once more.
-    void refreshSeats();
-    revealDiagnostics();
-  });
+  // Both listeners are this view's, and are dropped with it. The shared
+  // terminal subscribed once per launch and unsubscribed never, which is how
+  // every running session ended up writing into one pane (#57).
+  view.unlisten.push(
+    await listen<string>(`pty-data-${started.pty_id}`, (event) => view.term.write(event.payload)),
+  );
+  view.unlisten.push(
+    await listen<number | null>(`pty-exit-${started.pty_id}`, (event) => {
+      const code = event.payload;
+      const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
+      view.ended = detail;
+      // Nothing more will arrive on this pty. The view lives on for what it
+      // has already printed, not for anything it is still waiting to hear.
+      for (const off of view.unlisten) off();
+      view.unlisten = [];
+      const name = viewName(view);
+      status(`${name} が終了しました（${detail}）。診断を確認してください。`, "error");
+      // The seat this account held is free the moment its session ends, so the
+      // panel says 未起動 again and the account can be started once more.
+      void refreshSeats();
+      renderTerminalList();
+      if (shownAccount === view.accountId) {
+        renderSessionFacts();
+        revealDiagnostics();
+      }
+    }),
+  );
 
   // The first thing a session shows is a question, so the pane that carries
   // the answer opens with it rather than waiting for a failure.
   revealDiagnostics();
-  terminal.focus();
+  if (shownAccount === view.accountId) view.term.focus();
 }
 
 async function startSession(): Promise<void> {
@@ -721,29 +1085,36 @@ async function startSession(): Promise<void> {
   saveAccounts();
 
   // Size the PTY to the terminal that will display it, so the CLI's first
-  // paint is not laid out for a window it does not have.
+  // paint is not laid out for a window it does not have. The pane is revealed
+  // first because a hidden container has no size to measure.
+  //
+  // What was on the glass is kept, so a launch that fails can put it back
+  // rather than leaving a blank pane where a running session had been.
+  const previous = shownAccount;
   revealDiagnostics();
-  fitAddon.fit();
+  const view = openView(account);
 
   startEl.disabled = true;
   status(`${name} を起動しています…`);
   try {
     const started = await invoke<StartedSession>("start_session", {
       account,
-      cols: terminal.cols,
-      rows: terminal.rows,
+      cols: view.term.cols,
+      rows: view.term.rows,
     });
     status(`${name} を起動しました。${started.mcp_config} に登録済み。`);
     await refreshSeats();
-    await followSession(account, started);
+    await followSession(view, started);
   } catch (err) {
+    // Nothing was spawned, so this terminal has nothing to show and no session
+    // to end. It goes, and the failure stands in the status line, which carries
+    // the app's own reason rather than the word 起動失敗.
+    discardView(view);
+    showView(previous !== null && views.has(previous) ? previous : ([...views.keys()].pop() ?? null));
     status(`${name} を起動できませんでした: ${err}`, "error");
-    sessionStateEl.textContent = `${name} 起動失敗`;
-    sessionStateEl.dataset.kind = "error";
     // A launch that failed after the app claimed the seat releases it there;
     // this keeps the panel in step with that.
     await refreshSeats();
-    revealDiagnostics();
   } finally {
     startEl.disabled = false;
   }
@@ -848,6 +1219,11 @@ function deleteAccount(): void {
     return;
   }
   accounts = accounts.filter((candidate) => candidate.id !== account.id);
+  // Its terminal goes with it. An account that no longer exists cannot be named
+  // in the panel, and the row is the only way that pane could be reached.
+  discardView(views.get(account.id));
+  renderTerminalList();
+  renderSessionFacts();
   renderAccountOptions(accounts[0]?.id ?? "");
   showAccount();
   saveAccounts();
@@ -872,45 +1248,20 @@ function renderSocket(port: number | null, error?: string): void {
   socketStateEl.dataset.kind = "ok";
 }
 
-function setUpTerminal(): void {
-  terminal.loadAddon(fitAddon);
-  terminal.open(terminalEl);
-
+/** The page's own colours, so a terminal is not a light rectangle in the dark. */
+function terminalTheme(): { background: string; foreground: string } {
   const style = getComputedStyle(document.documentElement);
-  terminal.options.theme = {
+  return {
     background: style.getPropertyValue("--bg").trim() || "#17171a",
     foreground: style.getPropertyValue("--fg").trim() || "#e8e8ea",
   };
-
-  terminal.onData((data) => {
-    if (activePtyId === null) return;
-    void invoke("write_pty", { id: activePtyId, data }).catch((err) => {
-      status(`セッションへ送れませんでした: ${err}`, "error");
-    });
-  });
-
-  // The webview does not deliver a native paste to xterm, so Ctrl+V is bridged
-  // explicitly. preventDefault stops the input arriving twice.
-  terminal.attachCustomKeyEventHandler((event) => {
-    const isPaste =
-      event.type === "keydown" &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey &&
-      (event.key === "v" || event.key === "V");
-    if (!isPaste) return true;
-
-    event.preventDefault();
-    void readText().then((text) => {
-      if (text && activePtyId !== null) void invoke("write_pty", { id: activePtyId, data: text });
-    });
-    return false;
-  });
-
-  new ResizeObserver(() => fitTerminal()).observe(terminalEl);
 }
 
 async function main(): Promise<void> {
-  setUpTerminal();
+  // The pane is one container holding every session's terminal, so the observer
+  // is on the container and the fit lands on whichever one is showing.
+  new ResizeObserver(() => fitShown()).observe(terminalEl);
+  renderSessionFacts();
 
   nameEl.value = localStorage.getItem(NAME_KEY) ?? "human";
   fillHues(hueEl, localStorage.getItem(HUE_KEY));
@@ -971,6 +1322,11 @@ async function main(): Promise<void> {
     const option = accountEl.selectedOptions[0];
     if (option) option.textContent = account.name || "（名前未設定）";
     renderPanel();
+    // The terminal list is drawn from the account list, so a rename follows the
+    // pane it belongs to: the row is keyed on the id, and the name is only what
+    // it is called (#53).
+    renderTerminalList();
+    renderSessionFacts();
   });
   accountNameEl.addEventListener("change", () => saveAccounts());
   accountHueEl.addEventListener("change", () => {
@@ -979,6 +1335,7 @@ async function main(): Promise<void> {
     account.hue = declaredHue(accountHueEl);
     saveAccounts();
     renderPanel();
+    renderTerminalList();
   });
   cwdEl.addEventListener("change", () => {
     const account = selectedAccount();

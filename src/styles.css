@@ -352,6 +352,88 @@ body {
   color: var(--muted);
 }
 
+/* ── panel: terminals ────────────────────────────────────────────────────── */
+
+/* The sessions this screen holds a pane for. Its own block under the roster,
+   because it answers a different question: the roster says who is in the room,
+   this says which terminals are here to be watched and ended. */
+#participants .terminals-section {
+  border-top: 1px solid var(--line);
+  margin-top: 0.35rem;
+}
+
+#participants .terminals {
+  margin: 0;
+  padding: 0 0.6rem 0.35rem;
+  list-style: none;
+}
+
+#participants .term-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* The name is the control that picks the pane, so it takes the width of the
+   row: choosing which session to watch is a click on the session, not on a
+   separate button beside it. */
+#participants .term-row .pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.3rem;
+  cursor: pointer;
+}
+
+/* The pane on the glass. Lifted out of the panel's surface rather than tinted,
+   so which terminal is showing reads at a glance and in either theme. */
+#participants .term-row.shown .pick {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+/* Dimmed, and the dot goes from filled to outline — the same pair the roster
+   uses for an account that is not in the room. A session that has ended is not
+   in it either; the row is still here only for what it printed. */
+#participants .term-row.ended .who {
+  color: var(--muted);
+}
+
+#participants .term-row.ended .dot {
+  background: none;
+  border: 1px solid var(--speaker, var(--line));
+}
+
+/* Its resting state is a quiet outline in the danger colour: this is the one
+   control here that cannot be taken back, and it sits next to one that only
+   changes what is displayed. Armed, it fills — the button says which of its two
+   states it is in, and the second click is the one that acts (src/main.ts). */
+#participants .term-row .end {
+  flex: none;
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--danger);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+}
+
+#participants .term-row .end.armed {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
 #participants .facts {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -473,6 +555,13 @@ body {
   border-radius: 4px;
   padding: 0.35rem;
   background: var(--bg);
+}
+
+/* One frame, one terminal per running account, stacked and all but one hidden.
+   Each fills the frame, so switching between them does not resize anything and
+   a session is not told its window changed because another was looked at. */
+#terminal .term {
+  height: 100%;
 }
 
 /* xterm sizes itself to the container, so the container must have a size of
