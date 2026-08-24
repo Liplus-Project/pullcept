@@ -28,9 +28,11 @@
              about, and a control reachable only by keys would leave that
              fixable only by whoever already knew the keys.
 
-             It reaches the conversation alone. The panel, the diagnostics
-             pane, the terminal and the composer keep their own sizes — see the
-             `#room` block in src/styles.css for why the scope holds. -->
+             It reaches the conversation's words, wherever they are: the room,
+             and the textarea they are typed into (#81). The panel, the
+             diagnostics pane, the terminal and the composer's own controls
+             keep their own sizes — see the `#room` block in src/styles.css for
+             why the scope holds. -->
         <select
           id="room-font-size"
           aria-label="会話の文字サイズ"

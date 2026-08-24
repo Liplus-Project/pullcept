@@ -561,11 +561,17 @@ function storedRoomFontSize(): number {
 /**
  * Draw the conversation at `size`, and remember it if it was chosen.
  *
- * The property goes on `#room` itself, which is what keeps this off everything
- * else: the panel, the diagnostics pane, the terminal and the composer are
- * elsewhere in the tree and inherit nothing from here. Setting it on the root
- * would reach all four, and the terminal computes its columns and rows from
- * its own size.
+ * The property goes on the two elements that render the conversation's words —
+ * `#room` and the composer's textarea — and on nothing else. What is typed is
+ * the same sentence that is then read, so the two move together (#81). Their
+ * nearest shared ancestor is `#conversation`, which also holds the diagnostics
+ * pane and the status line; setting it there, or on the root, would reach
+ * surfaces that are not on this axis, and the terminal computes its columns and
+ * rows from its own size. Two `setProperty` calls make the scope the placement
+ * itself, so nothing has to be cancelled anywhere.
+ *
+ * 宛先 and 送信 sit in the composer but do not follow. They are controls, not
+ * the sentence, and they stay on the whole-UI axis (#66).
  *
  * `save` is false for the restore at startup. Writing the value back there
  * would put a size in storage for a screen that never chose one, which is the
@@ -574,6 +580,7 @@ function storedRoomFontSize(): number {
 function applyRoomFontSize(size: number, save: boolean): void {
   roomFontSize = size;
   roomEl.style.setProperty("--room-font-size", `${size}rem`);
+  inputEl.style.setProperty("--room-font-size", `${size}rem`);
   fontSizeEl.value = String(size);
   if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
 }
@@ -1993,9 +2000,10 @@ async function main(): Promise<void> {
     const step = ROOM_FONT_SIZE_KEYS[event.key];
     if (step === undefined) return;
     // Load-bearing, not tidiness: the webview answers these same keys with its
-    // own zoom, which takes the terminal, the panel and the composer with it.
-    // Scaling those four is the one thing this control may not do, so the
-    // default has to be stopped for the scoped version to be what happens.
+    // own zoom, which takes the whole screen — the terminal, the panel, and the
+    // composer's own controls along with its textarea. Scaling those is the one
+    // thing this control may not do, so the default has to be stopped for the
+    // scoped version to be what happens.
     event.preventDefault();
     stepRoomFontSize(step);
   });
