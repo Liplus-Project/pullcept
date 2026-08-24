@@ -442,10 +442,60 @@ interface SessionView {
   unlisten: UnlistenFn[];
   /** How the session ended, or null while it is still running. */
   ended: string | null;
+  /**
+   * True while output is still arriving from this session.
+   *
+   * Raised by the first byte and lowered by `OUTPUT_QUIET_MS` of silence, so it
+   * says "this terminal is printing right now" and not "this terminal has
+   * printed at some point". It is the whole of what this screen can observe
+   * about a running CLI: the bytes are not read, only counted as having
+   * arrived (#82).
+   */
+  outputting: boolean;
+  /** The pending fall back to silence, or undefined when none is armed. */
+  quiet: number | undefined;
 }
+
+/**
+ * How long a terminal must stay silent before its row stops saying anything
+ * about it, in milliseconds.
+ *
+ * Both halves of this number are load-bearing. Long enough that the gaps inside
+ * one burst of output — a TUI's spinner frame, a pause between two paragraphs of
+ * a streamed answer — do not read as the session having stopped, which is what
+ * makes the word hold still instead of flickering once per repaint. Short enough
+ * that a word describing something that has stopped is gone about as fast as a
+ * person can look up from the terminal, because a word left standing over a
+ * session that has fallen quiet is the failure this feature is most able to
+ * cause: 考え中 over a CLI that is in fact sitting at a prompt waiting to be
+ * answered (#82).
+ *
+ * It is also the whole of the redraw budget. The row is redrawn when the word
+ * changes and at no other time, so a session printing without pause costs two
+ * draws — one when it starts, one when it stops — however many bytes it sends.
+ */
+const OUTPUT_QUIET_MS = 1000;
 
 /** The terminals this screen holds, by account id, in launch order. */
 const views = new Map<string, SessionView>();
+/**
+ * The names the room is waiting on: addressed in a post, and not heard from
+ * since.
+ *
+ * Names rather than account ids, because that is what the room addresses. `to`
+ * carries a display name and the room fans every post out regardless, so being
+ * addressed is a thing that happens to whoever answers to that name — two
+ * participants sharing one are both being asked. The panel's own rows resolve
+ * back to it through the roster, which is the same name they are drawn under.
+ *
+ * Only ever filled by a post arriving while this screen is open. A screen that
+ * reloaded into a session already mid-answer has an empty set and says nothing
+ * about it, which is the honest answer: the room's history is not replayed here,
+ * so nothing on this side knows that account was asked (#84 / #86). Silence is
+ * the failure this is allowed to have; a word for a state nobody observed is not
+ * (#82).
+ */
+const awaiting = new Set<string>();
 /** The account whose terminal is on the glass, or null when none is. */
 let shownAccount: string | null = null;
 /** The size every terminal on this screen is currently drawn at, in `px`. */
@@ -883,6 +933,121 @@ function memberName(row: Member): string {
   return row.participant?.name ?? row.account?.name ?? "";
 }
 
+// ── what a running account is doing ──────────────────────────────────────────
+//
+// The row could say whether an account was running and nothing more: the four
+// words it had — 未起動 / 起動中 / 終了 / 起動失敗 — all come from whether a
+// process exists. What follows adds the two things this screen can observe about
+// one that does, and stops there (#82):
+//
+//   the room's round trip — addressed in a post, not heard from since
+//   the byte stream     — output arriving at this account's terminal
+//
+// Neither reads what the CLI printed. Reading it is the only way to tell 考え中
+// from ツール使用中, and it is a separate implementation per CLI that breaks
+// whenever the other side changes its display, so it is refused here and judged
+// on its own (#82 決まったこと).
+//
+// Both words are gated on output still arriving, and that gate is the design
+// rather than an optimisation. A word that outlives the thing it describes is
+// worse than no word at all, and being addressed has no end of its own: a
+// session that is asked something and then sits at a confirmation prompt never
+// answers, so 考え中 on the address alone would stand there for as long as the
+// app is open — which is exactly the shape the issue named as the worst one.
+// Silence is what this says instead, and silence is allowed to be wrong.
+
+/**
+ * Note that this session is printing, and arm its fall back to silence.
+ *
+ * Called once per chunk, and cheap on purpose: the timer is pushed forward every
+ * time, and the panel is redrawn only on the edge where the word appears.
+ */
+function markOutput(view: SessionView): void {
+  if (view.quiet !== undefined) clearTimeout(view.quiet);
+  view.quiet = window.setTimeout(() => {
+    view.quiet = undefined;
+    view.outputting = false;
+    renderPanel();
+  }, OUTPUT_QUIET_MS);
+  if (view.outputting) return;
+  view.outputting = true;
+  renderPanel();
+}
+
+/**
+ * Take this session's word down at once, without waiting out the quiet window.
+ *
+ * For the two ends that are not silence: the session exited, or its terminal was
+ * discarded. The timer goes with it — one left armed on a discarded view would
+ * redraw the panel from a session nothing else can reach.
+ */
+function stopOutput(view: SessionView): void {
+  if (view.quiet !== undefined) clearTimeout(view.quiet);
+  view.quiet = undefined;
+  view.outputting = false;
+}
+
+/**
+ * Read one post for who the room is now waiting on.
+ *
+ * Speaking clears first, then being addressed marks — in that order, so a
+ * participant answering one question and being asked another in the same instant
+ * ends up marked. Whoever spoke is no longer owed an answer whether or not the
+ * post was the one they were asked for: they are audibly not stuck.
+ *
+ * A name nobody currently answers to is not marked. The room delivers a post
+ * addressed to no one present just the same, and marking it would leave the word
+ * armed for whoever takes that name next — a row saying 考え中 about a question
+ * asked before it was even running.
+ */
+function trackAddress(message: RoomMessage): void {
+  let moved = awaiting.delete(message.speaker);
+  const to = message.to;
+  if (to !== null && !awaiting.has(to) && participants.some((one) => one.name === to && !one.own)) {
+    awaiting.add(to);
+    moved = true;
+  }
+  if (moved) renderPanel();
+}
+
+/**
+ * Drop everyone the room is waiting on who is no longer in it.
+ *
+ * The roster is the authority on who is present, so this runs when it arrives. A
+ * session that exits with a question outstanding leaves the room, and this is
+ * what takes its mark with it.
+ */
+function pruneAwaiting(): void {
+  const present = new Set(participants.filter((one) => !one.own).map((one) => one.name));
+  for (const name of awaiting) {
+    if (!present.has(name)) awaiting.delete(name);
+  }
+}
+
+/**
+ * What a running account is doing, in the one word the row has room for.
+ *
+ * 考え中… when the room is waiting on this name, 出力中 otherwise, and nothing at
+ * all while the terminal is quiet.
+ *
+ * The order is not a preference between two equal signals. Both words stand on
+ * the same observation — this terminal is printing — and the address is what says
+ * why: the account owes the room an answer and has not given it. That is strictly
+ * more than the other word says, so a row that could say both says that one.
+ *
+ * 出力中 rather than 動作中 for what is left. What was observed is that bytes
+ * arrived, and a CLI repainting the prompt it is waiting at is producing output
+ * without doing any work — 動作中 would be a claim about the CLI that this screen
+ * has no way to check, and it would be wrong in exactly the case the issue
+ * measured on the device (an `Enter to confirm` prompt). Both words are three
+ * characters or so, inside the width 起動失敗 already costs the name beside it,
+ * so neither buys anything back at the panel's 16.5rem (#71).
+ */
+function activityNote(name: string, view: SessionView | undefined): string {
+  if (!view || view.ended !== null || !view.outputting) return "";
+  return awaiting.has(name) ? "考え中…" : "出力中";
+}
+
 /**
  * Draw one line of the participant list.
  *
@@ -922,13 +1087,20 @@ function memberRow(row: Member): HTMLLIElement {
   const failure = row.account ? launchFailures.get(row.account.id) : undefined;
 
   // What this line says about itself beyond the name. Someone present and not
-  // oneself says nothing: being in the list is what it would have said.
+  // oneself says what they are doing, when this screen can observe it, and
+  // otherwise says nothing — being in the list is what it would have said (#82).
+  //
+  // One note, in one place. 未起動 and 考え中… are mutually exclusive states of
+  // the same account, so they need no second slot, and the two fixed tracks #71
+  // measured are untouched.
   let noteText = "";
   let noteKind = "";
   if (own) noteText = "（あなた）";
   else if (launching) noteText = "起動中";
-  else if (row.participant) noteText = "";
-  else if (failure) {
+  else if (row.participant) {
+    noteText = activityNote(name, view);
+    if (noteText) noteKind = "active";
+  } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
   } else if (view?.ended != null) noteText = "終了";
@@ -1200,6 +1372,9 @@ function renderPanel(): void {
 /** Take the room's roster and redraw the panel around it. */
 function renderRoster(joined: Participant[]): void {
   participants = joined;
+  // Against the roster that just arrived, before it is drawn: who the room is
+  // waiting on is only meaningful about someone who is in it (#82).
+  pruneAwaiting();
   renderPanel();
 }
 
@@ -1365,6 +1540,22 @@ function renderAddressees(): void {
   const addressable = [
     ...new Set(participants.filter((one) => !one.own).map((one) => one.name)),
   ];
+
+  // Left alone when the roster has not moved. The panel is now redrawn whenever
+  // a row's word changes — when a session starts printing and again when it
+  // stops (#82) — and this control is the one thing in the panel a person can be
+  // in the middle of using: rebuilding a `<select>` closes the list that is open
+  // over it. The roster is what this reads from, so the same list of names is
+  // the same options, and replacing them would be work with a cost and no
+  // effect.
+  const wanted = ["", ...addressable];
+  if (
+    toEl.options.length === wanted.length &&
+    wanted.every((name, at) => toEl.options[at].value === name)
+  ) {
+    return;
+  }
+
   toEl.replaceChildren();
 
   const everyone = document.createElement("option");
@@ -1573,6 +1764,11 @@ function openView(account: Account, running?: RunningSession): SessionView {
     host,
     unlisten: [],
     ended: null,
+    // Quiet until something arrives. A session picked up again after a reload
+    // starts here too: its terminal is new even though its process is not, so
+    // what this screen can say about it begins at the next byte (#86).
+    outputting: false,
+    quiet: undefined,
   };
 
   term.onData((data) => {
@@ -1616,6 +1812,7 @@ function discardView(view: SessionView | undefined): void {
   if (!view) return;
   for (const off of view.unlisten) off();
   view.unlisten = [];
+  stopOutput(view);
   view.term.dispose();
   view.host.remove();
   views.delete(view.accountId);
@@ -1668,13 +1865,21 @@ function showView(accountId: string | null): void {
  */
 async function attachSession(view: SessionView, ptyId: string): Promise<void> {
   view.unlisten.push(
-    await listen<string>(`pty-data-${ptyId}`, (event) => view.term.write(event.payload)),
+    await listen<string>(`pty-data-${ptyId}`, (event) => {
+      view.term.write(event.payload);
+      // The bytes go to the emulator and are not looked at here. That this
+      // chunk arrived is the whole of the signal (#82).
+      markOutput(view);
+    }),
   );
   view.unlisten.push(
     await listen<number | null>(`pty-exit-${ptyId}`, (event) => {
       const code = event.payload;
       const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
       view.ended = detail;
+      // Nothing more will print, so the row must not spend the quiet window
+      // still saying that something is (#82).
+      stopOutput(view);
       // Nothing more will arrive on this pty. The view lives on for what it
       // has already printed, not for anything it is still waiting to hear.
       for (const off of view.unlisten) off();
@@ -2138,7 +2343,13 @@ async function main(): Promise<void> {
   });
   diagnosticsCloseEl.addEventListener("click", () => hideDiagnostics());
 
-  await listen<RoomMessage>("room-message", (event) => appendMessage(event.payload));
+  await listen<RoomMessage>("room-message", (event) => {
+    appendMessage(event.payload);
+    // The same post read twice: once as a line in the conversation, once for
+    // who the room is now waiting on. The second reading is what puts 考え中…
+    // on a row without anything having to read the CLI's output (#82).
+    trackAddress(event.payload);
+  });
   await listen<Participant[]>("room-participants", (event) => renderRoster(event.payload));
   // The socket binds after the frontend loads, so the event is the authority
   // and the poll below is only for a listener that attached too late.
