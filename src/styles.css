@@ -140,25 +140,40 @@ body {
 
 /* ── room ────────────────────────────────────────────────────────────────── */
 
-/* The conversation's own text size, declared here and nowhere else.
+/* The conversation's own text size, declared on the two elements that render
+   the conversation's own words and nowhere else.
 
-   On `#room` rather than on `:root` because that placement is what the scope
-   is made of: the participant panel, the diagnostics pane, the terminal and
-   the composer are not descendants of this element, so no size set here can
-   reach them. The terminal is the one that would hurt — xterm.js carries its
-   own size and computes columns and rows from it, and a size arriving from
-   above would shift both (#60).
+   Two elements, not one shared ancestor and not `:root`. What is typed into
+   the composer is the same sentence that is then read in the room, so one size
+   covers both (#81); everything else keeps its own. The nearest ancestor
+   holding both is `#conversation`, and it also holds the diagnostics pane and
+   the status line, so a size set there would arrive at two surfaces that are
+   not on this axis. The terminal is the one that would hurt — xterm.js carries
+   its own size and computes columns and rows from it, and a size arriving from
+   above would shift both (#60). Declaring it on the two directly is what makes
+   the scope the placement itself: there is no third element for the property
+   to be inherited by, so nothing anywhere has to cancel it.
 
-   `1rem` is what this surface has always rendered at. No `font-size` is
+   The textarea alone, not the whole composer. 宛先 and 送信 sit on the same
+   row but are controls, not the sentence, and they stay on the whole-UI axis
+   (#66). The room's own `font-size` lands on `.message` rather than here, so
+   only the words are carried and the padding is not.
+
+   `1rem` is what both surfaces have always rendered at. No `font-size` is
    written on `body`, on `html` or on `:root`, so the room has been showing the
-   user agent's default while everything around it was given a size. That is
+   user agent's default while everything around it was given a size, and the
+   textarea's `font: inherit` has been resolving to that same default. That is
    where "the text is large" came from, and keeping the default here is what
    makes a screen that has set nothing look exactly as it did. Levelling the
    surfaces against each other is a separate question and not this one's.
 
-   src/main.ts overrides this on the element when a size has been stored. */
-#room {
+   src/main.ts overrides this on both elements when a size has been stored. */
+#room,
+#composer textarea {
   --room-font-size: 1rem;
+}
+
+#room {
   flex: 1;
   overflow-y: auto;
   padding: 1rem;
@@ -256,9 +271,14 @@ body {
   max-width: 10rem;
 }
 
+/* Written at the size it will be read at. The `font-size` follows the
+   shorthand deliberately: `font: inherit` sets a size of its own, and only a
+   later `font-size` in the same rule replaces it. `rows="2"` is counted in
+   lines, so the field's height moves with the size without being told to. */
 #composer textarea {
   flex: 1;
   font: inherit;
+  font-size: var(--room-font-size);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line);
