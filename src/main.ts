@@ -126,6 +126,32 @@ interface StartedSession {
 }
 
 /**
+ * What is running under one held seat, as the app reports it.
+ *
+ * The same facts a `SessionView` holds, from the side that survives a reload of
+ * this screen. The pty id is why it is sent at all: it is made at spawn and
+ * handed over once, so a screen that has forgotten it cannot reach the session
+ * again — and the account cannot be started either, because the seat refuses it
+ * (#84).
+ *
+ * The command and the directory are the launch's own, not the account's as it
+ * reads now. An account is editable while its session runs.
+ */
+interface RunningSession {
+  pty_id: string;
+  started_at: string;
+  command: string;
+  cwd: string;
+}
+
+/** One account holding a seat, and what it is running. */
+interface SeatedAccount {
+  account_id: string;
+  /** Null while its launch is in flight: claimed seat, nothing spawned yet. */
+  session: RunningSession | null;
+}
+
+/**
  * Where the name and hue of this screen's person used to live, and the only
  * thing still read out of them: the values to make their account from, once.
  *
@@ -284,8 +310,12 @@ let accounts: Account[] = [];
  * name — which they may, now that a name is an editable attribute (#53). The
  * app is the authority (`seated_accounts`); the screen re-reads it rather than
  * keeping a count of its own launches.
+ *
+ * A map rather than a set of ids, because the answer carries what is running
+ * under each seat as well. That is what a terminal is rebuilt from when this
+ * screen has been reloaded out from under a running session (#84).
  */
-let seated = new Set<string>();
+let seated = new Map<string, SeatedAccount>();
 /** Everyone in the room, this screen's person included. */
 let participants: Participant[] = [];
 /**
@@ -374,6 +404,17 @@ const TERMINAL_OPTIONS = {
   convertEol: false,
   scrollback: 5000,
 };
+
+/**
+ * The line a terminal opens with when it is picked up rather than launched.
+ *
+ * It stands where the missing output would have been, which is the only place
+ * it answers the question it exists for: this pane is not empty because the
+ * session has said nothing. Dim, because it is the app speaking inside a pane
+ * that otherwise belongs entirely to the session (#84).
+ */
+const RESUMED_NOTICE =
+  "\x1b[2m[pullcept] 画面が再読み込みされました。セッションは走ったままで、この端末はそこへ繋ぎ直したものです。これより前の出力は残っていません。\x1b[0m";
 
 /**
  * One account's terminal: the session's output, its scrollback, and the way in.
@@ -1172,13 +1213,59 @@ function renderRoster(joined: Participant[]): void {
  */
 async function refreshSeats(): Promise<void> {
   try {
-    seated = new Set(await invoke<string[]>("seated_accounts"));
+    const held = await invoke<SeatedAccount[]>("seated_accounts");
+    seated = new Map(held.map((seat) => [seat.account_id, seat]));
   } catch {
     // The panel keeps the last answer rather than declaring everyone offline
     // on a failed read. It still redraws: what failed is this one value, and
     // whatever else moved since the last draw is not held back by it.
   }
+  await adoptSeats();
   renderPanel();
+}
+
+/**
+ * Give a running session its terminal back, wherever this screen has none.
+ *
+ * The terminals live in the webview and the sessions do not. A reload takes
+ * every `SessionView` and leaves every PTY running, so the account is left held
+ * by a session this screen has no id for: the row draws 開始 because it finds no
+ * view, and 開始 is refused because the seat is taken. No way in and no way out
+ * (#84). The app's answer carries the pty id, and subscribing to it again is
+ * the whole of the way back.
+ *
+ * What does not come back is the scrollback — it was in the emulator that went
+ * with the old screen, and nothing else ever held it — nor whatever the session
+ * printed between the reload and this call. The terminal says so on its first
+ * line instead of opening blank, because a blank terminal under 起動中 reads as
+ * a session that has printed nothing, and reading what a session last printed
+ * is how the person decides whether to end it (#57).
+ *
+ * Only ever after a reload, never after a restart: the seats are the app's own
+ * memory and go with it, so an app that has just started holds none.
+ */
+async function adoptSeats(): Promise<void> {
+  const adopted: string[] = [];
+  for (const seat of seated.values()) {
+    // No session yet: the seat is claimed and the launch is still in flight.
+    // Nothing to subscribe to, and it is this screen's own launch in every case
+    // but a reload landing inside that window.
+    if (!seat.session || views.has(seat.account_id)) continue;
+    const account = accounts.find((one) => one.id === seat.account_id);
+    // An account this screen does not have is one it cannot draw a row for, and
+    // the row is the only way that terminal could be reached. The app refuses
+    // to delete a seated account, so this is a config edited from outside.
+    if (!account) continue;
+    const view = openView(account, seat.session);
+    view.term.writeln(RESUMED_NOTICE);
+    await attachSession(view, seat.session.pty_id);
+    adopted.push(viewName(view));
+  }
+  if (!adopted.length) return;
+  // Open, because open is where it was: a session is reloaded out from under
+  // while it is being watched, which is to say while this pane is showing it.
+  revealDiagnostics();
+  status(`${adopted.join("、")} の端末に繋ぎ直しました。再読み込みより前の出力は残っていません。`);
 }
 
 /** The name this screen posts under, and is listed in the roster under. */
@@ -1448,8 +1535,13 @@ async function endSession(view: SessionView): Promise<void> {
  *
  * Made before the launch, because the CLI's first paint is laid out for the
  * size this pane reports and there is nothing else to measure.
+ *
+ * `running` is passed when the session is already up and this terminal is
+ * being made for it rather than ahead of it — a session picked up again after
+ * this screen was reloaded (#84). Its facts then come from the app's record of
+ * the launch instead of from the account, which may have been edited since.
  */
-function openView(account: Account): SessionView {
+function openView(account: Account, running?: RunningSession): SessionView {
   // A relaunch replaces the previous run's pane. Two panes for one account
   // would be two rows under one name, and the row is what the operations hang
   // on; the scrollback that goes with it is the one the person just decided to
@@ -1471,11 +1563,11 @@ function openView(account: Account): SessionView {
 
   const view: SessionView = {
     accountId: account.id,
-    ptyId: "",
+    ptyId: running?.pty_id ?? "",
     name: account.name,
-    command: account.command,
-    cwd: account.cwd,
-    startedAt: "",
+    command: running?.command ?? account.command,
+    cwd: running?.cwd ?? account.cwd,
+    startedAt: running?.started_at ?? "",
     term,
     fit,
     host,
@@ -1562,26 +1654,24 @@ function showView(accountId: string | null): void {
 }
 
 /**
- * Follow a launched session until it dies.
+ * Subscribe one view to its session: everything it prints, and its exit.
  *
- * A session that exits on startup is the failure mode with no other witness:
- * the room simply stays empty. Without this the screen is identical whether
- * the CLI is running or was never there.
+ * Both listeners are this view's, and are dropped with it. The shared terminal
+ * subscribed once per launch and unsubscribed never, which is how every running
+ * session ended up writing into one pane (#57).
+ *
+ * Reached from two directions: a launch this screen just made, and a session it
+ * is picking up again after having been reloaded out from under it (#84). The
+ * pty id is the whole of what either one needs — nothing else about a session
+ * is remembered on this side, which is why one can be followed again from the
+ * id alone, and why losing the id is what made a running session unreachable.
  */
-async function followSession(view: SessionView, started: StartedSession): Promise<void> {
-  view.ptyId = started.pty_id;
-  view.startedAt = started.started_at;
-  renderPanel();
-  renderSessionFacts();
-
-  // Both listeners are this view's, and are dropped with it. The shared
-  // terminal subscribed once per launch and unsubscribed never, which is how
-  // every running session ended up writing into one pane (#57).
+async function attachSession(view: SessionView, ptyId: string): Promise<void> {
   view.unlisten.push(
-    await listen<string>(`pty-data-${started.pty_id}`, (event) => view.term.write(event.payload)),
+    await listen<string>(`pty-data-${ptyId}`, (event) => view.term.write(event.payload)),
   );
   view.unlisten.push(
-    await listen<number | null>(`pty-exit-${started.pty_id}`, (event) => {
+    await listen<number | null>(`pty-exit-${ptyId}`, (event) => {
       const code = event.payload;
       const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
       view.ended = detail;
@@ -1601,6 +1691,22 @@ async function followSession(view: SessionView, started: StartedSession): Promis
       }
     }),
   );
+}
+
+/**
+ * Follow a launched session until it dies.
+ *
+ * A session that exits on startup is the failure mode with no other witness:
+ * the room simply stays empty. Without this the screen is identical whether
+ * the CLI is running or was never there.
+ */
+async function followSession(view: SessionView, started: StartedSession): Promise<void> {
+  view.ptyId = started.pty_id;
+  view.startedAt = started.started_at;
+  renderPanel();
+  renderSessionFacts();
+
+  await attachSession(view, started.pty_id);
 
   // The first thing a session shows is a question, so the pane that carries
   // the answer opens with it rather than waiting for a failure.
@@ -1628,6 +1734,14 @@ async function startSession(account: Account): Promise<void> {
   // One account, one seat per room. Said here so the reason is on screen in the
   // language it is read in; the app refuses it as well, and that refusal is the
   // authority — this check only gets there first (#53).
+  //
+  // Re-read before refusing, never after. The copy this screen holds is only as
+  // new as the last thing that moved, and a launch that was in flight when the
+  // screen reloaded is a seat with no session under it yet — a row that draws
+  // 開始 with nothing to end beside it. Asking again resolves that seat, and
+  // resolving it is what puts 終了 on the row (`adoptSeats`), so the refusal
+  // below now names something the person can act on (#84).
+  if (seated.has(account.id)) await refreshSeats();
   if (seated.has(account.id)) {
     status(
       `「${name}」は既にこの部屋に居ます。一つのアカウントが持てる席は一つの部屋につき一つです。起動中のセッションを終了してから、もう一度起動してください。`,
@@ -2099,12 +2213,19 @@ async function main(): Promise<void> {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
 
+  // Before the room, and outside its try. A session running under a seat this
+  // screen has forgotten is reachable again from the seats alone (`adoptSeats`),
+  // and a room that fails to answer is no reason to leave it unreachable — the
+  // failure this is here for is the screen having been reloaded, which the room
+  // knows nothing about (#84). It swallows its own errors, so it needs none.
+  await refreshSeats();
+
   try {
     await join();
     participants = await invoke<Participant[]>("room_participants");
-    await refreshSeats();
     const port = await invoke<number | null>("room_port");
     if (port !== null) renderSocket(port);
+    renderPanel();
   } catch (err) {
     renderPanel();
     renderSocket(null, `取得できませんでした: ${err}`);
