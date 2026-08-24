@@ -204,16 +204,43 @@
           <p id="dialog-error" class="error" role="alert"></p>
 
           <menu class="actions">
-            <!-- Two clicks, like 終了 in the list and for the same reason: this
-                 one cannot be taken back and it sits beside two that can. Not
-                 `window.confirm`, whose two failure directions are both wrong
-                 here (#57). -->
+            <!-- Two clicks: this one cannot be taken back and it sits beside
+                 two that can. Not `window.confirm`, whose two failure
+                 directions are both wrong here (#57). 終了 in the list asked
+                 the same question in this same shape until #71 moved it into a
+                 dialog of its own; whether this one follows is #72. -->
             <button id="dialog-delete" type="button" class="delete">削除</button>
             <span class="spacer"></span>
             <button id="dialog-cancel" type="button">取消</button>
             <button id="dialog-commit" type="submit" value="commit">決定</button>
           </menu>
         </form>
+      </dialog>
+
+      <!-- The 終了 confirmation. One click on the row opens this, and the
+           question is answered here rather than on the button itself (#71).
+
+           Its own `<dialog>`, not the account form above. That one is a form
+           for editing an account; a single element holding both would have to
+           decide which of its two faces to open in every time it opens.
+
+           In the webview, and not `window.confirm`: a host that answers
+           nothing fails in one of two directions and both are wrong here — the
+           button goes silently dead, or a default-yes ends the session on one
+           click (#57). A `<dialog>` on this side has neither failure.
+
+           取消 holds the focus, so a stray Enter or Space on an opened dialog
+           answers the safe way. Escape closes it, which is the same answer. -->
+      <dialog id="end-dialog" aria-labelledby="end-dialog-title">
+        <div class="confirm">
+          <h2 id="end-dialog-title">セッションの終了</h2>
+          <p id="end-dialog-message"></p>
+          <menu class="actions">
+            <span class="spacer"></span>
+            <button id="end-cancel" type="button" autofocus>取消</button>
+            <button id="end-commit" type="button" class="danger">終了</button>
+          </menu>
+        </div>
       </dialog>
     </div>
   </body>

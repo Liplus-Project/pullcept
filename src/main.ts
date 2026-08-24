@@ -267,6 +267,10 @@ const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
 const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
 const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
+const endDialogEl = document.getElementById("end-dialog") as HTMLDialogElement;
+const endMessageEl = document.getElementById("end-dialog-message") as HTMLElement;
+const endCancelEl = document.getElementById("end-cancel") as HTMLButtonElement;
+const endCommitEl = document.getElementById("end-commit") as HTMLButtonElement;
 
 let accounts: Account[] = [];
 /**
@@ -323,18 +327,6 @@ const TERMINAL_OPTIONS = {
   scrollback: 5000,
 };
 
-/** How long a 終了 stays armed before it falls back to its resting state. */
-const END_ARM_MS = 4000;
-/**
- * How long an armed 終了 refuses to act.
- *
- * The armed button is wider than the resting one and grows under the pointer,
- * so a double-click lands both clicks on it: without this, one slip of the
- * finger arms and ends in a single gesture, which is the shape the two clicks
- * exist to rule out. Short enough that a deliberate second click never waits.
- */
-const END_SETTLE_MS = 400;
-
 /**
  * One account's terminal: the session's output, its scrollback, and the way in.
  *
@@ -377,10 +369,15 @@ let shownAccount: string | null = null;
  * goes back to reading 未起動, as though it never had been.
  */
 const launchFailures = new Map<string, string>();
-/** The account whose 終了 is armed. Its next click is the one that ends it. */
-let armedEnd: string | null = null;
-let armedTimer = 0;
-let armedAt = 0;
+/**
+ * The account the open 終了 dialog is asking about, or null while it is closed.
+ *
+ * The id rather than the view: the dialog stays open across whatever else the
+ * screen does, and a view can be discarded while it is (`showView`). Resolving
+ * the id when the answer comes back finds a session that is still there, or
+ * finds nothing and ends nothing.
+ */
+let endingAccount: string | null = null;
 
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
@@ -848,37 +845,45 @@ function memberRow(row: Member): HTMLLIElement {
 /**
  * The control that starts one account's session.
  *
- * One click, where 終了 beside it takes two. The asymmetry is the difference
- * between the two acts: ending a session cannot be taken back, and starting one
- * is undone by the button that replaces this one. An arm here would charge
- * every deliberate start a second click to guard a mistake that undoes itself.
+ * It acts on the click, where 終了 beside it asks first. The asymmetry is the
+ * difference between the two acts: ending a session cannot be taken back, and
+ * starting one is undone by the button that replaces this one. A question here
+ * would charge every deliberate start an answer, to guard a mistake that undoes
+ * itself.
  *
  * It carries its own launch. Pressed, it goes dead until the launch comes back,
  * on the row that was pressed — the launcher's button held that state for
  * whichever account its picker was on, and could not say which one (#62). What
  * the state *is* stays in the note beside the name, where 未起動 and 終了 and
  * 起動失敗 are: the button says what can be done, the note says what is so.
+ *
+ * A mark rather than a word (#71). The word it was is on `aria-label` and on
+ * `title`, because a mark is not a name: the label is what a screen reader
+ * says and what the pointer resting here reads.
  */
 function startButton(account: Account, launching: boolean): HTMLButtonElement {
   const start = document.createElement("button");
   start.type = "button";
   start.className = "start";
-  start.textContent = "開始";
+  start.textContent = "▶️";
   start.disabled = launching;
-  start.title = launching
+  const label = launching
     ? `${account.name} を起動しています`
     : `${account.name} のセッションを開始する`;
+  start.title = label;
+  start.setAttribute("aria-label", label);
   start.addEventListener("click", () => void startSession(account));
   return start;
 }
 
-/** The control that opens one account's form. */
+/** The control that opens one account's form. A mark, named by its label. */
 function editButton(account: Account): HTMLButtonElement {
   const edit = document.createElement("button");
   edit.type = "button";
   edit.className = "edit";
-  edit.textContent = "編集";
+  edit.textContent = "⚙️";
   edit.title = `${account.name} の設定`;
+  edit.setAttribute("aria-label", `${account.name} の設定`);
   edit.addEventListener("click", () => openAccountDialog(account));
   return edit;
 }
@@ -1145,60 +1150,56 @@ function renderSessionFacts(): void {
 }
 
 /**
- * The 終了 control, which takes two clicks.
+ * The 終了 control, which asks before it acts.
  *
  * Ending a session cannot be undone, and this control sits in a list whose
  * other click merely changes which pane is showing. One plain click away from a
  * harmless neighbour is how a slip ends a session that was mid-answer, so the
- * first click only arms: the button changes what it says and how it looks, and
- * the second click within a few seconds is the one that acts.
+ * click opens the question and the dialog is where it is answered (#71).
  *
- * Two clicks rather than `window.confirm`, which the account delete beside this
- * uses. That dialog answers on the host's terms, and the two ways it can fail
- * here are both wrong: a host that answers nothing either makes the button
- * silently dead or — the bias the delete chose — makes a single click destroy.
- * An arm state held on this side has neither failure, and the button says which
- * state it is in rather than a modal saying it elsewhere.
+ * A dialog of this app's own, never `window.confirm`. That one answers on the
+ * host's terms and the two ways it can fail here are both wrong: a host that
+ * answers nothing either makes the button silently dead or — reading its own
+ * default as yes — ends the session on the single click. `#end-dialog` is in
+ * the webview and has neither failure (#57).
+ *
+ * The mark is fixed, so the button no longer changes width under the pointer.
+ * That is what the two-click form had to hold a settle window for, and what
+ * made the lifecycle column's width a thing the whole list paid for.
  */
 function endButton(view: SessionView, name: string): HTMLButtonElement {
-  const armed = armedEnd === view.accountId;
   const end = document.createElement("button");
   end.type = "button";
-  end.className = armed ? "end armed" : "end";
-  end.textContent = armed ? "本当に終了" : "終了";
-  end.title = armed
-    ? `もう一度押すと ${name} のセッションを終了します。`
-    : `${name} のセッションを終了する`;
-  end.addEventListener("click", () => {
-    if (!armed) {
-      armEnd(view.accountId);
-      return;
-    }
-    // A click that arrives inside the settle window is the tail of the gesture
-    // that armed it, not an answer to it. Ignored, arm left standing.
-    if (Date.now() - armedAt < END_SETTLE_MS) return;
-    void endSession(view);
-  });
+  end.className = "end";
+  end.textContent = "❌";
+  end.title = `${name} のセッションを終了する`;
+  end.setAttribute("aria-label", `${name} のセッションを終了する`);
+  end.addEventListener("click", () => openEndDialog(view.accountId, name));
   return end;
 }
 
-/** Put one account's 終了 into its armed state, and let the arm lapse. */
-function armEnd(accountId: string): void {
-  window.clearTimeout(armedTimer);
-  armedEnd = accountId;
-  armedAt = Date.now();
-  // The arm expires on its own. A button left saying 「本当に終了」 for the rest
-  // of a session is one that an unrelated click, minutes later, fires.
-  armedTimer = window.setTimeout(() => {
-    armedEnd = null;
-    renderPanel();
-  }, END_ARM_MS);
-  renderPanel();
+/** Ask whether one account's session is to end. Nothing ends until answered. */
+function openEndDialog(accountId: string, name: string): void {
+  endingAccount = accountId;
+  endMessageEl.textContent = `${name} のセッションを終了します。よろしいですか？`;
+  endDialogEl.showModal();
 }
 
-function disarmEnd(): void {
-  window.clearTimeout(armedTimer);
-  armedEnd = null;
+/** Leave the question unanswered. Escape lands here too, by the close handler. */
+function closeEndDialog(): void {
+  endingAccount = null;
+  if (endDialogEl.open) endDialogEl.close();
+}
+
+/** The answer that acts. */
+function confirmEndDialog(): void {
+  const accountId = endingAccount;
+  closeEndDialog();
+  if (accountId === null) return;
+  // Resolved now, not when the dialog opened: the session may have ended on its
+  // own while the question stood, and there is then nothing left to end.
+  const view = views.get(accountId);
+  if (view) void endSession(view);
 }
 
 /**
@@ -1210,7 +1211,6 @@ function disarmEnd(): void {
  * chosen, because what it last printed is the only account of how it ended.
  */
 async function endSession(view: SessionView): Promise<void> {
-  disarmEnd();
   const name = viewName(view);
   try {
     await invoke("kill_pty", { id: view.ptyId });
@@ -1323,7 +1323,6 @@ function discardView(view: SessionView | undefined): void {
  * they have read it (#57).
  */
 function showView(accountId: string | null): void {
-  disarmEnd();
   for (const view of [...views.values()]) {
     if (view.ended !== null && view.accountId !== accountId) discardView(view);
   }
@@ -1507,7 +1506,7 @@ function unusedAccountName(): string {
 let editing: Account | null = null;
 /** The draft the form is filling in. Never the account itself. */
 let draft: Account | null = null;
-/** True once 削除 has been armed, in the same shape 終了 uses. */
+/** True once 削除 has been armed. The shape 終了 held until #71; see #72. */
 let deleteArmed = false;
 
 /** Say why the form cannot be decided yet, or clear that. */
@@ -1681,7 +1680,8 @@ async function commitAccountDialog(): Promise<boolean> {
  *
  * Two clicks rather than `window.confirm`, for the reason 終了 does not use one
  * either: a host that answers nothing makes the button either silently dead or
- * — the bias `confirm` defaults to — destructive on one click (#57).
+ * — the bias `confirm` defaults to — destructive on one click (#57). 終了 asks
+ * in a `<dialog>` of the app's own since #71; whether this follows is #72.
  *
  * Refused while it is running: the session in the room belongs to this account,
  * and deleting the account under it would leave a participant on the roster
@@ -1845,6 +1845,15 @@ async function main(): Promise<void> {
     void commitAccountDialog().then((done) => {
       if (done) closeAccountDialog();
     });
+  });
+
+  endCancelEl.addEventListener("click", () => closeEndDialog());
+  endCommitEl.addEventListener("click", () => confirmEndDialog());
+  // Escape closes the dialog itself, and it means 取消. Clearing the account
+  // here as well is what makes that true on every path out: a dialog closed by
+  // anything but 終了 leaves nothing standing that a later click could fire.
+  endDialogEl.addEventListener("close", () => {
+    endingAccount = null;
   });
 
   try {
