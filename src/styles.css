@@ -636,6 +636,18 @@ body {
   color: var(--danger);
 }
 
+/* 考え中… and 出力中. The one note that is true only while it is on screen: the
+   others describe a state that holds until something happens, and this one is
+   gone within a second of the terminal falling quiet (#82). Lifted out of
+   `--muted` because a word that comes and goes has to be read in the moment it
+   is there, and left at the body colour rather than taken to the accent —
+   the accent is what says "oneself" on this surface, and it would be the one
+   colour on this row that already means something else. The name keeps the
+   participant's own colour beside it either way. */
+#participants .note[data-kind="active"] {
+  color: var(--fg);
+}
+
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
    is still someone, and this list is where the person reads who they have
    (#53). Dimmed rather than greyed — the colour carries the account's identity,
