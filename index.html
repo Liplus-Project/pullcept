@@ -61,9 +61,13 @@
                rounding is on this element rather than on the terminal inside
                it, so the frame that is folded and unfolded is one shape. -->
           <aside id="diagnostics" hidden>
-            <!-- The window's header. Three things, in the order they are
-                 reached for: which terminal is on the glass, how large it is
-                 drawn, and folding the whole pane away.
+            <!-- The window's header. Its name, then three things in the order
+                 they are reached for: which terminal is on the glass, how large
+                 it is drawn, and folding the whole pane away.
+
+                 No fill of its own. It is the same ground as the rest of the
+                 window, and what says it is a header is where it sits and what
+                 is in it (Master, 実機, 2026-08-24).
 
                  The tabs and the participant rows are two renderings of one
                  selection, and they move together — either one puts the same
@@ -78,6 +82,12 @@
                  one click from a control that merely changes what is showing is
                  how a slip ends a session mid-answer (#57 / #71). -->
             <div id="terminal-head">
+              <!-- The window's name, at the left where a window's name goes. The
+                   tabs follow it, so the strip reads as this window's tabs; it
+                   is also what the header says about itself when nothing is
+                   running and there are no tabs to show. Same word as the title
+                   bar's button, which is the control that opens this. -->
+              <span class="pane-title">端末</span>
               <!-- `group`, not `tablist`. A tab strip that carries a close
                    control on some of its tabs is two controls per tab, and the
                    tablist pattern has one; the rows in the panel already mark
