@@ -106,7 +106,47 @@ enum Seat {
     Starting,
     /// A session is running. The PTY id is what says so, and asking the PTY is
     /// the only liveness question anyone asks here.
-    Running(String),
+    Running(RunningSession),
+}
+
+/// What is running under a held seat.
+///
+/// The screen holds these same facts while it is up, in the terminal it opened
+/// for the session, and loses every one of them when the webview reloads. This
+/// does not: it lives in the app, which a reload does not touch.
+///
+/// The pty id is the load-bearing one. It is made at spawn and handed out once,
+/// so a screen that has forgotten it has no way back to the session at all —
+/// the account cannot be started (this seat refuses it) and cannot be ended
+/// (there is no id to kill). Keeping it here is what lets the screen ask (#84).
+///
+/// The other three are what the session panel says about a session. They are
+/// kept beside the id rather than read off the account, because the account is
+/// editable while its session runs: its command and directory are what a launch
+/// would use now, not what this one used.
+#[derive(Clone, serde::Serialize)]
+pub struct RunningSession {
+    pub pty_id: String,
+    /// When the PTY was spawned, RFC 3339. The stamp `StartedSession` carries.
+    pub started_at: String,
+    /// The command this session was launched from.
+    pub command: String,
+    /// The working directory it was launched in.
+    pub cwd: String,
+}
+
+/// One account's seat, as the screen reads it.
+#[derive(Clone, serde::Serialize)]
+pub struct SeatedAccount {
+    pub account_id: String,
+    /// What is running under the seat, or `null` while a launch is in flight.
+    ///
+    /// Null is a state, not a missing value: the seat is claimed before
+    /// anything is spawned (`Seat::Starting`), so there is a window in which an
+    /// account holds a seat and no session exists to reach. In that window the
+    /// screen may neither start the account nor end it, and it can only say so
+    /// if the case is distinguishable from a running one.
+    pub session: Option<RunningSession>,
 }
 
 impl RoomSeats {
@@ -116,19 +156,28 @@ impl RoomSeats {
         }
     }
 
-    /// The accounts holding a seat right now.
+    /// The accounts holding a seat right now, with what runs under each.
     ///
     /// Liveness is read off the PTY rather than from a release call anyone has
     /// to remember to make. A seat whose session has exited is a free seat, and
     /// a release that never arrived would otherwise lock an account out of the
     /// room for the rest of the run with no way back short of restarting.
-    pub fn seated(&self, ptys: &PtyState) -> Vec<String> {
+    pub fn seated(&self, ptys: &PtyState) -> Vec<SeatedAccount> {
         let mut seats = self.seats.lock();
         seats.retain(|_, seat| match seat {
             Seat::Starting => true,
-            Seat::Running(pty_id) => ptys.is_running(pty_id),
+            Seat::Running(session) => ptys.is_running(&session.pty_id),
         });
-        seats.keys().cloned().collect()
+        seats
+            .iter()
+            .map(|(account_id, seat)| SeatedAccount {
+                account_id: account_id.clone(),
+                session: match seat {
+                    Seat::Starting => None,
+                    Seat::Running(session) => Some(session.clone()),
+                },
+            })
+            .collect()
     }
 
     /// Claim the seat for `account_id`, or fail because it is taken.
@@ -139,7 +188,7 @@ impl RoomSeats {
         let mut seats = self.seats.lock();
         let taken = match seats.get(account_id) {
             Some(Seat::Starting) => true,
-            Some(Seat::Running(pty_id)) => ptys.is_running(pty_id),
+            Some(Seat::Running(session)) => ptys.is_running(&session.pty_id),
             None => false,
         };
         if taken {
@@ -150,10 +199,10 @@ impl RoomSeats {
     }
 
     /// The launch got a session up; the seat is now held by that session.
-    fn hold(&self, account_id: &str, pty_id: &str) {
+    fn hold(&self, account_id: &str, session: RunningSession) {
         self.seats
             .lock()
-            .insert(account_id.to_string(), Seat::Running(pty_id.to_string()));
+            .insert(account_id.to_string(), Seat::Running(session));
     }
 
     /// The launch failed. Nothing is running, so nothing holds the seat.
@@ -168,8 +217,17 @@ impl RoomSeats {
 /// Account ids, never names. The screen matches these against its accounts by
 /// id, so an account renamed while its session runs is still the same account
 /// on both sides, and two accounts sharing a name are still two.
+///
+/// What each one is running rides along (`RunningSession`), because the screen
+/// cannot reconstruct it. This map from account to PTY was here from the start
+/// and only the keys were ever handed over; a screen that lost its own copy of
+/// a pty id was then told an account holds a seat and given no way to reach the
+/// session holding it (#84).
 #[tauri::command]
-pub fn seated_accounts(pty_state: tauri::State<PtyState>, seats: tauri::State<RoomSeats>) -> Vec<String> {
+pub fn seated_accounts(
+    pty_state: tauri::State<PtyState>,
+    seats: tauri::State<RoomSeats>,
+) -> Vec<SeatedAccount> {
     seats.seated(&pty_state)
 }
 
@@ -294,7 +352,18 @@ pub fn start_session(
 
     match launch(app, &room, pty_state, &account, &name, &room_url, &cwd, cols, rows) {
         Ok(started) => {
-            seats.hold(&account.id, &started.pty_id);
+            // The launch's own values, not the account's. The account may be
+            // edited while this runs, and what is running would then be
+            // reported as whatever was typed into the form afterwards.
+            seats.hold(
+                &account.id,
+                RunningSession {
+                    pty_id: started.pty_id.clone(),
+                    started_at: started.started_at.clone(),
+                    command: account.command.clone(),
+                    cwd: cwd.to_string_lossy().to_string(),
+                },
+            );
             Ok(started)
         }
         Err(err) => {
