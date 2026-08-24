@@ -373,16 +373,15 @@ body {
    who is not launched — from closing the column and sliding its 編集 left of
    everyone else's.
 
-   The lifecycle track has a floor rather than a fixed width: 本当に終了 is wider
-   than the 終了 it replaces, and it is meant to be. It grows leftward into the
-   name, because its own track's right edge is where 編集 begins and that does
-   not move. Fixing the track to the armed width instead would spend that width
-   on every row of the list to hold four seconds of one of them, and the panel
-   is 16.5rem wide — measured, it leaves 「マスター（あなた）」 with no room for
-   the name. */
+   Both tracks are fixed, because both hold a mark and a mark is one width
+   (#71). The lifecycle track had a floor instead while 終了 answered its own
+   question on itself and grew to say so; the question is a dialog now, so
+   nothing here changes width and the name keeps everything the two tracks do
+   not take. That matters at this size: the panel is 16.5rem, and it was a
+   measured 「マスター（あなた）」 that ruled out widening these tracks before. */
 #participants .member {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(3.2rem, auto) 3rem;
+  grid-template-columns: minmax(0, 1fr) 2rem 2rem;
   align-items: center;
   gap: 0.3rem;
 }
@@ -478,18 +477,28 @@ body {
 
    Each fills its track, so the button is the column: 開始 and 終了 are one width
    in one place, and which of them a row has is read off the button rather than
-   off where the row's controls have slid to (#62). */
+   off where the row's controls have slid to (#62).
+
+   Sized rather than fitted, because what is in them is a mark (#71). An emoji's
+   advance width is the font's, and the font is whichever one the host resolves
+   the mark in; a box that took its width from the glyph would be a different
+   box on a different machine. The box is fixed and the mark is centred in it,
+   so the three read as one column of the same three shapes anywhere. */
 #participants .member .edit,
 #participants .member .start,
 #participants .member .end {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
+  height: 1.6rem;
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
+  line-height: 1;
   background: none;
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 0.2rem 0.4rem;
-  white-space: nowrap;
+  padding: 0;
   cursor: pointer;
 }
 
@@ -502,35 +511,37 @@ body {
   display: flex;
 }
 
+/* Colour on these reaches the outline and the mark's own text fallback, not the
+   mark as the host normally paints it: an emoji is drawn by a colour font,
+   which answers to no `color`. It is kept because the fallback is the case that
+   needs it — a host resolving ▶ or ❌ as plain text has only this to say which
+   of the three it is. */
 #participants .member .edit {
   color: var(--muted);
 }
 
-/* One click, unlike the 終了 that replaces it: a session started by mistake is
-   ended by that button, and an arm here would charge every deliberate start a
-   second click. Dead while the launch is out; what the row is doing meanwhile
-   is the 起動中 beside the name (src/main.ts). */
+/* It acts on the click, unlike the 終了 that replaces it: a session started by
+   mistake is ended by that button, and a question here would charge every
+   deliberate start an answer. Dead while the launch is out; what the row is
+   doing meanwhile is the 起動中 beside the name (src/main.ts). */
 #participants .member .start {
   color: var(--fg);
 }
 
+/* Dimmed as a whole, because the mark is not dimmed by `color`. Being unable to
+   press it is the state, and the state has to be visible on the button that is
+   in it. */
 #participants .member .start:disabled {
   color: var(--muted);
+  opacity: 0.45;
   cursor: default;
 }
 
-/* Its resting state is a quiet outline in the danger colour: this is the one
-   control here that cannot be taken back, and it sits next to two that can.
-   Armed, it fills — the button says which of its two states it is in, and the
-   second click is the one that acts (src/main.ts). */
+/* A quiet outline in the danger colour: this is the one control here that
+   cannot be taken back, and it sits next to two that can. It has one state now
+   — the question it asks is asked in `#end-dialog`, not on the button (#71). */
 #participants .member .end {
   color: var(--danger);
-}
-
-#participants .member .end.armed {
-  color: var(--bg);
-  background: var(--danger);
-  border-color: var(--danger);
 }
 
 #participants .facts {
@@ -726,14 +737,85 @@ body {
   border-color: var(--accent);
 }
 
-/* Two clicks, in the same shape 終了 uses in the list: a quiet outline at rest,
-   filled once armed. Selected through `.actions` so it outranks the colour that
-   rule sets on every button in the row. */
+/* Two clicks: a quiet outline at rest, filled once armed. Selected through
+   `.actions` so it outranks the colour that rule sets on every button in the
+   row. 終了 in the list held this same shape until #71; whether this one
+   follows it into a dialog is #72. */
 #account-dialog .actions .delete {
   color: var(--danger);
 }
 
 #account-dialog .actions .delete.armed {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ── the 終了 confirmation ───────────────────────────────────────────────── */
+
+/* Its own dialog, holding a question and two answers. It borrows the account
+   dialog's frame because the two are the same kind of surface, and shares none
+   of its body: that one is a form, this one is a sentence (#71). */
+#end-dialog {
+  width: min(22rem, calc(100vw - 3rem));
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+#end-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+#end-dialog .confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem 1.1rem 0.9rem;
+}
+
+#end-dialog h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+/* Which session, by name. The name is the whole content of the question — the
+   row that was clicked is no longer under the pointer once this is open. */
+#end-dialog p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+#end-dialog .actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+}
+
+#end-dialog .actions .spacer {
+  flex: 1;
+}
+
+#end-dialog .actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+/* The answer that acts, filled in the danger colour. 取消 stays a plain button
+   and holds the focus, so the two are told apart by more than their position
+   and the easy answer is the one that changes nothing. */
+#end-dialog .actions .danger {
   color: var(--bg);
   background: var(--danger);
   border-color: var(--danger);
