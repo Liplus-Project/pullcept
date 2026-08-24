@@ -55,8 +55,61 @@
           <!-- One frame, holding a terminal per running account. All but the
                selected one are hidden rather than closed, so a session keeps
                running and keeps filling its own scrollback while another is
-               being watched (#57). -->
+               being watched (#57).
+
+               A window, since #68: it carries a header of its own and the
+               rounding is on this element rather than on the terminal inside
+               it, so the frame that is folded and unfolded is one shape. -->
           <aside id="diagnostics" hidden>
+            <!-- The window's header. Its name, then three things in the order
+                 they are reached for: which terminal is on the glass, how large
+                 it is drawn, and folding the whole pane away.
+
+                 No fill of its own. It is the same ground as the rest of the
+                 window, and what says it is a header is where it sits and what
+                 is in it (Master, 実機, 2026-08-24).
+
+                 The tabs and the participant rows are two renderings of one
+                 selection, and they move together — either one puts the same
+                 terminal on the glass. That is the duplication #59 removed from
+                 the roster, chosen deliberately here (#68): a tab strip answers
+                 "which terminals are open" at the pane being looked at, which
+                 the rows answer only by being read alongside it.
+
+                 ✕ folds the pane; it does not end anything. The session under
+                 the terminal keeps running and its tab comes back with the
+                 pane. Ending a session is 終了 on the row, and it stays there —
+                 one click from a control that merely changes what is showing is
+                 how a slip ends a session mid-answer (#57 / #71). -->
+            <div id="terminal-head">
+              <!-- The window's name, at the left where a window's name goes. The
+                   tabs follow it, so the strip reads as this window's tabs; it
+                   is also what the header says about itself when nothing is
+                   running and there are no tabs to show. Same word as the title
+                   bar's button, which is the control that opens this. -->
+              <span class="pane-title">端末</span>
+              <!-- `group`, not `tablist`. A tab strip that carries a close
+                   control on some of its tabs is two controls per tab, and the
+                   tablist pattern has one; the rows in the panel already mark
+                   the same selection with `aria-pressed`, and matching them is
+                   worth more than a role whose keyboard contract this does not
+                   implement. -->
+              <div id="terminal-tabs" role="group" aria-label="端末のタブ"></div>
+              <!-- The terminal's own size, and only the terminal's. It is one of
+                   three independent size axes — the conversation (#60), this,
+                   and the whole UI (#66) — and none of the three is expressed
+                   relative to another. This one moves xterm's `fontSize`, which
+                   is what the CLI's columns and rows are computed from, so a
+                   change here re-fits the pane and tells the session. -->
+              <select
+                id="terminal-font-size"
+                aria-label="端末の文字サイズ"
+                title="端末の文字サイズ"
+              ></select>
+              <button id="diagnostics-close" type="button" aria-label="端末を閉じる" title="端末を閉じる">
+                ✕
+              </button>
+            </div>
             <div id="terminal" aria-label="セッションの端末"></div>
           </aside>
 

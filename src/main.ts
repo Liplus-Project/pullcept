@@ -254,6 +254,9 @@ const dirEl = document.getElementById("session-dir") as HTMLElement;
 const startedEl = document.getElementById("session-started") as HTMLElement;
 const windowEl = document.getElementById("session-window") as HTMLElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
+const tabsEl = document.getElementById("terminal-tabs") as HTMLElement;
+const terminalFontSizeEl = document.getElementById("terminal-font-size") as HTMLSelectElement;
+const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
 const dialogEl = document.getElementById("account-dialog") as HTMLDialogElement;
 const dialogFormEl = document.getElementById("account-form") as HTMLFormElement;
 const dialogTitleEl = document.getElementById("account-dialog-title") as HTMLElement;
@@ -310,15 +313,60 @@ let lastSeenId: string | null = null;
 let roomFontSize = DEFAULT_ROOM_FONT_SIZE;
 
 /**
+ * How large a terminal is drawn, in `px`.
+ *
+ * The third size axis and an independent one: the conversation (#60), this, and
+ * the whole UI (#66) are three separate answers, and none of them is expressed
+ * relative to another. What makes this one different in kind from #60 is that it
+ * is not only a display size — xterm.js computes the session's columns and rows
+ * from it, so moving it changes the window the CLI is drawing for.
+ *
+ * `localStorage` and not the config, for #60's reason: it is a property of the
+ * screen being read from rather than of anybody in the room.
+ */
+const TERMINAL_FONT_SIZE_KEY = "pullcept.terminal-font-size";
+
+/**
+ * The sizes a terminal can be set to, in `px`.
+ *
+ * A ladder with its ends as the bounds, the shape #60 settled for the
+ * conversation: there is no size off the ladder to clamp, so nothing separate
+ * enforces the limits.
+ *
+ * In `px` and labelled in `px`, where #60 labels a proportion. The two are
+ * asked different questions. A conversation is read against nothing in
+ * particular, so "larger or smaller than what I have" is the whole of it; a
+ * terminal is read against the CLI's own layout, and the number that decides how
+ * many columns fit is this one. It is also the unit xterm takes.
+ *
+ * Spread evenly rather than dense at one end. #60's rungs lean downward because
+ * the observation behind it was that the room reads large; nothing says which
+ * direction this one gets used in, and inventing a lean would be answering a
+ * question nobody has asked yet.
+ */
+const TERMINAL_FONT_SIZES = [9, 10, 11, 12, 13, 14, 16, 18, 20, 24];
+
+/**
+ * Where a screen that has never chosen sits.
+ *
+ * `13px`, which is what every terminal has been opened at. Keeping it is the
+ * same completion condition #60 had: this adds the means to move, and moves
+ * nobody.
+ */
+const DEFAULT_TERMINAL_FONT_SIZE = 13;
+
+/**
  * The emulator options every session's terminal is opened with.
  *
  * One set for all of them, so that two sessions on this screen are two of the
  * same kind of thing and a difference between their panes says something about
- * the sessions rather than about the panes.
+ * the sessions rather than about the panes. The size is one of them: it is the
+ * screen's, not a session's, so opening a second terminal does not open it at
+ * some other size than the first (`openView` passes the current one).
  */
 const TERMINAL_OPTIONS = {
   cursorBlink: true,
-  fontSize: 13,
+  fontSize: DEFAULT_TERMINAL_FONT_SIZE,
   fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
   // The CLI is a full-screen TUI: it moves the cursor, clears regions and
   // repaints. Anything less than an emulator turns that into debris, which is
@@ -359,6 +407,8 @@ interface SessionView {
 const views = new Map<string, SessionView>();
 /** The account whose terminal is on the glass, or null when none is. */
 let shownAccount: string | null = null;
+/** The size every terminal on this screen is currently drawn at, in `px`. */
+let terminalFontSize = DEFAULT_TERMINAL_FONT_SIZE;
 /**
  * Why an account's last launch failed, by account id, until it is tried again.
  *
@@ -389,6 +439,20 @@ function revealDiagnostics(): void {
   toggleEl.setAttribute("aria-expanded", "true");
   // The container has no size while hidden, so the fit has to wait for layout.
   requestAnimationFrame(() => fitShown());
+}
+
+/**
+ * Fold the pane away. Nothing under it stops.
+ *
+ * Every terminal keeps its session, its listeners and its scrollback, so the
+ * pane comes back with the same tabs on it. The two ways in and out are the
+ * 端末 button in the title bar and ✕ in the pane's own header: one is reachable
+ * while the pane is folded and the other while it is open, which is why both
+ * exist for one act (#68).
+ */
+function hideDiagnostics(): void {
+  diagnosticsEl.hidden = true;
+  toggleEl.setAttribute("aria-expanded", "false");
 }
 
 /** The terminal currently on the glass, or null when none is. */
@@ -528,6 +592,52 @@ function stepRoomFontSize(step: number): void {
   const at = ROOM_FONT_SIZES.indexOf(roomFontSize);
   const next = Math.min(Math.max(at + step, 0), ROOM_FONT_SIZES.length - 1);
   applyRoomFontSize(ROOM_FONT_SIZES[next], true);
+}
+
+/** Fill the terminal's size picker. Labelled in `px`; see the ladder above. */
+function fillTerminalFontSizes(): void {
+  for (const size of TERMINAL_FONT_SIZES) {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = `${size}px`;
+    terminalFontSizeEl.appendChild(option);
+  }
+}
+
+/**
+ * The stored terminal size, or the default.
+ *
+ * Only a size on the ladder is honoured, for the reason `storedRoomFontSize`
+ * gives: a value off it cannot be stepped from, so the picker would stop working
+ * with nothing on screen saying why.
+ */
+function storedTerminalFontSize(): number {
+  const stored = Number(localStorage.getItem(TERMINAL_FONT_SIZE_KEY));
+  return TERMINAL_FONT_SIZES.includes(stored) ? stored : DEFAULT_TERMINAL_FONT_SIZE;
+}
+
+/**
+ * Draw every terminal at `size`, and remember it if it was chosen.
+ *
+ * Every one, not only the one on the glass. The size is the screen's, so a pane
+ * switched to later must not be the odd one out; and a terminal opened after
+ * this reads the same value (`openView`).
+ *
+ * The re-fit that follows only reaches the shown pane, which is the same limit
+ * `fitShown` has always had — a hidden container has no size to measure against.
+ * The others are laid out when they are next shown, because `showView` fits what
+ * it puts on the glass. Their sessions are told the new column count at that
+ * moment rather than this one.
+ *
+ * `save` is false for the restore at startup, so a screen that never chose is
+ * not given a stored size by being opened.
+ */
+function applyTerminalFontSize(size: number, save: boolean): void {
+  terminalFontSize = size;
+  for (const view of views.values()) view.term.options.fontSize = size;
+  terminalFontSizeEl.value = String(size);
+  if (save) localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(size));
+  fitShown();
 }
 
 /**
@@ -889,6 +999,102 @@ function editButton(account: Account): HTMLButtonElement {
 }
 
 /**
+ * One tab: an open terminal, named by the account it belongs to.
+ *
+ * The name rather than the command it was launched from. The command is on the
+ * row's `title` and in the account's own form, and a strip of `claude` repeated
+ * once per session tells two sessions apart by nothing at all.
+ *
+ * The colour is the account's, the same one its lines carry in the room and its
+ * dot carries in the panel — which is what lets a tab and a row be read as one
+ * participant rather than as two names that happen to match.
+ *
+ * ✕ appears on an ended tab and on no other. On a running one it would be read
+ * as "end this session", and ending a session is 終了 on the row, asked in a
+ * dialog and answered there (#57 / #71); a second, plainer way to do it beside a
+ * control that merely changes what is showing is the slip those two were built
+ * against (#68).
+ */
+function terminalTab(view: SessionView): HTMLElement {
+  const name = viewName(view);
+  const account = accounts.find((one) => one.id === view.accountId) ?? null;
+  const shown = view.accountId === shownAccount;
+
+  const tab = document.createElement("div");
+  tab.className = "tab";
+  // Never oneself: a terminal belongs to a session, and the person at this
+  // screen is not launched (`start_session` refuses a `user` account).
+  tab.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
+  if (shown) tab.classList.add("shown");
+  if (view.ended !== null) tab.classList.add("ended");
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "name";
+  pick.textContent = name;
+  pick.title = view.ended === null ? `${name} の端末` : `${name} の端末（${view.ended}）`;
+  pick.setAttribute("aria-pressed", String(shown));
+  pick.addEventListener("click", () => {
+    showView(view.accountId);
+    view.term.focus();
+  });
+  tab.appendChild(pick);
+
+  if (view.ended !== null) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "close";
+    close.textContent = "✕";
+    close.title = `${name} の端末を閉じる`;
+    close.setAttribute("aria-label", `${name} の端末を閉じる`);
+    close.addEventListener("click", () => closeView(view));
+    tab.appendChild(close);
+  }
+
+  return tab;
+}
+
+/**
+ * Draw the tab strip: every terminal this screen holds, in launch order.
+ *
+ * Drawn from `views`, which is the same source the rows read to decide whether
+ * they are a picker — so the tabs and the rows cannot disagree about what is
+ * open. That they are two renderings of one selection is the duplication #59
+ * removed from the roster and #68 chose here deliberately: the strip answers
+ * "which terminals are open" at the pane being looked at, and the rows answer it
+ * only by being read alongside it. Being drawn together is what keeps the
+ * accepted duplication from becoming a divergence.
+ */
+function renderTerminalTabs(): void {
+  tabsEl.replaceChildren();
+  for (const view of views.values()) tabsEl.appendChild(terminalTab(view));
+}
+
+/**
+ * Close one ended terminal for good, from its tab.
+ *
+ * This is where "the person has read it" is said now. It used to be said by
+ * choosing another account — `showView` discarded an ended terminal the moment
+ * one was — and a tab that stays put until it is closed makes that an explicit
+ * act instead of a side effect of looking elsewhere (#68). The signal is not
+ * lost; it moved.
+ *
+ * What is on the glass afterwards is the most recently opened of what is left,
+ * which is the nearest neighbour in launch order. Nothing left is an honest
+ * answer too, and `showView(null)` is it.
+ */
+function closeView(view: SessionView): void {
+  const wasShown = shownAccount === view.accountId;
+  discardView(view);
+  if (wasShown) {
+    showView([...views.keys()].pop() ?? null);
+    return;
+  }
+  renderPanel();
+  renderSessionFacts();
+}
+
+/**
  * Draw the participant list: everyone who is here, and everyone who exists.
  *
  * One list. It was two — a roster keyed on the connection and a terminal list
@@ -908,6 +1114,10 @@ function editButton(account: Account): HTMLButtonElement {
  * roster only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
+  // The tabs are redrawn here rather than on their own schedule. Both surfaces
+  // read `views` and both mark the same selection, so drawing them from one call
+  // is what makes "they move together" true by construction (#68).
+  renderTerminalTabs();
   rosterEl.replaceChildren();
   const rows = members();
 
@@ -1243,7 +1453,10 @@ function openView(account: Account): SessionView {
   host.className = "term";
   terminalEl.appendChild(host);
 
-  const term = new Terminal({ ...TERMINAL_OPTIONS });
+  // At the size this screen is set to, not at the default in the options: a
+  // terminal opened after the size was changed would otherwise be the one pane
+  // that is a different size from the rest.
+  const term = new Terminal({ ...TERMINAL_OPTIONS, fontSize: terminalFontSize });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
@@ -1317,15 +1530,15 @@ function discardView(view: SessionView | undefined): void {
  * watched, and its output keeps arriving into its own emulator, so switching
  * back finds the scrollback where it was left.
  *
- * A terminal whose session has ended is the exception, and it is discarded here
- * rather than at the moment it died — what a session printed on its way out is
- * the only account of why, and choosing another account is the person saying
- * they have read it (#57).
+ * A terminal whose session has ended is no longer the exception. It was
+ * discarded here, on the reasoning that choosing another account is the person
+ * saying they have read what it printed on its way out (#57). Its tab carries a
+ * ✕ now, so that saying is an act rather than a by-product of looking elsewhere,
+ * and `closeView` is where it lands (#68). The cost is that an ended terminal
+ * holds its scrollback until someone closes it — a tab left alone is memory held
+ * — and that is the accepted half of the trade.
  */
 function showView(accountId: string | null): void {
-  for (const view of [...views.values()]) {
-    if (view.ended !== null && view.accountId !== accountId) discardView(view);
-  }
   shownAccount = accountId;
   for (const view of views.values()) {
     view.host.hidden = view.accountId !== accountId;
@@ -1787,14 +2000,21 @@ async function main(): Promise<void> {
     stepRoomFontSize(step);
   });
 
-  toggleEl.addEventListener("click", () => {
-    if (diagnosticsEl.hidden) {
-      revealDiagnostics();
-    } else {
-      diagnosticsEl.hidden = true;
-      toggleEl.setAttribute("aria-expanded", "false");
-    }
+  // Restored before any terminal is opened, so the first session is laid out at
+  // the size this screen reads at rather than being re-fitted once it lands.
+  fillTerminalFontSizes();
+  applyTerminalFontSize(storedTerminalFontSize(), false);
+  terminalFontSizeEl.addEventListener("change", () => {
+    applyTerminalFontSize(Number(terminalFontSizeEl.value), true);
   });
+
+  // The two ends of one act. 端末 is reachable while the pane is folded and ✕
+  // while it is open, which is the whole of why both exist (#68).
+  toggleEl.addEventListener("click", () => {
+    if (diagnosticsEl.hidden) revealDiagnostics();
+    else hideDiagnostics();
+  });
+  diagnosticsCloseEl.addEventListener("click", () => hideDiagnostics());
 
   await listen<RoomMessage>("room-message", (event) => appendMessage(event.payload));
   await listen<Participant[]>("room-participants", (event) => renderRoster(event.payload));

@@ -281,11 +281,32 @@ body {
 
 /* Not the conversation surface. The room answers "what was said"; this answers
    "is anything under the room alive", which is the question a silent room
-   leaves unanswerable. */
+   leaves unanswerable.
+
+   A window rather than a strip since #68. The rounding is here, on the frame
+   that is actually folded and unfolded, and the header and the terminal are
+   clipped to it — the terminal had a 4px radius of its own and it drew a
+   rounded rectangle inside a square pane, which is a corner on nothing. The
+   margin is what makes the corners visible at all: an edge-to-edge pane has no
+   corner to round against the window.
+
+   `overflow: hidden` is load-bearing, not tidiness. It is what puts the header's
+   top corners and the terminal's bottom corners on the radius declared here,
+   so one value holds both ends of the frame.
+
+   One ground across the whole window, and it is the page's rather than the
+   panel's tint. The pane was `--surface` while it was a strip, which left the
+   header a band of one colour above a terminal of another — a header does not
+   need a fill to say it is one, its position and its contents say that
+   (Master, 実機, 2026-08-24). What tells the window from the room above it is
+   the border and the rounding, which is what a frame is for. */
 #diagnostics {
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-  padding: 0.6rem 0.9rem;
+  --pane-radius: 8px;
+  margin: 0 0.9rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+  background: var(--bg);
   font-size: 0.78rem;
   /* The CLI is a full-screen TUI; a strip too short to hold its frame is not
      worth opening. This is also why the terminal stayed in this column instead
@@ -294,7 +315,6 @@ body {
   height: 50vh;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
 }
 
 /* The `display` above outranks the user agent's rule for the attribute, so
@@ -302,6 +322,134 @@ body {
    the room from the first frame. */
 #diagnostics[hidden] {
   display: none;
+}
+
+/* ── the terminal window's header ────────────────────────────────────────── */
+
+/* The window's name, then the tabs, then the size picker and ✕ pinned to the
+   right, so the last two are in one place whatever is open. `flex: none` is what
+   keeps the header its own height while the terminal below takes the rest of the
+   pane.
+
+   A rule under it and no fill behind it. The line says where the header ends;
+   the colour it used to say that with is gone (see the pane above). */
+#terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0.45rem;
+}
+
+/* What this window is, at the left where a window's name goes. The tabs follow
+   it, so the strip reads as this pane's tabs rather than as a row of names
+   floating on the frame (Master, 実機, 2026-08-24). It is also the only thing
+   in the header when nothing is running, which is the state where a pane with
+   an empty strip would say nothing about itself at all. */
+#terminal-head .pane-title {
+  flex: none;
+  color: var(--muted);
+  font-weight: 600;
+  padding-left: 0.2rem;
+}
+
+/* Scrolls sideways rather than wrapping. A second row of tabs would change the
+   pane's header height, and the terminal under it computes its rows from
+   whatever is left — opening one more session would resize every session's
+   window. */
+#terminal-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* A tab is the account's name, in that account's colour: the same colour its
+   lines carry in the room and its dot carries in the panel, so a tab and a row
+   are read as one participant without matching the names letter by letter. */
+#terminal-tabs .tab {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  max-width: 12rem;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+}
+
+#terminal-tabs .tab .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Lifted off the window's ground, the way the selected row in the panel is
+   lifted off the panel's (`#participants .member.shown .pick`). The two
+   selections are one selection, so they are marked the same way; the grounds are
+   the other way round here, so the tint that lifts is the other one. */
+#terminal-tabs .tab.shown {
+  color: var(--speaker, var(--fg));
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+/* A session that has ended. Dimmed rather than dropped: what it printed on its
+   way out is the only account of why it went, and it stays readable until the
+   tab is closed (#68). */
+#terminal-tabs .tab.ended .name {
+  opacity: 0.7;
+}
+
+/* Only on an ended tab. On a running one it would be read as "end this
+   session", which is 終了 on the row and stays there (#68). */
+#terminal-tabs .tab .close {
+  flex: none;
+  font: inherit;
+  font-size: 0.9em;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  padding: 0 0.15rem;
+  cursor: pointer;
+}
+
+#terminal-tabs .tab .close:hover {
+  color: var(--fg);
+  background: var(--surface);
+}
+
+/* Lifted off the window's ground, the way the title bar's controls are lifted
+   off the page's. The pane is `--bg` throughout now, so a control drawn in `--bg`
+   would be an outline with nothing inside it. */
+#terminal-head select,
+#terminal-head button {
+  font: inherit;
+  flex: none;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.25rem;
+  cursor: pointer;
+}
+
+/* The pane's own way out. It folds the window and ends nothing — the session
+   under the terminal keeps running, so this is not drawn in the danger colour
+   that 終了 carries on the row. */
+#terminal-head #diagnostics-close {
+  line-height: 1;
+  padding: 0.15rem 0.4rem;
 }
 
 /* ── participants ────────────────────────────────────────────────────────── */
@@ -588,16 +736,38 @@ body {
 
 /* ── terminal ────────────────────────────────────────────────────────────── */
 
-/* The frame on the diagnostics pane. It stood after the launcher's own rules
-   until #62 removed them, under a heading that was never about it. */
+/* The terminal's own area, below the header. It stood after the launcher's own
+   rules until #62 removed them, under a heading that was never about it.
+
+   It has no frame of its own any more: the border and the top corners are the
+   pane's (#68). What is left here is the bottom pair, which the pane's
+   `overflow: hidden` would clip anyway — they are written out so that the
+   radius is declared on both ends of the window rather than inherited by an
+   accident of clipping.
+
+   The inset is `0.15rem`, down from `0.35rem` (Master, 実機, 2026-08-24). The
+   area between the frame and the terminal is area the terminal is not using, and
+   it is not only whitespace here: the CLI's columns and rows are computed from
+   what is left, so trimming the inset is columns given back. It is not `0` —
+   xterm draws its own cursor and selection to the edge of its box, and a box
+   flush against the frame puts them on the border.
+
+   The ground is the pane's. It was declared here as well while the pane was
+   `--surface`, and there is one ground now.
+
+   `min-height` was `18rem`, the floor a TUI needs to draw a frame in. The pane
+   is a fixed `50vh` and now spends part of it on a header, so that floor is a
+   figure the terminal can be asked for and not given: on a short window the
+   column would total more than the pane and the excess would be clipped by the
+   rule above, silently. `0` lets this track shrink with the pane instead, which
+   is the height the pane actually has. What the floor was guarding is the pane's
+   `50vh`, and that is where it is enforced. */
 #terminal {
   flex: 1;
-  min-height: 18rem;
+  min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.35rem;
-  background: var(--bg);
+  border-radius: 0 0 var(--pane-radius) var(--pane-radius);
+  padding: 0.15rem;
 }
 
 /* One frame, one terminal per running account, stacked and all but one hidden.
