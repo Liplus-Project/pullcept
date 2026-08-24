@@ -1,5 +1,16 @@
 :root {
   color-scheme: light dark;
+  /* Two grounds, and which one a thing carries is decided by whether it is a
+     surface or a control. `--bg` is the window's own ground, and it is also
+     what every control is drawn on: input, select, textarea, button, the
+     selected terminal tab. `--surface` is a panel's tint — the participant
+     list's ground, and the lift for something sitting on a ground that is
+     already `--bg`.
+
+     A control is told from what it sits on by its `--line` border, not by a
+     fill of its own (Master, 実機, 2026-08-24). A fill would make the same
+     button look different on each panel it appears on; a border makes it one
+     shape wherever it is. */
   --bg: #ffffff;
   --fg: #1b1b1f;
   --line: #d8d8de;
@@ -89,7 +100,7 @@ body {
 #titlebar button {
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.2rem 0.4rem;
@@ -238,7 +249,7 @@ body {
 #composer select {
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.5rem 0.4rem;
@@ -249,7 +260,7 @@ body {
   flex: 1;
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.5rem;
@@ -259,7 +270,7 @@ body {
 #composer button {
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.5rem 1rem;
@@ -392,13 +403,19 @@ body {
   cursor: pointer;
 }
 
-/* Lifted off the window's ground, the way the selected row in the panel is
-   lifted off the panel's (`#participants .member.shown .pick`). The two
-   selections are one selection, so they are marked the same way; the grounds are
-   the other way round here, so the tint that lifts is the other one. */
+/* The mark the selected row in the panel carries, drawn the same way here
+   (`#participants .member.shown .pick`): the window's ground with a `--line`
+   border around it. The two selections are one selection, and they are now one
+   shape — the tab was tinted while the row was lifted, which is the same
+   selection drawn with opposite hands (Master, 実機, 2026-08-24).
+
+   The tab and the header under it are the same colour now, so the ground says
+   nothing about which tab is open. What says it is the border arriving where
+   an unselected tab holds `transparent`, and the name turning from `--muted`
+   to the participant's own colour. */
 #terminal-tabs .tab.shown {
   color: var(--speaker, var(--fg));
-  background: var(--surface);
+  background: var(--bg);
   border-color: var(--line);
 }
 
@@ -429,15 +446,16 @@ body {
   background: var(--surface);
 }
 
-/* Lifted off the window's ground, the way the title bar's controls are lifted
-   off the page's. The pane is `--bg` throughout now, so a control drawn in `--bg`
-   would be an outline with nothing inside it. */
+/* The window's ground, the way the title bar's controls carry the page's. It is
+   the same ground the header itself has, which leaves the border to say where
+   the control is — and that is what a control is everywhere in this app (see
+   `--bg` at the top of this file). */
 #terminal-head select,
 #terminal-head button {
   font: inherit;
   flex: none;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.1rem 0.25rem;
@@ -631,7 +649,13 @@ body {
    advance width is the font's, and the font is whichever one the host resolves
    the mark in; a box that took its width from the glyph would be a different
    box on a different machine. The box is fixed and the mark is centred in it,
-   so the three read as one column of the same three shapes anywhere. */
+   so the three read as one column of the same three shapes anywhere.
+
+   The ground is the window's, written out rather than left at `none`. `none`
+   let the panel's tint through, which put the only three controls in the panel
+   on a ground no other control in the app sits on (Master, 実機, 2026-08-24).
+   The panel keeps its own tint; what is aligned is the controls in it, not the
+   panel. */
 #participants .member .edit,
 #participants .member .start,
 #participants .member .end {
@@ -643,7 +667,7 @@ body {
   font: inherit;
   font-size: 0.8rem;
   line-height: 1;
-  background: none;
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0;
@@ -828,7 +852,7 @@ body {
   font: inherit;
   width: 100%;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.3rem 0.45rem;
@@ -892,7 +916,7 @@ body {
 #account-dialog .actions button {
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.35rem 0.9rem;
@@ -975,7 +999,7 @@ body {
 #end-dialog .actions button {
   font: inherit;
   color: var(--fg);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.35rem 0.9rem;
