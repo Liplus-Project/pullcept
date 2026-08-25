@@ -227,6 +227,23 @@ struct RoomInner {
     floor: Floor,
 }
 
+/// The name whoever is on `origin` answers to, or `None` when no one is seated
+/// there yet.
+///
+/// Takes the seat table rather than a `RoomState`, and the delivery pump in
+/// `serve_participant` is the whole reason: `RoomState` carries the fan-out
+/// `Sender` beside the `Arc`, not inside it, so holding one to read a name
+/// would hold a sender too. Read for logging only. Nothing branches on it, and
+/// nothing may: a name is not the identity here (#40), so this is the readable
+/// half of a handle whose other half is the connection id.
+fn name_on(seats: &Mutex<RoomInner>, origin: &str) -> Option<String> {
+    seats
+        .lock()
+        .participants
+        .get(origin)
+        .map(|seat| seat.name.clone())
+}
+
 /// Shared handle to the room socket. Cloneable; all clones share one room.
 #[derive(Clone)]
 pub struct RoomState {
@@ -583,8 +600,61 @@ async fn serve_participant(
 
     let mut from_room = room.to_participants.subscribe();
     let own_origin = origin.clone();
+    // The seat table alone, for one purpose: naming this connection in the lag
+    // log below.
+    //
+    // Deliberately not `room.clone()`. `RoomState` holds `to_participants` as
+    // a plain field beside `inner`, not inside the `Arc`, so cloning the room
+    // clones the `Sender` — and a pump that owns a sender can never see its own
+    // channel close. `RecvError::Closed` means every sender is gone, so the
+    // `Closed` arm below would be unreachable and the pump would sit in `recv`
+    // forever after the room is torn down, holding the socket task with it.
+    // The seat table cannot do that: `RoomInner` is a port, a `BTreeMap` of
+    // seats and the floor, and no sender lives under it.
+    let seats = Arc::clone(&room.inner);
     let pump = tokio::spawn(async move {
-        while let Ok(fanout) = from_room.recv().await {
+        loop {
+            let fanout = match from_room.recv().await {
+                Ok(fanout) => fanout,
+                // No sender left: the room itself is gone, so nothing further
+                // will ever arrive. Leaving is all there is to do.
+                Err(broadcast::error::RecvError::Closed) => break,
+                // This connection read more slowly than the room spoke, and the
+                // channel overwrote posts it had not taken yet. The receiver is
+                // still live — tokio advances its cursor to the oldest post the
+                // channel still holds and the next `recv` returns that one — so
+                // a lag is a gap, not an ending, and the pump stays.
+                //
+                // Leaving here is what made a momentary gap permanent: the
+                // socket stayed open and the participant stayed on the roster,
+                // so a participant who was never spoken to again looked exactly
+                // like one with nothing to hear. Nothing on the screen or in
+                // the roster could show the difference, which is why this arm
+                // continues and why it logs (#42).
+                //
+                // The dropped posts are not resent. The room keeps no history
+                // to resend from, and giving it one here would put the room in
+                // possession of who heard what — the property the fan-out is
+                // built to avoid holding. A participant who missed posts still
+                // learns of them on their own next post: the floor refuses a
+                // post whose `last_seen` is behind and hands the missed ones
+                // back (#47). That path is the speaker's, not the room's.
+                Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    // Named by both halves on purpose. The name is what a
+                    // reader recognises and what every other line in this file
+                    // logs; the connection id is what tells two participants
+                    // sharing one name apart, which is the case that made the
+                    // name unusable as an identity in the first place (#40).
+                    // Before `hello` there is no name, and the id alone still
+                    // identifies the connection.
+                    let seated = name_on(&seats, &own_origin);
+                    let who = seated.as_deref().unwrap_or("(not yet seated)");
+                    eprintln!(
+                        "[room] \"{who}\" ({own_origin}) fell behind: {dropped} post(s) dropped, delivery continues"
+                    );
+                    continue;
+                }
+            };
             match &fanout.target {
                 // Addressed to one connection: the room answering whoever
                 // posted. Everyone else's socket is not part of that exchange.
