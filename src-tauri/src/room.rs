@@ -227,6 +227,23 @@ struct RoomInner {
     floor: Floor,
 }
 
+/// The name whoever is on `origin` answers to, or `None` when no one is seated
+/// there yet.
+///
+/// Takes the seat table rather than a `RoomState`, and the delivery pump in
+/// `serve_participant` is the whole reason: `RoomState` carries the fan-out
+/// `Sender` beside the `Arc`, not inside it, so holding one to read a name
+/// would hold a sender too. Read for logging only. Nothing branches on it, and
+/// nothing may: a name is not the identity here (#40), so this is the readable
+/// half of a handle whose other half is the connection id.
+fn name_on(seats: &Mutex<RoomInner>, origin: &str) -> Option<String> {
+    seats
+        .lock()
+        .participants
+        .get(origin)
+        .map(|seat| seat.name.clone())
+}
+
 /// Shared handle to the room socket. Cloneable; all clones share one room.
 #[derive(Clone)]
 pub struct RoomState {
@@ -305,20 +322,6 @@ impl RoomState {
             .participants
             .get(origin)
             .and_then(|seat| seat.account.clone())
-    }
-
-    /// The name whoever is on `origin` answers to, or `None` when no one is
-    /// seated there yet.
-    ///
-    /// Read for logging only. Nothing branches on it, and nothing may: a name
-    /// is not the identity here (#40), so this is the readable half of a
-    /// handle whose other half is the connection id.
-    fn name_of(&self, origin: &str) -> Option<String> {
-        self.inner
-            .lock()
-            .participants
-            .get(origin)
-            .map(|seat| seat.name.clone())
     }
 
     fn set_port(&self, port: u16) {
@@ -597,10 +600,18 @@ async fn serve_participant(
 
     let mut from_room = room.to_participants.subscribe();
     let own_origin = origin.clone();
-    // Held by the pump for one purpose: naming this connection in the lag log
-    // below. The room outlives the pump, and a clone is a handle to the same
-    // room, so this adds no lifetime to anything.
-    let log_room = room.clone();
+    // The seat table alone, for one purpose: naming this connection in the lag
+    // log below.
+    //
+    // Deliberately not `room.clone()`. `RoomState` holds `to_participants` as
+    // a plain field beside `inner`, not inside the `Arc`, so cloning the room
+    // clones the `Sender` — and a pump that owns a sender can never see its own
+    // channel close. `RecvError::Closed` means every sender is gone, so the
+    // `Closed` arm below would be unreachable and the pump would sit in `recv`
+    // forever after the room is torn down, holding the socket task with it.
+    // The seat table cannot do that: `RoomInner` is a port, a `BTreeMap` of
+    // seats and the floor, and no sender lives under it.
+    let seats = Arc::clone(&room.inner);
     let pump = tokio::spawn(async move {
         loop {
             let fanout = match from_room.recv().await {
@@ -636,7 +647,7 @@ async fn serve_participant(
                     // name unusable as an identity in the first place (#40).
                     // Before `hello` there is no name, and the id alone still
                     // identifies the connection.
-                    let seated = log_room.name_of(&own_origin);
+                    let seated = name_on(&seats, &own_origin);
                     let who = seated.as_deref().unwrap_or("(not yet seated)");
                     eprintln!(
                         "[room] \"{who}\" ({own_origin}) fell behind: {dropped} post(s) dropped, delivery continues"
