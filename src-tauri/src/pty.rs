@@ -38,6 +38,32 @@ impl PtyState {
     pub fn is_running(&self, id: &str) -> bool {
         self.procs.lock().contains_key(id)
     }
+
+    /// Kill every session that is running, and say which ones resisted.
+    ///
+    /// One acquisition of the lock over the whole map, for the same reason
+    /// `RoomSeats::claim` sweeps and claims under one: a list of ids taken
+    /// first and killed after would miss whatever was spawned in between, and
+    /// the session nobody asked about is the one that outlives the app (#85).
+    ///
+    /// An entry is dropped only once its child is dead. Membership here is
+    /// liveness (`is_running`), and it is what a seat in the room is held by —
+    /// removing an entry whose process is still out there would free that
+    /// account's seat while the CLI under it keeps running, which is the
+    /// double-launch this map exists to refuse. What resisted is returned
+    /// rather than swallowed, so the caller can say a sweep did not finish
+    /// instead of reporting one that did.
+    pub fn kill_all(&self) -> Vec<String> {
+        let mut resisted = Vec::new();
+        self.procs.lock().retain(|id, pty| match pty.child.kill() {
+            Ok(()) => false,
+            Err(_) => {
+                resisted.push(id.clone());
+                true
+            }
+        });
+        resisted
+    }
 }
 
 #[tauri::command]
@@ -191,4 +217,31 @@ pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String>
         pty.child.kill().map_err(|e| format!("Kill failed: {e}"))?;
     }
     Ok(())
+}
+
+/// End every running session at once, for the app being closed (#85).
+///
+/// Its own command rather than a loop over `kill_pty` on the screen's side. The
+/// screen's list of sessions is a copy of the app's, and a copy is what would
+/// leave running whatever the screen had not heard of yet — a launch still in
+/// flight when the window was asked to close is exactly that. Sweeping the map
+/// itself has no such gap.
+///
+/// The close is held open on the screen's side, not here. Tauri prevents the
+/// close on its own as soon as the webview listens for `CloseRequested`
+/// (`tauri::manager::window::on_window_event` calls `api.prevent_close()` when
+/// `window.has_js_listener` finds one), and closes the window once the
+/// listener returns without preventing. So there is no `on_window_event`
+/// wiring on this side to arrange: the question is asked and answered where
+/// the dialog is, and this is only the act the answer authorises.
+#[tauri::command]
+pub fn kill_all_ptys(state: tauri::State<PtyState>) -> Result<(), String> {
+    let resisted = state.kill_all();
+    if resisted.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} of the running sessions could not be ended",
+        resisted.len()
+    ))
 }

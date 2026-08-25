@@ -297,6 +297,37 @@
           </menu>
         </div>
       </dialog>
+
+      <!-- The アプリの終了 confirmation. Closing the window ends every session
+           running under it, so the close is held open until this is answered
+           (#85).
+
+           Its own `<dialog>`, not a second face of `#end-dialog` above. That
+           one asks about one account's session and is answered into the
+           account it was opened on; one element holding both questions would
+           have to decide which of them it is opening in, and the answer would
+           have to find its way back to whichever asked. It is the same reason
+           `#end-dialog` is not a face of the account form.
+
+           Not `window.confirm`, for the reason given there (#57), and the hole
+           is the same one on this operation: the button goes silently dead, or
+           a default-yes closes the app and every session with it on one click.
+
+           取消 holds the focus and Escape closes, which is the same answer: the
+           window stays and every session keeps running. There is no answer here
+           that ends the sessions without closing — ending one session is the
+           row's 終了, and this is the app going away. -->
+      <dialog id="quit-dialog" aria-labelledby="quit-dialog-title">
+        <div class="confirm">
+          <h2 id="quit-dialog-title">アプリの終了</h2>
+          <p id="quit-dialog-message"></p>
+          <menu class="actions">
+            <span class="spacer"></span>
+            <button id="quit-cancel" type="button" autofocus>取消</button>
+            <button id="quit-commit" type="button" class="danger">終了</button>
+          </menu>
+        </div>
+      </dialog>
     </div>
   </body>
 </html>
