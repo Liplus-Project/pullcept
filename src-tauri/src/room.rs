@@ -307,6 +307,20 @@ impl RoomState {
             .and_then(|seat| seat.account.clone())
     }
 
+    /// The name whoever is on `origin` answers to, or `None` when no one is
+    /// seated there yet.
+    ///
+    /// Read for logging only. Nothing branches on it, and nothing may: a name
+    /// is not the identity here (#40), so this is the readable half of a
+    /// handle whose other half is the connection id.
+    fn name_of(&self, origin: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .participants
+            .get(origin)
+            .map(|seat| seat.name.clone())
+    }
+
     fn set_port(&self, port: u16) {
         self.inner.lock().port = Some(port);
     }
@@ -583,8 +597,53 @@ async fn serve_participant(
 
     let mut from_room = room.to_participants.subscribe();
     let own_origin = origin.clone();
+    // Held by the pump for one purpose: naming this connection in the lag log
+    // below. The room outlives the pump, and a clone is a handle to the same
+    // room, so this adds no lifetime to anything.
+    let log_room = room.clone();
     let pump = tokio::spawn(async move {
-        while let Ok(fanout) = from_room.recv().await {
+        loop {
+            let fanout = match from_room.recv().await {
+                Ok(fanout) => fanout,
+                // No sender left: the room itself is gone, so nothing further
+                // will ever arrive. Leaving is all there is to do.
+                Err(broadcast::error::RecvError::Closed) => break,
+                // This connection read more slowly than the room spoke, and the
+                // channel overwrote posts it had not taken yet. The receiver is
+                // still live — tokio advances its cursor to the oldest post the
+                // channel still holds and the next `recv` returns that one — so
+                // a lag is a gap, not an ending, and the pump stays.
+                //
+                // Leaving here is what made a momentary gap permanent: the
+                // socket stayed open and the participant stayed on the roster,
+                // so a participant who was never spoken to again looked exactly
+                // like one with nothing to hear. Nothing on the screen or in
+                // the roster could show the difference, which is why this arm
+                // continues and why it logs (#42).
+                //
+                // The dropped posts are not resent. The room keeps no history
+                // to resend from, and giving it one here would put the room in
+                // possession of who heard what — the property the fan-out is
+                // built to avoid holding. A participant who missed posts still
+                // learns of them on their own next post: the floor refuses a
+                // post whose `last_seen` is behind and hands the missed ones
+                // back (#47). That path is the speaker's, not the room's.
+                Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    // Named by both halves on purpose. The name is what a
+                    // reader recognises and what every other line in this file
+                    // logs; the connection id is what tells two participants
+                    // sharing one name apart, which is the case that made the
+                    // name unusable as an identity in the first place (#40).
+                    // Before `hello` there is no name, and the id alone still
+                    // identifies the connection.
+                    let seated = log_room.name_of(&own_origin);
+                    let who = seated.as_deref().unwrap_or("(not yet seated)");
+                    eprintln!(
+                        "[room] \"{who}\" ({own_origin}) fell behind: {dropped} post(s) dropped, delivery continues"
+                    );
+                    continue;
+                }
+            };
             match &fanout.target {
                 // Addressed to one connection: the room answering whoever
                 // posted. Everyone else's socket is not part of that exchange.
