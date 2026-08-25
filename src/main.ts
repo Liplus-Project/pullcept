@@ -1103,6 +1103,29 @@ function memberRow(row: Member): HTMLLIElement {
   } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
+  } else if (view && view.ended === null) {
+    // The process is alive and the room has not seen it yet. 起動中 is the word
+    // the status panel already puts on exactly this state — `renderSessionFacts`
+    // reads `view.ended === null` and writes `${name} 起動中` — and one screen
+    // must not carry two definitions of running. The panel was reading the
+    // process while this row read the roster, and the two disagree for as long
+    // as a CLI takes to spawn and join the room's websocket: the row fell
+    // through to 未起動, the word for an account that was never started, while
+    // the same row offered ❌. On the device that window lasted minutes,
+    // because the development-channels flag stops the CLI at a confirm prompt,
+    // and a running session was indistinguishable by word from an idle
+    // account — only the button said which was which (#89).
+    //
+    // Below `row.participant` on purpose. A row that is in the room says
+    // nothing unless it has something to report, and being in the list is what
+    // that silence says (#82); a branch above would take that back. Only a row
+    // outside the roster reaches here, which reads both windows correctly: the
+    // one right after 開始, and a CLI that has lost a connection it once had.
+    //
+    // No new word, and no new kind. This is what is so about the session, the
+    // same as 終了 and 未起動 beside it, so it stays uncoloured — 起動失敗 above
+    // is the row's only error.
+    noteText = "起動中";
   } else if (view?.ended != null) noteText = "終了";
   else if (row.account) noteText = "未起動";
 
