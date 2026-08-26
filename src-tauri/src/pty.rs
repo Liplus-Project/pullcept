@@ -38,6 +38,38 @@ impl PtyState {
     pub fn is_running(&self, id: &str) -> bool {
         self.procs.lock().contains_key(id)
     }
+
+    /// Kill every session that is running.
+    ///
+    /// One acquisition of the lock over the whole map, for the same reason
+    /// `RoomSeats::claim` sweeps and claims under one: a list of ids taken
+    /// first and killed after would miss whatever was spawned in between, and
+    /// the session nobody asked about is the one that outlives the app (#85).
+    ///
+    /// Drained rather than iterated and cleared, because taking the entry out
+    /// is what drops it and the drop is the half that does the work. Killing
+    /// the child does not take the tree down on its own — what does is the
+    /// `PtyInstance` going away, which closes the master and takes every
+    /// process attached to that ConPTY with it. Measured on the row's own
+    /// `kill_pty` path (2026-08-25, AI operating): `cmd.exe` and the
+    /// `claude.exe` under it were both gone from the process list afterwards.
+    /// This sweep drops each instance the same way, so it ends the same tree.
+    ///
+    /// **There is no failure to report, so nothing here reports one.** On
+    /// Windows `Child::kill` resolves to `WinChild::kill`, which discards the
+    /// result of its own `TerminateProcess` call and returns `Ok(())`
+    /// unconditionally (`portable-pty-patch/src/win/mod.rs`). A caller
+    /// collecting the sessions that resisted would collect nothing, forever,
+    /// and the report built on it would be a protection that reads as present
+    /// and is not. The root of that — `do_kill` also has its success test
+    /// inverted — is #96. **If #96 lands, `kill()` can start failing for real,
+    /// and a failure path here becomes worth having again.** Until then it
+    /// would be dead code claiming to be a safety net.
+    pub fn kill_all(&self) {
+        for (_, mut pty) in self.procs.lock().drain() {
+            let _ = pty.child.kill();
+        }
+    }
 }
 
 #[tauri::command]
@@ -191,4 +223,28 @@ pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String>
         pty.child.kill().map_err(|e| format!("Kill failed: {e}"))?;
     }
     Ok(())
+}
+
+/// End every running session at once, for the app being closed (#85).
+///
+/// Its own command rather than a loop over `kill_pty` on the screen's side. The
+/// screen's list of sessions is a copy of the app's, and a copy is what would
+/// leave running whatever the screen had not heard of yet — a launch still in
+/// flight when the window was asked to close is exactly that. Sweeping the map
+/// itself has no such gap.
+///
+/// The close is held open on the screen's side, not here. Tauri prevents the
+/// close on its own as soon as the webview listens for `CloseRequested`
+/// (`tauri::manager::window::on_window_event` calls `api.prevent_close()` when
+/// `window.has_js_listener` finds one), and closes the window once the
+/// listener returns without preventing. So there is no `on_window_event`
+/// wiring on this side to arrange: the question is asked and answered where
+/// the dialog is, and this is only the act the answer authorises.
+///
+/// Returns nothing, including no error. The sweep it calls cannot fail — see
+/// `PtyState::kill_all` for why, and for what would have to change (#96)
+/// before a failure is a thing this could report.
+#[tauri::command]
+pub fn kill_all_ptys(state: tauri::State<PtyState>) {
+    state.kill_all();
 }

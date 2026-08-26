@@ -12,6 +12,7 @@
 // find messages (docs/0-requirements.md); showing the CLI is not that.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -300,6 +301,10 @@ const endDialogEl = document.getElementById("end-dialog") as HTMLDialogElement;
 const endMessageEl = document.getElementById("end-dialog-message") as HTMLElement;
 const endCancelEl = document.getElementById("end-cancel") as HTMLButtonElement;
 const endCommitEl = document.getElementById("end-commit") as HTMLButtonElement;
+const quitDialogEl = document.getElementById("quit-dialog") as HTMLDialogElement;
+const quitMessageEl = document.getElementById("quit-dialog-message") as HTMLElement;
+const quitCancelEl = document.getElementById("quit-cancel") as HTMLButtonElement;
+const quitCommitEl = document.getElementById("quit-commit") as HTMLButtonElement;
 
 let accounts: Account[] = [];
 /**
@@ -519,6 +524,27 @@ const launchFailures = new Map<string, string>();
  * finds nothing and ends nothing.
  */
 let endingAccount: string | null = null;
+/**
+ * What is waiting on the open アプリの終了 dialog, or null while it is closed.
+ *
+ * A resolver rather than an id, because the caller is not a click that can be
+ * left to finish on its own: the window's close is held open across this
+ * question, and the answer is what releases it (`onQuitRequested`). Holding the
+ * resolver is what makes every way out of the dialog — either button, Escape —
+ * an answer rather than a question nobody is left to answer.
+ */
+let quitAnswer: ((confirmed: boolean) => void) | null = null;
+/**
+ * Whether a close is already being decided.
+ *
+ * Separate from `quitAnswer`, which is only set once the app has answered who
+ * is running — the window can be closed again inside that gap, and a flag that
+ * is not up yet would let a second decision start. The title bar is the native
+ * one (`tauri.conf.json` leaves `decorations` at its default), so its `✕` sits
+ * outside the webview and stays clickable while the modal is up: a second close
+ * while the question stands is a normal thing to do, not a corner.
+ */
+let quitPending = false;
 
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
@@ -1745,6 +1771,122 @@ async function endSession(view: SessionView): Promise<void> {
 }
 
 /**
+ * The names of whatever is running under a seat right now.
+ *
+ * Asked of the app rather than read off `seated`, which is this screen's copy
+ * and is only as fresh as whatever last refreshed it. The question about to be
+ * put is whether closing would end anything, and the app is what would end it
+ * (`seated_accounts` is the authority the panel already defers to).
+ *
+ * A seat with no session counts. It is a launch still in flight, and what it is
+ * about to leave behind is a process — asking about it costs one dialog, while
+ * reading it as nothing to end is how the one case that is not visible yet
+ * becomes the orphan (#85).
+ *
+ * On a failed read the last answer stands, for the reason `refreshSeats` keeps
+ * it: a read that failed says nothing about who is running, and answering
+ * "nobody" would close the app over a running session without ever asking.
+ */
+async function runningSeatNames(): Promise<string[]> {
+  let held: SeatedAccount[];
+  try {
+    held = await invoke<SeatedAccount[]>("seated_accounts");
+  } catch {
+    held = [...seated.values()];
+  }
+  // Named from the account list, and by id where the account is not in it. The
+  // app refuses to delete a seated account, so a seat with no account is a
+  // config edited from outside — it is still running, so it is still counted,
+  // and the id is what the app can be asked about it under.
+  return held.map(
+    (seat) =>
+      accounts.find((one) => one.id === seat.account_id)?.name.trim() || seat.account_id,
+  );
+}
+
+/**
+ * Ask whether the app is to close with sessions still running.
+ *
+ * A promise rather than a callback, because the window's close is held open
+ * across the answer and the caller is the one holding it.
+ */
+function askQuit(names: string[]): Promise<boolean> {
+  quitMessageEl.textContent =
+    `${names.join("、")} のセッションが走っています。` +
+    `アプリを終了すると、これらのセッションも終了します。よろしいですか？`;
+  return new Promise((resolve) => {
+    quitAnswer = resolve;
+    quitDialogEl.showModal();
+  });
+}
+
+/** Answer the standing question, once. Escape lands here too, as 取消. */
+function answerQuit(confirmed: boolean): void {
+  const answer = quitAnswer;
+  // Cleared before the close, because closing fires the handler that calls this
+  // again: that second call finds nothing standing and does nothing. Without it
+  // the answer would be delivered twice, and the second one is always 取消.
+  quitAnswer = null;
+  if (quitDialogEl.open) quitDialogEl.close();
+  answer?.(confirmed);
+}
+
+/**
+ * Decide what closing the window does, with the close held open until it is.
+ *
+ * There is no round trip to arrange for this. Tauri prevents the close itself
+ * the moment this screen is listening for it — `WindowEvent::CloseRequested`
+ * calls `api.prevent_close()` when `window.has_js_listener` finds a webview
+ * listener (tauri 2.11.5, `src/manager/window.rs`) — and `onCloseRequested`
+ * destroys the window after this returns without `preventDefault`
+ * (`@tauri-apps/api/window`). So preventing is what says "stay open", and
+ * returning is what closes; no `on_window_event` handler on the Rust side is
+ * in the path.
+ *
+ * Nothing running means nothing to ask about, and the app closes on the click
+ * that asked for it. A confirmation over an empty list is one more step on a
+ * close that would end nothing (#85).
+ *
+ * 取消 takes the close back and nothing else: the window stays and every
+ * session keeps running. There is deliberately no answer here that ends the
+ * sessions and leaves the app standing — ending one session is what the row's
+ * 終了 is for, and this dialog is the app going away.
+ */
+async function onQuitRequested(event: CloseRequestedEvent): Promise<void> {
+  // A second close while the first is still being decided is the same question,
+  // and it is already on the screen. Taken back rather than asked again:
+  // `showModal` on an open dialog throws, and a throw here leaves the window's
+  // close unresolved with no dialog able to release it (`onCloseRequested`
+  // awaits this before it destroys anything).
+  if (quitPending) {
+    event.preventDefault();
+    return;
+  }
+  quitPending = true;
+  try {
+    const running = await runningSeatNames();
+    if (!running.length) return;
+    if (!(await askQuit(running))) {
+      event.preventDefault();
+      return;
+    }
+    // Nothing is caught around this, and nothing here takes the close back on a
+    // failed sweep. `kill_all_ptys` has no failure to return: the kill it calls
+    // cannot report one on Windows (`PtyState::kill_all`, and #96 for the root
+    // of it). A catch here would be a branch that never runs, next to a comment
+    // promising the app stays open when the sessions survive — a protection
+    // that reads as present and is not. If #96 lands, this is where it goes
+    // back.
+    await invoke("kill_all_ptys");
+  } finally {
+    // Cleared on every path, the closing one included: the window is destroyed
+    // after this returns, and a flag left standing would refuse the next close
+    // if the destroy never came.
+    quitPending = false;
+  }
+}
+
+/**
  * Give an account its own terminal and put it on the glass.
  *
  * Made before the launch, because the CLI's first paint is laid out for the
@@ -2323,6 +2465,24 @@ async function main(): Promise<void> {
   // is on the container and the fit lands on whichever one is showing.
   new ResizeObserver(() => fitShown()).observe(terminalEl);
   renderSessionFacts();
+
+  // ── closing the app ────────────────────────────────────────────────────────
+  //
+  // First, and the dialog's own wiring with it. The window can be closed at any
+  // moment this screen is up, and two things depend on being ready before that:
+  // a close arriving before the listener is registered is one Tauri does not
+  // hold open — it takes the window and leaves every session under it running —
+  // and a dialog opened before its buttons are wired is a question that cannot
+  // be answered while the close waits on it. A reload lands here with sessions
+  // already running (`adoptSeats`), so this is not only a first-launch window.
+  quitCancelEl.addEventListener("click", () => answerQuit(false));
+  quitCommitEl.addEventListener("click", () => answerQuit(true));
+  // Escape closes the dialog itself, and it means 取消. Answering from the close
+  // is what makes that true on every path out, this time load-bearing rather
+  // than tidy: a question left standing would hold the window's close open with
+  // nothing left able to answer it.
+  quitDialogEl.addEventListener("close", () => answerQuit(false));
+  await getCurrentWindow().onCloseRequested(onQuitRequested);
 
   // The account's colour is the account's, so nothing is restored into this
   // picker — the form fills it from whichever account it was opened on.
