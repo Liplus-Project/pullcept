@@ -12,8 +12,8 @@ use crate::config::{Account, AccountKind};
 use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use mcp_config::{
-    channel_launch_args, register_sidecar, reject_incompatible_flags, server_name_for,
-    RoomRegistration,
+    declared_character, declares_settings, launch_args, register_sidecar,
+    reject_incompatible_flags, server_name_for, RoomRegistration,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -243,8 +243,10 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 
 /// The arguments a launch would actually use, for display.
 ///
-/// The app merges its own channel entry into what the person wrote, so the
-/// line they typed is not the line that runs. This returns the line that runs.
+/// The app merges its own channel entry into what the person wrote and selects
+/// the account's character on top of it, so the line they typed is not the line
+/// that runs. This returns the line that runs, through the same function the
+/// launch itself goes through (`launch_args`).
 ///
 /// The entry names this account's own server, which is a function of the
 /// account id, so the preview changes when a different account is selected and
@@ -252,8 +254,16 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// the identity being launched is the account, and renaming it does not make it
 /// something else (#53).
 #[tauri::command]
-pub fn preview_launch_args(args: Vec<String>, account_id: String) -> Vec<String> {
-    channel_launch_args(&args, &server_name_for(account_id.trim()))
+pub fn preview_launch_args(
+    args: Vec<String>,
+    account_id: String,
+    character: Option<String>,
+) -> Vec<String> {
+    launch_args(
+        &args,
+        &server_name_for(account_id.trim()),
+        character.as_deref(),
+    )
 }
 
 /// What the caller gets back after a session joins.
@@ -280,6 +290,10 @@ pub struct StartedSession {
 /// all before there was anything durable to hang a name on (#40). The account
 /// is that durable thing, so the launch no longer declares anything; it starts
 /// someone who already exists.
+///
+/// Its character is on that same list since #99, and is why two accounts can
+/// now be started in one working directory and still be two: the one file that
+/// had kept them in separate directories is selected per launch instead.
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -318,6 +332,21 @@ pub fn start_session(
         ));
     }
 
+    // The character rides in `--settings`, so launch options carrying their own
+    // `--settings` are on the same axis as the character field. Refused rather
+    // than resolved: which of two copies of one flag a CLI reads is not
+    // something this app has established, and picking one here would be a
+    // guess that surfaces as the wrong character speaking (#99). Refused rather
+    // than stripped, for the reason the flag guard above is: a launch that
+    // quietly dropped half of what was asked for looks like it worked.
+    let character = declared_character(account.character.as_deref());
+    if character.is_some() && declares_settings(&account.args) {
+        return Err(format!(
+            "Account \"{name}\" declares a character and also passes --settings in its launch \
+             options. Both name the same setting. Clear one of them."
+        ));
+    }
+
     let port = room
         .port()
         .ok_or_else(|| "The room socket is not listening yet.".to_string())?;
@@ -350,7 +379,9 @@ pub fn start_session(
         )
     })?;
 
-    match launch(app, &room, pty_state, &account, &name, &room_url, &cwd, cols, rows) {
+    match launch(
+        app, &room, pty_state, &account, &name, character, &room_url, &cwd, cols, rows,
+    ) {
         Ok(started) => {
             // The launch's own values, not the account's. The account may be
             // edited while this runs, and what is running would then be
@@ -387,6 +418,7 @@ fn launch(
     pty_state: tauri::State<PtyState>,
     account: &Account,
     name: &str,
+    character: Option<&str>,
     room_url: &str,
     cwd: &Path,
     cols: u16,
@@ -416,7 +448,11 @@ fn launch(
         app,
         pty_state,
         account.command.clone(),
-        channel_launch_args(&account.args, &server_name),
+        // The same function the preview goes through, so what the form showed
+        // is what spawns. Nothing is written for the character: `--settings`
+        // takes the JSON inline, and a file per account would grow the very
+        // directory this account is sharing (#99).
+        launch_args(&account.args, &server_name, character),
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),

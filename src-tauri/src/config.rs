@@ -70,6 +70,28 @@ pub struct Account {
     /// keyboard had no account at all until now.
     #[serde(default)]
     pub kind: AccountKind,
+    /// Which character this account speaks as: the `name:` of an output style
+    /// in its working directory's `.claude/output-styles/`, or `None` when it
+    /// declares none and the directory's own default stands.
+    ///
+    /// A field of the account rather than a string inside `args`, because the
+    /// character is who this account is when it runs — the same axis its name
+    /// and hue are on, and both of those left the launch for exactly this
+    /// reason (#40). Buried in the launch options it would be an attribute of
+    /// the account in name only (#99).
+    ///
+    /// This is what lets two accounts share one working directory. The only
+    /// real difference between the two directories they had been kept in was
+    /// one output-style file; carried here, that difference no longer needs a
+    /// directory of its own, and the memory keyed to the directory becomes
+    /// shared by the same move.
+    ///
+    /// Absent rather than defaulted, and absent for an account saved before
+    /// this field existed: a directory whose `settings.json` names a style
+    /// already has an answer, and writing one here would be a declaration
+    /// nobody made.
+    #[serde(default)]
+    pub character: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +153,7 @@ impl Default for AppConfig {
                 cwd: None,
                 hue: None,
                 kind: AccountKind::Ai,
+                character: None,
             }],
         }
     }
@@ -177,6 +200,11 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     // migrated, because what it is made from — the name and hue they had been
     // joining under — lives in the webview's own storage and never reached
     // this file (#59).
+    //
+    // `character` is the same again, and its absence is the state it means:
+    // an account saved before it existed declared no character, so its launch
+    // reads whatever its working directory's own `settings.json` names — which
+    // is what that launch did before this field was here (#99).
     //
     // No path exists for anything older than that. Pullcept has never
     // shipped a release, and its app data directory is keyed to its own

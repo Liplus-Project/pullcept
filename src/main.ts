@@ -113,6 +113,12 @@ interface Account {
   /** Declared when the account was made. What the participant list groups on,
    *  and nothing else — the room still has one kind of participant. */
   kind: AccountKind;
+  /** Which character this account speaks as: the `name:` of an output style in
+   *  its working directory's `.claude/output-styles/`, or null when it declares
+   *  none and that directory's own default stands. An attribute of the account
+   *  rather than a string inside `args`, for the reason the name and the hue
+   *  are attributes (#40) — it is who this account is when it runs (#99). */
+  character: string | null;
 }
 
 interface AppConfig {
@@ -292,6 +298,7 @@ const dialogKindEl = document.getElementById("dialog-kind") as HTMLSelectElement
 const dialogHueEl = document.getElementById("dialog-hue") as HTMLSelectElement;
 const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
+const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
 const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
@@ -1557,6 +1564,10 @@ function resolveLocalAccount(): void {
         ? Number(savedHue)
         : null,
       kind: "user",
+      // Carried for the same reason `command` is: one shape of account. A
+      // person speaks as themselves, and there is no launch to select a style
+      // on.
+      character: null,
     };
     accounts.push(account);
     saveAccounts();
@@ -2240,13 +2251,16 @@ function showDialogKind(): void {
 /**
  * Show the command this account's launch would actually run.
  *
- * The app merges its own channel entry into whatever is typed, so the line
- * written here is not the line that launches; showing the result is cheaper
- * than explaining the merge. The entry names this account's own server, which
- * follows the account id — so the preview holds still while the name in the
- * field above it is edited. Holding still is the point: the identity being
- * launched is the account, and renaming it does not make it something else
- * (#53).
+ * The app merges its own channel entry into whatever is typed and selects the
+ * character named above, so the line written here is not the line that
+ * launches; showing the result is cheaper than explaining either. The character
+ * is why this reads the fields rather than the draft: it is the one place the
+ * `--settings` it becomes can be seen before 決定, and a preview built from the
+ * draft would only show it on the next open. The entry names this account's own
+ * server, which follows the account id — so the preview holds still while the
+ * name in the field above it is edited. Holding still is the point: the
+ * identity being launched is the account, and renaming it does not make it
+ * something else (#53).
  */
 async function refreshDialogPreview(): Promise<void> {
   if (!draft) return;
@@ -2255,7 +2269,13 @@ async function refreshDialogPreview(): Promise<void> {
     const parsed = await invoke<string[]>("parse_launch_options", {
       text: dialogOptionsEl.value,
     });
-    const merged = await invoke<string[]>("preview_launch_args", { args: parsed, accountId: id });
+    const merged = await invoke<string[]>("preview_launch_args", {
+      args: parsed,
+      accountId: id,
+      // The field rather than the draft: the preview answers for what the form
+      // holds now, and the draft is only written at 決定.
+      character: dialogCharacterEl.value.trim() || null,
+    });
     // The form may have been closed or reopened during the round trip.
     if (draft?.id !== id) return;
     dialogPreviewEl.textContent = `${draft.command} ${joinArgs(merged)}`;
@@ -2288,6 +2308,10 @@ function openAccountDialog(account: Account | null): void {
         cwd: homeDir || null,
         hue: null,
         kind: "ai",
+        // Nothing, rather than a guess at a style name: an unnamed character
+        // launches on whatever the working directory's own settings say, which
+        // is an answer. A guessed name that resolves to no style is not.
+        character: null,
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
@@ -2295,6 +2319,7 @@ function openAccountDialog(account: Account | null): void {
   dialogKindEl.value = draft.kind;
   dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
   dialogCwdEl.value = draft.cwd ?? "";
+  dialogCharacterEl.value = draft.character ?? "";
   dialogOptionsEl.value = joinArgs(draft.args);
   dialogDeleteEl.hidden = account === null;
   disarmDelete();
@@ -2342,12 +2367,27 @@ async function commitAccountDialog(): Promise<boolean> {
     return false;
   }
   const cwd = dialogCwdEl.value.trim();
-  // Only for a session. A person's working directory and options would be two
-  // values nothing ever reads, kept alive by an edit that once set them.
+  const character = dialogCharacterEl.value.trim();
+  // Only for a session. A person's working directory, character and options
+  // would be values nothing ever reads, kept alive by an edit that once set
+  // them. A person is not launched, so nothing selects a style for them.
   const args =
     kind === "ai"
       ? await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value })
       : [];
+
+  // The character rides in `--settings`, so one written by hand up in the
+  // options is the same setting declared twice. Said here because this is the
+  // one place both fields are on screen together, and in the language they are
+  // read in; the app refuses the launch as well, and that refusal is the
+  // authority — this check only gets there first, at the moment it can be
+  // fixed rather than at the moment it fails (#99).
+  if (character && args.some((arg) => arg.split("=")[0] === "--settings")) {
+    dialogError(
+      "起動オプションの --settings とキャラクターは同じ設定を指します。どちらか一方にしてください。",
+    );
+    return false;
+  }
 
   const settled: Account = {
     ...settling,
@@ -2355,6 +2395,9 @@ async function commitAccountDialog(): Promise<boolean> {
     kind,
     hue: declaredHue(dialogHueEl),
     cwd: kind === "ai" ? cwd || null : null,
+    // Blank clears it, and clearing it is a state: the account goes back to
+    // launching on whatever its working directory's own settings name.
+    character: kind === "ai" ? character || null : null,
     args,
   };
 
@@ -2559,9 +2602,19 @@ async function main(): Promise<void> {
   accountNewEl.addEventListener("click", () => openAccountDialog(null));
   dialogKindEl.addEventListener("change", () => showDialogKind());
   dialogOptionsEl.addEventListener("input", () => void refreshDialogPreview());
+  // The character ends up in the line that runs, so it redraws the preview for
+  // the same reason the options do: the line shown has to be the line spawned.
+  dialogCharacterEl.addEventListener("input", () => void refreshDialogPreview());
   // Anything but the second click of 削除 disarms it: an arm left standing is
   // one that an unrelated click fires later.
-  for (const field of [dialogNameEl, dialogKindEl, dialogHueEl, dialogCwdEl, dialogOptionsEl]) {
+  for (const field of [
+    dialogNameEl,
+    dialogKindEl,
+    dialogHueEl,
+    dialogCwdEl,
+    dialogCharacterEl,
+    dialogOptionsEl,
+  ]) {
     field.addEventListener("input", () => disarmDelete());
   }
   dialogDeleteEl.addEventListener("click", () => deleteFromDialog());
