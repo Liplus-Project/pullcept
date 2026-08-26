@@ -39,30 +39,36 @@ impl PtyState {
         self.procs.lock().contains_key(id)
     }
 
-    /// Kill every session that is running, and say which ones resisted.
+    /// Kill every session that is running.
     ///
     /// One acquisition of the lock over the whole map, for the same reason
     /// `RoomSeats::claim` sweeps and claims under one: a list of ids taken
     /// first and killed after would miss whatever was spawned in between, and
     /// the session nobody asked about is the one that outlives the app (#85).
     ///
-    /// An entry is dropped only once its child is dead. Membership here is
-    /// liveness (`is_running`), and it is what a seat in the room is held by —
-    /// removing an entry whose process is still out there would free that
-    /// account's seat while the CLI under it keeps running, which is the
-    /// double-launch this map exists to refuse. What resisted is returned
-    /// rather than swallowed, so the caller can say a sweep did not finish
-    /// instead of reporting one that did.
-    pub fn kill_all(&self) -> Vec<String> {
-        let mut resisted = Vec::new();
-        self.procs.lock().retain(|id, pty| match pty.child.kill() {
-            Ok(()) => false,
-            Err(_) => {
-                resisted.push(id.clone());
-                true
-            }
-        });
-        resisted
+    /// Drained rather than iterated and cleared, because taking the entry out
+    /// is what drops it and the drop is the half that does the work. Killing
+    /// the child does not take the tree down on its own — what does is the
+    /// `PtyInstance` going away, which closes the master and takes every
+    /// process attached to that ConPTY with it. Measured on the row's own
+    /// `kill_pty` path (2026-08-25, AI operating): `cmd.exe` and the
+    /// `claude.exe` under it were both gone from the process list afterwards.
+    /// This sweep drops each instance the same way, so it ends the same tree.
+    ///
+    /// **There is no failure to report, so nothing here reports one.** On
+    /// Windows `Child::kill` resolves to `WinChild::kill`, which discards the
+    /// result of its own `TerminateProcess` call and returns `Ok(())`
+    /// unconditionally (`portable-pty-patch/src/win/mod.rs`). A caller
+    /// collecting the sessions that resisted would collect nothing, forever,
+    /// and the report built on it would be a protection that reads as present
+    /// and is not. The root of that — `do_kill` also has its success test
+    /// inverted — is #96. **If #96 lands, `kill()` can start failing for real,
+    /// and a failure path here becomes worth having again.** Until then it
+    /// would be dead code claiming to be a safety net.
+    pub fn kill_all(&self) {
+        for (_, mut pty) in self.procs.lock().drain() {
+            let _ = pty.child.kill();
+        }
     }
 }
 
@@ -234,14 +240,11 @@ pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String>
 /// listener returns without preventing. So there is no `on_window_event`
 /// wiring on this side to arrange: the question is asked and answered where
 /// the dialog is, and this is only the act the answer authorises.
+///
+/// Returns nothing, including no error. The sweep it calls cannot fail — see
+/// `PtyState::kill_all` for why, and for what would have to change (#96)
+/// before a failure is a thing this could report.
 #[tauri::command]
-pub fn kill_all_ptys(state: tauri::State<PtyState>) -> Result<(), String> {
-    let resisted = state.kill_all();
-    if resisted.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "{} of the running sessions could not be ended",
-        resisted.len()
-    ))
+pub fn kill_all_ptys(state: tauri::State<PtyState>) {
+    state.kill_all();
 }

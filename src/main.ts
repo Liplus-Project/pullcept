@@ -1870,18 +1870,14 @@ async function onQuitRequested(event: CloseRequestedEvent): Promise<void> {
       event.preventDefault();
       return;
     }
-    try {
-      await invoke("kill_all_ptys");
-    } catch (err) {
-      // The close is taken back rather than carried through. Closing now would
-      // leave running the very thing the answer asked to end, which is the
-      // orphan this whole path exists to prevent, and it would take away the
-      // screen that is the only place able to name the session that survived.
-      // Closing again is one click, and it asks again.
-      event.preventDefault();
-      await refreshSeats();
-      status(`セッションを終了できませんでした。アプリは終了していません: ${err}`, "error");
-    }
+    // Nothing is caught around this, and nothing here takes the close back on a
+    // failed sweep. `kill_all_ptys` has no failure to return: the kill it calls
+    // cannot report one on Windows (`PtyState::kill_all`, and #96 for the root
+    // of it). A catch here would be a branch that never runs, next to a comment
+    // promising the app stays open when the sessions survive — a protection
+    // that reads as present and is not. If #96 lands, this is where it goes
+    // back.
+    await invoke("kill_all_ptys");
   } finally {
     // Cleared on every path, the closing one included: the window is destroyed
     // after this returns, and a flag left standing would refuse the next close
