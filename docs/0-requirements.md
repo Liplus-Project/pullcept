@@ -577,6 +577,8 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 
 **閉じる操作の差し止めはアプリ側に配線を持たない。** Tauri は webview が `CloseRequested` を購読した時点で自ら閉じるのを差し止め（`tauri::manager::window::on_window_event` が `window.has_js_listener` を見て `api.prevent_close()` を呼ぶ、tauri 2.11.5）、購読側が差し止めずに戻ればウィンドウを破棄する。問いと答えはダイアログの在る側で完結するため、Rust 側に `on_window_event` を置く必要が無い。
 
+**閉じるを完了させるのは webview 側の `destroy` であり、そのための権限が要る（#97）。** `onCloseRequested` は購読側が `preventDefault` せずに戻った後、自分で `window.destroy()` を呼ぶ（`@tauri-apps/api/window`）。閉じるを成立させる一手はこれだけである。この呼び出しは Tauri の ACL を通るため、`src-tauri/capabilities/default.json` に `core:window:allow-destroy` が要る。`core:default` の束には入っていない——`core:window` の既定に並ぶのは `allow-title` や `allow-is-visible` のような問い合わせ系だけであり、窓を壊す権限は明示して初めて付く。権限が無ければ `destroy` は ACL に拒否され、その拒否はリスナの中の promise で捨てられるため画面には何も出ない。差し止めだけが残り、`✕` を押しても閉じないアプリになる——#95 が購読を足したとき、購読が要求する権限は権限表へ入っていなかった。購読を足す変更と、その購読が要る権限は、同じ変更に揃える。
+
 ### 起動オプション
 
 セッションの起動オプションはアカウントの属性であり、アカウントのモーダルで編集する（下記「アカウント」）。決定するまで保存しない。
