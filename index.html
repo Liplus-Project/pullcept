@@ -240,6 +240,26 @@
               作業ディレクトリ
               <input id="dialog-cwd" type="text" spellcheck="false" />
             </label>
+            <!-- 誰として喋るか。作業ディレクトリの
+                 `.claude/output-styles/` に置かれた output style の
+                 frontmatter の `name:` を書く。ファイル名ではない。
+
+                 欄であることに意味がある。起動オプションの文字列の中へ書い
+                 ても同じ行にはなるが、それはアカウントの属性になっていない
+                 ——名前と色が起動時宣言から属性へ移った理由と同じである
+                 (#40 / #99)。
+
+                 空ならこの欄は何も足さず、作業ディレクトリの
+                 `settings.json` が指す既定がそのまま立つ。 -->
+            <label class="field">
+              キャラクター
+              <input
+                id="dialog-character"
+                type="text"
+                spellcheck="false"
+                placeholder="例: character_Lay（output style の name）"
+              />
+            </label>
             <label class="field">
               起動オプション
               <input

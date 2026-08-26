@@ -170,6 +170,63 @@ pub fn channel_launch_args(base: &[String], server_name: &str) -> Vec<String> {
     args
 }
 
+/// The flag that hands a launch its settings, as a path or as JSON.
+pub const SETTINGS_FLAG: &str = "--settings";
+
+/// Whether the launch options already declare settings of their own.
+///
+/// `--settings=<value>` counts, the same way `reject_incompatible_flags` counts
+/// it: matching the bare flag alone would miss half the ways of writing it.
+pub fn declares_settings(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg.split('=').next().unwrap_or(arg) == SETTINGS_FLAG)
+}
+
+/// The character an account speaks as, or `None` when it declares none.
+///
+/// Blank is the same state as absent. The field is a text input on the screen,
+/// so an account that had a character and lost it arrives here as an empty
+/// string rather than as nothing, and the two have to mean one thing or a
+/// cleared field would launch `{"outputStyle":""}`.
+pub fn declared_character(character: Option<&str>) -> Option<&str> {
+    character.map(str::trim).filter(|name| !name.is_empty())
+}
+
+/// The launch arguments carrying this account's character, given its own.
+///
+/// The character is the `name:` of an output style in the working directory's
+/// `.claude/output-styles/`, and it is selected at launch rather than written
+/// anywhere: `--settings` takes JSON inline, so two accounts sharing one
+/// working directory each get their own character out of the styles already
+/// sitting there, and the shared directory gains no per-account file. Gaining
+/// one would be the opposite of what sharing the directory is for.
+///
+/// Selected rather than merged, unlike the channel entry above: `--settings`
+/// on the command line wins over the `settings.json` in the directory, so the
+/// directory's own default stays as it is and is simply not what this launch
+/// reads. An account declaring no character launches untouched and gets that
+/// default.
+pub fn character_launch_args(base: &[String], character: Option<&str>) -> Vec<String> {
+    let mut args = base.to_vec();
+    let Some(name) = declared_character(character) else {
+        return args;
+    };
+    args.push(SETTINGS_FLAG.to_string());
+    args.push(json!({ "outputStyle": name }).to_string());
+    args
+}
+
+/// The whole line one launch runs: the account's options, the room's channel
+/// entry, and the account's character.
+///
+/// One function rather than two calls at each site, because the line shown on
+/// screen and the line spawned have to be the same line. They are produced in
+/// different places — a preview command and the launch — and every step either
+/// one composes for itself is a step the other can be missing.
+pub fn launch_args(base: &[String], server_name: &str, character: Option<&str>) -> Vec<String> {
+    character_launch_args(&channel_launch_args(base, server_name), character)
+}
+
 /// Split a launch-options string the way a shell would, minus the parts a
 /// shell does that have no place here.
 ///
@@ -653,6 +710,74 @@ mod tests {
         let room = server_name_for(LIN);
         let base = vec![CHANNEL_FLAG.to_string(), format!("server:{room}")];
         assert_eq!(channel_launch_args(&base, &room), base);
+    }
+
+    #[test]
+    fn a_declared_character_rides_in_settings_json() {
+        let args = character_launch_args(&["--verbose".to_string()], Some("character_Lay"));
+        assert_eq!(
+            args,
+            vec![
+                "--verbose".to_string(),
+                SETTINGS_FLAG.to_string(),
+                r#"{"outputStyle":"character_Lay"}"#.to_string(),
+            ]
+        );
+        // The value has to parse as JSON on the other side: it is handed to the
+        // CLI inline rather than written to a file anyone could look at.
+        let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
+        assert_eq!(settled["outputStyle"], json!("character_Lay"));
+    }
+
+    #[test]
+    fn a_character_with_a_quote_in_it_stays_one_json_string() {
+        // Built rather than formatted, so a name that would otherwise close the
+        // string early cannot make the value stop being JSON.
+        let args = character_launch_args(&[], Some(r#"quote"style"#));
+        let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
+        assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
+    }
+
+    #[test]
+    fn no_character_means_the_line_is_left_alone() {
+        let base = vec!["--verbose".to_string()];
+        // Absent and blank are one state: a cleared field must not launch
+        // `{"outputStyle":""}`, which names no style at all.
+        assert_eq!(character_launch_args(&base, None), base);
+        assert_eq!(character_launch_args(&base, Some("")), base);
+        assert_eq!(character_launch_args(&base, Some("   ")), base);
+        assert_eq!(declared_character(Some("  x  ")), Some("x"));
+    }
+
+    #[test]
+    fn settings_written_by_hand_is_visible_to_the_caller() {
+        // `=` form included: the launch refuses the pair rather than spawning a
+        // line whose two `--settings` are read in an order nobody declared.
+        assert!(declares_settings(&[SETTINGS_FLAG.to_string()]));
+        assert!(declares_settings(&["--settings=C:/x/settings.json".to_string()]));
+        assert!(!declares_settings(&["--verbose".to_string()]));
+    }
+
+    #[test]
+    fn one_line_carries_the_room_and_the_character_together() {
+        // The preview and the spawn both come through here. A site composing
+        // the two halves for itself is a site the other one can drift from.
+        let room = server_name_for(LIN);
+        let line = launch_args(&["--verbose".to_string()], &room, Some("character_Lin"));
+        assert_eq!(
+            line,
+            vec![
+                "--verbose".to_string(),
+                CHANNEL_FLAG.to_string(),
+                format!("server:{room}"),
+                SETTINGS_FLAG.to_string(),
+                r#"{"outputStyle":"character_Lin"}"#.to_string(),
+            ]
+        );
+        assert_eq!(
+            launch_args(&["--verbose".to_string()], &room, None),
+            channel_launch_args(&["--verbose".to_string()], &room)
+        );
     }
 
     #[test]
