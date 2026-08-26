@@ -9,6 +9,9 @@
 //!   - The launch must carry `--dangerously-load-development-channels
 //!     server:<name>` and nothing else on that axis. Adding `--channels`
 //!     registers the same server twice and takes the whole room down.
+//!   - The launch must name the room registrations it is **not**, in
+//!     `--settings`. The CLI starts every enabled server in the file, and a
+//!     shared working directory holds one per account (#103).
 //!
 //! This crate holds no tauri: it writes into the user's own project directory,
 //! which is the part of Pullcept that most needs test coverage, and a test
@@ -192,7 +195,9 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
     character.map(str::trim).filter(|name| !name.is_empty())
 }
 
-/// The launch arguments carrying this account's character, given its own.
+/// The launch arguments carrying what this session declares about itself,
+/// given its own: the character it speaks as, and the room registrations it
+/// must not start.
 ///
 /// The character is the `name:` of an output style in the working directory's
 /// `.claude/output-styles/`, and it is selected at launch rather than written
@@ -204,27 +209,58 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// Selected rather than merged, unlike the channel entry above: `--settings`
 /// on the command line wins over the `settings.json` in the directory, so the
 /// directory's own default stays as it is and is simply not what this launch
-/// reads. An account declaring no character launches untouched and gets that
-/// default.
-pub fn character_launch_args(base: &[String], character: Option<&str>) -> Vec<String> {
+/// reads.
+///
+/// `disabled` names the sibling accounts' entries (`other_room_servers`). A
+/// shared `.mcp.json` holds one entry per account by design (#40), and the CLI
+/// starts every enabled server it finds there — so a session in a shared
+/// directory spawns the other accounts' sidecars too, and each of those joins
+/// the room under the identity it is registered with rather than the one that
+/// started it (#103). `disabledMcpjsonServers` is what stops them:
+/// `enabledMcpjsonServers` is the approval key, not the start key, and naming
+/// only this account's own server there leaves the siblings starting anyway
+/// (measured, 2026-08-26).
+///
+/// A launch with no character and nothing to stop is left untouched and takes
+/// the directory's own default. That is now the condition — nothing to stop —
+/// rather than "declares no character": a second registration in the directory
+/// puts `--settings` on the line whether a character was declared or not.
+pub fn settings_launch_args(
+    base: &[String],
+    character: Option<&str>,
+    disabled: &[String],
+) -> Vec<String> {
     let mut args = base.to_vec();
-    let Some(name) = declared_character(character) else {
+    let character = declared_character(character);
+    if character.is_none() && disabled.is_empty() {
         return args;
-    };
+    }
+    let mut settings = Map::new();
+    if let Some(name) = character {
+        settings.insert("outputStyle".into(), json!(name));
+    }
+    if !disabled.is_empty() {
+        settings.insert("disabledMcpjsonServers".into(), json!(disabled));
+    }
     args.push(SETTINGS_FLAG.to_string());
-    args.push(json!({ "outputStyle": name }).to_string());
+    args.push(Value::Object(settings).to_string());
     args
 }
 
 /// The whole line one launch runs: the account's options, the room's channel
-/// entry, and the account's character.
+/// entry, and the settings this session declares about itself.
 ///
 /// One function rather than two calls at each site, because the line shown on
 /// screen and the line spawned have to be the same line. They are produced in
 /// different places — a preview command and the launch — and every step either
 /// one composes for itself is a step the other can be missing.
-pub fn launch_args(base: &[String], server_name: &str, character: Option<&str>) -> Vec<String> {
-    character_launch_args(&channel_launch_args(base, server_name), character)
+pub fn launch_args(
+    base: &[String],
+    server_name: &str,
+    character: Option<&str>,
+    disabled: &[String],
+) -> Vec<String> {
+    settings_launch_args(&channel_launch_args(base, server_name), character, disabled)
 }
 
 /// Split a launch-options string the way a shell would, minus the parts a
@@ -281,6 +317,90 @@ fn spawn_form(runner: &Path, entry: &Path) -> (&'static str, Vec<String>) {
     )
 }
 
+/// The `.mcp.json` at `dir`, parsed, or an empty object when there is none.
+///
+/// Shared by the writer and the reader below so the refusal on a file that is
+/// not JSON is one sentence rather than two: the launch reads the file before
+/// it writes it, and hearing two different complaints about one file would not
+/// tell the person anything the first one did not.
+fn read_config(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(Value::Object(Map::new()));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    // Truncating a file that failed to parse would destroy whatever it held.
+    let root: Value = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{} exists but is not valid JSON ({e}). Fix or move it before starting a session.",
+            path.display()
+        )
+    })?;
+    if !root.is_object() {
+        return Err(format!("{} is not a JSON object.", path.display()));
+    }
+    Ok(root)
+}
+
+/// Whether one `.mcp.json` entry survives a registration into `room_url`.
+///
+/// Entries this app wrote in an earlier run can never connect: the room binds a
+/// fresh port every run, so their address is dead. Entries carrying the current
+/// address are live siblings — the other sessions of this run. Entries with no
+/// `PULLCEPT_ROOM_URL` at all are not ours to judge, whatever they are named.
+///
+/// One predicate rather than two, because `other_room_servers` answers for the
+/// file as the registration will leave it and runs before the write. A second
+/// copy of this rule would let the list name an entry the write then removed.
+fn survives_registration(name: &str, entry: &Value, room_url: &str) -> bool {
+    if !name.starts_with(SERVER_PREFIX) {
+        return true;
+    }
+    match entry
+        .get("env")
+        .and_then(|env| env.get("PULLCEPT_ROOM_URL"))
+    {
+        Some(Value::String(url)) => url == room_url,
+        _ => true,
+    }
+}
+
+/// The room registrations in `dir` that a launch of `own_server_name` must not
+/// start, as the registration into `room_url` will leave the file.
+///
+/// Every `SERVER_PREFIX` key except this account's own, including one carrying
+/// no room address of ours: the CLI starts what the file enables, and it does
+/// not consult us about whose entry it is. Enumerated from the file rather than
+/// derived from the account list, because an account deleted from the app, or a
+/// registration written by some other route, is in the file and not in the list
+/// — and it is the file the CLI reads.
+///
+/// Answers for the post-registration file while running before it: the write
+/// only removes entries `survives_registration` rejects and inserts
+/// `own_server_name`, which is excluded here either way. Running before means
+/// the launch can refuse without having written anything (`--settings` already
+/// in the launch options), and a refusal that had already registered would
+/// leave behind exactly the entry this issue is about.
+pub fn other_room_servers(
+    dir: &Path,
+    room_url: &str,
+    own_server_name: &str,
+) -> Result<Vec<String>, String> {
+    let root = read_config(&dir.join(".mcp.json"))?;
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    Ok(servers
+        .iter()
+        .filter(|(name, entry)| {
+            name.starts_with(SERVER_PREFIX)
+                && name.as_str() != own_server_name
+                && survives_registration(name, entry, room_url)
+        })
+        .map(|(name, _)| name.clone())
+        .collect())
+}
+
 /// Merge the room server into the `.mcp.json` at `dir`, preserving whatever
 /// else is there. Returns the path written.
 ///
@@ -292,24 +412,8 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     let server_name = server_name_for(room.account_id);
 
     let path = dir.join(".mcp.json");
-    let mut root: Value = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-        // Truncating a file that failed to parse would destroy whatever it held.
-        serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "{} exists but is not valid JSON ({e}). Fix or move it before starting a session.",
-                path.display()
-            )
-        })?
-    } else {
-        Value::Object(Map::new())
-    };
-
-    if !root.is_object() {
-        return Err(format!("{} is not a JSON object.", path.display()));
-    }
-    let obj = root.as_object_mut().expect("checked above");
+    let mut root = read_config(&path)?;
+    let obj = root.as_object_mut().expect("read_config checked this");
     let servers = obj
         .entry("mcpServers")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -319,22 +423,12 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
 
     let servers = servers.as_object_mut().expect("checked above");
 
-    // Entries this app wrote in an earlier run can never connect: the room
-    // binds a fresh port every run, so their address is dead. Left in place
-    // they would have every CLI started in this directory spawn a sidecar that
-    // retries nothing forever, and the file would grow by one key per account
-    // ever launched here. Entries carrying the current address are live
-    // siblings — the other sessions of this run — and stay. Entries with no
-    // `PULLCEPT_ROOM_URL` at all are not ours to judge, whatever they are named.
-    servers.retain(|name, entry| {
-        if !name.starts_with(SERVER_PREFIX) {
-            return true;
-        }
-        match entry.get("env").and_then(|env| env.get("PULLCEPT_ROOM_URL")) {
-            Some(Value::String(url)) => url == room.room_url,
-            _ => true,
-        }
-    });
+    // Left in place, a dead entry would have every CLI started in this
+    // directory spawn a sidecar that retries nothing forever, and the file
+    // would grow by one key per account ever launched here. What survives is
+    // `survives_registration`, which `other_room_servers` reads the file
+    // through as well.
+    servers.retain(|name, entry| survives_registration(name, entry, room.room_url));
 
     let mut env = Map::new();
     env.insert("PULLCEPT_ROOM_URL".into(), json!(room.room_url));
@@ -714,7 +808,7 @@ mod tests {
 
     #[test]
     fn a_declared_character_rides_in_settings_json() {
-        let args = character_launch_args(&["--verbose".to_string()], Some("character_Lay"));
+        let args = settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &[]);
         assert_eq!(
             args,
             vec![
@@ -733,20 +827,120 @@ mod tests {
     fn a_character_with_a_quote_in_it_stays_one_json_string() {
         // Built rather than formatted, so a name that would otherwise close the
         // string early cannot make the value stop being JSON.
-        let args = character_launch_args(&[], Some(r#"quote"style"#));
+        let args = settings_launch_args(&[], Some(r#"quote"style"#), &[]);
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
     }
 
     #[test]
-    fn no_character_means_the_line_is_left_alone() {
+    fn nothing_to_declare_means_the_line_is_left_alone() {
         let base = vec!["--verbose".to_string()];
         // Absent and blank are one state: a cleared field must not launch
         // `{"outputStyle":""}`, which names no style at all.
-        assert_eq!(character_launch_args(&base, None), base);
-        assert_eq!(character_launch_args(&base, Some("")), base);
-        assert_eq!(character_launch_args(&base, Some("   ")), base);
+        assert_eq!(settings_launch_args(&base, None, &[]), base);
+        assert_eq!(settings_launch_args(&base, Some(""), &[]), base);
+        assert_eq!(settings_launch_args(&base, Some("   "), &[]), base);
         assert_eq!(declared_character(Some("  x  ")), Some("x"));
+    }
+
+    #[test]
+    fn a_sibling_registration_is_named_as_one_this_launch_does_not_start() {
+        // The launch's own entry is not on the list: a session that disabled
+        // its own room server would be a session with no room (#103).
+        let lay = server_name_for(LAY);
+        let args = settings_launch_args(&[], Some("character_Lin"), std::slice::from_ref(&lay));
+        let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
+        assert_eq!(settled["outputStyle"], json!("character_Lin"));
+        assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
+    }
+
+    #[test]
+    fn a_sibling_registration_puts_settings_on_a_line_with_no_character() {
+        // The pass-through condition moved: it is "nothing to stop", not
+        // "declares no character". An account with no character in a shared
+        // directory still has to stop the other account's sidecar (#103).
+        let lay = server_name_for(LAY);
+        let args =
+            settings_launch_args(&["--verbose".to_string()], None, std::slice::from_ref(&lay));
+        assert_eq!(args[0], "--verbose");
+        assert_eq!(args[1], SETTINGS_FLAG);
+        let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
+        assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
+        assert!(
+            settled.get("outputStyle").is_none(),
+            "an undeclared character must not become an empty style"
+        );
+    }
+
+    #[test]
+    fn the_siblings_are_read_from_the_file_as_the_registration_leaves_it() {
+        // Enumerated from the file rather than from the account list: an entry
+        // the app no longer has an account for is still one the CLI starts.
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.path().join(".mcp.json"),
+            r#"{"mcpServers":{
+                 "pullcept-room": {"env":{"PULLCEPT_ROOM_URL":"ws://127.0.0.1:1"}},
+                 "pullcept-room-lay-00000000": {"env":{"PULLCEPT_ROOM_URL":"ws://127.0.0.1:1234"}},
+                 "pullcept-room-theirs": {"command":"not-ours"},
+                 "theirs": {"command":"their-server"}
+               }}"#,
+        )
+        .expect("seed");
+
+        let others =
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+                .expect("read");
+        assert_eq!(
+            others,
+            vec![
+                "pullcept-room-lay-00000000".to_string(),
+                "pullcept-room-theirs".to_string(),
+            ],
+            "a live sibling and a prefixed entry of unknown origin are both started by the CLI; \
+             a dead entry the registration removes is not"
+        );
+
+        // Read before the write, answering for the file after it. Registering
+        // must not change what the list said.
+        let entry = PathBuf::from(ENTRY);
+        let runner = PathBuf::from(RUNNER);
+        register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
+        assert_eq!(
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+                .expect("read"),
+            others
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_registrations_names_nothing() {
+        let scratch = Scratch::new();
+        assert!(
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+                .expect("read")
+                .is_empty(),
+            "no file is not a failure: it is a directory nothing has been registered in yet"
+        );
+
+        let entry = PathBuf::from(ENTRY);
+        let runner = PathBuf::from(RUNNER);
+        register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
+        assert!(
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+                .expect("read")
+                .is_empty(),
+            "the only entry is this account's own, and disabling it would leave it roomless"
+        );
+    }
+
+    #[test]
+    fn a_config_that_is_not_json_is_refused_before_anything_is_written() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.path().join(".mcp.json"), "{ not json").expect("seed");
+        let err = other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+            .expect_err("must refuse");
+        assert!(err.contains("not valid JSON"), "{err}");
     }
 
     #[test]
@@ -763,7 +957,12 @@ mod tests {
         // The preview and the spawn both come through here. A site composing
         // the two halves for itself is a site the other one can drift from.
         let room = server_name_for(LIN);
-        let line = launch_args(&["--verbose".to_string()], &room, Some("character_Lin"));
+        let line = launch_args(
+            &["--verbose".to_string()],
+            &room,
+            Some("character_Lin"),
+            &[],
+        );
         assert_eq!(
             line,
             vec![
@@ -775,8 +974,33 @@ mod tests {
             ]
         );
         assert_eq!(
-            launch_args(&["--verbose".to_string()], &room, None),
+            launch_args(&["--verbose".to_string()], &room, None, &[]),
             channel_launch_args(&["--verbose".to_string()], &room)
+        );
+    }
+
+    #[test]
+    fn one_line_starts_this_account_and_stops_the_others() {
+        // The room entry names this session's own server and the settings name
+        // the ones it must leave alone: the same file, read twice, must not
+        // disagree about which entry is whose (#103).
+        let room = server_name_for(LIN);
+        let lay = server_name_for(LAY);
+        let line = launch_args(
+            &[],
+            &room,
+            Some("character_Lin"),
+            std::slice::from_ref(&lay),
+        );
+        assert_eq!(line[0], CHANNEL_FLAG);
+        assert_eq!(line[1], format!("server:{room}"));
+        assert_eq!(line[2], SETTINGS_FLAG);
+        let settled: Value = serde_json::from_str(&line[3]).expect("valid JSON");
+        assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
+        assert_ne!(
+            settled["disabledMcpjsonServers"][0],
+            json!(room),
+            "the server the channel flag just named must not be disabled"
         );
     }
 

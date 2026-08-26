@@ -12,7 +12,7 @@ use crate::config::{Account, AccountKind};
 use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use mcp_config::{
-    declared_character, declares_settings, launch_args, register_sidecar,
+    declared_character, declares_settings, launch_args, other_room_servers, register_sidecar,
     reject_incompatible_flags, server_name_for, RoomRegistration,
 };
 use parking_lot::Mutex;
@@ -253,17 +253,35 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// holds still while that account's name is edited. Holding still is the point:
 /// the identity being launched is the account, and renaming it does not make it
 /// something else (#53).
+///
+/// The working directory is read for the same reason the character is: the
+/// sibling registrations sitting in it are on the line too (#103), and a
+/// directory shared with another account is the case where the person most
+/// needs to see that before starting. A directory that does not exist yet, or
+/// a room not listening, names nothing — the preview answers for what it can
+/// see, and the launch reads the directory again for itself.
 #[tauri::command]
 pub fn preview_launch_args(
+    room: tauri::State<RoomState>,
     args: Vec<String>,
     account_id: String,
     character: Option<String>,
+    cwd: Option<String>,
 ) -> Vec<String> {
-    launch_args(
-        &args,
-        &server_name_for(account_id.trim()),
-        character.as_deref(),
-    )
+    let server_name = server_name_for(account_id.trim());
+    let others = room
+        .port()
+        .zip(cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()))
+        .and_then(|(port, dir)| {
+            other_room_servers(
+                Path::new(dir),
+                &format!("ws://127.0.0.1:{port}"),
+                &server_name,
+            )
+            .ok()
+        })
+        .unwrap_or_default();
+    launch_args(&args, &server_name, character.as_deref(), &others)
 }
 
 /// What the caller gets back after a session joins.
@@ -294,6 +312,11 @@ pub struct StartedSession {
 /// Its character is on that same list since #99, and is why two accounts can
 /// now be started in one working directory and still be two: the one file that
 /// had kept them in separate directories is selected per launch instead.
+///
+/// Sharing the directory also means sharing its `.mcp.json`, which holds one
+/// room registration per account. The CLI starts every enabled server it finds
+/// there, so this launch has to name the siblings it is not — otherwise it
+/// spawns their sidecars too and the room lists them twice (#103).
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -332,20 +355,7 @@ pub fn start_session(
         ));
     }
 
-    // The character rides in `--settings`, so launch options carrying their own
-    // `--settings` are on the same axis as the character field. Refused rather
-    // than resolved: which of two copies of one flag a CLI reads is not
-    // something this app has established, and picking one here would be a
-    // guess that surfaces as the wrong character speaking (#99). Refused rather
-    // than stripped, for the reason the flag guard above is: a launch that
-    // quietly dropped half of what was asked for looks like it worked.
     let character = declared_character(account.character.as_deref());
-    if character.is_some() && declares_settings(&account.args) {
-        return Err(format!(
-            "Account \"{name}\" declares a character and also passes --settings in its launch \
-             options. Both name the same setting. Clear one of them."
-        ));
-    }
 
     let port = room
         .port()
@@ -370,6 +380,43 @@ pub fn start_session(
         ));
     }
 
+    let server_name = server_name_for(&account.id);
+    // Read before anything is written, and answering for the file as the
+    // registration below will leave it. The CLI starts every enabled server in
+    // the working directory's `.mcp.json`, and a directory shared with another
+    // account holds that account's entry by design (#40) — so without this the
+    // session would spawn the sibling's sidecar too, and the room would list
+    // that sibling twice (#103).
+    let others = other_room_servers(&cwd, &room_url, &server_name)?;
+
+    // The character and the sibling registrations both ride in `--settings`,
+    // so launch options carrying their own `--settings` are on the same axis as
+    // either. Refused rather than resolved: which of two copies of one flag a
+    // CLI reads is not something this app has established, and picking one here
+    // would be a guess that surfaces as the wrong character speaking (#99) or
+    // as the sibling's sidecar started anyway (#103). Refused rather than
+    // stripped, for the reason the flag guard above is: a launch that quietly
+    // dropped half of what was asked for looks like it worked.
+    if (character.is_some() || !others.is_empty()) && declares_settings(&account.args) {
+        // Two refusals rather than one sentence with a hole in it: what the
+        // person can do about it differs. A character is theirs to clear; a
+        // sibling registration is another account's, and the way out of that
+        // one is a directory of this account's own.
+        return Err(if character.is_some() {
+            format!(
+                "Account \"{name}\" declares a character and also passes --settings in its \
+                 launch options. Both name the same setting. Clear one of them."
+            )
+        } else {
+            format!(
+                "Account \"{name}\" passes --settings in its launch options, and its working \
+                 directory holds another account's room registration that this session has to \
+                 keep from starting. Both name the same setting. Remove the --settings, or give \
+                 this account a working directory of its own."
+            )
+        });
+    }
+
     // One account, one seat per room (`RoomSeats`). Claimed before anything is
     // written or spawned, so a refusal costs nothing and leaves nothing behind.
     seats.claim(&account.id, &pty_state).map_err(|()| {
@@ -380,7 +427,18 @@ pub fn start_session(
     })?;
 
     match launch(
-        app, &room, pty_state, &account, &name, character, &room_url, &cwd, cols, rows,
+        app,
+        &room,
+        pty_state,
+        &account,
+        &name,
+        character,
+        &others,
+        &server_name,
+        &room_url,
+        &cwd,
+        cols,
+        rows,
     ) {
         Ok(started) => {
             // The launch's own values, not the account's. The account may be
@@ -419,17 +477,20 @@ fn launch(
     account: &Account,
     name: &str,
     character: Option<&str>,
+    // The sibling registrations this session must not start, read from the
+    // working directory before this function writes into it.
+    others: &[String],
+    // Keyed on the account id, so two accounts launched into one working
+    // directory write two entries instead of overwriting each other's identity
+    // (#40), and renaming an account does not move the key out from under the
+    // session running on it (#53).
+    server_name: &str,
     room_url: &str,
     cwd: &Path,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
     let (sidecar_entry, sidecar_runner) = resolve_sidecar_paths()?;
-    // Keyed on the account id, so two accounts launched into one working
-    // directory write two entries instead of overwriting each other's identity
-    // (#40), and renaming an account does not move the key out from under the
-    // session running on it (#53).
-    let server_name = server_name_for(&account.id);
     let mcp_config = register_sidecar(
         cwd,
         &RoomRegistration {
@@ -449,10 +510,10 @@ fn launch(
         pty_state,
         account.command.clone(),
         // The same function the preview goes through, so what the form showed
-        // is what spawns. Nothing is written for the character: `--settings`
+        // is what spawns. Nothing is written for the settings: `--settings`
         // takes the JSON inline, and a file per account would grow the very
         // directory this account is sharing (#99).
-        launch_args(&account.args, &server_name, character),
+        launch_args(&account.args, server_name, character, others),
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),
