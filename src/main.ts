@@ -2261,6 +2261,11 @@ function showDialogKind(): void {
  * name in the field above it is edited. Holding still is the point: the
  * identity being launched is the account, and renaming it does not make it
  * something else (#53).
+ *
+ * The working directory goes with them: another account's room registration
+ * sitting in it is named on the line as one this session does not start (#103).
+ * That is the case worth seeing before 決定 — pointing an account at a shared
+ * directory is what puts `--settings` on a line that had none.
  */
 async function refreshDialogPreview(): Promise<void> {
   if (!draft) return;
@@ -2275,6 +2280,7 @@ async function refreshDialogPreview(): Promise<void> {
       // The field rather than the draft: the preview answers for what the form
       // holds now, and the draft is only written at 決定.
       character: dialogCharacterEl.value.trim() || null,
+      cwd: dialogCwdEl.value.trim() || null,
     });
     // The form may have been closed or reopened during the round trip.
     if (draft?.id !== id) return;
@@ -2605,6 +2611,9 @@ async function main(): Promise<void> {
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
   dialogCharacterEl.addEventListener("input", () => void refreshDialogPreview());
+  // So does the working directory: which registrations the line stops is read
+  // out of the directory it is pointed at (#103).
+  dialogCwdEl.addEventListener("input", () => void refreshDialogPreview());
   // Anything but the second click of 削除 disarms it: an arm left standing is
   // one that an unrelated click fires later.
   for (const field of [
