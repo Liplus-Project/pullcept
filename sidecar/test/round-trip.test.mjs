@@ -46,6 +46,21 @@ const TURN_TAKING = [
   "  足りないことがあるときだけ足してください。",
 ].join("\n");
 
+// Looking back. The room hands a late joiner nothing, by design, so the whole
+// of what makes the read reachable is that the manners name it and say when it
+// is worth calling (#115, decision 4C). Asserted in full for the reason the two
+// above are: a head-only check passes on a paragraph whose tail was deleted.
+const LOOKING_BACK = [
+  "前を見る:",
+  "- あなたが来る前の発言は届きません。部屋は過去を配らないからです。",
+  "- 必要になったら read_room_history を呼んでください。今のトピックで",
+  "  それまでに言われたことが、古い順で返ります。",
+  "- 押し付けられないので、要らないときは呼ばないでください。話の流れが",
+  "  分からないまま答えそうなときにだけ引けば足ります。",
+  "- 返り切らなかったときは、いちばん古い発言の message_id を before に",
+  "  入れてもう一度呼ぶと、その手前が返ります。",
+].join("\n");
+
 const SEE_THE_FLOOR = [
   "床を見てから送る:",
   "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
@@ -124,12 +139,55 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     },
   ];
 
+  // What the topic held before this session joined. The room delivers none of
+  // it live — a later joiner missed it — so the only way it reaches the agent
+  // is the pull (#115, decision 4C).
+  const PAST = [
+    {
+      message_id: "h-1",
+      speaker: "Master",
+      content: "この件は昨日決めた",
+      ts: "2026-08-26T00:00:00.000Z",
+    },
+    {
+      message_id: "h-2",
+      speaker: "Claude Lay",
+      content: "了解しました",
+      to: "Master",
+      ts: "2026-08-26T00:00:01.000Z",
+    },
+  ];
+  const historyFrames = [];
+
   wss.on("connection", (socket) => {
     roomSocket = socket;
     connected.resolve(socket);
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
+      if (frame.type === "history") {
+        historyFrames.push(frame);
+        // An answer for a pull nobody made, sent first. The call must not
+        // settle on it: pulls are correlated by request_id, the way posts are
+        // by message_id, and arrival order says nothing.
+        socket.send(
+          JSON.stringify({
+            type: "history_result",
+            request_id: "not-this-pull",
+            posts: [],
+            has_more: false,
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: "history_result",
+            request_id: frame.request_id,
+            posts: PAST,
+            has_more: true,
+          }),
+        );
+        return;
+      }
       if (frame.type !== "post") return;
 
       postFrames.push(frame);
@@ -320,18 +378,38 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     SEE_THE_FLOOR,
     "instructions must carry the floor manners in full, tail included",
   );
+  // The pull. A tool nobody is told about is a tool nobody calls: the room
+  // still delivers nothing that predates a seat, so a session that joined a
+  // topic late learns what it missed only by knowing to go and ask (#115,
+  // decision 4C).
+  assertContains(
+    instructions,
+    LOOKING_BACK,
+    "instructions must carry the looking-back manners in full, tail included",
+  );
 
   notify("notifications/initialized", {});
 
   const tools = await request("tools/list", {});
+  const toolNames = tools.result.tools.map((tool) => tool.name);
+  // One way to speak, one way to look back. The constraint that held the count
+  // at one is about *posting*: a second way to be heard would put "which one do
+  // I answer through" back on the agent. `read_room_history` cannot post, so it
+  // does not sit on that axis (#115, decision 4C).
   assert.deepEqual(
-    tools.result.tools.map((tool) => tool.name),
-    ["say_to_room"],
+    toolNames,
+    ["say_to_room", "read_room_history"],
+    "one posting tool and one reading tool, and nothing else",
+  );
+  assert.equal(
+    toolNames.filter((name) => name === "say_to_room").length,
+    1,
     "exactly one posting tool is exposed",
   );
-  // Seeing the floor is an argument of the one tool, not a second tool. A
-  // separate read call would put "which one do I speak through" back on the
-  // agent, which is the reason there is one (docs/0-requirements.md).
+  // Seeing the floor is an argument of the posting tool, not a tool of its own.
+  // The watermark is a claim about what the speaker saw, made at the moment of
+  // speaking; split into its own call it would be a claim about a moment that
+  // has already passed by the time the post goes out (#47).
   const schema = tools.result.tools[0].inputSchema;
   assert.deepEqual(
     Object.keys(schema.properties).sort(),
@@ -358,7 +436,7 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // (#59). It rides on `hello` and decides nothing: identity in the room is the
   // connection, and this frame cannot set that (#39 / #40).
   assert.equal(hello.account_id, TEST_ACCOUNT);
-  assert.equal(hello.protocol, 5);
+  assert.equal(hello.protocol, 6);
 
   roomSocket.send(
     JSON.stringify({
@@ -509,6 +587,58 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     refusal,
     'last_seen: "m-10"',
     "the refusal must name the watermark to declare on the next attempt",
+  );
+
+  // ── the pull: what the topic held before this session joined ──────────────
+  // The room hands a late joiner nothing, and this is the whole of what a
+  // participant can do about that. It is a read: nothing is posted, and the
+  // frame that goes out is not a post (#115, decision 4C).
+  const pulled = await request("tools/call", {
+    name: "read_room_history",
+    arguments: { limit: 2 },
+  });
+  assert.ok(!pulled.result.isError, `pull failed: ${JSON.stringify(pulled.result)}`);
+  assert.equal(historyFrames.length, 1, "one pull produces exactly one frame");
+  assert.equal(historyFrames[0].type, "history");
+  assert.equal(historyFrames[0].limit, 2);
+  assert.equal(
+    "before" in historyFrames[0],
+    false,
+    "a first page names no cursor; an empty one would be a value the room has to rule out",
+  );
+  // A pull is not a post. Reaching the room as one would put words in the room
+  // that nobody said.
+  assert.equal(
+    postFrames.length,
+    3,
+    "reading the topic must not put anything on the floor",
+  );
+  const past = pulled.result.content[0].text;
+  // Correlation held: the answer for another pull arrived first and did not
+  // settle this call.
+  for (const one of PAST) {
+    assertContains(past, one.message_id, "each past post must carry its id");
+    assertContains(past, one.speaker, "each past post must name its speaker");
+    assertContains(past, one.content, "each past post must carry what was said");
+  }
+  assertContains(
+    past,
+    "Claude Lay -> Master:",
+    "a past post addressed to someone comes back carrying who it was for",
+  );
+  // The way to keep reading backwards, named concretely. "There is more" with
+  // no cursor is a dead end the agent cannot act on.
+  assertContains(
+    past,
+    'before: "h-1"',
+    "a page with more behind it must name the cursor for the next one",
+  );
+  // What this is and is not. These posts were never addressed to this session
+  // and were never delivered to it; read as arrivals they would be answered.
+  assertContains(
+    past,
+    "Read it as context, not as something to answer.",
+    "the pull must say that what it returns is not addressed to the reader",
   );
 
   // ── an unanswered post is unconfirmed, not delivered and not refused ───────
