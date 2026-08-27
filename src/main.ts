@@ -46,13 +46,24 @@ interface PostOutcome {
   /** The id the post is filed under, or null when it was refused. */
   message_id: string | null;
   /** What this screen had not seen, oldest first. Empty when delivered. */
-  missed: {
-    message_id: string;
-    speaker: string;
-    content: string;
-    to: string | null;
-    ts: string;
-  }[];
+  missed: MissedPost[];
+}
+
+/**
+ * One post the room handed back in place of delivering.
+ *
+ * The post itself, not a summary of it: everything a line needs is here, which
+ * is what lets the refusal put it on the glass (#108).
+ */
+interface MissedPost {
+  message_id: string;
+  speaker: string;
+  /** The hue it was said in, or null when the speaker declared none. Carried
+   *  so the drawn line is the line it would have been. */
+  hue: number | null;
+  content: string;
+  to: string | null;
+  ts: string;
 }
 
 /**
@@ -351,6 +362,19 @@ let homeDir = "";
  * see and does not pretend to (#47).
  */
 let lastSeenId: string | null = null;
+/**
+ * Every `message_id` this screen has put on the glass.
+ *
+ * The floor hands a refusal its whole retained window when it cannot resolve
+ * the declared watermark — an id that has aged out of the 512, or one the room
+ * never issued, is read as having seen nothing — so what comes back then
+ * includes lines this screen already drew. This is what tells the two apart
+ * (#108).
+ *
+ * Unbounded, like the log it mirrors: nothing here prunes drawn lines, so a
+ * set of their ids grows no faster than the DOM already does.
+ */
+const drawnIds = new Set<string>();
 /** The size the conversation is currently drawn at, in `rem`. */
 let roomFontSize = DEFAULT_ROOM_FONT_SIZE;
 
@@ -896,8 +920,59 @@ function appendMessage(message: RoomMessage): void {
   // included: the room does not hold a speaker's own posts against them, and
   // carrying the newest id either way keeps this one value rather than two.
   lastSeenId = message.message_id;
+  drawnIds.add(message.message_id);
 
   if (atBottom) roomEl.scrollTop = roomEl.scrollHeight;
+}
+
+/**
+ * Put the posts a refusal handed back on the glass, and answer how many were
+ * new. Oldest first, in the order the room put them in.
+ *
+ * The refusal is the only place these posts are reachable from. The room has no
+ * read-out for the floor — `room_participants` / `room_port` / `room_join` /
+ * `room_post` is the whole surface — and the watermark advances inside
+ * `appendMessage`, that is, only for a line actually drawn. So a screen that
+ * missed the delivering event had no second path to those posts: the watermark
+ * stayed behind, the next post was refused for the same reason, and nothing the
+ * person could do moved it. Only another participant speaking broke it, which
+ * is not something the person could cause while refused (#108).
+ *
+ * Drawn as ordinary lines, with no mark saying they were caught up on. They are
+ * posts of the room like any other, and "arrived while you were typing" is not
+ * an attribute of a post.
+ *
+ * The watermark is then the newest of them, drawn here or drawn earlier: the
+ * screen has seen every one either way. Setting it is what the already-drawn
+ * case needs — nothing is appended there, so nothing else would move it, and
+ * leaving it standing is the refusal loop this exists to break. Against the
+ * watermark that was declared it always advances, since every missed post is by
+ * definition ahead of that one. A post admitted after the refusal was computed
+ * and drawn before this runs is the one thing it can fall behind, and that
+ * costs the round trip the floor already prices (#47).
+ */
+function drawMissed(missed: MissedPost[]): number {
+  let drew = 0;
+  for (const one of missed) {
+    if (drawnIds.has(one.message_id)) continue;
+    appendMessage({
+      message_id: one.message_id,
+      speaker: one.speaker,
+      hue: one.hue,
+      content: one.content,
+      to: one.to,
+      ts: one.ts,
+      // Never this screen's own. The floor holds a speaker's own posts back
+      // from their own refusal: they were not delivered to their author, so
+      // there was nothing there to have missed.
+      own: false,
+    });
+    drew += 1;
+  }
+
+  const newest = missed[missed.length - 1];
+  if (newest) lastSeenId = newest.message_id;
+  return drew;
 }
 
 /**
@@ -1653,13 +1728,21 @@ async function send(): Promise<void> {
       lastSeen,
     });
     if (!outcome.delivered) {
-      // Refused, not failed. The missed posts are already on screen — the room
-      // drew them through the same event — so the report names who spoke and
-      // leaves the reading where it belongs.
+      // Refused, not failed. The refusal carries the posts themselves, so they
+      // go on the glass here and the person reads them and decides again — #47
+      // unchanged, except that what it says to read is now there to read. The
+      // reading is left where it belongs; only the means of doing it is added.
       inputEl.value = content;
+      const drew = drawMissed(outcome.missed);
       const speakers = [...new Set(outcome.missed.map((one) => one.speaker))];
+      // What was drawn, and nothing about how much arrived. Beyond the floor's
+      // 512 the room cannot enumerate what it dropped and this screen cannot
+      // count it, so a total here would be a number that looks complete and is
+      // not.
       status(
-        `送っていません。書いている間に届いた発言が ${outcome.missed.length} 件あります（${speakers.join("、")}）。読んでから送るか決めてください。`,
+        drew
+          ? `送っていません。書いている間に届いた発言 ${drew} 件を下へ描きました（${speakers.join("、")}）。読んでから送るか決めてください。`
+          : `送っていません。書いている間に届いた発言（${speakers.join("、")}）は画面に出ています。読んでから送るか決めてください。`,
         "error",
       );
       return;

@@ -36,10 +36,27 @@ use serde::Serialize;
 pub const DEFAULT_CAPACITY: usize = 512;
 
 /// One utterance, as it was said.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not `Eq`: `hue` is a float. Nothing compares posts for identity — the
+/// `message_id` is the identity — so the weaker bound costs nothing.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Post {
     pub message_id: String,
     pub speaker: String,
+    /// The hue the speaker had declared when they said it, in oklch degrees,
+    /// or `None` when they declared none.
+    ///
+    /// Stamped by the caller from the connection the post arrived on, in the
+    /// same critical section this is admitted under, and never read off the
+    /// frame — a sender may name an addressee and may not name itself, and the
+    /// colour is part of that attribution (#40).
+    ///
+    /// On the post rather than looked up when it is handed back: a name is not
+    /// an identity here, so a lookup by name is the wrong participant as soon
+    /// as two answer to one name, and the speaker may have left the room by
+    /// then. It is what lets a refusal hand a missed post back in the colour it
+    /// was said in (#108).
+    pub hue: Option<f64>,
     pub content: String,
     pub to: Option<String>,
     pub ts: String,
@@ -50,10 +67,14 @@ pub struct Post {
 /// Carries what a participant needs in order to decide again: who said it,
 /// what they said, who they said it to, and the `message_id` to declare as
 /// `last_seen` on the next attempt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Missed {
     pub message_id: String,
     pub speaker: String,
+    /// The hue it was said in, carried straight from the post. What lets a
+    /// screen draw this post as the line it would have been, rather than as a
+    /// line in some other colour (#108).
+    pub hue: Option<f64>,
     pub content: String,
     pub to: Option<String>,
     pub ts: String,
@@ -65,7 +86,7 @@ pub struct Missed {
 /// [`Admission::Admitted`] later — to hand back a position in a queue rather
 /// than only the position taken — adds a field here and changes no caller's
 /// signature (#47 constraint: leave no step up to turn assignment).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Admission {
     /// On the floor, at this position.
     Admitted { seq: u64 },
@@ -159,6 +180,7 @@ impl Floor {
             .map(|entry| Missed {
                 message_id: entry.post.message_id.clone(),
                 speaker: entry.post.speaker.clone(),
+                hue: entry.post.hue,
                 content: entry.post.content.clone(),
                 to: entry.post.to.clone(),
                 ts: entry.post.ts.clone(),
@@ -205,6 +227,7 @@ mod tests {
         Post {
             message_id: message_id.to_string(),
             speaker: speaker.to_string(),
+            hue: None,
             content: content.to_string(),
             to: None,
             ts: "2026-08-23T00:00:00.000Z".to_string(),
@@ -339,6 +362,22 @@ mod tests {
         let missed = refusal(&admission);
         assert_eq!(missed.len(), 1);
         assert_eq!(missed[0].message_id, "m-1");
+    }
+
+    #[test]
+    fn the_refusal_hands_a_post_back_in_the_colour_it_was_said_in() {
+        let mut floor = Floor::new();
+        let mut declared = post("m-1", "Claude Lay", "ハロー");
+        declared.hue = Some(275.0);
+        floor.admit("lay", 0, None, declared);
+
+        // The screen draws this line from the refusal, and it has to be the
+        // line it would have been. Deriving the colour from the name on the way
+        // out would repaint it (#108).
+        let admission = floor.admit("lin", 0, None, post("m-2", "Claude Lin", "答えます"));
+        let missed = refusal(&admission);
+        assert_eq!(missed.len(), 1);
+        assert_eq!(missed[0].hue, Some(275.0));
     }
 
     #[test]

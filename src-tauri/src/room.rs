@@ -455,7 +455,7 @@ fn deliver(
     app: &AppHandle,
     room: &RoomState,
     origin: &str,
-    post: Post,
+    mut post: Post,
     last_seen: Option<&str>,
 ) -> PostOutcome {
     let message_id = post.message_id.clone();
@@ -471,6 +471,10 @@ fn deliver(
             // command does that before it reaches this point.
             None => (0, None),
         };
+        // Stamped before the floor takes its copy, so the retained post and the
+        // live line carry one declaration rather than two readings of it. A
+        // refusal hands that copy back, and the screen draws it (#108).
+        post.hue = hue;
         let admission = inner.floor.admit(origin, since, last_seen, post.clone());
         (admission, hue)
     };
@@ -726,6 +730,10 @@ async fn serve_participant(
                     Post {
                         message_id: message_id.clone(),
                         speaker,
+                        // Stamped by `deliver` off the seat on this connection.
+                        // A sender may name an addressee; it may not name its
+                        // own colour any more than its own name.
+                        hue: None,
                         content: frame.content.unwrap_or_default(),
                         to: normalize_to(frame.to),
                         ts: frame.ts.unwrap_or_else(now_iso),
@@ -860,6 +868,10 @@ pub fn room_post(
         Post {
             message_id,
             speaker,
+            // Stamped by `deliver` off the seat, which the call above left as
+            // it stood. Filling it here would be a second reading of the same
+            // declaration.
+            hue: None,
             content,
             to: normalize_to(to),
             ts: now_iso(),
