@@ -406,6 +406,39 @@
           </menu>
         </div>
       </dialog>
+
+      <!-- The トピックの削除 confirmation. Deleting a topic takes the posts and
+           the way back into the sessions that were in it, and neither is
+           anywhere else — the log is not in git and nothing copies it (#119).
+           So the question is asked, and it is asked here rather than on the
+           button: this one sits in a list whose other click merely opens a
+           topic.
+
+           Its own `<dialog>`, for the reason `#end-dialog` and `#quit-dialog`
+           are each their own: one element holding three questions would have to
+           decide which of them it is opening in, and each answer would have to
+           find its way back to whichever asked.
+
+           Two lines, and the second one is not decoration. Deleting a topic
+           ends the sessions running in it (#119, decision 4), so a dialog that
+           spoke only about the log would make a stopped session an ambush. It
+           is hidden when nothing is running, because saying it then would be
+           saying something untrue.
+
+           取消 holds the focus, so a stray Enter or Space answers the safe way.
+           Escape closes it, which is the same answer. -->
+      <dialog id="topic-delete-dialog" aria-labelledby="topic-delete-title">
+        <div class="confirm">
+          <h2 id="topic-delete-title">トピックの削除</h2>
+          <p id="topic-delete-message"></p>
+          <p id="topic-delete-sessions" class="sessions" hidden></p>
+          <menu class="actions">
+            <span class="spacer"></span>
+            <button id="topic-delete-cancel" type="button" autofocus>取消</button>
+            <button id="topic-delete-commit" type="button" class="danger">削除</button>
+          </menu>
+        </div>
+      </dialog>
     </div>
   </body>
 </html>
