@@ -490,7 +490,7 @@ body {
   padding: 0.15rem 0.4rem;
 }
 
-/* ── history ─────────────────────────────────────────────────────────────── */
+/* ── topics ──────────────────────────────────────────────────────────────── */
 
 /* The other column, and the pair to #participants below: same width, same
    ground, and the border on the side that faces the conversation. Two panels
@@ -501,7 +501,11 @@ body {
    The rule below is the whole of what makes them a pair — `border-right` here
    against `border-left` there. Nothing else needs saying twice, because the
    parts inside are the panel's own vocabulary (`.panel-head`, `.panel-title`,
-   `.empty`) and those are shared. */
+   `.empty`) and those are shared.
+
+   The id is still `history`: what this column is for did not change — it is
+   where the past is reached from — and only its unit did, from a post to a
+   topic (#115). */
 #history {
   width: 16.5rem;
   flex: none;
@@ -528,72 +532,106 @@ body {
   font-weight: 600;
 }
 
-#history .history {
+/* 新規, and the same shape ＋ has on the panel opposite: the window's ground
+   with a border, because what separates a control from the surface it sits on
+   is the border and not a fill (see 二つの地色 in docs/0-requirements.md). */
+#history .panel-head button {
+  font: inherit;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+
+#history .topics {
   margin: 0;
   padding: 0 0.3rem 0.6rem;
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.15rem;
 }
 
-/* One past post. The same shape a line in the room has — a rule in the
-   speaker's colour down the left, the meta above the words — at the panel's
-   size rather than the conversation's. Reading it has to be reading the same
-   thing, or the two surfaces stop being one conversation seen from two
-   distances.
-
-   It does not carry `--room-font-size`. That size is declared on the two
-   elements rendering the conversation's own words and nowhere else (#81), and
-   this is a panel; it takes the panel's size like the roster beside it. */
-#history .entry {
-  border-left: 3px solid var(--speaker, var(--line));
-  padding: 0.1rem 0.4rem 0.1rem 0.5rem;
+/* One topic. A row that is picked, so it is the shape a picked row has on the
+   panel opposite — the whole row is the control, and the selected one is lifted
+   out of the panel's surface rather than tinted (#75). */
+#history .topic .pick {
+  width: 100%;
+  min-width: 0;
+  display: block;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  cursor: pointer;
 }
 
-#history .entry .meta {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  font-size: 0.9em;
+#history .topic.current .pick {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+/* The name, and the one part of the row that can be long. It takes one line and
+   ellipses: a list is read down its left edge, and a title that wrapped to three
+   lines would put the next topic wherever the last one happened to end. */
+#history .topic .name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A topic nobody has spoken in yet. Said rather than left blank, because blank
+   is what a row with a failed read would also look like. */
+#history .topic .name.unnamed {
   color: var(--muted);
 }
 
-#history .entry .speaker {
-  font-weight: 600;
+/* When it was made. The day, and the clock under it — a list of topics spans
+   months, so the day is the part that places one. */
+#history .topic .when {
+  display: block;
+  margin-top: 0.05rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+/* Renaming, in place. The generated title is a starting point in an editable
+   field, which is the same thing an account's name is (#115, decision 9), so it
+   is edited where it is read rather than in a form of its own. */
+#history .topic input.rename {
+  width: 100%;
+  font: inherit;
   color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Written in the speaker's colour, not the addressee's: it is part of what this
-   speaker said. Same reading as `.message .to`. */
-#history .entry .to {
-  color: var(--speaker, var(--accent));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The time takes what the two above leave, and never shrinks: a stamp that
-   ellipsed would be the one part of the row that cannot be guessed from the
-   rest of it. */
-#history .entry .ts {
-  margin-left: auto;
-  flex: none;
-}
-
-#history .entry .body {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.5;
-  margin-top: 0.1rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.35rem;
 }
 
 #history .empty {
   padding: 0.45rem 0.9rem;
   color: var(--muted);
+}
+
+/* A line that was said before this window opened, drawn in the room among the
+   lines being said in it now.
+
+   Picking a topic puts its posts back in the room (#115, decision 2), which is
+   the constraint #48 held the other way — that one is overwritten. What is
+   drawn is the log, and the log carries no declared colour and no viewer's
+   position, so these lines take a colour derived from the name and none of them
+   is this screen's accent (see `LoggedPost` in src/main.ts). Nothing marks them
+   as past beyond that: they are the same conversation, and a badge saying which
+   side of a launch a line fell on would be an axis the room does not have. */
+#room .message.past .meta {
+  opacity: 0.75;
 }
 
 /* ── participants ────────────────────────────────────────────────────────── */

@@ -42,25 +42,32 @@
       </header>
 
       <div id="body">
-        <!-- What was said before this run, read out of the room's log
-             (src-tauri/src/room_log.rs). A surface of its own, on the opposite
-             side from the account panel, because the room's body and the
-             history are two different things and mixing them would undo the
-             one that the room starts empty every time (#48).
+        <!-- The topics (src-tauri/src/room_log.rs). Not a strip of past posts:
+             this column used to hold every line ever said in one flow, and what
+             Master asked for was a list to pick from (#115). A topic is the
+             vessel a conversation happens in — picking one puts it back in the
+             room to the right and the talk continues in it.
 
-             The division between the two is the launch. Below is what was said
-             before this window opened; the room to the right is what is being
-             said in it. That is why nothing here follows along as posts
-             arrive — a strip that grew with the conversation would be a second
-             drawing of the conversation, which is the surface next to it. -->
-        <aside id="history" aria-label="履歴">
+             It sits opposite the account panel and is its pair in width and
+             ground, for the reason it was one before: two panels flanking the
+             room read as two panels, and one of them narrower reads as a
+             mistake (#48).
+
+             新規 is what draws a boundary, and it is the only thing that draws
+             one. Starting the app opens a new topic too, but the two are
+             independent: one run may hold several topics, and one topic may
+             span several runs (#115, decision 1). -->
+        <aside id="history" aria-label="トピック">
           <div class="panel-head">
-            <h2 class="panel-title">履歴</h2>
+            <h2 class="panel-title">トピック</h2>
+            <!-- Making one belongs next to the list it appears in, which is
+                 where ＋ sits on the panel opposite (#59). -->
+            <button id="topic-new" type="button" title="新しいトピックを始める">新規</button>
           </div>
-          <!-- Seeded, because the log is read after the frame is up: an empty
-               strip in that gap would say "nothing was ever said" at the one
-               moment nothing has been asked yet. -->
-          <ol id="history-list" class="history">
+          <!-- Seeded, because the index is read after the frame is up: an empty
+               list in that gap would say "there are no topics" at the one moment
+               nothing has been asked yet. -->
+          <ol id="topic-list" class="topics">
             <li class="empty">読み込み中</li>
           </ol>
         </aside>
@@ -283,13 +290,41 @@
                 placeholder="例: character_Lay（output style の name）"
               />
             </label>
+            <!-- 起動オプション。`{session_id}` を書くと、そこへこのアプリが
+                 決めた UUID が入る。新しいトピックでセッションを始めるときに
+                 使う側であり、`claude` では `--session-id {session_id}` と
+                 書く。どのフラグが id を運ぶかは CLI ごとの問いであるため、
+                 アプリ側は欄を持たず、書かれた場所へ差し込む。
+
+                 書かなければ id を配らない。それは resume を持たない CLI が
+                 恒常的に置かれる状態であり、失敗ではない——その場合の参加者
+                 は、部屋の読み出し（`read_room_history`）で自分から辿る
+                 (#115)。 -->
             <label class="field">
               起動オプション
               <input
                 id="dialog-options"
                 type="text"
                 spellcheck="false"
-                placeholder="例: --dangerously-skip-permissions"
+                placeholder="例: --dangerously-skip-permissions --session-id {session_id}"
+              />
+            </label>
+            <!-- 再開コマンド。トピックが持っているセッションへ戻る一行であり、
+                 先頭の語が command になる。トピックはアカウントごとに
+                 `{account_id: session_uuid}` を持ち、その id がここへ入る
+                 (#115、決定4B)。
+
+                 起動コマンドと別の欄なのは、戻り方が起動と同じ呼び出しとは
+                 限らないためである。空なら resume 無しであり、そのアカウント
+                 は開き直したトピックへ新規のセッションとして着席する。席が
+                 一つ戻らなくてもトピックは開く（決定6）。 -->
+            <label class="field">
+              再開コマンド
+              <input
+                id="dialog-resume"
+                type="text"
+                spellcheck="false"
+                placeholder="例: claude --resume {session_id}"
               />
             </label>
             <!-- What will actually run. The app merges its own channel entry

@@ -90,6 +90,39 @@ interface LoggedPost {
 }
 
 /**
+ * One topic, as the index holds it (src-tauri/src/room_log.rs).
+ *
+ * The vessel a conversation happens in, not a section of a transcript. Picking
+ * one puts its posts back in the room and hands its session ids to the next
+ * launch, so what comes back is the participants' own context rather than a
+ * reading of the log to them (#115).
+ */
+interface Topic {
+  topic_id: string;
+  /** Generated from the first post's opening, editable after. Empty until that
+   *  post lands, which the list draws as its own state rather than as a blank. */
+  title: string;
+  created_at: string;
+  /** Which session each account was in while this was open, by account id.
+   *  Read by the launch, never by the screen — it is here because the index
+   *  entry carries it, not because anything on this side decides on it. */
+  sessions: Record<string, string>;
+}
+
+/**
+ * The topic the room is in.
+ *
+ * Held apart from the list because it may not be in the list: a launch opens a
+ * new topic and nothing is written down until something is said in it, so the
+ * index has no entry for it yet (#115). The panel draws this whether or not the
+ * list names it.
+ */
+interface TopicRef {
+  topic_id: string;
+  created_at: string;
+}
+
+/**
  * One participant of the room, as the roster lists them.
  *
  * `id` is the connection they are in the room on, and it is the identity. The
@@ -153,6 +186,17 @@ interface Account {
    *  rather than a string inside `args`, for the reason the name and the hue
    *  are attributes (#40) — it is who this account is when it runs (#99). */
   character: string | null;
+  /** The whole command line that puts this account back into a session it was
+   *  already in, with `{session_id}` where the id goes — or null when it
+   *  declares none. A topic holds which session each account was in while it
+   *  was open, and reopening one hands that id to this line: what comes back is
+   *  the participant's own context, carried by the CLI rather than read out to
+   *  it (#115, decision 4B).
+   *
+   *  Null is the common state. An account with no resume line joins a reopened
+   *  topic as a new session and pulls what it needs out of the room instead
+   *  (#115, decision 4C). */
+  resume_command: string | null;
 }
 
 interface AppConfig {
@@ -164,6 +208,12 @@ interface StartedSession {
   mcp_config: string;
   /** When the session was launched, stamped by the room's own clock. */
   started_at: string;
+  /** True when this went in through the account's resume line rather than its
+   *  launch line — the topic held a session for it, and the CLI came back
+   *  carrying its own context (#115, decision 4B). False is not a failure: it
+   *  is a seat starting fresh in a reopened topic, which is what a topic does
+   *  for every seat it cannot resume (decision 6). */
+  resumed: boolean;
 }
 
 /**
@@ -305,8 +355,8 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
-const historyEl = document.getElementById("history") as HTMLElement;
-const historyListEl = document.getElementById("history-list") as HTMLElement;
+const topicListEl = document.getElementById("topic-list") as HTMLElement;
+const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
@@ -336,6 +386,7 @@ const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
+const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
 const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
 const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
@@ -386,6 +437,14 @@ let homeDir = "";
  * two. A person who leaves a message unread on screen is a gap the room cannot
  * see and does not pretend to (#47).
  */
+/**
+ * The topics as the index holds them, oldest first, and the one the room is in.
+ *
+ * Two values because the current one may not be in the list: a launch opens a
+ * new topic and nothing is written down until something is said in it (#115).
+ */
+let topics: Topic[] = [];
+let currentTopic: TopicRef | null = null;
 let lastSeenId: string | null = null;
 /**
  * Every `message_id` this screen has put on the glass.
@@ -915,47 +974,76 @@ function shortDateTime(iso: string): string {
   return `${day} ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-function appendMessage(message: RoomMessage): void {
-  // The room is scrolled to the bottom only when it already was, so reading
-  // back through the log is not yanked away by an arriving message.
-  const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
-
-  const line = document.createElement("article");
-  line.className = "message";
-  // `own` rather than a name test: the room decides self on the connection a
-  // post arrived on, which a rename cannot blur (#40).
-  line.style.setProperty(
-    "--speaker",
-    speakerColor(message.speaker, message.hue, message.own),
-  );
+/**
+ * One line of the room, whenever it was said.
+ *
+ * The same element for a post arriving now and a post read back out of the
+ * topic's log, because they are the same conversation: picking a topic puts its
+ * posts in the room rather than beside it (#115, decision 2). What differs is
+ * the stamp — a line said in this window is placed by its clock, one from
+ * before it by its day as well — and that is passed in rather than decided
+ * here.
+ */
+function roomLine(line: {
+  speaker: string;
+  colour: string;
+  to: string | null;
+  ts: string;
+  stamp: string;
+  content: string;
+  past: boolean;
+}): HTMLElement {
+  const article = document.createElement("article");
+  article.className = line.past ? "message past" : "message";
+  article.style.setProperty("--speaker", line.colour);
 
   const head = document.createElement("div");
   head.className = "meta";
 
   const speaker = document.createElement("span");
   speaker.className = "speaker";
-  speaker.textContent = message.speaker;
+  speaker.textContent = line.speaker;
   head.appendChild(speaker);
 
-  if (message.to) {
+  if (line.to) {
     const to = document.createElement("span");
     to.className = "to";
-    to.textContent = `→ ${message.to}`;
+    to.textContent = `→ ${line.to}`;
     head.appendChild(to);
   }
 
   const time = document.createElement("time");
   time.className = "ts";
-  time.dateTime = message.ts;
-  time.textContent = shortTime(message.ts);
+  time.dateTime = line.ts;
+  time.textContent = line.stamp;
   head.appendChild(time);
 
   const body = document.createElement("div");
   body.className = "body";
-  body.textContent = message.content;
+  body.textContent = line.content;
 
-  line.append(head, body);
-  roomEl.appendChild(line);
+  article.append(head, body);
+  return article;
+}
+
+function appendMessage(message: RoomMessage): void {
+  // The room is scrolled to the bottom only when it already was, so reading
+  // back through the log is not yanked away by an arriving message.
+  const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
+
+  roomEl.appendChild(
+    roomLine({
+      speaker: message.speaker,
+      // `own` rather than a name test: the room decides self on the connection
+      // a post arrived on, which a rename cannot blur (#40).
+      colour: speakerColor(message.speaker, message.hue, message.own),
+      to: message.to,
+      ts: message.ts,
+      stamp: shortTime(message.ts),
+      content: message.content,
+      past: false,
+    }),
+  );
   // On the glass, so it is what this screen can declare having seen. Own posts
   // included: the room does not hold a speaker's own posts against them, and
   // carrying the newest id either way keeps this one value rather than two.
@@ -966,90 +1054,244 @@ function appendMessage(message: RoomMessage): void {
 }
 
 /**
- * Draw what was said before this window opened.
+ * Put a topic's posts in the room, in place of whatever was there.
  *
- * Read once, at launch, out of the room's log. It never follows along after
- * that, and the reason is the division the two surfaces are built on: the room
- * starts empty every run (#48), so what is beside this strip is this run and
- * what is in it is everything before. A strip that grew as posts arrived would
- * be a second drawing of the conversation already on the glass next to it, and
- * the boundary that tells the two apart would stop existing.
+ * Picking a topic is picking where the conversation is, so what is drawn is the
+ * topic itself and not a strip beside it. #48 held the opposite — the room
+ * started empty and the past was read in a column of its own — and #115
+ * overwrites that line: the column is a list of topics now, and the room is
+ * where a topic is read.
  *
- * Oldest first, as the file holds them and as the room draws them, and opened
- * at the end. The two are one reading: the last line here was said just before
- * the first line of the room beside it, so the bottom of this strip is where
- * the conversation is continuous and the top is months back. A panel that
- * opened at its oldest entry would put the far side of the log in front of the
- * person every time, and the log has no ceiling to keep that distance short.
+ * The watermark is cleared rather than set to the last line drawn. These posts
+ * are not on the floor: entering a topic empties it and puts the seats back to
+ * its start (`RoomState::enter_topic`). A watermark naming a post the floor
+ * does not hold resolves to position 0, which is the same answer as declaring
+ * none — so clearing it says the true thing rather than the equivalent one.
  *
- * The colour is derived from the name, because the log does not carry the
- * declaration (see `LoggedPost`). `own` is passed false for the same reason —
- * the file records what was said, not who was watching — so nothing here is
- * drawn in this screen's accent.
+ * The ids are kept, because they are on the glass: a refusal that hands back
+ * the whole retained floor must not draw a line twice (#108).
+ *
+ * The colour is derived from the name and `own` is false for every line. The
+ * log carries neither declaration (see `LoggedPost`), so nothing read back is
+ * in this screen's accent — this screen's own past words included.
  */
-function renderHistory(posts: LoggedPost[]): void {
-  historyListEl.replaceChildren();
+function drawTopic(posts: LoggedPost[]): void {
+  roomEl.replaceChildren();
+  lastSeenId = null;
+  drawnIds.clear();
 
-  if (posts.length === 0) {
+  for (const post of posts) {
+    roomEl.appendChild(
+      roomLine({
+        speaker: post.speaker,
+        colour: speakerColor(post.speaker, null, false),
+        to: post.to ?? null,
+        ts: post.ts,
+        // The day as well as the clock. A topic spans days, and a bare 14:32
+        // could be any of them.
+        stamp: shortDateTime(post.ts),
+        content: post.content,
+        past: true,
+      }),
+    );
+    drawnIds.add(post.message_id);
+  }
+
+  // Opened at the end, which is where the conversation continues.
+  roomEl.scrollTop = roomEl.scrollHeight;
+}
+
+/** When a topic was made, for a list that spans months. */
+function topicWhen(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const day = at.toLocaleDateString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return `${day} ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/**
+ * The topics, newest first, with the current one marked.
+ *
+ * Newest first because that is the end a list of conversations is read from.
+ * The file keeps them in the order they happened, which is the order an append
+ * produces; the reversal is a reading decision rather than a storage one.
+ *
+ * The current topic is drawn whether or not the index names it. A launch opens
+ * a new topic and writes nothing until something is said in it, so at the top
+ * of every run there is exactly one topic in the room and not in the list
+ * (#115).
+ */
+function renderTopics(): void {
+  topicListEl.replaceChildren();
+
+  const listed = [...topics].reverse();
+  const current = currentTopic;
+  if (current && !listed.some((one) => one.topic_id === current.topic_id)) {
+    // Not yet written down, and drawn as itself rather than as a gap. A room
+    // whose own topic is missing from its own list would read as a fault.
+    listed.unshift({
+      topic_id: current.topic_id,
+      title: "",
+      created_at: current.created_at,
+      sessions: {},
+    });
+  }
+
+  if (listed.length === 0) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    // Not an error, and not "history unavailable". A room nobody has spoken in
-    // yet is the first run of the app, and it has a log that says so.
-    empty.textContent = "記録なし";
-    historyListEl.appendChild(empty);
+    empty.textContent = "トピックなし";
+    topicListEl.appendChild(empty);
     return;
   }
 
-  for (const post of posts) {
-    const entry = document.createElement("li");
-    entry.className = "entry";
-    entry.style.setProperty("--speaker", speakerColor(post.speaker, null, false));
-
-    const meta = document.createElement("div");
-    meta.className = "meta";
-
-    const speaker = document.createElement("span");
-    speaker.className = "speaker";
-    speaker.textContent = post.speaker;
-    meta.appendChild(speaker);
-
-    if (post.to) {
-      const to = document.createElement("span");
-      to.className = "to";
-      to.textContent = `→ ${post.to}`;
-      meta.appendChild(to);
-    }
-
-    const time = document.createElement("time");
-    time.className = "ts";
-    time.dateTime = post.ts;
-    // The date as well as the clock. In the room the day is the one being
-    // lived through and the clock alone reads; here it is whichever day this
-    // was said on, and a bare 14:32 could be any of them.
-    time.textContent = shortDateTime(post.ts);
-    meta.appendChild(time);
-
-    const body = document.createElement("div");
-    body.className = "body";
-    body.textContent = post.content;
-
-    entry.append(meta, body);
-    historyListEl.appendChild(entry);
-  }
-
-  // The scroller is the panel, not the list: the heading is inside it and stays
-  // where it is only because it scrolls off with everything else, which is the
-  // same thing the account panel does.
-  historyEl.scrollTop = historyEl.scrollHeight;
+  for (const topic of listed) topicListEl.appendChild(topicRow(topic));
 }
 
-/** Say on the history strip why it has nothing to show. */
-function historyFailed(reason: string): void {
-  historyListEl.replaceChildren();
+/** One row of the list: the whole row is the control that opens it. */
+function topicRow(topic: Topic): HTMLLIElement {
+  const row = document.createElement("li");
+  row.className = "topic";
+  if (topic.topic_id === currentTopic?.topic_id) row.classList.add("current");
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "pick";
+
+  const name = document.createElement("span");
+  name.className = topic.title ? "name" : "name unnamed";
+  // A topic nobody has spoken in yet. Said rather than left blank: blank is
+  // also what a row would look like if its title had failed to read.
+  name.textContent = topic.title || "未命名";
+  pick.appendChild(name);
+
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = topicWhen(topic.created_at);
+  pick.appendChild(when);
+
+  pick.addEventListener("click", () => void openTopic(topic));
+  // Renamed where it is read. The generated title is a starting point in an
+  // editable field, the same thing an account's name is (#115, decision 9).
+  pick.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    beginRename(row, topic);
+  });
+
+  row.appendChild(pick);
+  return row;
+}
+
+/**
+ * Rename one topic in place.
+ *
+ * Escape and losing focus both mean 取消, Enter means 決定 — the three ways out
+ * the account form has. The row is redrawn from the list on every path, so none
+ * of them leaves half an edit applied.
+ */
+function beginRename(row: HTMLLIElement, topic: Topic): void {
+  const field = document.createElement("input");
+  field.type = "text";
+  field.className = "rename";
+  field.value = topic.title;
+  field.spellcheck = false;
+
+  let settled = false;
+  const cancel = (): void => {
+    if (settled) return;
+    settled = true;
+    renderTopics();
+  };
+  const commit = (): void => {
+    if (settled) return;
+    settled = true;
+    const title = field.value.trim();
+    if (!title || title === topic.title) {
+      renderTopics();
+      return;
+    }
+    void invoke("room_rename_topic", { topicId: topic.topic_id, title })
+      .then(() => status(`トピックを「${title}」にしました。`))
+      .catch((err) => status(`トピック名を変えられませんでした: ${err}`, "error"))
+      // The list arrives on `room-topics` when the rename lands. This redraw is
+      // for the path where it did not: a field left standing over a failed
+      // rename is an edit that looks like it took.
+      .finally(() => renderTopics());
+  };
+
+  field.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  field.addEventListener("blur", () => cancel());
+
+  row.replaceChildren(field);
+  field.focus();
+  field.select();
+}
+
+/**
+ * Put a topic back in the room.
+ *
+ * The room is told first and the posts are read second: the room decides where
+ * the next post is written down, and drawing a topic the room is not in would
+ * show one conversation while another was being recorded.
+ *
+ * Nothing is launched. A topic opens whether or not the sessions it held can be
+ * resumed, and resuming one is a press of ▶ on its row afterwards (#115,
+ * decision 6).
+ */
+async function openTopic(topic: Topic): Promise<void> {
+  if (topic.topic_id === currentTopic?.topic_id) return;
+  try {
+    await invoke("room_select_topic", {
+      topicId: topic.topic_id,
+      createdAt: topic.created_at,
+    });
+    currentTopic = { topic_id: topic.topic_id, created_at: topic.created_at };
+    drawTopic(await invoke<LoggedPost[]>("room_topic_log", { topicId: topic.topic_id }));
+    renderTopics();
+    status(`トピック「${topic.title || "未命名"}」を開きました。`);
+  } catch (err) {
+    status(`トピックを開けませんでした: ${err}`, "error");
+  }
+}
+
+/**
+ * Cut here: a new topic, and an empty room.
+ *
+ * The boundary is drawn by hand and by nothing else. Starting the app opens one
+ * too, but the two are independent — one run may hold several topics, and one
+ * topic may span several runs (#115, decision 1).
+ */
+async function startNewTopic(): Promise<void> {
+  try {
+    currentTopic = await invoke<TopicRef>("room_new_topic");
+    drawTopic([]);
+    renderTopics();
+    status("新しいトピックを始めました。");
+  } catch (err) {
+    status(`新しいトピックを始められませんでした: ${err}`, "error");
+  }
+}
+
+/** Say on the topic list why it has nothing to show. */
+function topicsFailed(reason: string): void {
+  topicListEl.replaceChildren();
   const line = document.createElement("li");
   line.className = "empty";
-  line.textContent = `履歴を読めませんでした: ${reason}`;
-  historyListEl.appendChild(line);
+  line.textContent = `トピックを読めませんでした: ${reason}`;
+  topicListEl.appendChild(line);
 }
 
 /**
@@ -1770,6 +2012,9 @@ function resolveLocalAccount(): void {
       // person speaks as themselves, and there is no launch to select a style
       // on.
       character: null,
+      // And for the same reason again: a person is not resumed into a topic,
+      // they are at the screen when it is opened.
+      resume_command: null,
     };
     accounts.push(account);
     saveAccounts();
@@ -2377,7 +2622,14 @@ async function startSession(account: Account): Promise<void> {
       cols: view.term.cols,
       rows: view.term.rows,
     });
-    status(`${name} を起動しました。${started.mcp_config} に登録済み。`);
+    // Which of the two lines ran is said, because the person is the one who
+    // can tell whether it mattered. A seat that came back fresh in a reopened
+    // topic is a legitimate outcome and not a silent one (#115, decision 6).
+    status(
+      started.resumed
+        ? `${name} を再開しました。${started.mcp_config} に登録済み。`
+        : `${name} を起動しました。${started.mcp_config} に登録済み。`,
+    );
     await refreshSeats();
     await followSession(view, started);
   } catch (err) {
@@ -2528,6 +2780,10 @@ function openAccountDialog(account: Account | null): void {
         // launches on whatever the working directory's own settings say, which
         // is an answer. A guessed name that resolves to no style is not.
         character: null,
+        // Nothing, for the same shape of reason: a resume line naming the wrong
+        // flag fails at the one moment it is needed, and the person has no
+        // reason to go looking at a field they never filled in.
+        resume_command: null,
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
@@ -2537,6 +2793,7 @@ function openAccountDialog(account: Account | null): void {
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
   dialogOptionsEl.value = joinArgs(draft.args);
+  dialogResumeEl.value = draft.resume_command ?? "";
   dialogDeleteEl.hidden = account === null;
   disarmDelete();
   dialogError("");
@@ -2614,6 +2871,10 @@ async function commitAccountDialog(): Promise<boolean> {
     // Blank clears it, and clearing it is a state: the account goes back to
     // launching on whatever its working directory's own settings name.
     character: kind === "ai" ? character || null : null,
+    // Blank is a state here too, and the common one: an account with no resume
+    // line joins a reopened topic as a new session and reads back what it needs
+    // through the room's own pull instead (#115, decision 4C).
+    resume_command: kind === "ai" ? dialogResumeEl.value.trim() || null : null,
     args,
   };
 
@@ -2793,6 +3054,13 @@ async function main(): Promise<void> {
     trackAddress(event.payload);
   });
   await listen<Participant[]>("room-participants", (event) => renderRoster(event.payload));
+  // The index changed underneath: a topic realised by its own first post, or a
+  // session id recorded by a launch. Both happen without the screen asking, and
+  // the first is how a topic gets the name the list shows it under (#115).
+  await listen<Topic[]>("room-topics", (event) => {
+    topics = event.payload;
+    renderTopics();
+  });
   // The room went on without the log. Saying so is the whole of what this does
   // — a log that had quietly stopped recording would still look like a log, and
   // the next person to go looking would read the gap as nothing having been
@@ -2803,6 +3071,10 @@ async function main(): Promise<void> {
   // The socket binds after the frontend loads, so the event is the authority
   // and the poll below is only for a listener that attached too late.
   await listen<number>("room-ready", (event) => renderSocket(event.payload));
+
+  // The one thing that draws a topic boundary. Beside the list it appears in,
+  // which is where ＋ sits on the panel opposite (#59).
+  topicNewEl.addEventListener("click", () => void startNewTopic());
 
   sendEl.addEventListener("click", () => void send());
   inputEl.addEventListener("keydown", (event) => {
@@ -2840,6 +3112,7 @@ async function main(): Promise<void> {
     dialogCwdEl,
     dialogCharacterEl,
     dialogOptionsEl,
+    dialogResumeEl,
   ]) {
     field.addEventListener("input", () => disarmDelete());
   }
@@ -2886,14 +3159,21 @@ async function main(): Promise<void> {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
 
-  // The history, read once. Outside the room's try below and independent of it:
-  // the log is a file this app wrote, so a room that never answers is no reason
-  // for the strip to stay blank — what was said last week is readable whether
-  // or not anything is listening now (#48).
+  // The topics, read once. Outside the room's try below and independent of it:
+  // the index is a file this app wrote, so a room that never answers is no
+  // reason for the list to stay blank — what was said last week is readable
+  // whether or not anything is listening now (#48).
+  //
+  // The room itself is left empty. Starting the app opens a new topic and does
+  // not continue the last one (#115, Master 判断5), so there is nothing to draw
+  // into it — which is the behaviour #48 had for a different reason and this
+  // keeps for its own: the past is opened by being picked.
   try {
-    renderHistory(await invoke<LoggedPost[]>("room_log"));
+    topics = await invoke<Topic[]>("room_topics");
+    currentTopic = await invoke<TopicRef>("room_current_topic");
+    renderTopics();
   } catch (err) {
-    historyFailed(String(err));
+    topicsFailed(String(err));
   }
 
   // Before the room, and outside its try. A session running under a seat this
