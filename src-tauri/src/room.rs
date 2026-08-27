@@ -80,7 +80,7 @@
 //! the room before the disk is touched, and a failure there costs the record,
 //! not the utterance (#48).
 
-use crate::room_log;
+use crate::room_log::{self, TopicRef};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use room_floor::{Admission, Floor, Missed, Post};
@@ -104,7 +104,10 @@ use uuid::Uuid;
 /// 5: `hello` may carry the `account_id` the session was launched as, and the
 ///    roster hands it back. Carried only — identity stays on the connection
 ///    (#59).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// 6: `history` / `history_result` — a participant may pull what was said in
+///    the current topic before it arrived. Pull only: the room still pushes
+///    nothing it did not fan out live (#115, decision 4C).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -202,6 +205,13 @@ struct IncomingFrame {
     ts: Option<String>,
     last_seen: Option<String>,
     protocol: Option<u32>,
+    /// Correlates a `history` request with the `history_result` that answers
+    /// it, the way `message_id` correlates a post with its receipt. Minted by
+    /// the asker: two pulls may be in flight, and settling the wrong one would
+    /// hand back another request's posts.
+    request_id: Option<String>,
+    limit: Option<usize>,
+    before: Option<String>,
 }
 
 /// What the room holds about one seated participant.
@@ -232,6 +242,19 @@ struct RoomInner {
     /// than beside the lock so the check and the stamp are one critical
     /// section (#47).
     floor: Floor,
+    /// The topic the room is in: where a post is written down, and what a pull
+    /// reads back.
+    ///
+    /// Under the same lock the floor is, for the same reason the append is
+    /// inside the critical section — a post has to reach the file of the topic
+    /// it was admitted into, and reading the topic outside the acquisition
+    /// leaves a window where a switch lands between the two.
+    ///
+    /// It exists before anything is written down. A launch opens a new topic
+    /// (#115, Master 判断5) and most runs of the app say nothing, so the index
+    /// entry waits for the first post rather than the app being opened
+    /// (`room_log::TopicRef`).
+    topic: TopicRef,
 }
 
 /// The name whoever is on `origin` answers to, or `None` when no one is seated
@@ -273,6 +296,10 @@ impl RoomState {
                 port: None,
                 participants: BTreeMap::new(),
                 floor: Floor::new(),
+                // A new one, every launch. Nothing of the previous run is
+                // reopened by starting the app: the room begins empty and a
+                // past topic is opened by being picked (#48 / #115).
+                topic: TopicRef::new(now_iso()),
             })),
             to_participants,
             token: Uuid::new_v4().to_string(),
@@ -379,6 +406,35 @@ impl RoomState {
     fn unseat(&self, origin: &str) {
         self.inner.lock().participants.remove(origin);
     }
+
+    /// The topic the room is in.
+    pub fn topic(&self) -> TopicRef {
+        self.inner.lock().topic.clone()
+    }
+
+    /// Put the room in a topic.
+    ///
+    /// **The floor is emptied and every seat is put back to its start.** A
+    /// topic is where the conversation is, so the floor of the one being left
+    /// is not the floor of the one being entered — and a watermark naming a
+    /// post from elsewhere resolves to position 0, which the floor reads as
+    /// having seen nothing (`room-floor`). Left standing, the first thing said
+    /// in a reopened topic would be refused and handed back the whole of the
+    /// previous topic's retained floor, by a participant who had in fact seen
+    /// all of it.
+    ///
+    /// The seats stay. Switching a topic does not put anyone out of the room:
+    /// the sessions are still connected and the person is still at the screen.
+    /// What changes is where they are speaking.
+    pub fn enter_topic(&self, topic: TopicRef) {
+        let mut inner = self.inner.lock();
+        inner.topic = topic;
+        inner.floor.reset();
+        let start = inner.floor.seq();
+        for seat in inner.participants.values_mut() {
+            seat.since = start;
+        }
+    }
 }
 
 /// A hue is a position on the colour wheel, so it is taken modulo a turn rather
@@ -469,7 +525,7 @@ fn deliver(
 
     // One acquisition, both halves. Concurrent speakers serialise here, so the
     // loser's check runs against a floor the winner has already changed.
-    let (admission, hue, logged) = {
+    let (admission, hue, logged, topic) = {
         let mut inner = room.inner.lock();
         let (since, hue) = match inner.participants.get(origin) {
             Some(seat) => (seat.since, seat.hue),
@@ -496,11 +552,17 @@ fn deliver(
         // The failure is carried out rather than reported here: the room is
         // stopped while this lock is held, and telling the screen is not work
         // to do with everyone waiting.
+        //
+        // The topic is read under this same acquisition, so the post reaches
+        // the file of the topic it was admitted into. Read outside it, a switch
+        // landing between the two would put a post in one topic's order and the
+        // other topic's file.
+        let topic = inner.topic.clone();
         let logged = match &admission {
-            Admission::Admitted { .. } => room_log::append(app, &post),
-            Admission::Unseen(_) => Ok(()),
+            Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post),
+            Admission::Unseen(_) => Ok(false),
         };
-        (admission, hue, logged)
+        (admission, hue, logged, topic)
     };
 
     if let Admission::Unseen(missed) = admission {
@@ -515,8 +577,14 @@ fn deliver(
     // the record, never the utterance — so nothing below is conditional on
     // this, and the one thing that must not happen is it passing unnoticed
     // (#48).
-    if let Err(err) = logged {
-        room_log::report(app, err);
+    match logged {
+        Err(err) => room_log::report(app, err),
+        // The first thing said in this topic. The topic gets its entry and its
+        // name from it, out here rather than under the lock: the index is a
+        // second file read and rewritten whole, and nothing about a post waits
+        // on it (#115, decision 9).
+        Ok(true) => room_log::realize_from_first_post(app, &topic, &post.content),
+        Ok(false) => {}
     }
 
     let mut frame = serde_json::json!({
@@ -561,6 +629,47 @@ fn deliver(
         message_id: Some(message_id),
         missed: Vec::new(),
     }
+}
+
+/// How many posts one pull answers with when the asker names no number.
+const HISTORY_PAGE: usize = 50;
+
+/// The most one pull answers with, whatever the asker names.
+///
+/// A topic has no ceiling, and a participant asking for all of one would be
+/// handed a context's worth of text in a single tool result. The page and the
+/// `before` cursor together are what make a long topic readable in the
+/// direction it is actually read — backwards from the end.
+const HISTORY_MAX: usize = 200;
+
+/// One page of a topic, oldest first, ending at `before`.
+///
+/// The tail of the eligible window rather than its head: what a participant
+/// joining late needs first is what was just said, and paging further back is
+/// what `before` is for. `has_more` says whether there is anything older, so
+/// the asker knows whether the top of the page is the top of the topic.
+///
+/// A `before` the topic does not contain is read as naming its end. Erring the
+/// other way — answering with nothing — would be indistinguishable from an
+/// empty topic, and the asker would stop.
+fn history_answer(
+    request_id: &str,
+    posts: Vec<room_log::LoggedPost>,
+    before: Option<&str>,
+    limit: Option<usize>,
+) -> serde_json::Value {
+    let end = before
+        .and_then(|id| posts.iter().position(|post| post.message_id == id))
+        .unwrap_or(posts.len());
+    let window = &posts[..end];
+    let limit = limit.unwrap_or(HISTORY_PAGE).clamp(1, HISTORY_MAX);
+    let start = window.len().saturating_sub(limit);
+    serde_json::json!({
+        "type": "history_result",
+        "request_id": request_id,
+        "posts": &window[start..],
+        "has_more": start > 0,
+    })
 }
 
 /// Bind the room socket and start accepting sidecars.
@@ -788,6 +897,43 @@ async fn serve_participant(
                     frame: receipt.to_string(),
                 });
             }
+            // The read-out (#115, decision 4C). A participant asks for what
+            // was said in the current topic before it got here; the room
+            // answers on this connection alone.
+            //
+            // **Pull, and only pull.** The room still fans out nothing it did
+            // not deliver live — a later joiner missed what predates its seat,
+            // and that is unchanged. What changes is that the participant can
+            // now go and get it, which is a different thing from the room
+            // holding who has heard what (#31 / #39). Nothing here is recorded
+            // against the asker, and asking twice is the same as asking once.
+            //
+            // The topic is read and the lock released before the file is
+            // touched: this is the room's own lock, and a read of a log with
+            // no ceiling is not work to do with everyone waiting.
+            "history" => {
+                let request_id = frame.request_id.unwrap_or_default();
+                let topic = room.topic();
+                let answer = match room_log::topic_posts(&app, &topic.topic_id) {
+                    Ok(posts) => history_answer(&request_id, posts, frame.before.as_deref(), frame.limit),
+                    Err(err) => {
+                        room_log::report(&app, err.clone());
+                        // Said rather than answered with an empty page: a
+                        // participant told "nothing was said" would go on to
+                        // act on that.
+                        serde_json::json!({
+                            "type": "history_result",
+                            "request_id": request_id,
+                            "error": err,
+                        })
+                    }
+                };
+                let _ = room.to_participants.send(Fanout {
+                    origin: origin.clone(),
+                    target: Some(origin.clone()),
+                    frame: answer.to_string(),
+                });
+            }
             _ => {}
         }
     }
@@ -813,6 +959,53 @@ pub fn room_port(state: tauri::State<RoomState>) -> Option<u16> {
 #[tauri::command]
 pub fn room_participants(state: tauri::State<RoomState>) -> Vec<Participant> {
     state.participants()
+}
+
+/// The topic the room is in.
+///
+/// It may not be in the index yet — a launch opens a new one and nothing is
+/// written until something is said in it (#115) — so the screen draws this
+/// beside the list rather than looking for it inside the list.
+#[tauri::command]
+pub fn room_current_topic(state: tauri::State<RoomState>) -> TopicRef {
+    state.topic()
+}
+
+/// Cut here: a new topic, current from now on.
+///
+/// The 新規 button, and the whole of what a topic boundary is — drawn by hand,
+/// independent of when the app was started (#115, decision 1). Nothing is
+/// written down: the index entry waits for the first post, so a topic opened
+/// and left unspoken leaves no row behind.
+#[tauri::command]
+pub fn room_new_topic(state: tauri::State<RoomState>) -> TopicRef {
+    let topic = TopicRef::new(now_iso());
+    state.enter_topic(topic.clone());
+    topic
+}
+
+/// Put an existing topic back in the room.
+///
+/// Selecting one from the list. What comes back with it is its posts, which the
+/// screen reads for itself, and the session each account was in, which a launch
+/// reads when a seat is started (`session.rs`). Nothing is started here: the
+/// topic opens whether or not anything can be resumed into it (#115, decision
+/// 6).
+#[tauri::command]
+pub fn room_select_topic(
+    app: AppHandle,
+    state: tauri::State<RoomState>,
+    topic_id: String,
+    created_at: String,
+) -> Result<(), String> {
+    if !room_log::topic_exists(&app, &topic_id) {
+        return Err(format!("トピック {topic_id} は見つかりません。"));
+    }
+    state.enter_topic(TopicRef {
+        topic_id,
+        created_at,
+    });
+    Ok(())
 }
 
 /// Seat this screen's person in the room, under the name and hue they declared.
