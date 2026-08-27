@@ -193,6 +193,7 @@ src/                  チャットルーム UI（TypeScript）
 src-tauri/src/        Tauri、部屋ソケット、PTY、設定・セッション保存の Rust 実装
 crates/mcp-config/    .mcp.json 登録と起動フラグ検査（tauri 非依存、テスト対象）
 crates/room-floor/    同時発話の順序付け（tauri 非依存、テスト対象）
+crates/topic-index/   トピックの保存と索引の照合（tauri 非依存、テスト対象）
 portable-pty-patch/   Windows 対応を含む portable-pty のローカルパッチ
 .github/workflows/    Windows CI とリリース用 CD
 ```

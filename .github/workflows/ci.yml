@@ -66,6 +66,10 @@ jobs:
         working-directory: crates/room-floor
         run: cargo test
 
+      - name: Test the topic-index crate
+        working-directory: crates/topic-index
+        run: cargo test
+
   # Gate job: single Required status check for branch protection.
   # Add new jobs to `needs` when CI grows. No Settings change needed.
   CI:
