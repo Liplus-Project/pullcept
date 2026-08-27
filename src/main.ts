@@ -1330,6 +1330,12 @@ async function openTopic(topic: Topic): Promise<void> {
  * copy is only as fresh as whatever last refreshed it.
  */
 async function openTopicDeleteDialog(topic: Topic): Promise<void> {
+  // A question is already standing, so this one is not opened. Without it the
+  // two interleave across the read below: the second click overwrites the first
+  // one's topic and its sentence, then the first read returns and opens the
+  // dialog carrying one topic's name over the other's sessions. `deletingTopic`
+  // is cleared on every path out of the dialog, so nothing is wedged by it.
+  if (deletingTopic) return;
   deletingTopic = topic;
   topicDeleteMessageEl.textContent =
     `トピック「${topic.title}」を削除します。` +
