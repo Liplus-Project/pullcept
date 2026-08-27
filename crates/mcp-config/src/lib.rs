@@ -185,6 +185,39 @@ pub fn declares_settings(args: &[String]) -> bool {
         .any(|arg| arg.split('=').next().unwrap_or(arg) == SETTINGS_FLAG)
 }
 
+/// What an account writes where the id of a CLI session goes.
+///
+/// The one thing this app knows about resuming a session is that the id is
+/// decided here rather than read back out of the CLI's output. Which flag
+/// carries it is the CLI's business, and the CLI is per-account
+/// (`Account::command`) — so the app substitutes into a line the person wrote
+/// instead of holding a flag of its own. `claude` spells the two halves
+/// `--session-id <uuid>` and `--resume <uuid>`; another CLI spells them
+/// otherwise, or not at all, and an account that writes the placeholder nowhere
+/// simply has no session id (#115, decision 4B).
+pub const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
+/// Whether these arguments have somewhere to put a session id.
+///
+/// What decides whether one is minted at all. Minting unconditionally would
+/// hand out an id no launch passes on, and the topic would then record a
+/// session that never existed under that name.
+pub fn declares_session_id(args: &[String]) -> bool {
+    args.iter().any(|arg| arg.contains(SESSION_ID_PLACEHOLDER))
+}
+
+/// Put the session id where the account said it goes.
+///
+/// Every occurrence in every argument, and inside a larger argument as well as
+/// alone: `--session-id={session_id}` is one argument, and so is
+/// `--resume={session_id}`. Arguments naming no placeholder come through
+/// untouched.
+pub fn substitute_session_id(args: &[String], session_id: &str) -> Vec<String> {
+    args.iter()
+        .map(|arg| arg.replace(SESSION_ID_PLACEHOLDER, session_id))
+        .collect()
+}
+
 /// The character an account speaks as, or `None` when it declares none.
 ///
 /// Blank is the same state as absent. The field is a text input on the screen,
@@ -1055,4 +1088,32 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn a_session_id_is_substituted_wherever_the_account_wrote_it() {
+        let args = split_launch_options("--resume {session_id} --verbose");
+        let filled = substitute_session_id(&args, "0f5a-uuid");
+        assert_eq!(filled, vec!["--resume", "0f5a-uuid", "--verbose"]);
+    }
+
+    #[test]
+    fn a_session_id_is_substituted_inside_one_argument_too() {
+        let args = split_launch_options("--session-id={session_id}");
+        let filled = substitute_session_id(&args, "0f5a-uuid");
+        assert_eq!(filled, vec!["--session-id=0f5a-uuid"]);
+    }
+
+    #[test]
+    fn options_with_no_placeholder_declare_no_session_id() {
+        let args = split_launch_options("--dangerously-skip-permissions");
+        assert!(!declares_session_id(&args));
+        assert_eq!(substitute_session_id(&args, "0f5a-uuid"), args);
+    }
+
+    #[test]
+    fn options_naming_the_placeholder_declare_a_session_id() {
+        assert!(declares_session_id(&split_launch_options(
+            "--session-id {session_id}"
+        )));
+    }
+
 }
