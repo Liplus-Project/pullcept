@@ -305,6 +305,7 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
+const historyEl = document.getElementById("history") as HTMLElement;
 const historyListEl = document.getElementById("history-list") as HTMLElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
@@ -969,13 +970,17 @@ function appendMessage(message: RoomMessage): void {
  *
  * Read once, at launch, out of the room's log. It never follows along after
  * that, and the reason is the division the two surfaces are built on: the room
- * starts empty every run (#48), so what is below this strip is this run and
+ * starts empty every run (#48), so what is beside this strip is this run and
  * what is in it is everything before. A strip that grew as posts arrived would
- * be a second drawing of the conversation already on the glass beside it, and
+ * be a second drawing of the conversation already on the glass next to it, and
  * the boundary that tells the two apart would stop existing.
  *
- * Oldest first, as the file holds them. No scroll to the end: this is read
- * from wherever the person is looking for something, not watched.
+ * Oldest first, as the file holds them and as the room draws them, and opened
+ * at the end. The two are one reading: the last line here was said just before
+ * the first line of the room beside it, so the bottom of this strip is where
+ * the conversation is continuous and the top is months back. A panel that
+ * opened at its oldest entry would put the far side of the log in front of the
+ * person every time, and the log has no ceiling to keep that distance short.
  *
  * The colour is derived from the name, because the log does not carry the
  * declaration (see `LoggedPost`). `own` is passed false for the same reason —
@@ -1031,6 +1036,11 @@ function renderHistory(posts: LoggedPost[]): void {
     entry.append(meta, body);
     historyListEl.appendChild(entry);
   }
+
+  // The scroller is the panel, not the list: the heading is inside it and stays
+  // where it is only because it scrolls off with everything else, which is the
+  // same thing the account panel does.
+  historyEl.scrollTop = historyEl.scrollHeight;
 }
 
 /** Say on the history strip why it has nothing to show. */
