@@ -80,7 +80,9 @@
 //! the room before the disk is touched, and a failure there costs the record,
 //! not the utterance (#48).
 
+use crate::pty::PtyState;
 use crate::room_log::{self, TopicRef};
+use crate::session::RoomSeats;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use room_floor::{Admission, Floor, Missed, Post};
@@ -1006,6 +1008,60 @@ pub fn room_select_topic(
         created_at,
     });
     Ok(())
+}
+
+/// Delete a topic: its posts, its entry, and the sessions that were in it.
+///
+/// Three acts, and the order between them is the whole of what this function
+/// decides. Each half is done by whoever owns it — the seats end the sessions,
+/// the log deletes the store, the room moves — and none of the three would be
+/// right on its own.
+///
+/// **The sessions first (#119, decision 4).** A topic holds the way back into
+/// the sessions that were in it, so deleting it while they run leaves sessions
+/// belonging to no topic — running, seated, and unreachable by any resume. Only
+/// the seats started into *this* topic are ended: which topic a session belongs
+/// to is a fact about its launch, and the seats carry it
+/// (`RoomSeats::running_in_topic`). Running is not a reason to refuse the
+/// delete (#119, decision 3).
+///
+/// **The store second.** If it fails, the sessions are already gone and the
+/// topic is still listed — visible, and the person can start a session again or
+/// press delete again. The other order fails the way decision 4 forbids: the
+/// topic gone and the sessions still running.
+///
+/// **The room last, and only if it was in this one (#119, decision 6).** What
+/// it moves to is a new topic, which is the state a launch already produces —
+/// an empty room, in a topic not yet in the index. Moving to the next topic in
+/// the list would open a conversation nobody asked for, and refusing to delete
+/// the open one would ask the person to leave a topic before deciding they do
+/// not want it.
+///
+/// Answers the topic the room moved to, or `None` when the room was somewhere
+/// else and did not move. The screen needs it: it holds its own current topic,
+/// and a screen still pointing at a deleted one would draw one conversation
+/// while the next post was recorded in another.
+#[tauri::command]
+pub fn room_delete_topic(
+    app: AppHandle,
+    state: tauri::State<RoomState>,
+    pty_state: tauri::State<PtyState>,
+    seats: tauri::State<RoomSeats>,
+    topic_id: String,
+) -> Result<Option<TopicRef>, String> {
+    pty_state.kill_each(&seats.running_in_topic(&topic_id, &pty_state));
+
+    room_log::delete_topic(&app, &topic_id)?;
+
+    let moved = (state.topic().topic_id == topic_id).then(|| {
+        let fresh = TopicRef::new(now_iso());
+        state.enter_topic(fresh.clone());
+        fresh
+    });
+    // After the move, so a list arriving on this event finds the room already
+    // somewhere the deleted topic is not.
+    room_log::announce(&app);
+    Ok(moved)
 }
 
 /// Seat this screen's person in the room, under the name and hue they declared.

@@ -70,6 +70,27 @@ impl PtyState {
             let _ = pty.child.kill();
         }
     }
+
+    /// Kill the named sessions.
+    ///
+    /// `kill_all` narrowed to a list, and the same three things hold about it:
+    /// one acquisition of the lock over the whole set, the entry taken out
+    /// rather than left in place because dropping the instance is the half that
+    /// ends the tree, and no failure to report (see `kill_all` for why, and for
+    /// what #96 would have to change first).
+    ///
+    /// An id that is not in the map is a session that has already exited. That
+    /// is not an error here: the caller's list came from the seats, and a seat
+    /// is released by its session ending rather than by anyone calling for it
+    /// (`session::RoomSeats`).
+    pub fn kill_each(&self, ids: &[String]) {
+        let mut map = self.procs.lock();
+        for id in ids {
+            if let Some(mut pty) = map.remove(id) {
+                let _ = pty.child.kill();
+            }
+        }
+    }
 }
 
 #[tauri::command]

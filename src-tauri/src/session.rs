@@ -135,6 +135,20 @@ pub struct RunningSession {
     pub command: String,
     /// The working directory it was launched in.
     pub cwd: String,
+    /// The topic this session was started into.
+    ///
+    /// Which topic a session belongs to is a fact about the launch, not about
+    /// the account and not about the room now: the room moves between topics
+    /// while a session keeps running, and the seat stays where it was started
+    /// (#115). Recorded here because deleting a topic has to end the sessions
+    /// that were in it and nothing else (#119, decision 4) — read off the
+    /// topic's `sessions` map instead, a delete would reach an account that ran
+    /// in this topic once and is now running in another one.
+    ///
+    /// A seat still being claimed (`Seat::Starting`) has no entry here at all,
+    /// which is the one session a delete cannot see; see the accepted tradeoff
+    /// in docs/0-requirements.md.
+    pub topic_id: String,
 }
 
 /// One account's seat, as the screen reads it.
@@ -198,6 +212,33 @@ impl RoomSeats {
         }
         seats.insert(account_id.to_string(), Seat::Starting);
         Ok(())
+    }
+
+    /// The PTY of every seat running in one topic.
+    ///
+    /// The sweep and the read are one acquisition, like `seated`: a seat whose
+    /// session has already exited is not a session to end, and the sweep is
+    /// what says so.
+    ///
+    /// A seat still starting is not here and cannot be: it holds no PTY yet, so
+    /// there is nothing to end. That is the window the delete cannot close, and
+    /// it is written down rather than papered over (docs/0-requirements.md,
+    /// 受容したトレードオフ).
+    pub fn running_in_topic(&self, topic_id: &str, ptys: &PtyState) -> Vec<String> {
+        let mut seats = self.seats.lock();
+        seats.retain(|_, seat| match seat {
+            Seat::Starting => true,
+            Seat::Running(session) => ptys.is_running(&session.pty_id),
+        });
+        seats
+            .values()
+            .filter_map(|seat| match seat {
+                Seat::Starting => None,
+                Seat::Running(session) => {
+                    (session.topic_id == topic_id).then(|| session.pty_id.clone())
+                }
+            })
+            .collect()
     }
 
     /// The launch got a session up; the seat is now held by that session.
@@ -580,6 +621,10 @@ pub fn start_session(
                     // launch command at all.
                     command: launch_line.command.clone(),
                     cwd: cwd.to_string_lossy().to_string(),
+                    // The topic read at the top of this launch, not the room's
+                    // current one: the two are the same here, and reading the
+                    // room again would make them the same only by luck.
+                    topic_id: topic.topic_id.clone(),
                 },
             );
             Ok(started)
