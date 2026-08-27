@@ -190,8 +190,9 @@ pub fn spawn_pty(
         let ended = ptys_clone.lock().remove(&id_clone);
         let exit_code: Option<u32> = match ended {
             Some(mut pty) => pty.child.wait().ok().map(|status| status.exit_code()),
-            // Already removed: `kill_pty` took it. The exit is this thread's to
-            // announce either way; the code is not knowable from here.
+            // Already removed: a kill took it — `kill_pty`, `kill_each`, or the
+            // `kill_all` sweep. The exit is this thread's to announce either
+            // way; the code is not knowable from here.
             None => None,
         };
         // Emit exit event with exit code payload (None if killed by signal/unknown)
