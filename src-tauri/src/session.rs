@@ -334,13 +334,21 @@ fn resolve_launch(
 
     if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
         let mut parts = split_launch_options(line);
-        if parts.is_empty() {
+        // The first token is the command, and a resume line whose first token
+        // is empty would spawn nothing under a name the person never chose. The
+        // reachable way in is a line of nothing but quotes, which splits into
+        // one empty token rather than into none.
+        let command = if parts.is_empty() {
+            String::new()
+        } else {
+            parts.remove(0)
+        };
+        if command.is_empty() {
             return Err(format!(
-                "Account \"{}\" has a resume command that splits into nothing. Write the whole                  line, command first.",
+                "Account \"{}\" has a resume command with no command in it. Write the whole line, command first.",
                 account.name.trim()
             ));
         }
-        let command = parts.remove(0);
         return Ok(LaunchLine {
             command,
             args: substitute_session_id(&parts, session_id),
