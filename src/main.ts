@@ -67,6 +67,29 @@ interface MissedPost {
 }
 
 /**
+ * One post as the room's log kept it (src-tauri/src/room_log.rs).
+ *
+ * Five fields, and the two a live post also carries are absent by decision
+ * rather than by loss. `own` is a property of whoever is looking, so a file
+ * could only have recorded one viewer's position as if it were part of the
+ * utterance. `hue` was a declaration made at a seat that no longer exists by
+ * the time this is read, so the history derives a colour from the name instead
+ * — which means two participants who answered to one name are one colour here.
+ * That is the known cost of not storing a declaration nobody is making any
+ * more, and it is a panel of the past rather than the room's own attribution
+ * surface (#48).
+ */
+interface LoggedPost {
+  message_id: string;
+  speaker: string;
+  content: string;
+  /** Absent, not null, when it was said to the room: the field's presence is
+   *  what carries the two states, in the file and on the way here alike. */
+  to?: string;
+  ts: string;
+}
+
+/**
  * One participant of the room, as the roster lists them.
  *
  * `id` is the connection they are in the room on, and it is the identity. The
@@ -282,6 +305,8 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
+const historyEl = document.getElementById("history") as HTMLElement;
+const historyListEl = document.getElementById("history-list") as HTMLElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
@@ -875,6 +900,21 @@ function shortTime(iso: string): string {
   return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * The day and the clock, for a stamp that is not from today.
+ *
+ * The room's own lines take `shortTime`, because every one of them was said
+ * during the run that is being watched and the day is not in question. The
+ * history is the other case by definition: everything in it predates this
+ * window, so the day is the part that places it (#48).
+ */
+function shortDateTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const day = at.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+  return `${day} ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 function appendMessage(message: RoomMessage): void {
   // The room is scrolled to the bottom only when it already was, so reading
   // back through the log is not yanked away by an arriving message.
@@ -923,6 +963,93 @@ function appendMessage(message: RoomMessage): void {
   drawnIds.add(message.message_id);
 
   if (atBottom) roomEl.scrollTop = roomEl.scrollHeight;
+}
+
+/**
+ * Draw what was said before this window opened.
+ *
+ * Read once, at launch, out of the room's log. It never follows along after
+ * that, and the reason is the division the two surfaces are built on: the room
+ * starts empty every run (#48), so what is beside this strip is this run and
+ * what is in it is everything before. A strip that grew as posts arrived would
+ * be a second drawing of the conversation already on the glass next to it, and
+ * the boundary that tells the two apart would stop existing.
+ *
+ * Oldest first, as the file holds them and as the room draws them, and opened
+ * at the end. The two are one reading: the last line here was said just before
+ * the first line of the room beside it, so the bottom of this strip is where
+ * the conversation is continuous and the top is months back. A panel that
+ * opened at its oldest entry would put the far side of the log in front of the
+ * person every time, and the log has no ceiling to keep that distance short.
+ *
+ * The colour is derived from the name, because the log does not carry the
+ * declaration (see `LoggedPost`). `own` is passed false for the same reason —
+ * the file records what was said, not who was watching — so nothing here is
+ * drawn in this screen's accent.
+ */
+function renderHistory(posts: LoggedPost[]): void {
+  historyListEl.replaceChildren();
+
+  if (posts.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    // Not an error, and not "history unavailable". A room nobody has spoken in
+    // yet is the first run of the app, and it has a log that says so.
+    empty.textContent = "記録なし";
+    historyListEl.appendChild(empty);
+    return;
+  }
+
+  for (const post of posts) {
+    const entry = document.createElement("li");
+    entry.className = "entry";
+    entry.style.setProperty("--speaker", speakerColor(post.speaker, null, false));
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+
+    const speaker = document.createElement("span");
+    speaker.className = "speaker";
+    speaker.textContent = post.speaker;
+    meta.appendChild(speaker);
+
+    if (post.to) {
+      const to = document.createElement("span");
+      to.className = "to";
+      to.textContent = `→ ${post.to}`;
+      meta.appendChild(to);
+    }
+
+    const time = document.createElement("time");
+    time.className = "ts";
+    time.dateTime = post.ts;
+    // The date as well as the clock. In the room the day is the one being
+    // lived through and the clock alone reads; here it is whichever day this
+    // was said on, and a bare 14:32 could be any of them.
+    time.textContent = shortDateTime(post.ts);
+    meta.appendChild(time);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = post.content;
+
+    entry.append(meta, body);
+    historyListEl.appendChild(entry);
+  }
+
+  // The scroller is the panel, not the list: the heading is inside it and stays
+  // where it is only because it scrolls off with everything else, which is the
+  // same thing the account panel does.
+  historyEl.scrollTop = historyEl.scrollHeight;
+}
+
+/** Say on the history strip why it has nothing to show. */
+function historyFailed(reason: string): void {
+  historyListEl.replaceChildren();
+  const line = document.createElement("li");
+  line.className = "empty";
+  line.textContent = `履歴を読めませんでした: ${reason}`;
+  historyListEl.appendChild(line);
 }
 
 /**
@@ -2666,6 +2793,13 @@ async function main(): Promise<void> {
     trackAddress(event.payload);
   });
   await listen<Participant[]>("room-participants", (event) => renderRoster(event.payload));
+  // The room went on without the log. Saying so is the whole of what this does
+  // — a log that had quietly stopped recording would still look like a log, and
+  // the next person to go looking would read the gap as nothing having been
+  // said (#48).
+  await listen<string>("room-log-error", (event) => {
+    status(`記録に失敗しました: ${event.payload}`, "error");
+  });
   // The socket binds after the frontend loads, so the event is the authority
   // and the poll below is only for a listener that attached too late.
   await listen<number>("room-ready", (event) => renderSocket(event.payload));
@@ -2750,6 +2884,16 @@ async function main(): Promise<void> {
     renderPanel();
   } catch (err) {
     status(`設定を読み込めませんでした: ${err}`, "error");
+  }
+
+  // The history, read once. Outside the room's try below and independent of it:
+  // the log is a file this app wrote, so a room that never answers is no reason
+  // for the strip to stay blank — what was said last week is readable whether
+  // or not anything is listening now (#48).
+  try {
+    renderHistory(await invoke<LoggedPost[]>("room_log"));
+  } catch (err) {
+    historyFailed(String(err));
   }
 
   // Before the room, and outside its try. A session running under a seat this

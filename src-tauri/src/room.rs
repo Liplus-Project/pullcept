@@ -73,7 +73,14 @@
 //!
 //! Everything the frontend needs arrives as a `room-message` event. The room
 //! never reads a CLI's terminal output; that is not a message source.
+//!
+//! What is admitted is also written to the room's log, inside the same
+//! acquisition it was judged under, so the file's order is the floor's order
+//! (`room_log`). A post is never held back on account of that write: it is in
+//! the room before the disk is touched, and a failure there costs the record,
+//! not the utterance (#48).
 
+use crate::room_log;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use room_floor::{Admission, Floor, Missed, Post};
@@ -462,7 +469,7 @@ fn deliver(
 
     // One acquisition, both halves. Concurrent speakers serialise here, so the
     // loser's check runs against a floor the winner has already changed.
-    let (admission, hue) = {
+    let (admission, hue, logged) = {
         let mut inner = room.inner.lock();
         let (since, hue) = match inner.participants.get(origin) {
             Some(seat) => (seat.since, seat.hue),
@@ -476,7 +483,24 @@ fn deliver(
         // refusal hands that copy back, and the screen draws it (#108).
         post.hue = hue;
         let admission = inner.floor.admit(origin, since, last_seen, post.clone());
-        (admission, hue)
+        // Written here, inside the acquisition the floor was judged under, so
+        // the file's order is the floor's order. Appending after the lock is
+        // dropped would let two speakers the floor has already ordered reach
+        // the disk the other way round, and the conversation would then have
+        // two orderings — which is the one thing the room is the authority on
+        // (#48).
+        //
+        // Only what was admitted. A refused post is not in the room, so there
+        // is nothing about it for the room to have recorded.
+        //
+        // The failure is carried out rather than reported here: the room is
+        // stopped while this lock is held, and telling the screen is not work
+        // to do with everyone waiting.
+        let logged = match &admission {
+            Admission::Admitted { .. } => room_log::append(app, &post),
+            Admission::Unseen(_) => Ok(()),
+        };
+        (admission, hue, logged)
     };
 
     if let Admission::Unseen(missed) = admission {
@@ -485,6 +509,14 @@ fn deliver(
             message_id: None,
             missed,
         };
+    }
+
+    // The post is in the room either way. A log that cannot be written loses
+    // the record, never the utterance — so nothing below is conditional on
+    // this, and the one thing that must not happen is it passing unnoticed
+    // (#48).
+    if let Err(err) = logged {
+        room_log::report(app, err);
     }
 
     let mut frame = serde_json::json!({

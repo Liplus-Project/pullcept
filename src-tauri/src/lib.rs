@@ -1,6 +1,7 @@
 mod config;
 mod pty;
 mod room;
+mod room_log;
 mod session;
 
 use pty::PtyState;
@@ -46,6 +47,7 @@ pub fn run() {
             room::room_participants,
             room::room_join,
             room::room_post,
+            room_log::room_log,
             session::seated_accounts,
             session::parse_launch_options,
             session::preview_launch_args,

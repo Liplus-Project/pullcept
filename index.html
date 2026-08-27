@@ -42,6 +42,29 @@
       </header>
 
       <div id="body">
+        <!-- What was said before this run, read out of the room's log
+             (src-tauri/src/room_log.rs). A surface of its own, on the opposite
+             side from the account panel, because the room's body and the
+             history are two different things and mixing them would undo the
+             one that the room starts empty every time (#48).
+
+             The division between the two is the launch. Below is what was said
+             before this window opened; the room to the right is what is being
+             said in it. That is why nothing here follows along as posts
+             arrive — a strip that grew with the conversation would be a second
+             drawing of the conversation, which is the surface next to it. -->
+        <aside id="history" aria-label="履歴">
+          <div class="panel-head">
+            <h2 class="panel-title">履歴</h2>
+          </div>
+          <!-- Seeded, because the log is read after the frame is up: an empty
+               strip in that gap would say "nothing was ever said" at the one
+               moment nothing has been asked yet. -->
+          <ol id="history-list" class="history">
+            <li class="empty">読み込み中</li>
+          </ol>
+        </aside>
+
         <div id="conversation">
           <main id="room" aria-live="polite"></main>
 
