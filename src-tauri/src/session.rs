@@ -11,9 +11,11 @@
 use crate::config::{Account, AccountKind};
 use crate::pty::{self, PtyState};
 use crate::room::RoomState;
+use crate::room_log::{self, TopicRef};
 use mcp_config::{
-    declared_character, declares_settings, launch_args, other_room_servers, register_sidecar,
-    reject_incompatible_flags, server_name_for, RoomRegistration,
+    declared_character, declares_session_id, declares_settings, launch_args, other_room_servers,
+    register_sidecar, reject_incompatible_flags, server_name_for, split_launch_options,
+    substitute_session_id, RoomRegistration,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -284,6 +286,95 @@ pub fn preview_launch_args(
     launch_args(&args, &server_name, character.as_deref(), &others)
 }
 
+/// The line one launch runs, resolved against the topic it is being started
+/// into.
+///
+/// Two lines exist for one account and this picks between them. The account's
+/// own command starts a session; its resume line puts it back into one it was
+/// already in, and which applies is not a property of the account — it is
+/// whether *this topic* holds a session for it (#115, decisions 3 and 4B).
+struct LaunchLine {
+    command: String,
+    args: Vec<String>,
+    /// The session id this launch is handing the CLI, when it is handing one.
+    ///
+    /// `Some` only on a fresh launch that had somewhere to put it: the id is
+    /// decided here and recorded on the topic, so the next opening of that
+    /// topic has something to resume. A resume passes an id it was given and
+    /// mints nothing, so it is `None` — there is nothing new to record.
+    session_id: Option<String>,
+    /// Whether this is the resume line rather than the launch line.
+    resumed: bool,
+}
+
+/// Which of the account's two lines this launch is, and with which id.
+///
+/// Resume needs both halves: a session recorded for this account in this topic,
+/// and a line that knows how to go back into one. Missing either, the launch is
+/// a fresh one — the account then reads back what it needs through the room's
+/// own pull instead, which is the second tier of the two-tier answer and the
+/// reason a missing resume line is a degraded state rather than a failure
+/// (#115, decision 4).
+///
+/// A fresh launch mints an id whenever the account's options name the
+/// placeholder, including when the topic already holds one. The old id is
+/// replaced rather than kept: without a resume line it can never be used again,
+/// and what a topic should hold is the session that is actually in it.
+fn resolve_launch(
+    app: &AppHandle,
+    account: &Account,
+    topic: &TopicRef,
+) -> Result<LaunchLine, String> {
+    let recorded = room_log::session_of(app, &topic.topic_id, &account.id);
+    let resume = account
+        .resume_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+
+    if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
+        let mut parts = split_launch_options(line);
+        // The first token is the command, and a resume line whose first token
+        // is empty would spawn nothing under a name the person never chose. The
+        // reachable way in is a line of nothing but quotes, which splits into
+        // one empty token rather than into none.
+        let command = if parts.is_empty() {
+            String::new()
+        } else {
+            parts.remove(0)
+        };
+        if command.is_empty() {
+            return Err(format!(
+                "Account \"{}\" has a resume command with no command in it. Write the whole line, command first.",
+                account.name.trim()
+            ));
+        }
+        return Ok(LaunchLine {
+            command,
+            args: substitute_session_id(&parts, session_id),
+            session_id: None,
+            resumed: true,
+        });
+    }
+
+    if declares_session_id(&account.args) {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        return Ok(LaunchLine {
+            command: account.command.clone(),
+            args: substitute_session_id(&account.args, &session_id),
+            session_id: Some(session_id),
+            resumed: false,
+        });
+    }
+
+    Ok(LaunchLine {
+        command: account.command.clone(),
+        args: account.args.clone(),
+        session_id: None,
+        resumed: false,
+    })
+}
+
 /// What the caller gets back after a session joins.
 #[derive(Debug, serde::Serialize)]
 pub struct StartedSession {
@@ -298,6 +389,15 @@ pub struct StartedSession {
     /// late. Same clock as a post's `ts`, so the panel's start time and the
     /// first line of the conversation can be read against each other.
     pub started_at: String,
+    /// True when this went in through the account's resume line rather than its
+    /// launch line.
+    ///
+    /// Handed back so the screen can say which of the two happened. Under
+    /// decision 6 a topic opens whether or not a seat could be resumed, and a
+    /// seat that came back fresh is not a failure — but it is a different thing
+    /// from one that came back carrying its own context, and the person is the
+    /// one who can tell whether that matters.
+    pub resumed: bool,
 }
 
 /// Put one account into the room.
@@ -348,7 +448,17 @@ pub fn start_session(
         ));
     }
 
-    if let Err(flag) = reject_incompatible_flags(&account.args) {
+    // Which topic this seat is being started into. Read from the room rather
+    // than passed in by the screen: the room is where the current topic lives,
+    // and a value carried through the screen could name a topic the room has
+    // since left.
+    let topic = room.topic();
+    // Resume or fresh, decided here so every check below runs against the line
+    // that will actually be spawned. Checking the account's own options and
+    // then spawning the resume line would be checking the wrong line.
+    let launch_line = resolve_launch(&app, &account, &topic)?;
+
+    if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
             "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
              Remove it from the launch options."
@@ -397,7 +507,7 @@ pub fn start_session(
     // as the sibling's sidecar started anyway (#103). Refused rather than
     // stripped, for the reason the flag guard above is: a launch that quietly
     // dropped half of what was asked for looks like it worked.
-    if (character.is_some() || !others.is_empty()) && declares_settings(&account.args) {
+    if (character.is_some() || !others.is_empty()) && declares_settings(&launch_line.args) {
         // Two refusals rather than one sentence with a hole in it: what the
         // person can do about it differs. A character is theirs to clear; a
         // sibling registration is another account's, and the way out of that
@@ -427,10 +537,11 @@ pub fn start_session(
     })?;
 
     match launch(
-        app,
+        app.clone(),
         &room,
         pty_state,
         &account,
+        &launch_line,
         &name,
         character,
         &others,
@@ -441,6 +552,22 @@ pub fn start_session(
         rows,
     ) {
         Ok(started) => {
+            // On the topic, so the next opening of it can resume this session.
+            // Recorded after the spawn rather than before: an id written for a
+            // launch that failed would be resumed into a session that was never
+            // started.
+            //
+            // A failure here does not fail the launch. The session is running —
+            // what is lost is the ability to resume it later, and the room's own
+            // pull still stands for that topic (#115, decision 4C). It is said
+            // on the same surface a failed append is said on, for the same
+            // reason: a record that quietly stopped being kept still looks like
+            // one.
+            if let Some(session_id) = &launch_line.session_id {
+                if let Err(err) = room_log::record_session(&app, &topic, &account.id, session_id) {
+                    room_log::report(&app, err);
+                }
+            }
             // The launch's own values, not the account's. The account may be
             // edited while this runs, and what is running would then be
             // reported as whatever was typed into the form afterwards.
@@ -449,7 +576,9 @@ pub fn start_session(
                 RunningSession {
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
-                    command: account.command.clone(),
+                    // The line that ran, which on a resume is not the account's
+                    // launch command at all.
+                    command: launch_line.command.clone(),
                     cwd: cwd.to_string_lossy().to_string(),
                 },
             );
@@ -475,6 +604,9 @@ fn launch(
     room: &RoomState,
     pty_state: tauri::State<PtyState>,
     account: &Account,
+    // Command and arguments as resolved against the topic, so what is spawned
+    // is what was checked.
+    line: &LaunchLine,
     name: &str,
     character: Option<&str>,
     // The sibling registrations this session must not start, read from the
@@ -508,12 +640,12 @@ fn launch(
     let pty_id = pty::spawn_pty(
         app,
         pty_state,
-        account.command.clone(),
+        line.command.clone(),
         // The same function the preview goes through, so what the form showed
         // is what spawns. Nothing is written for the settings: `--settings`
         // takes the JSON inline, and a file per account would grow the very
         // directory this account is sharing (#99).
-        launch_args(&account.args, server_name, character, others),
+        launch_args(&line.args, server_name, character, others),
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),
@@ -523,5 +655,6 @@ fn launch(
         pty_id,
         mcp_config: mcp_config.to_string_lossy().to_string(),
         started_at,
+        resumed: line.resumed,
     })
 }

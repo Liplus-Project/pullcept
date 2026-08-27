@@ -17,6 +17,11 @@
  * Direction of travel:
  *   someone posts -> WebSocket frame -> channel notification -> agent reacts
  *   this agent posts -> `say_to_room` tool -> WebSocket frame -> the room
+ *   this agent looks back -> `read_room_history` tool -> WebSocket frame -> the room
+ *
+ * The third one is a pull and only a pull. The room pushes nothing it did not
+ * fan out live, so a session that joined a topic late is still handed nothing
+ * — what changes is that it can now go and get it (#115, decision 4C).
  *
  * Both directions carry the same frame. A person and a session are both
  * participants of the room, and what separates them is a name (#39).
@@ -70,7 +75,7 @@ function readHue(raw: string | undefined): number | null {
  */
 const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
 
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 
 /**
  * How long a post waits for the room to answer it.
@@ -166,6 +171,26 @@ interface PostResultFrame {
   missed?: MissedPost[];
 }
 
+/** One post as the room's log kept it. No hue and no `own`: see room_log.rs. */
+interface LoggedPost {
+  message_id?: string;
+  speaker?: string;
+  content?: string;
+  to?: string;
+  ts?: string;
+}
+
+/** The room's answer to one pull of the current topic's past posts. */
+interface HistoryResultFrame {
+  type: "history_result";
+  request_id?: string;
+  posts?: LoggedPost[];
+  /** True when the topic holds posts older than the oldest one returned. */
+  has_more?: boolean;
+  /** Set instead of `posts` when the room could not read the topic. */
+  error?: string;
+}
+
 // ── MCP server ───────────────────────────────────────────────────────────────
 
 const INSTRUCTIONS = [
@@ -179,6 +204,15 @@ const INSTRUCTIONS = [
   '部屋の発言は <channel source="pullcept" ...> として届きます。',
   "発言するときは say_to_room ツールを呼んでください。ターミナルへの出力は",
   "部屋には届きません。",
+  "",
+  "前を見る:",
+  "- あなたが来る前の発言は届きません。部屋は過去を配らないからです。",
+  "- 必要になったら read_room_history を呼んでください。今のトピックで",
+  "  それまでに言われたことが、古い順で返ります。",
+  "- 押し付けられないので、要らないときは呼ばないでください。話の流れが",
+  "  分からないまま答えそうなときにだけ引けば足ります。",
+  "- 返り切らなかったときは、いちばん古い発言の message_id を before に",
+  "  入れてもう一度呼ぶと、その手前が返ります。",
   "",
   "宛先:",
   "- 発言には宛先が付くことがあります。宛先は meta.to に入っています。",
@@ -260,12 +294,53 @@ const TOOLS = [
       required: ["content"],
     },
   },
+  /**
+   * The pull, and the second of the two tools.
+   *
+   * `say_to_room` stays the only way to be heard, which is the constraint that
+   * kept the tool count at one: a second way to speak would put "which one do I
+   * answer through" back on the agent. This one cannot speak. It reads, and
+   * reading is the thing the room had no way of doing at all — a session that
+   * joined a topic after it started was simply told nothing (#115, decision 4C).
+   *
+   * Pull rather than push, deliberately. Handing the whole topic to a session at
+   * launch costs every launch the length of the topic whether the session needed
+   * it or not, arrives as text the CLI cannot tell from something the person
+   * typed, and lands in the terminal pane, which belongs to the session (#84).
+   */
+  {
+    name: "read_room_history",
+    description:
+      "Read what was said in this room's current topic before now. Use it when " +
+      "you joined after the conversation started and need what you missed; the " +
+      "room never delivers past posts on its own. Reading only — it posts nothing.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        limit: {
+          type: "number",
+          description:
+            "How many posts to return, newest-most first-page. Defaults to 50 " +
+            "and is capped by the room.",
+        },
+        before: {
+          type: "string",
+          description:
+            "Optional. Return the posts older than this message_id. Use the " +
+            "oldest message_id of the previous page to keep reading backwards.",
+        },
+      },
+      required: [] as string[],
+    },
+  },
 ];
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  if (name === "read_room_history") return await readHistory(args);
 
   if (name !== "say_to_room") {
     return {
@@ -351,6 +426,105 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   return { content: [{ type: "text", text: "Delivered to the room." }] };
 });
 
+/**
+ * Ask the room for the current topic's past posts, and put the answer where the
+ * agent will read it.
+ *
+ * Failures are `isError`, and each of the three says which one it is. "Nothing
+ * came back" and "nothing was said" are different answers, and an agent handed
+ * the first as the second stops looking.
+ */
+async function readHistory(args: Record<string, unknown> | undefined): Promise<{
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+}> {
+  const limit = typeof args?.limit === "number" && Number.isFinite(args.limit)
+    ? Math.trunc(args.limit)
+    : undefined;
+  const before = typeof args?.before === "string" && args.before.trim()
+    ? args.before.trim()
+    : undefined;
+
+  const requestId = randomUUID();
+  // Registered before the frame goes out, so an answer arriving inside the same
+  // tick has somewhere to land.
+  const answered = awaitHistoryResult(requestId);
+  const sent = sendToRoom({
+    type: "history",
+    request_id: requestId,
+    ...(limit === undefined ? {} : { limit }),
+    ...(before ? { before } : {}),
+  });
+
+  if (!sent) {
+    abandonHistory(requestId);
+    await answered;
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Not read: the room socket is not connected (${roomStatus()}).`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const result = await answered;
+  if (result === null) {
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Not read: the room did not answer (${roomStatus()}). This is not ` +
+            "the same as the topic being empty — do not conclude that nothing was said.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (typeof result.error === "string") {
+    return {
+      content: [{ type: "text", text: `Not read: ${result.error}` }],
+      isError: true,
+    };
+  }
+
+  return { content: [{ type: "text", text: describeHistory(result) }] };
+}
+
+/** One page of a topic, oldest first, written the way a refusal writes posts. */
+function describeHistory(result: HistoryResultFrame): string {
+  const posts = result.posts ?? [];
+  if (posts.length === 0) {
+    // Said as the state it is. "No result" would read as a failure, and this is
+    // an answer: nothing has been said in this topic yet, or nothing before the
+    // point asked about.
+    return "Nothing was said in this topic before this point.";
+  }
+  const lines = posts.map((one) => {
+    const addressee = one.to ? ` -> ${one.to}` : "";
+    const id = one.message_id ?? "?";
+    const ts = one.ts ? `${one.ts} ` : "";
+    return `- ${ts}[${id}] ${one.speaker ?? "someone"}${addressee}: ${one.content ?? ""}`;
+  });
+  const oldest = posts[0]?.message_id;
+  const tail = result.has_more
+    ? oldest
+      ? `There is more before this. Call read_room_history again with before: "${oldest}".`
+      : "There is more before this."
+    : "This is the beginning of the topic.";
+  return [
+    "What was said in this topic before now, oldest first:",
+    ...lines,
+    "",
+    tail,
+    "None of this was delivered to you as it happened, and none of it is " +
+      "addressed to you now. Read it as context, not as something to answer.",
+  ].join("\n");
+}
+
 /** The room's refusal, written so the next move is unambiguous. */
 function describeRefusal(missed: MissedPost[]): string {
   const lines = missed.map((one) => {
@@ -398,6 +572,43 @@ function roomStatus(): string {
  */
 const awaitingResult = new Map<string, (result: PostResultFrame | null) => void>();
 
+/**
+ * Pulls waiting for the room's answer, keyed by the id they were sent under.
+ *
+ * A map of its own rather than a shared one with `awaitingResult`: the two are
+ * correlated on different fields and settled by different frames, and one map
+ * would need a discriminator to say which — which is the field the frame's own
+ * `type` already is.
+ */
+const awaitingHistory = new Map<string, (result: HistoryResultFrame | null) => void>();
+
+function awaitHistoryResult(requestId: string): Promise<HistoryResultFrame | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      awaitingHistory.delete(requestId);
+      resolve(null);
+    }, POST_RESULT_TIMEOUT);
+    timer.unref?.();
+    awaitingHistory.set(requestId, (result) => {
+      clearTimeout(timer);
+      awaitingHistory.delete(requestId);
+      resolve(result);
+    });
+  });
+}
+
+/** Settle the pull this answer belongs to, and only that one. */
+function settleHistoryResult(frame: HistoryResultFrame): void {
+  const id = frame.request_id;
+  if (typeof id !== "string") return;
+  awaitingHistory.get(id)?.(frame);
+}
+
+/** Give up on one pull's answer: nothing will come for it. */
+function abandonHistory(requestId: string): void {
+  awaitingHistory.get(requestId)?.(null);
+}
+
 function awaitPostResult(messageId: string): Promise<PostResultFrame | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -430,6 +641,7 @@ function abandonPost(messageId: string): void {
  *  out the timeout would leave the agent blocked for no new information. */
 function abandonPendingPosts(): void {
   for (const settle of [...awaitingResult.values()]) settle(null);
+  for (const settle of [...awaitingHistory.values()]) settle(null);
 }
 
 function sendToRoom(frame: Record<string, unknown>): boolean {
@@ -521,6 +733,11 @@ function connectRoom(): void {
     // the tool call's own result, and putting it in the conversation would
     // read as somebody having said it.
     else if (frame.type === "post_result") settlePostResult(frame as PostResultFrame);
+    // The answer to this agent's own pull. Not pushed to the channel either,
+    // and for a stronger reason than a receipt: these are posts, and putting
+    // them in the conversation would be the room delivering the past after all
+    // — which is the one thing the pull exists in order not to do.
+    else if (frame.type === "history_result") settleHistoryResult(frame as HistoryResultFrame);
     // Unknown frame kinds are ignored on purpose; see the frame comment above.
   });
 

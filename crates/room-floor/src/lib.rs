@@ -140,6 +140,23 @@ impl Floor {
         self.seq
     }
 
+    /// Empty the floor and start its numbering over.
+    ///
+    /// For a room changing topic: the posts of the topic being left are not the
+    /// floor of the one being entered, and leaving them would refuse the first
+    /// thing said in the new one and hand back the old one's contents as
+    /// "missed" (`room.rs`).
+    ///
+    /// The caller has seats holding `since` positions taken against the old
+    /// numbering. Every one of them is now past the end of this floor, which
+    /// reads as having seen everything rather than nothing — so the caller puts
+    /// them back to [`Floor::seq`] itself. That is the room's to do: this type
+    /// holds no seats.
+    pub fn reset(&mut self) {
+        self.seq = 0;
+        self.log.clear();
+    }
+
     /// Check the speaker against the floor and, if they are clear, put their
     /// post on it.
     ///
@@ -246,6 +263,22 @@ mod tests {
             Admission::Unseen(missed) => missed,
             Admission::Admitted { seq } => panic!("expected refusal, admitted at {seq}"),
         }
+    }
+
+    #[test]
+    fn a_reset_floor_admits_a_speaker_carrying_a_watermark_from_before_it() {
+        let mut floor = Floor::new();
+        floor.admit("master", 0, None, post("m-1", "Master", "前のトピック"));
+        floor.admit("claude", 0, Some("m-1"), post("c-1", "Claude", "はい"));
+
+        floor.reset();
+        assert_eq!(floor.seq(), 0);
+
+        // The watermark names a post the floor no longer holds, which resolves
+        // to position 0. An empty floor has nothing past 0, so the speaker is
+        // admitted rather than handed back a topic they have already read.
+        let admission = floor.admit("master", 0, Some("c-1"), post("m-2", "Master", "続き"));
+        assert_eq!(admitted_seq(&admission), 1);
     }
 
     #[test]

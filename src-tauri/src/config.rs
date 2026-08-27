@@ -92,6 +92,33 @@ pub struct Account {
     /// nobody made.
     #[serde(default)]
     pub character: Option<String>,
+    /// The whole command line that puts this account back into a session it was
+    /// already in, with `{session_id}` where the id goes — for example
+    /// `claude --resume {session_id}`. `None` when the account declares none.
+    ///
+    /// A topic holds which session each account was in while it was open
+    /// (`room_log::Topic::sessions`), and reopening one hands that id to this
+    /// line. What comes back is the participant's own context, carried by the
+    /// CLI rather than read out to it — which is why this is a resume and not a
+    /// replay of the log (#115, decision 4B).
+    ///
+    /// A whole command line rather than options alone, because resuming may not
+    /// be the same invocation: it is the line the person would type. It is split
+    /// the way launch options are, and the first token is the command.
+    ///
+    /// The other half of the pair is not a field. A fresh launch hands the CLI
+    /// an id this app decided, and where that id goes on the line is the same
+    /// per-CLI question this field answers — so it is written into the launch
+    /// options with the same `{session_id}` placeholder
+    /// (`mcp_config::SESSION_ID_PLACEHOLDER`). An account that writes it
+    /// nowhere is launched with no id at all, which is the state a CLI with no
+    /// resume of its own is permanently in.
+    ///
+    /// Absent is a real state and the common one. An account that declares no
+    /// resume line is launched fresh into a reopened topic and reads back what
+    /// it needs through the room's own pull instead (#115, decision 4C).
+    #[serde(default)]
+    pub resume_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +181,11 @@ impl Default for AppConfig {
                 hue: None,
                 kind: AccountKind::Ai,
                 character: None,
+                // Nothing, rather than a line guessed from the command above.
+                // A resume line naming the wrong flag fails at the one moment
+                // it is needed, and the person has no reason to go looking at a
+                // field they never filled in.
+                resume_command: None,
             }],
         }
     }
@@ -200,6 +232,10 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     // migrated, because what it is made from — the name and hue they had been
     // joining under — lives in the webview's own storage and never reached
     // this file (#59).
+    //
+    // `resume_command` is the same shape of nothing again: an account saved
+    // before it existed declares no way of resuming, which is what every
+    // account did then — there was no topic for a session to be resumed into.
     //
     // `character` is the same again, and its absence is the state it means:
     // an account saved before it existed declared no character, so its launch
