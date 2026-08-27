@@ -1,0 +1,22 @@
+[package]
+name = "topic-index"
+version = "0.1.0"
+description = "The topics of a Pullcept room: a directory of topic files, and the index that annotates it"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Deliberately free of tauri, for the reason docs/0-requirements.md gives under
+# テストの配置: a test binary that links the tauri dependency tree does not load
+# on the GNU target, so pure logic left in `src-tauri/src/` is unverifiable the
+# moment it is written. The reconciliation between the directory and the index
+# was named there as the piece that had outgrown "read it and check" and
+# belonged in a crate; deleting a topic is what made that load-bearing (#119),
+# because a delete that left the file behind is undone by the next read.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
