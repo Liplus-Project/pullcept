@@ -112,10 +112,19 @@
         <aside id="history" aria-label="トピック">
           <div class="panel-head">
             <h2 class="panel-title">トピック</h2>
-            <!-- Making one belongs next to the list it appears in, which is
-                 where ＋ sits on the panel opposite (#59). -->
-            <button id="topic-new" type="button" title="新しいトピックを始める">新規</button>
           </div>
+          <!-- 新規, at the head of the list rather than beside the heading
+               (#125, 決定1). It is fixed: it stands outside the <ol> because the
+               list is redrawn from the index and this is not one of the index's
+               rows.
+
+               It is also what the top of the list used to hold. A launch opens a
+               topic the index does not carry yet (#115), and the list drew that
+               topic as a row of its own — a row naming a conversation nobody had
+               started, which is the thing 新規 says truthfully. Drawn as picked
+               while the room is in such a topic (#125, AI 判断4), so the place
+               the room is in is somewhere on this list. -->
+          <button id="topic-new" type="button" class="new" title="新しいトピックを始める">新規</button>
           <!-- Seeded, because the index is read after the frame is up: an empty
                list in that gap would say "there are no topics" at the one moment
                nothing has been asked yet. -->
