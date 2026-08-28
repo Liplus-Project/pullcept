@@ -10,7 +10,42 @@
   <body>
     <div id="app">
       <header id="titlebar">
-        <span class="title">Pullcept</span>
+        <!-- Folding the left panel away. Where the app's own name used to sit:
+             that word said what this window is to someone already looking at
+             it, and pressing it did nothing (#118). The control that reaches
+             the panel below it stands over that panel's column instead, which
+             is the position it is read from.
+
+             Its pair is at the far right of this bar, over the column it
+             folds, and the two are the same drawing mirrored. Both buttons
+             carry that drawing; what makes them a mirror rather than a pair of
+             pictures is one rule in src/styles.css, which turns
+             `#toggle-participants` over. A second picture for the second panel
+             would say the two controls do different things (#118, decision 4).
+
+             `Ctrl+B` reaches this one and not the one opposite. The key is
+             the terminal's while the terminal has focus — a session's pane is
+             the session's (#84) — so the shortcut is not the only way in, and
+             both buttons stay on the bar whether a panel is open or folded.
+
+             `aria-expanded` and a name that does not change with it, the way
+             `#toggle-diagnostics` below carries the same pair. The state is
+             the attribute's to say; a label that said it too would be two
+             answers to one question. -->
+        <button
+          id="toggle-history"
+          class="panel-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="history"
+          aria-label="トピックの開閉"
+          title="トピックの開閉（Ctrl+B）"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <rect x="1.7" y="2.7" width="12.6" height="10.6" rx="2.4" />
+            <line x1="6.2" y1="2.7" x2="6.2" y2="13.3" />
+          </svg>
+        </button>
         <!-- The roster used to be echoed here as one line. It is the
              participant panel's list now: two renderings of one roster is one
              surface too many, and the panel is always on screen. -->
@@ -39,6 +74,23 @@
           title="会話の文字サイズ（Ctrl + = / - / 0）"
         ></select>
         <button id="toggle-diagnostics" type="button" aria-expanded="false">端末</button>
+        <!-- Folding the right panel away. Last on the bar, so it sits over the
+             column it reaches — the same reason its pair is first. See that
+             one for the shape, the mirror and why this one has no shortcut. -->
+        <button
+          id="toggle-participants"
+          class="panel-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="participants"
+          aria-label="アカウントの開閉"
+          title="アカウントの開閉"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <rect x="1.7" y="2.7" width="12.6" height="10.6" rx="2.4" />
+            <line x1="6.2" y1="2.7" x2="6.2" y2="13.3" />
+          </svg>
+        </button>
       </header>
 
       <div id="body">

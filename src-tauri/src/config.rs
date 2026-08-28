@@ -121,6 +121,35 @@ pub struct Account {
     pub resume_command: Option<String>,
 }
 
+/// Which of the two panels flanking the room are open.
+///
+/// Here rather than in the webview's own storage, which is where the two text
+/// sizes live (#60 / #68). Those are properties of the screen reading the
+/// conversation — two people reading one room have no reason to want the same
+/// size — and this is a property of the window's layout, which the person who
+/// folded a panel away expects to find folded when they open the app again
+/// (#118, decision 1).
+///
+/// Both open, for a screen that has never folded either. That is what every
+/// screen showed before this field existed, so a config saved then opens the
+/// way it closed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PanelState {
+    /// The topic list, on the left (`#history`).
+    pub history: bool,
+    /// The account list, on the right (`#participants`).
+    pub participants: bool,
+}
+
+impl Default for PanelState {
+    fn default() -> Self {
+        PanelState {
+            history: true,
+            participants: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Also read from `tabs`, the name this key had while an account was a
@@ -130,6 +159,11 @@ pub struct AppConfig {
     /// and a hue is simply not declared yet. The next save writes `accounts`.
     #[serde(alias = "tabs")]
     pub accounts: Vec<Account>,
+    /// Absent in a config written before this field existed, which is every
+    /// config saved so far. `Default` fills it with both panels open — the
+    /// layout those screens have been showing.
+    #[serde(default)]
+    pub panels: PanelState,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +221,7 @@ impl Default for AppConfig {
                 // field they never filled in.
                 resume_command: None,
             }],
+            panels: PanelState::default(),
         }
     }
 }
@@ -236,6 +271,10 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     // `resume_command` is the same shape of nothing again: an account saved
     // before it existed declares no way of resuming, which is what every
     // account did then — there was no topic for a session to be resumed into.
+    //
+    // `panels` is the same again: a config saved before it existed says nothing
+    // about which panels are folded, and both of them were open on every screen
+    // then (#118).
     //
     // `character` is the same again, and its absence is the state it means:
     // an account saved before it existed declared no character, so its launch
