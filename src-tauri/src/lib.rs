@@ -54,6 +54,7 @@ pub fn run() {
             room_log::room_topics,
             room_log::room_topic_log,
             room_log::room_rename_topic,
+            room_log::room_forget_session,
             session::seated_accounts,
             session::parse_launch_options,
             session::preview_launch_args,

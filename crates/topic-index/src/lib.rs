@@ -126,6 +126,32 @@ impl TopicIndex {
         self.find_mut(topic_id).expect("just inserted when absent")
     }
 
+    /// Take one account's session id off a topic, when the topic still holds
+    /// exactly that id. Answers whether anything was taken.
+    ///
+    /// The id is named rather than assumed, so this removes the record it was
+    /// told about and never a later one. A resume that could not go back and a
+    /// fresh launch that recorded a new id are the same account in the same
+    /// topic; matching on the id is what keeps the first from reaching into the
+    /// second (#127).
+    ///
+    /// A topic this index does not name, an account with nothing on record, and
+    /// a record holding some other id all answer false. None of the three is an
+    /// error: the caller is undoing a record it may already have lost the race
+    /// for, and there being nothing to undo is a legitimate outcome of that.
+    ///
+    /// The entry itself stays. What is dropped is the way back into one
+    /// session; the topic is the conversation, and the conversation did happen.
+    pub fn forget_session(&mut self, topic_id: &str, account_id: &str, session_id: &str) -> bool {
+        let Some(topic) = self.find_mut(topic_id) else {
+            return false;
+        };
+        if topic.sessions.get(account_id).map(String::as_str) != Some(session_id) {
+            return false;
+        }
+        topic.sessions.remove(account_id).is_some()
+    }
+
     /// Take one topic's entry out. Answers whether there was one.
     ///
     /// Private, and a delete path cannot be built out of it by accident: the
@@ -464,6 +490,55 @@ mod tests {
         write(scratch.path(), &index).expect("write");
 
         assert!(read_now(scratch.path()).find("orphaned").is_none());
+    }
+
+    /// The way back out of a session id that no conversation stands behind.
+    ///
+    /// The record is written at spawn, which is earlier than the moment a
+    /// conversation exists, so a launch that ended before the CLI made one
+    /// leaves an id that every later resume fails on (#127). Taking it off is
+    /// what puts the next launch back on the normal line.
+    #[test]
+    fn forgetting_a_session_leaves_the_topic_and_the_other_accounts() {
+        let mut index = TopicIndex::default();
+        let topic = index.realize("alpha", NOW);
+        topic.sessions.insert("lay".to_string(), "dead".to_string());
+        topic.sessions.insert("lin".to_string(), "alive".to_string());
+
+        assert!(index.forget_session("alpha", "lay", "dead"));
+
+        let topic = index.find("alpha").expect("the topic itself stays");
+        assert_eq!(topic.sessions.get("lay"), None);
+        assert_eq!(
+            topic.sessions.get("lin").map(String::as_str),
+            Some("alive"),
+            "one account's dead id is not another account's"
+        );
+    }
+
+    /// The guard that keeps a late undo from reaching a live record.
+    ///
+    /// The account is seatless the moment its session ends, so it can be
+    /// launched again before the exit is acted on. That launch records a new
+    /// id under the same topic and the same account, and it is the id — not the
+    /// pair — that says which of the two this is.
+    #[test]
+    fn forgetting_takes_only_the_id_it_was_told_about() {
+        let mut index = TopicIndex::default();
+        index
+            .realize("alpha", NOW)
+            .sessions
+            .insert("lay".to_string(), "fresh".to_string());
+
+        assert!(!index.forget_session("alpha", "lay", "dead"));
+        assert_eq!(
+            index.find("alpha").expect("topic").sessions.get("lay").map(String::as_str),
+            Some("fresh"),
+            "a record that has moved on is not this caller's to undo"
+        );
+
+        assert!(!index.forget_session("alpha", "nobody", "dead"));
+        assert!(!index.forget_session("missing", "lay", "fresh"));
     }
 
     #[test]
