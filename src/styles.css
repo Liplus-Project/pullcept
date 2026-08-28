@@ -590,18 +590,36 @@ body {
   font-weight: 600;
 }
 
-/* 新規, and the same shape ＋ has on the panel opposite: the window's ground
-   with a border, because what separates a control from the surface it sits on
-   is the border and not a fill (see 二つの地色 in docs/0-requirements.md). */
-#history .panel-head button {
+/* 新規, at the head of the list and drawn as one of its rows (#125, 決定1).
+   `.topic .pick` below is what it is measured against — the same padding, the
+   same radius, the same transparent border — because it stands where a row
+   stands and is picked the way a row is picked. The margin is the list's own:
+   `.topics` insets its rows by 0.3rem and sets them 0.15rem apart, and this sits
+   in that column at that distance from the first of them.
+
+   It is a control drawn without a border, which 二つの地色 (docs/0-requirements.md)
+   would otherwise put on the window's ground. The rows of this list already are
+   that: `.pick` is a button too, and a list whose rows each carried a border
+   would read as a stack of buttons rather than as a list. The border arrives
+   when it is picked, which is what the rule below says. */
+#history .new {
+  display: block;
+  margin: 0 0.3rem 0.15rem;
   font: inherit;
-  line-height: 1;
+  text-align: left;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: none;
+  border: 1px solid transparent;
   border-radius: 4px;
-  padding: 0.15rem 0.4rem;
+  padding: 0.3rem 0.4rem;
   cursor: pointer;
+}
+
+/* The room is in a topic the index does not carry (#125, AI 判断4). The same
+   shape a picked row has, because it is the same thing being said. */
+#history .new.current {
+  background: var(--bg);
+  border-color: var(--line);
 }
 
 #history .topics {
@@ -613,8 +631,9 @@ body {
   gap: 0.15rem;
 }
 
-/* One topic. The row is a track holding the control that opens it and, where
-   the topic has a name, the ❌ that deletes it (#119, decision 5). It was the
+/* One topic. The row is a track holding the control that opens it and the ❌
+   that deletes it (#119, decision 5; #125, 決定2 — every row in this list is now
+   a row of the index, so every one of them has something to delete). It was the
    button itself until the ❌ arrived; what is drawn as picked is still the
    button, so the panel opposite's shape is unchanged. */
 #history .topic {
@@ -656,8 +675,9 @@ body {
   white-space: nowrap;
 }
 
-/* A topic nobody has spoken in yet. Said rather than left blank, because blank
-   is what a row with a failed read would also look like. */
+/* A row the index carries with no title on it — 未記入 (#125, AI 判断3). Said
+   rather than left blank, because blank is what a row with a failed read would
+   also look like. */
 #history .topic .name.unnamed {
   color: var(--muted);
 }

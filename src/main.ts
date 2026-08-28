@@ -114,8 +114,9 @@ interface Topic {
  *
  * Held apart from the list because it may not be in the list: a launch opens a
  * new topic and nothing is written down until something is said in it, so the
- * index has no entry for it yet (#115). The panel draws this whether or not the
- * list names it.
+ * index has no entry for it yet (#115). While it is not in the list, the panel
+ * says where the room is by drawing 新規 as picked rather than by adding a row
+ * for it (#125, 決定1 / AI 判断4).
  */
 interface TopicRef {
   topic_id: string;
@@ -1210,26 +1211,27 @@ function topicWhen(iso: string): string {
  * The file keeps them in the order they happened, which is the order an append
  * produces; the reversal is a reading decision rather than a storage one.
  *
- * The current topic is drawn whether or not the index names it. A launch opens
- * a new topic and writes nothing until something is said in it, so at the top
- * of every run there is exactly one topic in the room and not in the list
- * (#115).
+ * A topic the index does not carry is not drawn as a row (#125, 決定1). A launch
+ * opens a new topic and writes nothing until something is said in it, so at the
+ * top of every run there is exactly one topic in the room and not in the list
+ * (#115) — and this list used to put a row there for it. The row named a
+ * conversation nobody had started; 新規 above the list names the place one
+ * starts, which is the true thing about that state, and it is drawn as picked
+ * while the room is in it (#125, AI 判断4). Without that the room would be
+ * somewhere no part of the list showed, which is the fault the row was avoiding.
+ *
+ * Every row here is therefore a row of the index, which is what lets ❌ reach
+ * the ones with no title (#125, 決定2 — see `topicRow`).
  */
 function renderTopics(): void {
   topicListEl.replaceChildren();
 
   const listed = [...topics].reverse();
   const current = currentTopic;
-  if (current && !listed.some((one) => one.topic_id === current.topic_id)) {
-    // Not yet written down, and drawn as itself rather than as a gap. A room
-    // whose own topic is missing from its own list would read as a fault.
-    listed.unshift({
-      topic_id: current.topic_id,
-      title: "",
-      created_at: current.created_at,
-      sessions: {},
-    });
-  }
+  topicNewEl.classList.toggle(
+    "current",
+    current !== null && !listed.some((one) => one.topic_id === current.topic_id),
+  );
 
   if (listed.length === 0) {
     const empty = document.createElement("li");
@@ -1249,12 +1251,15 @@ function renderTopics(): void {
  * is used there — this is the control on the row that cannot be taken back, and
  * it sits beside one that merely changes what is showing.
  *
- * **A topic with no title carries no ❌ (#119, decision 5).** Two rows read that
- * way and neither is a topic anyone has a reason to delete from here: the
- * current topic before anything has been said in it, which is not in the index
- * and has nothing to remove, and a row the index carries for a file that is not
- * there (#117). Putting a button on every row that appears in the list is the
- * form decision 5 refused.
+ * **Every row carries one, a row with no title included (#125, 決定2).** #119
+ * decision 5 withheld it from the untitled ones because "neither is a topic
+ * anyone has a reason to delete from here", and one of that pair was the current
+ * topic before anything had been said in it — which is no longer a row at all
+ * (#125, 決定1). What is left reading as untitled is a row the index carries:
+ * the orphan whose file is gone (#117), and the entry a launch wrote by
+ * recording a session it never spoke in (`record_session`). Both are rows
+ * someone wants gone, and until now the list held them with no way to say so.
+ * Decision 5 is not overturned; its premise left with the row it was about.
  */
 function topicRow(topic: Topic): HTMLLIElement {
   const row = document.createElement("li");
@@ -1267,9 +1272,7 @@ function topicRow(topic: Topic): HTMLLIElement {
 
   const name = document.createElement("span");
   name.className = topic.title ? "name" : "name unnamed";
-  // A topic nobody has spoken in yet. Said rather than left blank: blank is
-  // also what a row would look like if its title had failed to read.
-  name.textContent = topic.title || "未命名";
+  name.textContent = topicName(topic);
   pick.appendChild(name);
 
   const when = document.createElement("span");
@@ -1286,8 +1289,24 @@ function topicRow(topic: Topic): HTMLLIElement {
   });
 
   row.appendChild(pick);
-  if (topic.title) row.appendChild(deleteButton(topic));
+  row.appendChild(deleteButton(topic));
   return row;
+}
+
+/**
+ * What a topic is called on the screen.
+ *
+ * A row the index carries with nothing said in it has no title, and the screen
+ * calls it 未記入 (#125, AI 判断3) — everywhere it is named, so that a sentence
+ * about it never comes out as 「」. Said rather than left blank: blank is also
+ * what a row would look like if its title had failed to read.
+ *
+ * Not written into the index. The word is what the screen says about an empty
+ * title, not a title, which is why renaming such a row opens on an empty field
+ * rather than on this.
+ */
+function topicName(topic: Topic): string {
+  return topic.title || "未記入";
 }
 
 /** The ❌ on one row. It asks; `#topic-delete-dialog` is where it is answered. */
@@ -1296,8 +1315,8 @@ function deleteButton(topic: Topic): HTMLButtonElement {
   remove.type = "button";
   remove.className = "delete";
   remove.textContent = "❌";
-  remove.title = `「${topic.title}」を削除する`;
-  remove.setAttribute("aria-label", `トピック「${topic.title}」を削除する`);
+  remove.title = `「${topicName(topic)}」を削除する`;
+  remove.setAttribute("aria-label", `トピック「${topicName(topic)}」を削除する`);
   remove.addEventListener("click", () => void openTopicDeleteDialog(topic));
   return remove;
 }
@@ -1377,7 +1396,7 @@ async function openTopic(topic: Topic): Promise<void> {
     currentTopic = { topic_id: topic.topic_id, created_at: topic.created_at };
     drawTopic(await invoke<LoggedPost[]>("room_topic_log", { topicId: topic.topic_id }));
     renderTopics();
-    status(`トピック「${topic.title || "未命名"}」を開きました。`);
+    status(`トピック「${topicName(topic)}」を開きました。`);
   } catch (err) {
     status(`トピックを開けませんでした: ${err}`, "error");
   }
@@ -1407,7 +1426,7 @@ async function openTopicDeleteDialog(topic: Topic): Promise<void> {
   if (deletingTopic) return;
   deletingTopic = topic;
   topicDeleteMessageEl.textContent =
-    `トピック「${topic.title}」を削除します。` +
+    `トピック「${topicName(topic)}」を削除します。` +
     `発言の記録と、セッションへの戻り道が消えます。取り消せません。`;
 
   const running = await runningNamesInTopic(topic.topic_id);
@@ -1471,7 +1490,7 @@ function confirmTopicDeleteDialog(): void {
  * somewhere else and did not move. Deleting the open topic leaves the room in a
  * new one, which is the state a launch already produces — an empty room, in a
  * topic not yet in the index (#119, decision 6) — so what is drawn for it is
- * what `startNewTopic` draws.
+ * what `startNewTopic` draws: no row, and 新規 picked (#125, 決定1).
  *
  * The list itself arrives on `room-topics`; this redraw is for the current
  * topic, which is this screen's own value and is not in that payload.
@@ -1489,7 +1508,7 @@ async function deleteTopic(topic: Topic): Promise<void> {
       drawTopic([]);
     }
     renderTopics();
-    status(`トピック「${topic.title}」を削除しました。`);
+    status(`トピック「${topicName(topic)}」を削除しました。`);
   } catch (err) {
     status(`トピックを削除できませんでした: ${err}`, "error");
   }
@@ -3334,8 +3353,9 @@ async function main(): Promise<void> {
   // and the poll below is only for a listener that attached too late.
   await listen<number>("room-ready", (event) => renderSocket(event.payload));
 
-  // The one thing that draws a topic boundary. Beside the list it appears in,
-  // which is where ＋ sits on the panel opposite (#59).
+  // The one thing that draws a topic boundary, and the head of the list it
+  // appears in (#125, 決定1). `renderTopics` is what draws it as picked; this is
+  // only the press.
   topicNewEl.addEventListener("click", () => void startNewTopic());
 
   sendEl.addEventListener("click", () => void send());
