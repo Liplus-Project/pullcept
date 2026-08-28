@@ -79,10 +79,6 @@ body {
   font-size: 0.85rem;
 }
 
-#titlebar .title {
-  font-weight: 600;
-}
-
 /* Takes the slack so the controls stay pinned to the right. */
 #titlebar .spacer {
   flex: 1;
@@ -119,6 +115,50 @@ body {
   opacity: 0.6;
 }
 
+/* The two panel toggles. The bar's own button — the same ground, border and
+   rounding every control on it carries — squared off around a drawing rather
+   than a word (#118). The buttons beside these are wider than they are tall
+   because a word is, and that box around a square drawing reads as a button
+   with the picture pushed off centre.
+
+   The vertical padding is the one the other buttons carry, put on all four
+   sides. With the size below it comes out at their height, so a toggle and the
+   `端末` next to it are two boxes of one height rather than two that nearly
+   agree. */
+#titlebar .panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+}
+
+/* Drawn in the button's own colour, so the pair follows the theme the way the
+   words beside them do. Strokes, no fill: the shape is a panel seen edge-on,
+   and a filled rectangle at this size is a block rather than a frame.
+
+   The size is the line the bar's words make — `1.125rem` against their
+   `0.85rem`, measured — rather than a round number picked on its own. That is
+   what puts the button at the height of the buttons beside it, since the box
+   round the drawing and the box round a word are then built on the same
+   height. */
+#titlebar .panel-toggle svg {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+/* The mirror, and the whole of it. The two buttons hold the same drawing and
+   this rule turns one of them over, so the divider stands on the side the
+   panel it folds is on. Two drawings would be two shapes to keep in step, and
+   the pair being one shape is the decision (#118, decision 4). */
+#titlebar #toggle-participants svg {
+  transform: scaleX(-1);
+}
+
 /* ── body ────────────────────────────────────────────────────────────────── */
 
 /* The conversation and the panel stand side by side, so the panel is read
@@ -136,6 +176,24 @@ body {
   /* Without this a long unbroken line in the room widens the column and pushes
      the panel off the window. */
   min-width: 0;
+}
+
+/* A folded panel takes no width at all — no strip is left where it stood
+   (#118, decision 2). A strip would be a signpost back, and the way back is on
+   the title bar whether the panel is open or not, so the room takes the whole
+   width instead.
+
+   `display: none` written out, for the reason `#diagnostics[hidden]` needs it
+   below: the `display: flex` these two carry outranks the user agent's rule
+   for the attribute, so the attribute on its own folds nothing.
+
+   Nothing under it stops, the way nothing under the terminal pane stops when
+   that is folded. Both panels are drawn from events that keep arriving — the
+   roster, the seats, the topic index — so a panel opened after a session ended
+   behind it shows that it ended (#118, 制約). */
+#history[hidden],
+#participants[hidden] {
+  display: none;
 }
 
 /* ── room ────────────────────────────────────────────────────────────────── */

@@ -199,8 +199,23 @@ interface Account {
   resume_command: string | null;
 }
 
+/**
+ * Which of the two panels flanking the room are open.
+ *
+ * In the config rather than in this screen's own storage, where the two text
+ * sizes are kept (#60 / #68). Those answer "is what I am reading a readable
+ * size", which is the reader's own question; this is the window's layout, and
+ * a panel folded away is expected to still be folded the next time the app
+ * opens (#118, decision 1).
+ */
+interface PanelState {
+  history: boolean;
+  participants: boolean;
+}
+
 interface AppConfig {
   accounts: Account[];
+  panels: PanelState;
 }
 
 interface StartedSession {
@@ -359,6 +374,12 @@ const RESERVED_ARC = 25;
 const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const roomEl = document.getElementById("room") as HTMLElement;
+const historyEl = document.getElementById("history") as HTMLElement;
+const participantsEl = document.getElementById("participants") as HTMLElement;
+const toggleHistoryEl = document.getElementById("toggle-history") as HTMLButtonElement;
+const toggleParticipantsEl = document.getElementById(
+  "toggle-participants",
+) as HTMLButtonElement;
 const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
@@ -413,6 +434,15 @@ const topicDeleteCancelEl = document.getElementById("topic-delete-cancel") as HT
 const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HTMLButtonElement;
 
 let accounts: Account[] = [];
+/**
+ * Which panels are open, until the config says otherwise.
+ *
+ * Both, which is the layout every screen showed before either could be folded.
+ * A config that has never recorded a fold reads back the same pair, so the
+ * value here and the value on disk agree without either being the fallback for
+ * the other.
+ */
+let panels: PanelState = { history: true, participants: true };
 /**
  * The accounts holding a seat in the room, by id.
  *
@@ -708,6 +738,39 @@ function hideDiagnostics(): void {
   toggleEl.setAttribute("aria-expanded", "false");
 }
 
+/**
+ * Draw both panels the way `panels` says, and say so on their buttons.
+ *
+ * One function for both states and both panels, called from the restore and
+ * from every toggle. The button's `aria-expanded` is set from the same value
+ * that folds the panel, so there is no path where the bar says one thing and
+ * the window shows another.
+ *
+ * Folding is `hidden` and nothing else. Nothing is torn down: both panels are
+ * drawn from events that keep arriving whether or not they are on screen — the
+ * roster, the seats, the topic index — so a panel opened after a session ended
+ * behind it opens showing that it ended (#118, 制約).
+ */
+function applyPanels(): void {
+  historyEl.hidden = !panels.history;
+  participantsEl.hidden = !panels.participants;
+  toggleHistoryEl.setAttribute("aria-expanded", String(panels.history));
+  toggleParticipantsEl.setAttribute("aria-expanded", String(panels.participants));
+}
+
+/**
+ * Fold one panel away, or bring it back, and remember which.
+ *
+ * The write goes to disk on every press rather than at the end of the session:
+ * the app is closed by the window's `✕` and by whatever ends it less politely,
+ * and a layout only saved on the way out is one the second of those loses.
+ */
+function togglePanel(which: keyof PanelState): void {
+  panels = { ...panels, [which]: !panels[which] };
+  applyPanels();
+  saveConfig();
+}
+
 /** The terminal currently on the glass, or null when none is. */
 function shownView(): SessionView | null {
   return shownAccount === null ? null : (views.get(shownAccount) ?? null);
@@ -766,17 +829,23 @@ function localAccount(): Account | null {
 }
 
 /**
- * Write the account list back to disk.
+ * Write the config back to disk: the accounts, and which panels are open.
+ *
+ * One function for the whole file, because that is what a save is — the command
+ * takes an `AppConfig` and writes it whole, so a second saver that knew about
+ * only one of the two fields would drop the other every time it ran.
  *
  * Called when an account is decided, deleted, or created for the person at this
  * screen — never from a field losing focus. An account is a thing that exists
  * whether or not it runs (#53), and the field-by-field save made every keystroke
  * on the way to a name into a state that existed: pressing ＋ created an
- * account, and from there the only way out was to delete it (#59).
+ * account, and from there the only way out was to delete it (#59). A panel is
+ * the other shape: folding one is the whole act, so it saves as it happens
+ * (#118, decision 1).
  */
-function saveAccounts(): void {
-  void invoke("save_config", { config: { accounts } }).catch(() => {
-    status("アカウントを保存できませんでした。", "error");
+function saveConfig(): void {
+  void invoke("save_config", { config: { accounts, panels } }).catch(() => {
+    status("設定を保存できませんでした。", "error");
   });
 }
 
@@ -2177,7 +2246,7 @@ function resolveLocalAccount(): void {
       resume_command: null,
     };
     accounts.push(account);
-    saveAccounts();
+    saveConfig();
   }
 
   localAccountId = account.id;
@@ -3044,7 +3113,7 @@ async function commitAccountDialog(): Promise<boolean> {
   } else {
     accounts.push(settled);
   }
-  saveAccounts();
+  saveConfig();
 
   renderPanel();
   renderSessionFacts();
@@ -3099,7 +3168,7 @@ function deleteFromDialog(): void {
   // Its terminal goes with it. An account that no longer exists cannot be named
   // in the panel, and the row is the only way that pane could be reached.
   discardView(views.get(account.id));
-  saveAccounts();
+  saveConfig();
   closeAccountDialog();
   renderPanel();
   renderSessionFacts();
@@ -3205,6 +3274,39 @@ async function main(): Promise<void> {
     else hideDiagnostics();
   });
   diagnosticsCloseEl.addEventListener("click", () => hideDiagnostics());
+
+  // ── the two panels ─────────────────────────────────────────────────────────
+  //
+  // Each button folds the panel it stands over. Both stay on the bar in either
+  // state: a folded panel leaves nothing behind to press (see `#history[hidden]`
+  // in src/styles.css), so the way back has to be somewhere that is always
+  // there.
+  toggleHistoryEl.addEventListener("click", () => togglePanel("history"));
+  toggleParticipantsEl.addEventListener("click", () => togglePanel("participants"));
+  // `Ctrl+B`, the left panel only. Claude Desktop — which is where Master took
+  // the shape of these buttons from — puts the key on that side, and inventing
+  // a second combination for the panel opposite would be adding a key before
+  // anyone has reached for one (#118, AI 判断6).
+  //
+  // On the window, like the text size keys above, and stopped before the
+  // window's own handling for the same reason those are. What is different here
+  // is the terminal. `attachCustomKeyEventHandler` returns true for everything
+  // but `Ctrl+V`, so a session receives every other key it is sent — and this
+  // event still reaches the window afterwards, which would fold the panel and
+  // send `Ctrl+B` to the shell in one press. `Ctrl+B` means something there
+  // (tmux's prefix, readline's backward-char), and a session's pane is the
+  // session's (#84), so while the terminal holds focus this key is not the
+  // app's and the app does not take it (#118, AI 判断5). The panels are still
+  // reachable from the two buttons, which is why giving the key up costs
+  // nothing.
+  window.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+    if (event.isComposing) return;
+    if (event.key !== "b" && event.key !== "B") return;
+    if (terminalEl.contains(document.activeElement)) return;
+    event.preventDefault();
+    togglePanel("history");
+  });
 
   await listen<RoomMessage>("room-message", (event) => {
     appendMessage(event.payload);
@@ -3316,6 +3418,11 @@ async function main(): Promise<void> {
   try {
     const config = await invoke<AppConfig>("load_config");
     accounts = config.accounts;
+    // Before the panel is drawn below. A panel folded when the app was last
+    // closed is folded again here, and the config is the only place that
+    // knows it (#118, decision 1).
+    panels = config.panels;
+    applyPanels();
     // Before the join below: the id this resolves goes into it, and an account
     // may have to be made here for it (#59).
     resolveLocalAccount();
