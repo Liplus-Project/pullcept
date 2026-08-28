@@ -411,6 +411,46 @@ pub fn record_session(
     Ok(())
 }
 
+/// Take a session id off a topic, because there is no conversation behind it.
+///
+/// The undo of [`record_session`], and it exists because that record is written
+/// one step too early to be sure of itself. The id is written when the spawn
+/// returns, which says a process started and does not say a conversation was
+/// made — a CLI that stops at a confirm prompt and is closed there leaves an id
+/// the next resume fails on, and every resume after it (#127). Nothing falls
+/// back on its own, so the pair (account, topic) stays broken until the record
+/// goes.
+///
+/// The id is named, so this undoes the record it was told about and not a later
+/// one; the match is the crate's (`TopicIndex::forget_session`). Answering
+/// false is a normal outcome and not a failure — see there.
+///
+/// The topic's entry stays, and so do its posts. What is dropped is the way
+/// back into one session, which is the one thing here that was never true.
+pub fn forget_session(
+    app: &AppHandle,
+    topic_id: &str,
+    account_id: &str,
+    session_id: &str,
+) -> Result<bool, String> {
+    let forgotten = {
+        let _guard = INDEX_LOCK.lock();
+        let mut index = read_index(app)?;
+        let forgotten = index.forget_session(topic_id, account_id, session_id);
+        // Written only when something changed. A read that adopted a file has
+        // already been written back by `read_index`, so there is nothing else
+        // here waiting on this write.
+        if forgotten {
+            write_index(app, &index)?;
+        }
+        forgotten
+    };
+    if forgotten {
+        announce(app);
+    }
+    Ok(forgotten)
+}
+
 /// Delete one topic: its posts, and the entry that annotated them.
 ///
 /// The store half of the delete. What surrounds it — stopping the sessions that
@@ -464,6 +504,29 @@ pub fn room_topics(app: AppHandle) -> Result<Vec<Topic>, String> {
 #[tauri::command]
 pub fn room_topic_log(app: AppHandle, topic_id: String) -> Result<Vec<LoggedPost>, String> {
     topic_posts(&app, &topic_id)
+}
+
+/// Drop a session id a resume could not go back into.
+///
+/// The screen's door to [`forget_session`], and the screen is the caller
+/// because the screen is what can tell that this happened. The two halves of
+/// the judgment are a launch that went in on the resume line — the seat carries
+/// that — and a session that ended without the room ever having seen it, which
+/// is the roster, read on the same side that already draws 起動中 from it. The
+/// CLI's own words are not read for it, and neither is its exit code: the
+/// condition this app can observe is that nobody arrived (#127).
+///
+/// Answers whether a record was actually dropped, so the screen says only what
+/// happened. It does not relaunch: the record is off, the next press starts a
+/// normal session, and whether to press is the person's (#127, AI 判断2).
+#[tauri::command]
+pub fn room_forget_session(
+    app: AppHandle,
+    topic_id: String,
+    account_id: String,
+    session_id: String,
+) -> Result<bool, String> {
+    forget_session(&app, &topic_id, &account_id, &session_id)
 }
 
 /// Rename a topic.

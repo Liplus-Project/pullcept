@@ -149,6 +149,16 @@ pub struct RunningSession {
     /// which is the one session a delete cannot see; see the accepted tradeoff
     /// in docs/0-requirements.md.
     pub topic_id: String,
+    /// The session id this launch went back into, or `None` when it started
+    /// fresh.
+    ///
+    /// Which of the two lines ran is a fact about the launch, like the three
+    /// above, and it is kept here for the reason the pty id is: the screen
+    /// loses it on a reload and the seat does not. What reads it is the exit —
+    /// a resume that ends without the room ever having seen it leaves a record
+    /// with no conversation behind it, and dropping that record is what puts
+    /// the next launch back on the normal line (#127).
+    pub resumed_from: Option<String>,
 }
 
 /// One account's seat, as the screen reads it.
@@ -344,8 +354,14 @@ struct LaunchLine {
     /// topic has something to resume. A resume passes an id it was given and
     /// mints nothing, so it is `None` — there is nothing new to record.
     session_id: Option<String>,
-    /// Whether this is the resume line rather than the launch line.
-    resumed: bool,
+    /// The session id this launch is going back into, when it is a resume.
+    ///
+    /// `Some` is the resume line and `None` is the launch line, so this is
+    /// also the answer to which of the two ran. One field rather than a flag
+    /// beside an id: the two would have to agree, and the id is what the undo
+    /// needs — a resume that could not go back has to name the record it is
+    /// dropping (#127).
+    resumed_from: Option<String>,
 }
 
 /// Which of the account's two lines this launch is, and with which id.
@@ -394,7 +410,7 @@ fn resolve_launch(
             command,
             args: substitute_session_id(&parts, session_id),
             session_id: None,
-            resumed: true,
+            resumed_from: Some(session_id.to_string()),
         });
     }
 
@@ -404,7 +420,7 @@ fn resolve_launch(
             command: account.command.clone(),
             args: substitute_session_id(&account.args, &session_id),
             session_id: Some(session_id),
-            resumed: false,
+            resumed_from: None,
         });
     }
 
@@ -412,7 +428,7 @@ fn resolve_launch(
         command: account.command.clone(),
         args: account.args.clone(),
         session_id: None,
-        resumed: false,
+        resumed_from: None,
     })
 }
 
@@ -430,15 +446,28 @@ pub struct StartedSession {
     /// late. Same clock as a post's `ts`, so the panel's start time and the
     /// first line of the conversation can be read against each other.
     pub started_at: String,
-    /// True when this went in through the account's resume line rather than its
-    /// launch line.
+    /// The topic this launch went into, and the topic the record it may have to
+    /// drop is on.
     ///
-    /// Handed back so the screen can say which of the two happened. Under
+    /// The launch's own, not the room's as it reads later: the room moves
+    /// between topics while a session runs, and a session that ends badly has
+    /// to reach the topic it started in (#127). Same fact the seat holds, sent
+    /// here as well because the screen acts on the exit and the seat is gone by
+    /// then.
+    pub topic_id: String,
+    /// The session id this went back into, or `null` when it started fresh.
+    ///
+    /// Handed back so the screen can say which of the two lines ran. Under
     /// decision 6 a topic opens whether or not a seat could be resumed, and a
     /// seat that came back fresh is not a failure — but it is a different thing
     /// from one that came back carrying its own context, and the person is the
     /// one who can tell whether that matters.
-    pub resumed: bool,
+    ///
+    /// The id itself rides rather than a flag, because the screen has one more
+    /// thing to do with it: a resume that ends without the room ever seeing it
+    /// is a record with nothing behind it, and dropping that record names it
+    /// (#127).
+    pub resumed_from: Option<String>,
 }
 
 /// Put one account into the room.
@@ -589,6 +618,7 @@ pub fn start_session(
         &server_name,
         &room_url,
         &cwd,
+        &topic.topic_id,
         cols,
         rows,
     ) {
@@ -625,6 +655,10 @@ pub fn start_session(
                     // current one: the two are the same here, and reading the
                     // room again would make them the same only by luck.
                     topic_id: topic.topic_id.clone(),
+                    // The line that ran, for the same reason the command is:
+                    // this is the launch's own fact, and the seat is where it
+                    // survives a reload of the screen (#127).
+                    resumed_from: launch_line.resumed_from.clone(),
                 },
             );
             Ok(started)
@@ -664,6 +698,9 @@ fn launch(
     server_name: &str,
     room_url: &str,
     cwd: &Path,
+    // The topic this launch is going into, carried through so the answer names
+    // the topic a failed resume would have to be undone on (#127).
+    topic_id: &str,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
@@ -700,6 +737,7 @@ fn launch(
         pty_id,
         mcp_config: mcp_config.to_string_lossy().to_string(),
         started_at,
-        resumed: line.resumed,
+        topic_id: topic_id.to_string(),
+        resumed_from: line.resumed_from.clone(),
     })
 }

@@ -224,12 +224,18 @@ interface StartedSession {
   mcp_config: string;
   /** When the session was launched, stamped by the room's own clock. */
   started_at: string;
-  /** True when this went in through the account's resume line rather than its
-   *  launch line — the topic held a session for it, and the CLI came back
-   *  carrying its own context (#115, decision 4B). False is not a failure: it
-   *  is a seat starting fresh in a reopened topic, which is what a topic does
-   *  for every seat it cannot resume (decision 6). */
-  resumed: boolean;
+  /** The topic this launch went into. The launch's own fact: the room moves
+   *  between topics while a session runs, so the topic a failed resume has to
+   *  be undone on is this one and not the room's current (#127). */
+  topic_id: string;
+  /** The session id this went back into, or null when it started fresh — the
+   *  topic held a session for it, and the CLI came back carrying its own
+   *  context (#115, decision 4B). Null is not a failure: it is a seat starting
+   *  fresh in a reopened topic, which is what a topic does for every seat it
+   *  cannot resume (decision 6). The id itself rather than a flag, because a
+   *  resume that ends without the room ever seeing it has a record to drop, and
+   *  dropping it names it (#127). */
+  resumed_from: string | null;
 }
 
 /**
@@ -254,6 +260,11 @@ interface RunningSession {
    *  was started. Read when a topic is deleted, which ends the sessions that
    *  were in that topic and no others (#119, decision 4). */
   topic_id: string;
+  /** The session id this launch went back into, or null when it started fresh.
+   *  A launch's own fact like the three above, and kept on the seat for the
+   *  reason the pty id is: this screen loses it on a reload and the seat does
+   *  not (#127). */
+  resumed_from: string | null;
 }
 
 /** One account holding a seat, and what it is running. */
@@ -612,6 +623,32 @@ interface SessionView {
   fit: FitAddon;
   host: HTMLElement;
   unlisten: UnlistenFn[];
+  /** The topic this session was launched into, so its record can be reached
+   *  after it ends. Empty until the launch returns, like `ptyId`. */
+  topicId: string;
+  /**
+   * The session id this launch went back into, or null when it started fresh.
+   *
+   * Half of what says a resume failed. The other half is `seenInRoom` below,
+   * and the exit is where the two are read together (#127).
+   */
+  resumedFrom: string | null;
+  /**
+   * True once the room's roster has carried this account.
+   *
+   * The screen's own definition of a session having arrived, and the one the
+   * rows already draw 起動中 from: a process is up and the room has not seen it
+   * yet (`memberRow`). Raised and never lowered — a session that was in the
+   * room and then dropped its connection did arrive, and what this answers is
+   * whether it ever did.
+   *
+   * Read at the exit, because a resume that ends without this having been
+   * raised is a resume that went back into nothing: the CLI it was handed to
+   * stopped before it started the servers that join the room. That is
+   * observable without reading a word the CLI printed, which is what the id
+   * being dropped on an error message would have cost (#127).
+   */
+  seenInRoom: boolean;
   /** How the session ended, or null while it is still running. */
   ended: string | null;
   /**
@@ -2117,12 +2154,25 @@ function renderPanel(): void {
   renderAddressees();
 }
 
-/** Take the room's roster and redraw the panel around it. */
+/**
+ * Take the room's roster and redraw the panel around it.
+ *
+ * The one door the roster comes in by, the event and the first read alike. A
+ * second assignment to `participants` elsewhere would be a roster that arrived
+ * without the two readings below happening to it.
+ */
 function renderRoster(joined: Participant[]): void {
   participants = joined;
   // Against the roster that just arrived, before it is drawn: who the room is
   // waiting on is only meaningful about someone who is in it (#82).
   pruneAwaiting();
+  // The other reading of the same roster: which sessions have arrived at all.
+  // Kept on the view rather than asked at the exit, because by then the
+  // connection is gone and the roster no longer remembers it was there (#127).
+  for (const view of views.values()) {
+    if (view.seenInRoom) continue;
+    if (joined.some((one) => one.account === view.accountId)) view.seenInRoom = true;
+  }
   renderPanel();
 }
 
@@ -2638,10 +2688,18 @@ function openView(account: Account, running?: RunningSession): SessionView {
     command: running?.command ?? account.command,
     cwd: running?.cwd ?? account.cwd,
     startedAt: running?.started_at ?? "",
+    topicId: running?.topic_id ?? "",
+    resumedFrom: running?.resumed_from ?? null,
     term,
     fit,
     host,
     unlisten: [],
+    // False even for a session picked up again after a reload. The roster is
+    // read on its own event and this account is on it if the session is in the
+    // room, so the answer arrives rather than being assumed here — and assuming
+    // it from the roster as it stands would read a connection the previous run
+    // of this account has not finished dropping as this one having arrived.
+    seenInRoom: false,
     ended: null,
     // Quiet until something arrives. A session picked up again after a reload
     // starts here too: its terminal is new even though its process is not, so
@@ -2765,6 +2823,11 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
       view.unlisten = [];
       const name = viewName(view);
       status(`${name} が終了しました（${detail}）。端末を確認してください。`, "error");
+      // A resume that ended on its own without the room ever having seen it
+      // went back into a session that is not there. The record it went in on is
+      // what every later launch into this topic will fail on the same way, so
+      // it goes (#127).
+      void dropDeadResume(view, code, detail);
       // The seat this account held is free the moment its session ends, so the
       // panel says 未起動 again and the account can be started once more.
       void refreshSeats();
@@ -2778,6 +2841,70 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
 }
 
 /**
+ * Take this topic's record of a session a resume could not go back into.
+ *
+ * The failure it answers has no other way out. A session id is recorded when the
+ * spawn returns, which is a process having started and not a conversation having
+ * been made — a CLI stopped at a confirm prompt and closed there leaves an id
+ * behind it. Every launch of that account into that topic afterwards takes the
+ * resume line, fails on the id, and ends; the pair is broken until the record
+ * goes, and nothing was taking it (#127).
+ *
+ * The condition is three things this app already observes: the launch went in on
+ * the resume line, the room never carried the account, and the session ended on
+ * its own. The CLI's own words are not read for any of them. Matching the
+ * message it prints would be a check that stops working the day the wording
+ * changes, and stops silently (#127, 制約).
+ *
+ * The third is what an exit code being carried at all says, not what its value
+ * is: a session the app killed is taken out of the map before it is reaped, and
+ * the exit then arrives with no code (`pty.rs`). That is the row's ❌, the topic
+ * delete, and the app closing — an end somebody asked for, and none of them says
+ * the resume failed. The window it covers is real: the confirm prompt holds a
+ * launched CLI outside the room for minutes (#89), and ending the wrong account
+ * during it is an ordinary act that must not cost a resume that would have
+ * worked. A code missing for any other reason falls the same way, which is the
+ * safe side — the poisoned launch ends by itself and is caught on the next press.
+ *
+ * It does not start anything again. The record is off, so the next press is a
+ * normal launch — and whether to press is the person's. Retrying here would be
+ * this screen running a failure round and round, which is the shape
+ * `model-loop-safety` is about (#127, AI 判断2).
+ *
+ * Said in the status line, because a repair nobody is told about is a history
+ * that quietly stopped being continuous. Only after the app answers that a
+ * record was actually dropped: the account is seatless the moment it exits, so
+ * a launch made in between owns the record now, and this says what happened
+ * rather than what it asked for.
+ */
+async function dropDeadResume(
+  view: SessionView,
+  code: number | null,
+  detail: string,
+): Promise<void> {
+  const dead = view.resumedFrom;
+  if (dead === null || view.seenInRoom || view.topicId === "" || code === null) return;
+  const name = viewName(view);
+  try {
+    const dropped = await invoke<boolean>("room_forget_session", {
+      topicId: view.topicId,
+      accountId: view.accountId,
+      sessionId: dead,
+    });
+    if (!dropped) return;
+    status(
+      `${name} は会話へ戻れないまま終了しました（${detail}）。このトピックの再開先を外したので、次は通常の起動になります。`,
+      "error",
+    );
+  } catch (err) {
+    // The record is still there, which means the next launch fails the same
+    // way. Saying so is the whole of what is left to do here — a repair that
+    // failed quietly reads as a repair that happened.
+    status(`${name} の再開先を外せませんでした: ${err}`, "error");
+  }
+}
+
+/**
  * Follow a launched session until it dies.
  *
  * A session that exits on startup is the failure mode with no other witness:
@@ -2787,6 +2914,11 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
 async function followSession(view: SessionView, started: StartedSession): Promise<void> {
   view.ptyId = started.pty_id;
   view.startedAt = started.started_at;
+  // Which line ran and where it ran, both from the launch's own answer. They
+  // are what the exit reads, and the exit can arrive as soon as the listener
+  // below is attached, so they are set before it (#127).
+  view.topicId = started.topic_id;
+  view.resumedFrom = started.resumed_from;
   renderPanel();
   renderSessionFacts();
 
@@ -2874,7 +3006,7 @@ async function startSession(account: Account): Promise<void> {
     // can tell whether it mattered. A seat that came back fresh in a reopened
     // topic is a legitimate outcome and not a silent one (#115, decision 6).
     status(
-      started.resumed
+      started.resumed_from !== null
         ? `${name} を再開しました。${started.mcp_config} に登録済み。`
         : `${name} を起動しました。${started.mcp_config} に登録済み。`,
     );
@@ -3481,7 +3613,11 @@ async function main(): Promise<void> {
 
   try {
     await join();
-    participants = await invoke<Participant[]>("room_participants");
+    // Through the same door the event uses. Read directly into `participants`,
+    // this first roster would be the one arrival the readings in `renderRoster`
+    // never see — and a session adopted just above (`refreshSeats`) is exactly
+    // what is on it (#127).
+    renderRoster(await invoke<Participant[]>("room_participants"));
     const port = await invoke<number | null>("room_port");
     if (port !== null) renderSocket(port);
     renderPanel();
