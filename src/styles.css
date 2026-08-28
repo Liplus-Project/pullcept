@@ -555,11 +555,22 @@ body {
   gap: 0.15rem;
 }
 
-/* One topic. A row that is picked, so it is the shape a picked row has on the
-   panel opposite — the whole row is the control, and the selected one is lifted
-   out of the panel's surface rather than tinted (#75). */
+/* One topic. The row is a track holding the control that opens it and, where
+   the topic has a name, the ❌ that deletes it (#119, decision 5). It was the
+   button itself until the ❌ arrived; what is drawn as picked is still the
+   button, so the panel opposite's shape is unchanged. */
+#history .topic {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+/* The control that opens the topic. It takes what the row has left, so a long
+   title ellipses against the ❌ rather than pushing it out of the panel. Picked
+   is the shape a picked row has on the panel opposite — lifted out of the
+   panel's surface rather than tinted (#75). */
 #history .topic .pick {
-  width: 100%;
+  flex: 1;
   min-width: 0;
   display: block;
   font: inherit;
@@ -613,6 +624,35 @@ body {
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.25rem 0.35rem;
+}
+
+/* Deleting the topic. The mark and the danger colour are the participant
+   panel's 終了 (`#participants .member .end`), because this is the same kind of
+   control in the same kind of list: the one thing on the row that cannot be
+   taken back, next to one that merely changes what is showing. Colour reaches
+   the outline and the mark's text fallback rather than the emoji itself, which
+   is drawn by a colour font — it is kept for the fallback, which is the case
+   that needs it.
+
+   It does not shrink. A row whose title is long is the row where the button
+   would otherwise be squeezed to nothing, and that is not a state this control
+   has. */
+#history .topic .delete {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--danger);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
 }
 
 #history .empty {
@@ -1158,8 +1198,14 @@ body {
 
 /* Its own dialog, holding a question and two answers. It borrows the account
    dialog's frame because the two are the same kind of surface, and shares none
-   of its body: that one is a form, this one is a sentence (#71). */
-#end-dialog {
+   of its body: that one is a form, this one is a sentence (#71).
+
+   `#topic-delete-dialog` (#119) is drawn by these same rules rather than by a
+   copy of them. They are two questions and two elements — one element holding
+   both would have to decide which of them it is opening in — but they are one
+   shape, and a second copy of the shape is what drifts from the first. */
+#end-dialog,
+#topic-delete-dialog {
   width: min(22rem, calc(100vw - 3rem));
   color: var(--fg);
   background: var(--bg);
@@ -1169,31 +1215,46 @@ body {
   font-size: 0.85rem;
 }
 
-#end-dialog::backdrop {
+#end-dialog::backdrop,
+#topic-delete-dialog::backdrop {
   background: rgb(0 0 0 / 0.45);
 }
 
-#end-dialog .confirm {
+#end-dialog .confirm,
+#topic-delete-dialog .confirm {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
   padding: 1rem 1.1rem 0.9rem;
 }
 
-#end-dialog h2 {
+#end-dialog h2,
+#topic-delete-dialog h2 {
   margin: 0;
   font-size: 0.95rem;
 }
 
 /* Which session, by name. The name is the whole content of the question — the
    row that was clicked is no longer under the pointer once this is open. */
-#end-dialog p {
+#end-dialog p,
+#topic-delete-dialog p {
   margin: 0;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-#end-dialog .actions {
+/* Which sessions the delete would end (#119, decision 4). Hidden when none
+   are, so the dialog never says it about a topic where it is not true. It sits
+   under the sentence about the log as a second sentence, because it is a second
+   thing being lost rather than a qualification of the first. */
+#topic-delete-dialog .sessions {
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+#end-dialog .actions,
+#topic-delete-dialog .actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -1201,11 +1262,13 @@ body {
   padding: 0;
 }
 
-#end-dialog .actions .spacer {
+#end-dialog .actions .spacer,
+#topic-delete-dialog .actions .spacer {
   flex: 1;
 }
 
-#end-dialog .actions button {
+#end-dialog .actions button,
+#topic-delete-dialog .actions button {
   font: inherit;
   color: var(--fg);
   background: var(--bg);
@@ -1218,7 +1281,8 @@ body {
 /* The answer that acts, filled in the danger colour. 取消 stays a plain button
    and holds the focus, so the two are told apart by more than their position
    and the easy answer is the one that changes nothing. */
-#end-dialog .actions .danger {
+#end-dialog .actions .danger,
+#topic-delete-dialog .actions .danger {
   color: var(--bg);
   background: var(--danger);
   border-color: var(--danger);

@@ -35,6 +35,17 @@
 //! open, a crash between the post reaching the file and the entry reaching the
 //! index, closes because the file alone is enough to rebuild the entry.
 //!
+//! **The store itself is the `topic-index` crate; this file is the app's door
+//! to it.** What is here needs tauri — the path to the room's directory comes
+//! out of `AppHandle`, the lock over read-modify-write of the index is held
+//! here, and the screen is told from here that the list changed. What is not
+//! here is everything that only ever needed the directory: the shapes, the
+//! reconciliation, the title, the parse, and the delete. That split is the one
+//! docs/0-requirements.md named under テストの配置 before it existed, and #119
+//! is what made it load-bearing rather than tidy — deleting a topic has to take
+//! the file, because an index with the entry taken out and the file left is a
+//! topic the very next read adopts back.
+//!
 //! `logs/{room}.jsonl` from before this — the single flow — is carried in as
 //! one topic the first time the index is built. It is moved, not copied and not
 //! dropped (#115, decision 8), and the scan above is what gives it its entry.
@@ -61,11 +72,18 @@
 
 use parking_lot::Mutex;
 use room_floor::Post;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde::Serialize;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
+use topic_index::TopicIndex;
+
+/// The shapes and the store, from the crate that holds them.
+///
+/// Re-exported because they are what this module's commands hand back, and a
+/// caller inside the app should not have to know which side of the tauri
+/// boundary a topic's shape lives on.
+pub use topic_index::{LoggedPost, Topic};
 
 /// The room whose log this is, as it appears in the path.
 ///
@@ -89,12 +107,6 @@ const LOG_ERROR_EVENT: &str = "room-log-error";
 /// here rather than being trusted to keep a second copy in step.
 const TOPICS_EVENT: &str = "room-topics";
 
-/// How long an auto-generated title is allowed to be, in characters.
-///
-/// Characters rather than bytes: the titles are Japanese more often than not,
-/// and a byte cut would land inside one.
-const TITLE_CHARS: usize = 40;
-
 /// One acquisition for every read-modify-write of the index.
 ///
 /// The index is a single small file read and rewritten whole. Two writers
@@ -104,67 +116,22 @@ const TITLE_CHARS: usize = 40;
 /// failed to resume.
 static INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// One post, as the log holds it.
+/// The five fields of a post, taken off the post itself.
 ///
-/// The same five fields going in and coming out.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggedPost {
-    pub message_id: String,
-    pub speaker: String,
-    pub content: String,
-    /// The participant this was addressed to, or absent when it was said to the
-    /// room. Omitted rather than written as null, so the two states are the
-    /// field's presence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<String>,
-    pub ts: String,
-}
-
-impl LoggedPost {
-    /// The five fields of a post, taken off the post itself.
-    ///
-    /// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as
-    /// well, and a derive would put it in the file. What is dropped here is
-    /// dropped on purpose, and this is where that is legible.
-    fn of(post: &Post) -> Self {
-        LoggedPost {
-            message_id: post.message_id.clone(),
-            speaker: post.speaker.clone(),
-            content: post.content.clone(),
-            to: post.to.clone(),
-            ts: post.ts.clone(),
-        }
+/// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as well,
+/// and a derive would put it in the file. What is dropped here is dropped on
+/// purpose, and this is where that is legible. A free function rather than an
+/// inherent method, because the type it builds belongs to the `topic-index`
+/// crate now — and this is the half that could not go with it, since `Post` is
+/// the room's own shape.
+fn logged(post: &Post) -> LoggedPost {
+    LoggedPost {
+        message_id: post.message_id.clone(),
+        speaker: post.speaker.clone(),
+        content: post.content.clone(),
+        to: post.to.clone(),
+        ts: post.ts.clone(),
     }
-}
-
-/// One topic, as the index holds it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Topic {
-    /// Opaque, minted once, and the file name of this topic's posts. Never a
-    /// title: a title is edited, and a file whose name moved with it would
-    /// leave the posts behind.
-    pub topic_id: String,
-    /// What the list shows. Generated from the opening of the first post said
-    /// in it and editable afterwards (#115, decision 9). Empty until that first
-    /// post lands, which is a state the screen draws rather than a value
-    /// missing.
-    pub title: String,
-    /// When it was made, RFC 3339. The room's clock (`room::now_iso`), or the
-    /// first post's own stamp for a topic adopted from a file.
-    pub created_at: String,
-    /// The session each account was in while this topic was open, keyed by
-    /// account id.
-    ///
-    /// This is what makes a topic a vessel rather than a transcript: reopening
-    /// it hands these back to the launch, and the participant returns carrying
-    /// its own context instead of being read a summary of it (#115, decisions 3
-    /// and 4).
-    ///
-    /// Keyed on the account id, which is the identity (#53). Not on the name,
-    /// which is editable, and not on the room's connection id, which is minted
-    /// per connection and is gone by the time a topic is reopened.
-    #[serde(default)]
-    pub sessions: BTreeMap<String, String>,
 }
 
 /// The topic the room is in, before anything has been said in it.
@@ -187,26 +154,7 @@ impl TopicRef {
     }
 }
 
-/// The topics, as the file holds them.
-///
-/// Oldest first, by `created_at`. The screen reverses it — a list is read
-/// newest first — and the file keeps the order the conversation happened in.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct TopicIndex {
-    #[serde(default)]
-    topics: Vec<Topic>,
-}
-
-impl TopicIndex {
-    fn find(&self, topic_id: &str) -> Option<&Topic> {
-        self.topics.iter().find(|one| one.topic_id == topic_id)
-    }
-
-    fn find_mut(&mut self, topic_id: &str) -> Option<&mut Topic> {
-        self.topics.iter_mut().find(|one| one.topic_id == topic_id)
-    }
-}
-
+/// Where this room's topics live.
 fn room_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -215,16 +163,9 @@ fn room_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("logs").join(ROOM_NAME))
 }
 
-fn index_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(room_dir(app)?.join("index.json"))
-}
-
 /// Where one topic's posts live.
-///
-/// The id is a UUID minted by `TopicRef`, so nothing a person types reaches a
-/// path. A title with a slash in it would otherwise be a directory.
 fn topic_path(app: &AppHandle, topic_id: &str) -> Result<PathBuf, String> {
-    Ok(room_dir(app)?.join(format!("{topic_id}.jsonl")))
+    Ok(topic_index::topic_path(&room_dir(app)?, topic_id))
 }
 
 /// The single flow this log kept before topics existed.
@@ -243,6 +184,11 @@ fn legacy_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// is one (`room.rs`). Nothing is dropped: the posts are the file, and the file
 /// is what moves (#115, decision 8). The entry it gets is the scan's, like any
 /// other file in the directory.
+///
+/// It stays on this side of the boundary rather than going into the crate with
+/// the rest of the store: what it reads is `logs/{room}.jsonl`, one level above
+/// the room's own directory, and the crate is given that directory and nothing
+/// around it.
 ///
 /// Call under `INDEX_LOCK`.
 fn migrate_legacy(app: &AppHandle) -> Result<(), String> {
@@ -268,124 +214,28 @@ fn migrate_legacy(app: &AppHandle) -> Result<(), String> {
 
 /// Read the index off disk and reconcile it with the directory.
 ///
-/// The reconciliation is not a repair path bolted on: it is what lets a topic
-/// exist before any entry is written for it. An entry with no file stays — a
-/// topic whose session was launched but which nobody has spoken in yet is that
-/// case, and its session id is the whole reason to keep it.
+/// The reconciliation is the crate's (`topic_index::read`); what is added here
+/// is the legacy carry-in ahead of it, and writing back whatever the read
+/// changed. A read that adopts is a read that has to be written down: the entry
+/// it built is what the next reader would otherwise build again, and the
+/// session ids recorded against it in between would land on an entry no file
+/// agrees with.
 ///
 /// Call under `INDEX_LOCK`.
 fn read_index(app: &AppHandle) -> Result<TopicIndex, String> {
     migrate_legacy(app)?;
 
-    let path = index_path(app)?;
-    let mut index = if path.exists() {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read the topic index: {e}"))?;
-        serde_json::from_str::<TopicIndex>(&content)
-            .map_err(|e| format!("Failed to parse the topic index: {e}"))?
-    } else {
-        TopicIndex::default()
-    };
-
-    let adopted = adopt_orphans(app, &mut index)?;
-    index
-        .topics
-        .sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.topic_id.cmp(&b.topic_id)));
-    if adopted || !path.exists() {
-        write_index(app, &index)?;
+    let dir = room_dir(app)?;
+    let (index, needs_write) = topic_index::read(&dir, &crate::room::now_iso())?;
+    if needs_write {
+        topic_index::write(&dir, &index)?;
     }
     Ok(index)
 }
 
-/// Give an entry to every topic file the index does not name.
-///
-/// Answers true when it changed anything.
-fn adopt_orphans(app: &AppHandle, index: &mut TopicIndex) -> Result<bool, String> {
-    let dir = room_dir(app)?;
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        // No directory is no topics, not a failure. It is the first run.
-        return Ok(false);
-    };
-    let mut adopted = false;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(topic_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        if index.find(topic_id).is_some() {
-            continue;
-        }
-        let (posts, _) = read_posts(&path);
-        let first = posts.first();
-        index.topics.push(Topic {
-            topic_id: topic_id.to_string(),
-            title: first.map(|post| title_from(&post.content)).unwrap_or_default(),
-            // The first thing said in it, which is the closest thing a file
-            // carries to when it began. A topic made through the app has its
-            // own stamp and never reaches here.
-            created_at: first
-                .map(|post| post.ts.clone())
-                .unwrap_or_else(crate::room::now_iso),
-            sessions: BTreeMap::new(),
-        });
-        adopted = true;
-    }
-    Ok(adopted)
-}
-
 /// Call under `INDEX_LOCK`.
 fn write_index(app: &AppHandle, index: &TopicIndex) -> Result<(), String> {
-    let path = index_path(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create the room log dir: {e}"))?;
-    }
-    let content = serde_json::to_string_pretty(index)
-        .map_err(|e| format!("Failed to serialize the topic index: {e}"))?;
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write the topic index: {e}"))
-}
-
-/// Make sure `topic` has an entry, and hand back a mutable hold on it.
-///
-/// The one place a topic reaches the index. Every caller is a deliberate act
-/// that has to survive the app closing — the first post, a session id, a
-/// rename — and none of them is "the app was opened".
-///
-/// Call under `INDEX_LOCK`.
-fn realize<'a>(index: &'a mut TopicIndex, topic: &TopicRef) -> &'a mut Topic {
-    if index.find(&topic.topic_id).is_none() {
-        index.topics.push(Topic {
-            topic_id: topic.topic_id.clone(),
-            title: String::new(),
-            created_at: topic.created_at.clone(),
-            sessions: BTreeMap::new(),
-        });
-    }
-    index
-        .find_mut(&topic.topic_id)
-        .expect("just inserted when absent")
-}
-
-/// A title from the opening of the first thing said in the topic.
-///
-/// The first line, whitespace collapsed, cut at `TITLE_CHARS`. A list of
-/// timestamps is a list nobody can read (#115, decision 9), and the opening of
-/// the first post is what a person would have written there anyway.
-fn title_from(content: &str) -> String {
-    let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.is_empty() {
-        return String::new();
-    }
-    let mut chars = flat.chars();
-    let head: String = chars.by_ref().take(TITLE_CHARS).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
+    topic_index::write(&room_dir(app)?, index)
 }
 
 /// Say on the screen that the log failed.
@@ -399,7 +249,11 @@ pub fn report(app: &AppHandle, message: String) {
 }
 
 /// Hand the screen the topic list as it now stands.
-fn announce(app: &AppHandle) {
+///
+/// Reachable from `room.rs` as well as from here: deleting a topic changes this
+/// list from a command that is not on this surface, and the screen is told
+/// about the list from one place regardless of who changed it.
+pub(crate) fn announce(app: &AppHandle) {
     let read = {
         let _guard = INDEX_LOCK.lock();
         read_index(app)
@@ -445,7 +299,7 @@ pub fn append(app: &AppHandle, topic_id: &str, post: &Post) -> Result<bool, Stri
         .map(|meta| meta.len() == 0)
         .unwrap_or(true);
 
-    let mut line = serde_json::to_string(&LoggedPost::of(post))
+    let mut line = serde_json::to_string(&logged(post))
         .map_err(|e| format!("Failed to serialize the post: {e}"))?;
     line.push('\n');
 
@@ -475,9 +329,9 @@ pub fn realize_from_first_post(app: &AppHandle, topic: &TopicRef, content: &str)
                 return;
             }
             Ok(mut index) => {
-                let entry = realize(&mut index, topic);
+                let entry = index.realize(&topic.topic_id, &topic.created_at);
                 if entry.title.is_empty() {
-                    entry.title = title_from(content);
+                    entry.title = topic_index::title_from(content);
                 }
                 match write_index(app, &index) {
                     Ok(()) => true,
@@ -494,35 +348,6 @@ pub fn realize_from_first_post(app: &AppHandle, topic: &TopicRef, content: &str)
     }
 }
 
-/// One topic's posts, oldest first.
-///
-/// The tuple's second half is how many lines did not parse. A line that does
-/// not parse is skipped rather than failing the read: the case it covers is a
-/// torn tail from a run that ended mid-write, and refusing the whole topic over
-/// the last line of it would lose everything to protect nothing. It is not
-/// skipped quietly — the count goes back to the screen on the same event a
-/// failed append does.
-fn read_posts(path: &Path) -> (Vec<LoggedPost>, usize) {
-    // No file is no history, not a failure. It is what a topic nobody has
-    // spoken in yet looks like.
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return (Vec::new(), 0);
-    };
-
-    let mut posts = Vec::new();
-    let mut skipped = 0usize;
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<LoggedPost>(line) {
-            Ok(post) => posts.push(post),
-            Err(_) => skipped += 1,
-        }
-    }
-    (posts, skipped)
-}
-
 /// One topic's posts, for a caller inside this process.
 ///
 /// The pull the sidecar's read tool reaches (`room.rs`), and the same read the
@@ -530,7 +355,7 @@ fn read_posts(path: &Path) -> (Vec<LoggedPost>, usize) {
 /// topic contains.
 pub fn topic_posts(app: &AppHandle, topic_id: &str) -> Result<Vec<LoggedPost>, String> {
     let path = topic_path(app, topic_id)?;
-    let (posts, skipped) = read_posts(&path);
+    let (posts, skipped) = topic_index::read_posts(&path);
     if skipped > 0 {
         report(app, format!("読めなかった記録が {skipped} 件あります"));
     }
@@ -576,13 +401,46 @@ pub fn record_session(
     {
         let _guard = INDEX_LOCK.lock();
         let mut index = read_index(app)?;
-        realize(&mut index, topic)
+        index
+            .realize(&topic.topic_id, &topic.created_at)
             .sessions
             .insert(account_id.to_string(), session_id.to_string());
         write_index(app, &index)?;
     }
     announce(app);
     Ok(())
+}
+
+/// Delete one topic: its posts, and the entry that annotated them.
+///
+/// The store half of the delete. What surrounds it — stopping the sessions that
+/// were running in the topic, and moving the room off it when it is the one the
+/// room is in — is `room::room_delete_topic`, because neither of those is the
+/// log's to do.
+///
+/// Both halves go, and the file goes first (`topic_index::delete`). The entry
+/// is an annotation of the file, so an index with the entry taken out and the
+/// file still there is a topic the very next read adopts back under a rebuilt
+/// entry — a delete that quietly undoes itself, reporting nothing while it does
+/// (#119, decision 1).
+///
+/// Refused when the index does not name the topic. Nothing the screen can press
+/// reaches that: the current topic before anything has realised it is drawn from
+/// the room rather than from the list, and it carries no delete (#119, decision
+/// 5). What the refusal covers is the same thing `room_select_topic`'s does — a
+/// caller naming a topic this room does not have — and it says so the same way.
+///
+/// The screen is told the list changed by the caller, once the room has been put
+/// somewhere the deleted topic is not.
+pub fn delete_topic(app: &AppHandle, topic_id: &str) -> Result<(), String> {
+    let _guard = INDEX_LOCK.lock();
+    let dir = room_dir(app)?;
+    let mut index = read_index(app)?;
+    if index.find(topic_id).is_none() {
+        return Err(format!("トピック {topic_id} は見つかりません。"));
+    }
+    topic_index::delete(&dir, &mut index, topic_id)?;
+    write_index(app, &index)
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
@@ -639,7 +497,9 @@ pub fn room_rename_topic(
                 if current.topic_id != topic_id {
                     return Err(format!("トピック {topic_id} は見つかりません。"));
                 }
-                realize(&mut index, &current).title = title;
+                index
+                    .realize(&current.topic_id, &current.created_at)
+                    .title = title;
             }
         }
         write_index(&app, &index)?;

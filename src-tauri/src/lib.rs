@@ -50,6 +50,7 @@ pub fn run() {
             room::room_current_topic,
             room::room_new_topic,
             room::room_select_topic,
+            room::room_delete_topic,
             room_log::room_topics,
             room_log::room_topic_log,
             room_log::room_rename_topic,

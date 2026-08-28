@@ -233,6 +233,11 @@ interface RunningSession {
   started_at: string;
   command: string;
   cwd: string;
+  /** The topic this session was started into. A launch's own fact: the room
+   *  moves between topics while a session runs, and the seat stays where it
+   *  was started. Read when a topic is deleted, which ends the sessions that
+   *  were in that topic and no others (#119, decision 4). */
+  topic_id: string;
 }
 
 /** One account holding a seat, and what it is running. */
@@ -399,6 +404,13 @@ const quitDialogEl = document.getElementById("quit-dialog") as HTMLDialogElement
 const quitMessageEl = document.getElementById("quit-dialog-message") as HTMLElement;
 const quitCancelEl = document.getElementById("quit-cancel") as HTMLButtonElement;
 const quitCommitEl = document.getElementById("quit-commit") as HTMLButtonElement;
+const topicDeleteDialogEl = document.getElementById(
+  "topic-delete-dialog",
+) as HTMLDialogElement;
+const topicDeleteMessageEl = document.getElementById("topic-delete-message") as HTMLElement;
+const topicDeleteSessionsEl = document.getElementById("topic-delete-sessions") as HTMLElement;
+const topicDeleteCancelEl = document.getElementById("topic-delete-cancel") as HTMLButtonElement;
+const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HTMLButtonElement;
 
 let accounts: Account[] = [];
 /**
@@ -445,6 +457,15 @@ let homeDir = "";
  */
 let topics: Topic[] = [];
 let currentTopic: TopicRef | null = null;
+/**
+ * The topic `#topic-delete-dialog` is standing open on, or null when it is not.
+ *
+ * The topic rather than its id, because the answer is reported by name and the
+ * row it was opened from is not under the pointer any more. Cleared on every
+ * path out of the dialog, so a close by Escape leaves nothing a later click
+ * could fire — the same discipline `endingAccount` keeps (#71).
+ */
+let deletingTopic: Topic | null = null;
 let lastSeenId: string | null = null;
 /**
  * Every `message_id` this screen has put on the glass.
@@ -1152,7 +1173,20 @@ function renderTopics(): void {
   for (const topic of listed) topicListEl.appendChild(topicRow(topic));
 }
 
-/** One row of the list: the whole row is the control that opens it. */
+/**
+ * One row of the list: the row opens the topic, and ❌ deletes it.
+ *
+ * The mark is the one the participant panel's 終了 uses, for the same reason it
+ * is used there — this is the control on the row that cannot be taken back, and
+ * it sits beside one that merely changes what is showing.
+ *
+ * **A topic with no title carries no ❌ (#119, decision 5).** Two rows read that
+ * way and neither is a topic anyone has a reason to delete from here: the
+ * current topic before anything has been said in it, which is not in the index
+ * and has nothing to remove, and a row the index carries for a file that is not
+ * there (#117). Putting a button on every row that appears in the list is the
+ * form decision 5 refused.
+ */
 function topicRow(topic: Topic): HTMLLIElement {
   const row = document.createElement("li");
   row.className = "topic";
@@ -1183,7 +1217,20 @@ function topicRow(topic: Topic): HTMLLIElement {
   });
 
   row.appendChild(pick);
+  if (topic.title) row.appendChild(deleteButton(topic));
   return row;
+}
+
+/** The ❌ on one row. It asks; `#topic-delete-dialog` is where it is answered. */
+function deleteButton(topic: Topic): HTMLButtonElement {
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "delete";
+  remove.textContent = "❌";
+  remove.title = `「${topic.title}」を削除する`;
+  remove.setAttribute("aria-label", `トピック「${topic.title}」を削除する`);
+  remove.addEventListener("click", () => void openTopicDeleteDialog(topic));
+  return remove;
 }
 
 /**
@@ -1265,6 +1312,119 @@ async function openTopic(topic: Topic): Promise<void> {
   } catch (err) {
     status(`トピックを開けませんでした: ${err}`, "error");
   }
+}
+
+/**
+ * Ask whether one topic is to be deleted. Nothing is deleted until answered.
+ *
+ * The question names what goes: the posts, and the way back into the sessions
+ * that were in it. Both are gone for good — the log is not in git and nothing
+ * copies it — which is why this is a dialog and not a second click on the
+ * button (#119, 決定1から導かれること).
+ *
+ * The sessions running in the topic are named on their own line, and only when
+ * there are any: deleting the topic ends them (#119, decision 4), and a
+ * question that spoke only about the log would make a stopped session an
+ * ambush. Asked of the app rather than read off `seated`, for the reason
+ * `runningSeatNames` asks: the app is what would end them, and this screen's
+ * copy is only as fresh as whatever last refreshed it.
+ */
+async function openTopicDeleteDialog(topic: Topic): Promise<void> {
+  // A question is already standing, so this one is not opened. Without it the
+  // two interleave across the read below: the second click overwrites the first
+  // one's topic and its sentence, then the first read returns and opens the
+  // dialog carrying one topic's name over the other's sessions. `deletingTopic`
+  // is cleared on every path out of the dialog, so nothing is wedged by it.
+  if (deletingTopic) return;
+  deletingTopic = topic;
+  topicDeleteMessageEl.textContent =
+    `トピック「${topic.title}」を削除します。` +
+    `発言の記録と、セッションへの戻り道が消えます。取り消せません。`;
+
+  const running = await runningNamesInTopic(topic.topic_id);
+  topicDeleteSessionsEl.hidden = running.length === 0;
+  topicDeleteSessionsEl.textContent =
+    running.length === 0
+      ? ""
+      : `${running.join("、")} のセッションも終了します。`;
+
+  // Opened after the read, so the question is whole the first time it is on the
+  // glass. A dialog that grew a line while it was open would be one the person
+  // may have already answered without it.
+  topicDeleteDialogEl.showModal();
+}
+
+/**
+ * The names of the accounts whose sessions are running in one topic.
+ *
+ * A seat carries the topic it was started into, so this is the topic's own
+ * sessions and not every seat in the room: the room moves between topics while
+ * a session runs, and an account that ran here once may be running elsewhere
+ * now (#119, decision 4).
+ *
+ * On a failed read this screen's own copy stands, for the reason
+ * `runningSeatNames` keeps it: a read that failed says nothing about who is
+ * running, and answering "nobody" would put the person in front of a question
+ * that does not mention the sessions it is about to end.
+ */
+async function runningNamesInTopic(topicId: string): Promise<string[]> {
+  let held: SeatedAccount[];
+  try {
+    held = await invoke<SeatedAccount[]>("seated_accounts");
+  } catch {
+    held = [...seated.values()];
+  }
+  return held
+    .filter((seat) => seat.session?.topic_id === topicId)
+    .map(
+      (seat) =>
+        accounts.find((one) => one.id === seat.account_id)?.name.trim() || seat.account_id,
+    );
+}
+
+/** Leave the question unanswered. Escape lands here too, by the close handler. */
+function closeTopicDeleteDialog(): void {
+  deletingTopic = null;
+  if (topicDeleteDialogEl.open) topicDeleteDialogEl.close();
+}
+
+/** The answer that acts. */
+function confirmTopicDeleteDialog(): void {
+  const topic = deletingTopic;
+  closeTopicDeleteDialog();
+  if (topic) void deleteTopic(topic);
+}
+
+/**
+ * Delete one topic.
+ *
+ * The app answers with the topic the room moved to, or null when the room was
+ * somewhere else and did not move. Deleting the open topic leaves the room in a
+ * new one, which is the state a launch already produces — an empty room, in a
+ * topic not yet in the index (#119, decision 6) — so what is drawn for it is
+ * what `startNewTopic` draws.
+ *
+ * The list itself arrives on `room-topics`; this redraw is for the current
+ * topic, which is this screen's own value and is not in that payload.
+ *
+ * The seats are re-read either way. Sessions running in the topic were ended by
+ * the delete, and the panel is drawn from a copy that does not know it yet.
+ */
+async function deleteTopic(topic: Topic): Promise<void> {
+  try {
+    const moved = await invoke<TopicRef | null>("room_delete_topic", {
+      topicId: topic.topic_id,
+    });
+    if (moved) {
+      currentTopic = moved;
+      drawTopic([]);
+    }
+    renderTopics();
+    status(`トピック「${topic.title}」を削除しました。`);
+  } catch (err) {
+    status(`トピックを削除できませんでした: ${err}`, "error");
+  }
+  await refreshSeats();
 }
 
 /**
@@ -3142,6 +3302,15 @@ async function main(): Promise<void> {
   // anything but 終了 leaves nothing standing that a later click could fire.
   endDialogEl.addEventListener("close", () => {
     endingAccount = null;
+  });
+
+  topicDeleteCancelEl.addEventListener("click", () => closeTopicDeleteDialog());
+  topicDeleteCommitEl.addEventListener("click", () => confirmTopicDeleteDialog());
+  // Escape closes the dialog itself, and it means 取消 — the same discipline the
+  // dialog above keeps, and for the same reason: no path out of it leaves a
+  // topic standing that a later click could delete.
+  topicDeleteDialogEl.addEventListener("close", () => {
+    deletingTopic = null;
   });
 
   try {
