@@ -75,6 +75,24 @@ function readHue(raw: string | undefined): number | null {
  */
 const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
 
+/**
+ * Whether this session was seated in a topic that already holds posts it does
+ * not have.
+ *
+ * The trigger the pull was missing. `read_room_history` has been reachable
+ * since #115, and the manners named it without ever naming a moment to call it
+ * — a session that joined a topic mid-conversation was told, in general terms,
+ * that a tool exists, and had nothing to notice its own blindness by. What the
+ * launch knows and the session does not is exactly that: the topic had been
+ * spoken in before this seat was taken (#133).
+ *
+ * The fact only. No count and no posts: the room does not push its past
+ * (#31 / #39), and whether to look is the session's decision, which a number
+ * does not inform. Presence of the key is the whole value — the launch rewrites
+ * this registration whole every time, so a stale key cannot arrive.
+ */
+const UNSEEN_HISTORY = process.env.PULLCEPT_UNSEEN_HISTORY === "1";
+
 const PROTOCOL_VERSION = 6;
 
 /**
@@ -193,6 +211,42 @@ interface HistoryResultFrame {
 
 // ── MCP server ───────────────────────────────────────────────────────────────
 
+/**
+ * Looking back, said one of two ways.
+ *
+ * The tool is the same either way and so is the decision; what differs is
+ * whether this session is standing in front of something. The general form
+ * describes a possibility, which is what a session with nothing behind it is
+ * in. The seated-late form states a fact about this seat, because that is what
+ * the launch established — and a session cannot notice, from inside, that the
+ * conversation started before it arrived.
+ *
+ * Neither form tells the session to call. Saying "there is something" and
+ * saying "go and read it" are different acts, and the second is the push this
+ * whole path exists to avoid (#133, 決定3).
+ */
+const LOOKING_BACK = [
+  "前を見る:",
+  ...(UNSEEN_HISTORY
+    ? [
+        "- 今のトピックには、あなたが来る前の発言が既にあります。あなたは",
+        "  それを持っていません。部屋は過去を配らないからです。",
+        "- 何が言われたかが要るときは read_room_history を呼んでください。",
+        "  今のトピックでそれまでに言われたことが、古い順で返ります。",
+        "- 引くかどうかはあなたが決めます。要らないと判断したなら",
+        "  呼ばないでください。",
+      ]
+    : [
+        "- あなたが来る前の発言は届きません。部屋は過去を配らないからです。",
+        "- 必要になったら read_room_history を呼んでください。今のトピックで",
+        "  それまでに言われたことが、古い順で返ります。",
+        "- 押し付けられないので、要らないときは呼ばないでください。話の流れが",
+        "  分からないまま答えそうなときにだけ引けば足ります。",
+      ]),
+  "- 返り切らなかったときは、いちばん古い発言の message_id を before に",
+  "  入れてもう一度呼ぶと、その手前が返ります。",
+];
+
 const INSTRUCTIONS = [
   "あなたは Pullcept の部屋に参加しています。",
   `この部屋でのあなたの名前は「${AGENT_NAME}」です。`,
@@ -205,14 +259,7 @@ const INSTRUCTIONS = [
   "発言するときは say_to_room ツールを呼んでください。ターミナルへの出力は",
   "部屋には届きません。",
   "",
-  "前を見る:",
-  "- あなたが来る前の発言は届きません。部屋は過去を配らないからです。",
-  "- 必要になったら read_room_history を呼んでください。今のトピックで",
-  "  それまでに言われたことが、古い順で返ります。",
-  "- 押し付けられないので、要らないときは呼ばないでください。話の流れが",
-  "  分からないまま答えそうなときにだけ引けば足ります。",
-  "- 返り切らなかったときは、いちばん古い発言の message_id を before に",
-  "  入れてもう一度呼ぶと、その手前が返ります。",
+  ...LOOKING_BACK,
   "",
   "宛先:",
   "- 発言には宛先が付くことがあります。宛先は meta.to に入っています。",

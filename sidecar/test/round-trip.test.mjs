@@ -61,6 +61,24 @@ const LOOKING_BACK = [
   "  入れてもう一度呼ぶと、その手前が返ります。",
 ].join("\n");
 
+// Looking back, as it is said to a seat taken in front of posts it does not
+// have. The tool and the decision are the same as above; what changes is that
+// the manners state a fact about this seat instead of describing a possibility
+// — a session cannot notice from inside that the conversation started before it
+// arrived, and the launch is the only party that knows (#133).
+//
+// The last bullet is not repeated here: it is the same sentence in both forms
+// and is asserted once, by the general literal above.
+const SEATED_LATE = [
+  "前を見る:",
+  "- 今のトピックには、あなたが来る前の発言が既にあります。あなたは",
+  "  それを持っていません。部屋は過去を配らないからです。",
+  "- 何が言われたかが要るときは read_room_history を呼んでください。",
+  "  今のトピックでそれまでに言われたことが、古い順で返ります。",
+  "- 引くかどうかはあなたが決めます。要らないと判断したなら",
+  "  呼ばないでください。",
+].join("\n");
+
 const SEE_THE_FLOOR = [
   "床を見てから送る:",
   "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
@@ -386,6 +404,14 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
     instructions,
     LOOKING_BACK,
     "instructions must carry the looking-back manners in full, tail included",
+  );
+  // This launch declared no unseen history, so the manners must not assert any.
+  // Telling every session that the topic already holds posts would make the
+  // sentence worthless in the one case it exists for, and would be false in
+  // every other (#133).
+  assert.ok(
+    !instructions.includes("あなたが来る前の発言が既にあります"),
+    "a seat with nothing behind it must not be told the topic already holds posts",
   );
 
   notify("notifications/initialized", {});
@@ -756,5 +782,99 @@ test("a session launched without a hue or an account says so by omission", async
     "account_id" in hello,
     false,
     "a connection with no account behind it must carry no account key",
+  );
+});
+
+test("a session seated in a topic that already holds posts is told so", async (t) => {
+  // The trigger, which is the whole of what #133 adds. The pull has been
+  // reachable since #115 and the manners named it, but they named no moment to
+  // call it: a session that joined mid-conversation was handed a general
+  // description of a tool and nothing to notice its own blindness by.
+  //
+  // No room here. The manners ride on `initialize`, which the sidecar answers
+  // over stdio whether or not a room is attached — and what is under test is
+  // what the launch put in the env, not anything on the wire.
+  const child = spawn(
+    process.execPath,
+    [join(REPO, "node_modules", "tsx", "dist", "cli.mjs"), ENTRY],
+    {
+      cwd: REPO,
+      env: {
+        ...process.env,
+        // Unset on purpose: no room to connect to, and the sidecar stays
+        // offline and serving rather than exiting.
+        PULLCEPT_ROOM_URL: "",
+        PULLCEPT_AGENT_NAME: "late-arrival",
+        PULLCEPT_ROOM_ID: "test-room",
+        PULLCEPT_UNSEEN_HISTORY: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  child.stderr.resume();
+  t.after(() => child.kill());
+
+  const pending = new Map();
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString();
+    let nl;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+      const msg = JSON.parse(line);
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        pending.get(msg.id).resolve(msg);
+        pending.delete(msg.id);
+      }
+    }
+  });
+
+  const d = deferred();
+  pending.set(1, d);
+  child.stdin.write(
+    `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "seated-late-test", version: "0" },
+      },
+    })}\n`,
+  );
+  const init = await withTimeout(d.promise, "response to initialize");
+  const instructions = init.result.instructions ?? "";
+
+  // In full, for the reason every other manners literal here is: a head-only
+  // check passes on a paragraph whose tail was deleted, and the tail is where
+  // the decision is left with the session.
+  assertContains(
+    instructions,
+    SEATED_LATE,
+    "a seat taken in front of posts it does not have must be told so, tail included",
+  );
+  // The general form is replaced, not stacked on top of. Both at once would
+  // say the topic holds posts and describe the possibility of it in the same
+  // breath.
+  assert.ok(
+    !instructions.includes("- あなたが来る前の発言は届きません。"),
+    "the seated-late form replaces the general one rather than joining it",
+  );
+  // The paging sentence is shared and must survive the branch: a first page
+  // that does not return the whole topic is the normal case, and a session
+  // with no cursor cannot keep reading.
+  assertContains(
+    instructions,
+    "- 返り切らなかったときは、いちばん古い発言の message_id を before に",
+    "the way to keep reading backwards is said in both forms",
+  );
+  // Said, not told to. Naming the fact is what the room may do; instructing the
+  // session to read is the push this path exists to avoid (#133, 決定3).
+  assert.ok(
+    !instructions.includes("まず read_room_history を呼んで"),
+    "the manners must state that there is something to pull, not order the pull",
   );
 });

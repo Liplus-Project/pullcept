@@ -631,6 +631,23 @@ pub fn start_session(
     // then spawning the resume line would be checking the wrong line.
     let launch_line = resolve_launch(&app, &account, &topic, &cwd)?;
 
+    // Whether this seat is being taken in front of posts it does not have.
+    //
+    // Read off the line that resolved, which is why it is here and not beside
+    // the topic: the question is not whether a record was dropped but whether
+    // this launch went in on the resume line at all. A seat entering a topic
+    // that has been spoken in for the first time is as blind as one whose way
+    // back went, and `dropped_resume` is one case of the state rather than the
+    // state (#133).
+    //
+    // Whether, not how much. A count would mean reading the topic on every
+    // launch, and the session does not need one to decide whether to look —
+    // which is the decision, and stays the session's (#115, decision 4C).
+    // Nothing about the posts crosses here: the room pushes no past, and what
+    // is handed over is that there is some.
+    let unseen_history = launch_line.resumed_from.is_none()
+        && room_log::topic_has_posts(&app, &topic.topic_id);
+
     if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
             "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
@@ -704,6 +721,7 @@ pub fn start_session(
         &room_url,
         &cwd,
         &topic.topic_id,
+        unseen_history,
         cols,
         rows,
     ) {
@@ -786,6 +804,9 @@ fn launch(
     // The topic this launch is going into, carried through so the answer names
     // the topic a failed resume would have to be undone on (#127).
     topic_id: &str,
+    // Whether the topic already holds posts this session was not seated with,
+    // decided by the caller against the line that resolved (#133).
+    unseen_history: bool,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
@@ -798,6 +819,7 @@ fn launch(
             account_id: &account.id,
             agent_name: name,
             agent_hue: account.hue,
+            unseen_history,
             sidecar_entry: &sidecar_entry,
             sidecar_runner: &sidecar_runner,
         },

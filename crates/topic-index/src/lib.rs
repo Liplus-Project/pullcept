@@ -211,6 +211,26 @@ pub fn title_from(content: &str) -> String {
     }
 }
 
+/// Whether anything has been said in `topic_id` yet, without reading it.
+///
+/// The file's size and nothing else, which is the same question [`read_posts`]
+/// answers and a different cost: a launch asks this to decide one sentence of
+/// the manners it hands the session, and paying the length of the topic for
+/// that sentence would put the cost #115 kept off every launch back on it. A
+/// count would need the read; that is why no count is handed to the session
+/// (#133).
+///
+/// A missing file and an empty one are the same state here, as they are for the
+/// first-post check the append makes. So is a file of nothing but torn lines:
+/// it answers true, and the pull that follows says the topic is empty. Over-
+/// answering costs one call nobody had to make; under-answering costs the
+/// session the fact that it is missing something.
+pub fn has_posts(dir: &Path, topic_id: &str) -> bool {
+    std::fs::metadata(topic_path(dir, topic_id))
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false)
+}
+
 /// One topic's posts, oldest first.
 ///
 /// The tuple's second half is how many lines did not parse. A line that does
@@ -410,6 +430,26 @@ mod tests {
         let topic = index.find("alpha").expect("adopted");
         assert_eq!(topic.title, "最初の一言");
         assert_eq!(topic.created_at, "2026-08-27T10:00:00+09:00");
+    }
+
+    #[test]
+    fn a_topic_with_posts_is_told_from_one_without_them() {
+        let scratch = Scratch::new();
+        put_topic(scratch.path(), "spoken", "先に言われたこと", "2026-08-27T10:00:00+09:00");
+        std::fs::write(topic_path(scratch.path(), "opened"), "").expect("write empty topic");
+
+        assert!(
+            has_posts(scratch.path(), "spoken"),
+            "a topic that was spoken in has posts"
+        );
+        assert!(
+            !has_posts(scratch.path(), "opened"),
+            "a topic realised by a launch and never spoken in has none"
+        );
+        assert!(
+            !has_posts(scratch.path(), "never-made"),
+            "a topic with no file at all has none"
+        );
     }
 
     #[test]
