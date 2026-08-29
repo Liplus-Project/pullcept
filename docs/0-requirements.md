@@ -496,7 +496,7 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 - **状態行は通常起動であった。** 「Claude Lin を起動しました。… に登録済み。」であり、再開の線には入っていない。判定は解決後の行に `resumed_from` が無いことであり（上記「伝える条件は…（AI 判断1）」）、この起動はその条件の側に立っている。
 - **セッションが自分から引いた。** 端末へ置いたのは「この部屋、もう話が進んでるみたいだね。今どういう流れ？」の一つであり、**道具の名前は出していない。** transcript（`4a1f4f71-…`）の tool_use は二件で、順に `ToolSearch`（`select:mcp__pullcept-room-…__read_room_history` ほか）と `mcp__pullcept-room-e31e04e9-…__read_room_history` の `{"limit": 50}` であった。**呼べと言われずに呼んでいる。** アプリが代理で呼ばない形（上記「アプリが `read_room_history` を代理で呼ばない」）のまま、引く判断がセッションの側で起きている。
 - **読んだのであって、書いてはいない。** トピックのログは前後とも 52,517 B で不変であり、`say_to_room` は呼ばれていない。読み出しが発言しない道具であること（上記「読み出しの道具は `say_to_room` の隣に置く」）が実機の値になった。
-- **返答が部屋の中身を含んでいた。** Li+ の update status（`build-2026-08-26.1` → `build-2026-08-29.1`）、issue #1819、05:44 の Master の「update は保留」。いずれも新規セッションの文脈には無く、読み出し以外の入手経路が無い。
+- **返答が部屋の中身を含んでいた。** Li+ の update status（`build-2026-08-26.1` → `build-2026-08-29.1`）、liplus-language の issue #1819、05:44 の Master の「update は保留」。いずれも新規セッションの文脈には無く、読み出し以外の入手経路が無い。
 
 この回は `CLAUDE_CODE_CHILD_SESSION` を環境から外して起動している。付いたままだと子の CLI で transcript の保存が無効になり、上の tool_use の証跡が残らない。また Lin の起動オプションは `--session-id {session_id}` を宣言していないため、Lin にはセッション id が配られず索引にも記録されない——判定は `resumed_from` が無いことであって記録の有無ではないため観測の成立条件ではないが、Lin がそもそも再開の線に入り得ないアカウントであることは残しておく。
 
