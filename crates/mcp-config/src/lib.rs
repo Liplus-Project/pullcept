@@ -124,6 +124,20 @@ pub struct RoomRegistration<'a> {
     /// for an undeclared participant, and a value written here would be a
     /// declaration the person never made.
     pub agent_hue: Option<f64>,
+    /// Whether this session is being seated in a topic that already holds posts
+    /// it does not have.
+    ///
+    /// True when both hold: the topic has been spoken in, and this launch did
+    /// not go in on the resume line. The boundary is the seat that did not
+    /// resume, not the seat whose resume record was dropped — a fresh session
+    /// entering a topic that has been talked in is as blind as one whose way
+    /// back went, and a flag that caught only the second would cover half of
+    /// one state (#133).
+    ///
+    /// Carried so the manners can say it. The room still pushes nothing: what
+    /// crosses is the fact that there is something to pull, never the posts
+    /// themselves, and whether to pull stays the session's call.
+    pub unseen_history: bool,
     /// Absolute path of the sidecar entry point.
     pub sidecar_entry: &'a Path,
     /// Absolute path of the TypeScript runner that executes the entry point.
@@ -543,6 +557,12 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     if let Some(hue) = room.agent_hue {
         env.insert("PULLCEPT_AGENT_HUE".into(), json!(format!("{hue:.1}")));
     }
+    // Only when true, and absence is the other half rather than a launch that
+    // lost it: every launch rewrites this entry whole, so a key left over from
+    // a run where it did hold cannot survive into one where it does not.
+    if room.unseen_history {
+        env.insert("PULLCEPT_UNSEEN_HISTORY".into(), json!("1"));
+    }
 
     servers.insert(
         server_name,
@@ -598,6 +618,7 @@ mod tests {
             account_id: LIN,
             agent_name: "Lin",
             agent_hue: None,
+            unseen_history: false,
             sidecar_entry: entry,
             sidecar_runner: runner,
         }
@@ -651,6 +672,51 @@ mod tests {
     }
 
     #[test]
+    fn the_unseen_history_flag_is_written_only_for_a_seat_that_has_one() {
+        // Both directions, because the sidecar reads presence: a key that stayed
+        // behind from a launch where it did hold would tell the next session it
+        // is missing something in a topic nobody has spoken in (#133).
+        let scratch = Scratch::new();
+        let entry = PathBuf::from(ENTRY);
+        let runner = PathBuf::from(RUNNER);
+
+        let path =
+            register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("no history");
+        let json = read(&path);
+        assert!(
+            !json["mcpServers"][server_name_for(LIN)]["env"]
+                .as_object()
+                .expect("env")
+                .contains_key("PULLCEPT_UNSEEN_HISTORY"),
+            "a seat with nothing behind it must leave no key"
+        );
+
+        let seated_late = RoomRegistration {
+            unseen_history: true,
+            ..registration(&entry, &runner)
+        };
+        let path = register_sidecar(scratch.path(), &seated_late).expect("history");
+        let json = read(&path);
+        assert_eq!(
+            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_UNSEEN_HISTORY"],
+            "1"
+        );
+
+        // And back again, on the same file: the entry is rewritten whole, so
+        // the key goes when the state does.
+        let path =
+            register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("no history");
+        let json = read(&path);
+        assert!(
+            !json["mcpServers"][server_name_for(LIN)]["env"]
+                .as_object()
+                .expect("env")
+                .contains_key("PULLCEPT_UNSEEN_HISTORY"),
+            "the key must not survive into a launch the state does not hold for"
+        );
+    }
+
+    #[test]
     fn leaves_everything_else_in_the_config_alone() {
         // This writes into the user's own project directory. Clobbering a
         // server they configured themselves is the failure that matters here.
@@ -685,6 +751,7 @@ mod tests {
             account_id: LIN,
             agent_name: "Lin",
             agent_hue: Some(145.0),
+            unseen_history: false,
             sidecar_entry: &entry,
             sidecar_runner: &runner,
         };
@@ -719,6 +786,7 @@ mod tests {
             account_id: LIN,
             agent_name: "リン",
             agent_hue: None,
+            unseen_history: false,
             sidecar_entry: &entry,
             sidecar_runner: &runner,
         };
@@ -751,6 +819,7 @@ mod tests {
             account_id: LAY,
             agent_name: "Lay",
             agent_hue: Some(25.0),
+            unseen_history: false,
             sidecar_entry: &entry,
             sidecar_runner: &runner,
         };

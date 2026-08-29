@@ -362,6 +362,23 @@ pub fn topic_posts(app: &AppHandle, topic_id: &str) -> Result<Vec<LoggedPost>, S
     Ok(posts)
 }
 
+/// Whether anything has been said in a topic, without reading what.
+///
+/// What a launch asks to decide whether the session it is seating is being put
+/// in front of posts it does not have (`session.rs`, #133). Not
+/// [`topic_posts`]: the answer needed is whether, and reading the topic to get
+/// it would charge every launch the length of the conversation.
+///
+/// Unreadable is answered as no history, the way [`topic_posts`] answers a
+/// missing file with no posts. Nothing is reported on the error surface: this
+/// is a question asked to word one sentence of the manners, and a failure to
+/// answer it costs the session a sentence it can still reach the pull without.
+pub fn topic_has_posts(app: &AppHandle, topic_id: &str) -> bool {
+    room_dir(app)
+        .map(|dir| topic_index::has_posts(&dir, topic_id))
+        .unwrap_or(false)
+}
+
 /// The session `account_id` was in while `topic_id` was open, if one is on
 /// record.
 pub fn session_of(app: &AppHandle, topic_id: &str, account_id: &str) -> Option<String> {
