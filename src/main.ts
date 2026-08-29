@@ -236,6 +236,13 @@ interface StartedSession {
    *  resume that ends without the room ever seeing it has a record to drop, and
    *  dropping it names it (#127). */
   resumed_from: string | null;
+  /** The session id this launch took off the topic before starting, because
+   *  the conversation it named is not on disk — or null when it took none.
+   *  Never set together with `resumed_from`: the drop is what made this the
+   *  fresh line. Said on the status line for the reason the one #127 drops is
+   *  said there — the way back into a conversation went, and nobody asked for
+   *  that (#131, decision 2). */
+  dropped_resume: string | null;
 }
 
 /**
@@ -3005,10 +3012,17 @@ async function startSession(account: Account): Promise<void> {
     // Which of the two lines ran is said, because the person is the one who
     // can tell whether it mattered. A seat that came back fresh in a reopened
     // topic is a legitimate outcome and not a silent one (#115, decision 6).
+    //
+    // A fresh line the topic had a record for is a third thing to say. The
+    // record went before this launch was made, and a launch that reads as an
+    // ordinary one leaves the person to find out from the next 起動しました
+    // that the way back is gone (#131, decision 2).
     status(
       started.resumed_from !== null
         ? `${name} を再開しました。${started.mcp_config} に登録済み。`
-        : `${name} を起動しました。${started.mcp_config} に登録済み。`,
+        : started.dropped_resume !== null
+          ? `${name} を起動しました。戻る先の会話が見つからなかったため、このトピックの再開先は外しました。${started.mcp_config} に登録済み。`
+          : `${name} を起動しました。${started.mcp_config} に登録済み。`,
     );
     await refreshSeats();
     await followSession(view, started);

@@ -421,6 +421,15 @@ pub fn record_session(
 /// back on its own, so the pair (account, topic) stays broken until the record
 /// goes.
 ///
+/// Two callers reach it, from either side of the launch. The next launch is the
+/// first: it looks for the conversation before choosing the resume line, and
+/// drops the record where it finds nothing (`session::resolve_launch`, #131).
+/// The screen is the second, and is what remains for a conversation that is on
+/// disk and refused anyway — the resume ran and the room never saw the session
+/// (#127). The first covers nearly everything the second used to, and the
+/// second is kept rather than folded in, because what it observes is the CLI's
+/// answer and not the file system's (#131, decision 4).
+///
 /// The id is named, so this undoes the record it was told about and not a later
 /// one; the match is the crate's (`TopicIndex::forget_session`). Answering
 /// false is a normal outcome and not a failure — see there.
