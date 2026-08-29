@@ -15,13 +15,13 @@ use crate::room_log::{self, TopicRef};
 use mcp_config::{
     declared_character, declares_session_id, declares_settings, launch_args, other_room_servers,
     register_sidecar, reject_incompatible_flags, server_name_for, split_launch_options,
-    substitute_session_id, RoomRegistration,
+    substitute_session_id, transcript_path, RoomRegistration,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// The sidecar entry point and the runner that executes it.
 ///
@@ -362,16 +362,65 @@ struct LaunchLine {
     /// needs — a resume that could not go back has to name the record it is
     /// dropping (#127).
     resumed_from: Option<String>,
+    /// The session id this launch took off the topic on its way past, because
+    /// the conversation it named is not on disk (#131, decision 2).
+    ///
+    /// A resolved line and a dropped record are not alternatives: the drop is
+    /// why this line is the fresh one. Carried out so the screen can say it —
+    /// the record went without the person asking, and a repair nobody is told
+    /// about is a history that quietly stopped being continuous (#127).
+    dropped_resume: Option<String>,
+}
+
+/// Whether the conversation this id names can be found on disk.
+///
+/// The check decision 1 adds to the two the resume already had (#131). Both of
+/// those are records this app wrote; this one asks the file system, which is
+/// the only party that knows whether the conversation was ever made.
+///
+/// Answers true when the file is there — and also when this app cannot tell,
+/// which is a home directory it could not resolve or a working directory the
+/// CLI spells with a hash (`transcript_path`). Unknown falls on the side of
+/// keeping the record: the launch then goes in on the resume line exactly as it
+/// did before this check existed, and #127 still takes the record off if the
+/// CLI turns it away. Guessing the other way would drop a record that was fine
+/// on the strength of not having looked.
+///
+/// Nothing is read out of the file. Whether a transcript is intact is a
+/// question about its contents, and this one is about whether there is anything
+/// there at all (#131, 制約).
+fn transcript_found(app: &AppHandle, cwd: &Path, session_id: &str) -> bool {
+    let Ok(home) = app.path().home_dir() else {
+        return true;
+    };
+    match transcript_path(&home, cwd, session_id) {
+        Some(path) => path.is_file(),
+        None => true,
+    }
 }
 
 /// Which of the account's two lines this launch is, and with which id.
 ///
-/// Resume needs both halves: a session recorded for this account in this topic,
-/// and a line that knows how to go back into one. Missing either, the launch is
-/// a fresh one — the account then reads back what it needs through the room's
-/// own pull instead, which is the second tier of the two-tier answer and the
-/// reason a missing resume line is a degraded state rather than a failure
-/// (#115, decision 4).
+/// Resume needs three things, and the third is the one #131 adds: a session
+/// recorded for this account in this topic, a line that knows how to go back
+/// into one, and the conversation that id names still being on disk. Missing
+/// any of them, the launch is a fresh one — the account then reads back what it
+/// needs through the room's own pull instead, which is the second tier of the
+/// two-tier answer and the reason a missing resume line is a degraded state
+/// rather than a failure (#115, decision 4).
+///
+/// The third is not the same kind of condition as the other two. They are read
+/// off records this app keeps and cost nothing to be wrong about; this one is a
+/// record the CLI keeps, and being wrong about it is what #127 had to repair
+/// after the fact. Checking it here is what makes the state unbuildable rather
+/// than recoverable: a line back into a conversation that is not there is never
+/// chosen, so there is nothing to fall back from.
+///
+/// **A record with no conversation behind it is dropped where it is found**
+/// (#131, decision 2), rather than left for the failure to take off. Waiting
+/// would mean the next press goes in on the same line again, which is the loop
+/// #127 exists at the far end of. What is dropped is named on the way out, so
+/// the screen can say it happened.
 ///
 /// A fresh launch mints an id whenever the account's options name the
 /// placeholder, including when the topic already holds one. The old id is
@@ -381,6 +430,7 @@ fn resolve_launch(
     app: &AppHandle,
     account: &Account,
     topic: &TopicRef,
+    cwd: &Path,
 ) -> Result<LaunchLine, String> {
     let recorded = room_log::session_of(app, &topic.topic_id, &account.id);
     let resume = account
@@ -389,29 +439,46 @@ fn resolve_launch(
         .map(str::trim)
         .filter(|line| !line.is_empty());
 
+    let mut dropped_resume = None;
     if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
-        let mut parts = split_launch_options(line);
-        // The first token is the command, and a resume line whose first token
-        // is empty would spawn nothing under a name the person never chose. The
-        // reachable way in is a line of nothing but quotes, which splits into
-        // one empty token rather than into none.
-        let command = if parts.is_empty() {
-            String::new()
-        } else {
-            parts.remove(0)
-        };
-        if command.is_empty() {
-            return Err(format!(
-                "Account \"{}\" has a resume command with no command in it. Write the whole line, command first.",
-                account.name.trim()
-            ));
+        if transcript_found(app, cwd, session_id) {
+            let mut parts = split_launch_options(line);
+            // The first token is the command, and a resume line whose first
+            // token is empty would spawn nothing under a name the person never
+            // chose. The reachable way in is a line of nothing but quotes,
+            // which splits into one empty token rather than into none.
+            let command = if parts.is_empty() {
+                String::new()
+            } else {
+                parts.remove(0)
+            };
+            if command.is_empty() {
+                return Err(format!(
+                    "Account \"{}\" has a resume command with no command in it. Write the whole line, command first.",
+                    account.name.trim()
+                ));
+            }
+            return Ok(LaunchLine {
+                command,
+                args: substitute_session_id(&parts, session_id),
+                session_id: None,
+                resumed_from: Some(session_id.to_string()),
+                dropped_resume: None,
+            });
         }
-        return Ok(LaunchLine {
-            command,
-            args: substitute_session_id(&parts, session_id),
-            session_id: None,
-            resumed_from: Some(session_id.to_string()),
-        });
+
+        // The id is named, so what goes is this record and not one a relaunch
+        // wrote in between (`room_log::forget_session`). Answering false is
+        // that check having held, not a failure, and nothing is claimed in that
+        // case. A failure to write does not fail the launch either: the record
+        // stands and the next press comes back here, which is the same state
+        // this arrived in — said on the log's own surface, because a record
+        // that quietly stopped being kept still looks like one.
+        match room_log::forget_session(app, &topic.topic_id, &account.id, session_id) {
+            Ok(true) => dropped_resume = Some(session_id.to_string()),
+            Ok(false) => {}
+            Err(err) => room_log::report(app, err),
+        }
     }
 
     if declares_session_id(&account.args) {
@@ -421,6 +488,7 @@ fn resolve_launch(
             args: substitute_session_id(&account.args, &session_id),
             session_id: Some(session_id),
             resumed_from: None,
+            dropped_resume,
         });
     }
 
@@ -429,6 +497,7 @@ fn resolve_launch(
         args: account.args.clone(),
         session_id: None,
         resumed_from: None,
+        dropped_resume,
     })
 }
 
@@ -468,6 +537,14 @@ pub struct StartedSession {
     /// is a record with nothing behind it, and dropping that record names it
     /// (#127).
     pub resumed_from: Option<String>,
+    /// The session id this launch took off the topic before starting, because
+    /// the conversation it named is not on disk, or `null` when it took none.
+    ///
+    /// Never set together with `resumed_from`: the drop is what made this the
+    /// fresh line. The screen says it for the same reason it says the one #127
+    /// drops — the way back into a conversation went, and nobody asked for that
+    /// (#131, decision 2).
+    pub dropped_resume: Option<String>,
 }
 
 /// Put one account into the room.
@@ -523,28 +600,17 @@ pub fn start_session(
     // and a value carried through the screen could name a topic the room has
     // since left.
     let topic = room.topic();
-    // Resume or fresh, decided here so every check below runs against the line
-    // that will actually be spawned. Checking the account's own options and
-    // then spawning the resume line would be checking the wrong line.
-    let launch_line = resolve_launch(&app, &account, &topic)?;
-
-    if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
-        return Err(format!(
-            "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
-             Remove it from the launch options."
-        ));
-    }
-
-    let character = declared_character(account.character.as_deref());
-
-    let port = room
-        .port()
-        .ok_or_else(|| "The room socket is not listening yet.".to_string())?;
-    let room_url = format!("ws://127.0.0.1:{port}");
 
     // No fallback to the app's own process directory. Under `tauri dev` that
     // is `src-tauri`, and a session silently launched there is a session the
     // person never chose and cannot see they got (#20).
+    //
+    // Resolved ahead of the line rather than beside the rest of the launch's
+    // materials, because the line is now resolved against it: the transcript of
+    // a session is filed under the directory it ran in, so there is no reading
+    // the topic's record without one. A directory that is missing or unset ends
+    // the launch here, which is also what keeps a record from being dropped on
+    // the strength of a directory nobody could have launched in (#131).
     let cwd = match account.cwd.as_deref().map(str::trim) {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
@@ -559,6 +625,25 @@ pub fn start_session(
             cwd.display()
         ));
     }
+
+    // Resume or fresh, decided here so every check below runs against the line
+    // that will actually be spawned. Checking the account's own options and
+    // then spawning the resume line would be checking the wrong line.
+    let launch_line = resolve_launch(&app, &account, &topic, &cwd)?;
+
+    if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
+        return Err(format!(
+            "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
+             Remove it from the launch options."
+        ));
+    }
+
+    let character = declared_character(account.character.as_deref());
+
+    let port = room
+        .port()
+        .ok_or_else(|| "The room socket is not listening yet.".to_string())?;
+    let room_url = format!("ws://127.0.0.1:{port}");
 
     let server_name = server_name_for(&account.id);
     // Read before anything is written, and answering for the file as the
@@ -739,5 +824,6 @@ fn launch(
         started_at,
         topic_id: topic_id.to_string(),
         resumed_from: line.resumed_from.clone(),
+        dropped_resume: line.dropped_resume.clone(),
     })
 }

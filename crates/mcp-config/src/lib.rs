@@ -13,6 +13,12 @@
 //!     `--settings`. The CLI starts every enabled server in the file, and a
 //!     shared working directory holds one per account (#103).
 //!
+//! What the app knows about the CLI itself is here too, for want of anywhere
+//! better: which flag carries a session id (`SESSION_ID_PLACEHOLDER`), and
+//! where the conversation under that id is kept (`transcript_path`). Both are
+//! per-CLI answers, and gathering them in one crate is what makes a second CLI
+//! a second answer rather than a search through the app (#131, decision 3).
+//!
 //! This crate holds no tauri: it writes into the user's own project directory,
 //! which is the part of Pullcept that most needs test coverage, and a test
 //! binary linking the tauri tree does not load on the GNU target.
@@ -216,6 +222,65 @@ pub fn substitute_session_id(args: &[String], session_id: &str) -> Vec<String> {
     args.iter()
         .map(|arg| arg.replace(SESSION_ID_PLACEHOLDER, session_id))
         .collect()
+}
+
+/// How long a directory slug may be before the CLI stops spelling it out.
+///
+/// Past this the CLI cuts the slug here and appends a hash of the path, and the
+/// hash is a private detail of its own — reproducing it would be copying an
+/// implementation rather than a layout. `transcript_path` answers `None` for
+/// those instead of guessing (see there).
+const SLUG_LIMIT: usize = 200;
+
+/// Where the CLI keeps the transcript of one session.
+///
+/// **The one place Pullcept depends on where a CLI stores its conversations**
+/// (#131, decision 3). The layout is Claude Code's:
+/// `<home>/.claude/projects/<slug of the working directory>/<session id>.jsonl`.
+/// Another CLI keeps them somewhere else entirely — `codex` writes
+/// `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — so a second CLI is a second
+/// answer from this function, and not a second reader grown somewhere else in
+/// the app. The dependency is accepted rather than avoided (Master 判断):
+/// asking the file system whether the conversation is there is steadier than
+/// matching the CLI's refusal text, which is the thing #127 already refuses to
+/// read.
+///
+/// The slug folds every character that is not an ASCII letter or digit into a
+/// `-`, the drive's colon and the separators alike: `C:\Users\smile\Code`
+/// becomes `C--Users-smile-Code`. Folded per UTF-16 code unit rather than per
+/// character, because the rule being copied is a JavaScript regular expression
+/// and that is the unit it steps in — a character outside the basic plane is
+/// two dashes there and would be one here.
+///
+/// `None` when the slug would pass `SLUG_LIMIT`: the CLI shortens those and the
+/// app cannot name the file. It is not "the transcript is missing" — the caller
+/// keeps whatever it would have done without this answer, because a guess that
+/// named the wrong file would read as a conversation that is gone.
+pub fn transcript_path(home: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+    Some(
+        home.join(".claude")
+            .join("projects")
+            .join(project_slug(&cwd.to_string_lossy())?)
+            .join(format!("{session_id}.jsonl")),
+    )
+}
+
+/// The working directory as it names a directory under `projects/`.
+///
+/// The result is ASCII by construction, so its byte length is the length the
+/// CLI measures against the limit.
+fn project_slug(cwd: &str) -> Option<String> {
+    let mut slug = String::new();
+    for ch in cwd.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+        } else {
+            for _ in 0..ch.len_utf16() {
+                slug.push('-');
+            }
+        }
+    }
+    (slug.len() <= SLUG_LIMIT).then_some(slug)
 }
 
 /// The character an account speaks as, or `None` when it declares none.
@@ -1116,4 +1181,51 @@ mod tests {
         )));
     }
 
+    /// Both directories were read off a running install (2026-08-29), and they
+    /// are what fixes the rule: the drive's colon and each separator are one
+    /// dash apiece, so the leading `C:` leaves two.
+    #[test]
+    fn the_transcript_of_a_session_sits_under_the_slug_of_its_directory() {
+        let home = PathBuf::from(r"C:\Users\smile");
+        assert_eq!(
+            transcript_path(&home, Path::new(r"C:\Users\smile\Code"), "0f5a-uuid"),
+            Some(home.join(".claude").join("projects").join("C--Users-smile-Code").join("0f5a-uuid.jsonl"))
+        );
+        assert_eq!(
+            transcript_path(&home, Path::new(r"C:\Users\smile\Claude"), "0f5a-uuid"),
+            Some(home.join(".claude").join("projects").join("C--Users-smile-Claude").join("0f5a-uuid.jsonl"))
+        );
+    }
+
+    /// The fold is not of separators. A dot, a space and a character with no
+    /// ASCII spelling all go the same way, which is why the rule is written as
+    /// what survives rather than as what is replaced. The last of them takes
+    /// two dashes and not one: it is one character here and two units in the
+    /// language the rule is written in.
+    #[test]
+    fn every_character_that_is_not_a_letter_or_a_digit_folds_into_a_dash() {
+        let home = PathBuf::from(r"C:\Users\smile");
+        assert_eq!(
+            transcript_path(&home, Path::new(r"C:\Users\smile\my code.v2\部屋\😀"), "id"),
+            Some(
+                home.join(".claude")
+                    .join("projects")
+                    .join("C--Users-smile-my-code-v2------")
+                    .join("id.jsonl")
+            )
+        );
+    }
+
+    /// A path the CLI would shorten names no file this app can predict, and the
+    /// answer says so rather than pointing at one that is not there.
+    #[test]
+    fn a_directory_too_long_to_spell_out_names_no_transcript() {
+        let long = format!("C:\\{}", "d".repeat(SLUG_LIMIT));
+        assert_eq!(
+            transcript_path(Path::new("C:\\home"), Path::new(&long), "id"),
+            None
+        );
+        let edge = format!("C:\\{}", "d".repeat(SLUG_LIMIT - 3));
+        assert!(transcript_path(Path::new("C:\\home"), Path::new(&edge), "id").is_some());
+    }
 }
