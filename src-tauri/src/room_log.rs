@@ -403,6 +403,37 @@ pub fn topic_exists(app: &AppHandle, topic_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Give a topic its entry because a session was started in it, with no id to
+/// record.
+///
+/// What `record_session` does for a launch that hands the CLI an id, done for
+/// one that does not. Before #141 such a launch left the topic unrealised, which
+/// cost nothing while leaving the topic also left the session: every session
+/// followed the screen. A session now stays in the topic it was started in
+/// while the screen opens another (decision 2), and a topic missing from the
+/// list is then a running session nothing on the screen can get back to — no
+/// row to open it from, and no mark saying it is running (decision 5).
+///
+/// Starting a session is the deliberate act the index already admits, so this
+/// is not a new kind of write: it is the same one without the id.
+pub fn realize_topic(app: &AppHandle, topic: &TopicRef) -> Result<(), String> {
+    let written = {
+        let _guard = INDEX_LOCK.lock();
+        let mut index = read_index(app)?;
+        if index.find(&topic.topic_id).is_some() {
+            false
+        } else {
+            index.realize(&topic.topic_id, &topic.created_at);
+            write_index(app, &index)?;
+            true
+        }
+    };
+    if written {
+        announce(app);
+    }
+    Ok(())
+}
+
 /// Record which session an account was launched into a topic under.
 ///
 /// Written at launch rather than at exit, because the id is decided before the
@@ -581,14 +612,13 @@ pub fn room_rename_topic(
         let mut index = read_index(&app)?;
         match index.find_mut(&topic_id) {
             Some(topic) => topic.title = title,
+            // A topic this run holds a room for and nothing has realised yet
+            // (#141: any of them, not only the one on the screen).
             None => {
-                let current = state.topic();
-                if current.topic_id != topic_id {
+                let Some(held) = state.topic_of(&topic_id) else {
                     return Err(format!("トピック {topic_id} は見つかりません。"));
-                }
-                index
-                    .realize(&current.topic_id, &current.created_at)
-                    .title = title;
+                };
+                index.realize(&held.topic_id, &held.created_at).title = title;
             }
         }
         write_index(&app, &index)?;

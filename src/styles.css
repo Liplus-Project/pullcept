@@ -682,6 +682,32 @@ body {
   color: var(--muted);
 }
 
+/* A session is running in this topic (#141, AI 判断5). Sessions stay running
+   when their topic is left, and this list is the one place every topic is on
+   screen at once, so it is where a session nobody is looking at is still seen.
+   In the accent colour, which is what already says "live" on this screen, and
+   set in the row's corner so the name keeps the width it ellipses against. */
+#history .topic.running .pick {
+  position: relative;
+  padding-right: 1.3rem;
+}
+
+#history .topic .running-mark {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.4rem;
+  color: var(--accent);
+  font-size: 0.8em;
+}
+
+/* The same mark on 新規, for the moment a launch into a topic the list does not
+   carry yet is in flight. */
+#history .new.running::after {
+  content: " ●";
+  color: var(--accent);
+  font-size: 0.8em;
+}
+
 /* When it was made. The day, and the clock under it — a list of topics spans
    months, so the day is the part that places one. */
 #history .topic .when {

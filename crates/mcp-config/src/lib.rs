@@ -28,34 +28,51 @@ use std::path::{Path, PathBuf};
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
-/// The full name is per account (`server_name_for`), not one fixed key. Two
+/// The full name is per account and room (`server_name_for`), not one fixed key. Two
 /// sessions pointed at the same working directory write into the same file, and
 /// a single key means the second launch overwrites the first one's name, hue
 /// and room address — the identity the first session was launched with is gone
 /// while that session is still running (#40).
 pub const SERVER_PREFIX: &str = "pullcept-room";
 
-/// The `.mcp.json` key, and the `server:<name>` tag, for one account.
+/// The `.mcp.json` key, and the `server:<name>` tag, for one account in one room.
 ///
-/// A function of the account id alone. The id is what an account is; the name
-/// is an attribute of it, and a key derived from the name moved every time the
-/// name was edited — the registration a running session was launched against
-/// would be orphaned under the old key while the CLI holding that session still
-/// names the old tag on its command line (#53). Deriving from the id makes a
-/// rename cost nothing, which is what makes the name editable at all.
+/// A function of the account id and the room id, and of nothing else. The id is
+/// what an account is; the name is an attribute of it, and a key derived from
+/// the name moved every time the name was edited — the registration a running
+/// session was launched against would be orphaned under the old key while the
+/// CLI holding that session still names the old tag on its command line (#53).
+/// Deriving from the id makes a rename cost nothing, which is what makes the
+/// name editable at all.
 ///
-/// Per account rather than per launch: relaunching one account reuses its
-/// entry, rather than growing the user's file by one key per launch.
+/// **The room is in the key because one account may be in several rooms at
+/// once (#141, decision 4).** A room is a topic, and a session started in one
+/// topic keeps running while another topic is opened and the same account is
+/// started there too (decisions 2 and 3). Both launches write into the account's
+/// working directory, and under a key of the account alone the second would
+/// overwrite the first one's entry — its room id among it — while that session
+/// is still running, which is #40 again one axis over. Keeping the key per
+/// room is also what leaves the dead-entry sweep unchanged: every room of one
+/// run shares the one address (`survives_registration`), so the entries of the
+/// other rooms carry the live address and stay, and nothing there has to learn
+/// which rooms still exist.
 ///
-/// The slug half is legibility and the hash half is what makes the key total,
-/// as it was under the name. An id is opaque, so the slug reads less well than
-/// a name did; which account an entry belongs to is read from
-/// `PULLCEPT_AGENT_NAME` in its own env instead. Legibility loses to identity
-/// here — a key that reads oddly costs one lookup, and a key that moves is a
+/// Per account and room rather than per launch: relaunching one account into a
+/// room it was in reuses its entry, rather than growing the user's file by one
+/// key per launch.
+///
+/// The slug half is legibility and the hash half is what makes the key total.
+/// The slug is the account's alone: a room id is a uuid, and spelling it out as
+/// well would double the key for nothing a reader could use. Which account and
+/// which room an entry belongs to is read from `PULLCEPT_AGENT_NAME` and
+/// `PULLCEPT_ROOM_ID` in its own env instead. Legibility loses to identity here
+/// — a key that reads oddly costs one lookup, and a key that moves is a
 /// registration nobody can find.
-pub fn server_name_for(account_id: &str) -> String {
+pub fn server_name_for(account_id: &str, room_id: &str) -> String {
     let slug = slugify(account_id);
-    let hash = fnv1a(account_id);
+    // A separator no id contains, so `("ab", "c")` and `("a", "bc")` are hashed
+    // as two different pairs rather than as one concatenation.
+    let hash = fnv1a(&format!("{account_id}\n{room_id}"));
     if slug.is_empty() {
         format!("{SERVER_PREFIX}-{hash:08x}")
     } else {
@@ -115,6 +132,14 @@ pub struct RoomRegistration<'a> {
     /// #47). What it buys is the screen being able to say which of its accounts
     /// a participant is, without matching on a name (#59).
     pub account_id: &'a str,
+    /// Id of the room being joined, which is the topic the launch goes into
+    /// (#141, decision 3).
+    ///
+    /// The other half of the registration key (`server_name_for`), and handed to
+    /// the sidecar in the env so it can name the room in `hello`. One socket
+    /// serves every room of a run, so the address cannot say which room a
+    /// connection is for; the room id is what does.
+    pub room_id: &'a str,
     /// Display name this session speaks under. Written into the env for the
     /// sidecar to declare in `hello`, and it is what says whose entry this is
     /// when the file is read by eye. Not the key: see `server_name_for`.
@@ -521,7 +546,7 @@ pub fn other_room_servers(
 /// touched; existing servers and unrelated top-level keys survive verbatim.
 pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathBuf, String> {
     let (command, args) = spawn_form(room.sidecar_runner, room.sidecar_entry);
-    let server_name = server_name_for(room.account_id);
+    let server_name = server_name_for(room.account_id, room.room_id);
 
     let path = dir.join(".mcp.json");
     let mut root = read_config(&path)?;
@@ -551,7 +576,9 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     // than that nobody declared one. Absent on the wire stays a real state —
     // it is what a connection with no account behind it sends (#59).
     env.insert("PULLCEPT_ACCOUNT_ID".into(), json!(room.account_id));
-    env.insert("PULLCEPT_ROOM_ID".into(), json!("pullcept"));
+    // Which room this session is in. The address is shared by every room of
+    // the run, so without this a connection could not say where it is (#141).
+    env.insert("PULLCEPT_ROOM_ID".into(), json!(room.room_id));
     // Only when declared. An undeclared participant is a participant the room
     // derives a hue for, which is not the same state as one who chose that hue.
     if let Some(hue) = room.agent_hue {
@@ -610,12 +637,17 @@ mod tests {
     /// test that read a name out of it would be testing the wrong key.
     const LIN: &str = "8f14e45f-ceea-467a-b160-6f14e45fceea";
     const LAY: &str = "2b1c9a70-3d4e-4f80-91a2-b3c4d5e6f708";
+    /// The room — the topic — a launch goes into. Opaque, like the accounts.
+    const ROOM: &str = "5d41402a-bc4b-4a76-b971-9d911017c592";
+    /// A second topic, open at the same time as the first (#141).
+    const OTHER_ROOM: &str = "7e2b0a9c-1f3d-4c5e-8a6b-0c1d2e3f4a5b";
 
     fn registration<'a>(entry: &'a Path, runner: &'a Path) -> RoomRegistration<'a> {
         RoomRegistration {
             room_url: "ws://127.0.0.1:1234",
             token: "tok",
             account_id: LIN,
+            room_id: ROOM,
             agent_name: "Lin",
             agent_hue: None,
             unseen_history: false,
@@ -637,7 +669,7 @@ mod tests {
             register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
 
         let json = read(&path);
-        let server = &json["mcpServers"][server_name_for(LIN)];
+        let server = &json["mcpServers"][server_name_for(LIN, ROOM)];
         assert_eq!(server["env"]["PULLCEPT_ROOM_URL"], "ws://127.0.0.1:1234");
         assert_eq!(server["env"]["PULLCEPT_ROOM_TOKEN"], "tok");
         assert_eq!(server["env"]["PULLCEPT_AGENT_NAME"], "Lin");
@@ -647,7 +679,9 @@ mod tests {
         // derived from it: the key is a `.mcp.json` concern, and the room has
         // no way back from it to the account.
         assert_eq!(server["env"]["PULLCEPT_ACCOUNT_ID"], LIN);
-        assert_eq!(server["env"]["PULLCEPT_ROOM_ID"], "pullcept");
+        // The room this session is in, which the sidecar names in `hello`: one
+        // address serves every room of the run, so the address cannot (#141).
+        assert_eq!(server["env"]["PULLCEPT_ROOM_ID"], ROOM);
         // Undeclared is the key absent, not a default value: a hue written here
         // would be a declaration this participant never made.
         assert!(
@@ -684,7 +718,7 @@ mod tests {
             register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("no history");
         let json = read(&path);
         assert!(
-            !json["mcpServers"][server_name_for(LIN)]["env"]
+            !json["mcpServers"][server_name_for(LIN, ROOM)]["env"]
                 .as_object()
                 .expect("env")
                 .contains_key("PULLCEPT_UNSEEN_HISTORY"),
@@ -698,7 +732,7 @@ mod tests {
         let path = register_sidecar(scratch.path(), &seated_late).expect("history");
         let json = read(&path);
         assert_eq!(
-            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_UNSEEN_HISTORY"],
+            json["mcpServers"][server_name_for(LIN, ROOM)]["env"]["PULLCEPT_UNSEEN_HISTORY"],
             "1"
         );
 
@@ -708,7 +742,7 @@ mod tests {
             register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("no history");
         let json = read(&path);
         assert!(
-            !json["mcpServers"][server_name_for(LIN)]["env"]
+            !json["mcpServers"][server_name_for(LIN, ROOM)]["env"]
                 .as_object()
                 .expect("env")
                 .contains_key("PULLCEPT_UNSEEN_HISTORY"),
@@ -735,7 +769,7 @@ mod tests {
         let json = read(&path);
         assert_eq!(json["mcpServers"]["theirs"]["command"], "their-server");
         assert_eq!(json["unrelated"], 42);
-        assert!(json["mcpServers"][server_name_for(LIN)].is_object());
+        assert!(json["mcpServers"][server_name_for(LIN, ROOM)].is_object());
     }
 
     #[test]
@@ -749,6 +783,7 @@ mod tests {
             room_url: "ws://127.0.0.1:1234",
             token: "tok2",
             account_id: LIN,
+            room_id: ROOM,
             agent_name: "Lin",
             agent_hue: Some(145.0),
             unseen_history: false,
@@ -758,7 +793,7 @@ mod tests {
         let path = register_sidecar(scratch.path(), &second).expect("second");
 
         let json = read(&path);
-        let server = &json["mcpServers"][server_name_for(LIN)];
+        let server = &json["mcpServers"][server_name_for(LIN, ROOM)];
         assert_eq!(server["env"]["PULLCEPT_ROOM_TOKEN"], "tok2");
         assert_eq!(server["env"]["PULLCEPT_AGENT_HUE"], "145.0");
         assert_eq!(
@@ -784,6 +819,7 @@ mod tests {
             room_url: "ws://127.0.0.1:1234",
             token: "tok",
             account_id: LIN,
+            room_id: ROOM,
             agent_name: "リン",
             agent_hue: None,
             unseen_history: false,
@@ -796,7 +832,7 @@ mod tests {
         let servers = json["mcpServers"].as_object().expect("servers");
         assert_eq!(servers.len(), 1, "a rename must not open a second entry");
         assert_eq!(
-            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LIN, ROOM)]["env"]["PULLCEPT_AGENT_NAME"],
             "リン",
             "the new name belongs in the entry the id already had"
         );
@@ -817,6 +853,7 @@ mod tests {
             room_url: "ws://127.0.0.1:1234",
             token: "tok",
             account_id: LAY,
+            room_id: ROOM,
             agent_name: "Lay",
             agent_hue: Some(25.0),
             unseen_history: false,
@@ -827,12 +864,12 @@ mod tests {
 
         let json = read(&path);
         assert_eq!(
-            json["mcpServers"][server_name_for(LIN)]["env"]["PULLCEPT_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LIN, ROOM)]["env"]["PULLCEPT_AGENT_NAME"],
             "Lin",
             "the first session's identity must survive the second launch"
         );
         assert_eq!(
-            json["mcpServers"][server_name_for(LAY)]["env"]["PULLCEPT_AGENT_NAME"],
+            json["mcpServers"][server_name_for(LAY, ROOM)]["env"]["PULLCEPT_AGENT_NAME"],
             "Lay"
         );
         assert_eq!(json["mcpServers"].as_object().expect("servers").len(), 2);
@@ -876,25 +913,73 @@ mod tests {
             "an entry with no room address of ours is not ours to remove"
         );
         assert!(servers.contains_key("theirs"));
-        assert!(servers.contains_key(&server_name_for(LIN)));
+        assert!(servers.contains_key(&server_name_for(LIN, ROOM)));
     }
 
     #[test]
-    fn a_server_name_is_a_function_of_the_account_id() {
-        assert_eq!(server_name_for(LIN), server_name_for(LIN));
-        assert_ne!(server_name_for(LIN), server_name_for(LAY));
-        assert!(server_name_for(LIN).starts_with(SERVER_PREFIX));
+    fn a_server_name_is_a_function_of_the_account_and_the_room() {
+        assert_eq!(server_name_for(LIN, ROOM), server_name_for(LIN, ROOM));
+        assert_ne!(server_name_for(LIN, ROOM), server_name_for(LAY, ROOM));
+        // One account in two topics is two entries (#141, decision 4).
+        assert_ne!(server_name_for(LIN, ROOM), server_name_for(LIN, OTHER_ROOM));
+        assert!(server_name_for(LIN, ROOM).starts_with(SERVER_PREFIX));
+        // The pair is hashed as a pair: moving characters across the boundary
+        // between the two ids is a different pair, not the same concatenation.
+        assert_ne!(server_name_for("ab", "c"), server_name_for("a", "bc"));
         // Total over whatever an id turns out to be, as it was over a name: an
         // input that slugs to nothing still gets a key of its own, and two that
         // slug alike still get two. The uniqueness lives in the hash, and the
         // ids the app mints do not lean on the slug for it.
-        assert!(server_name_for("マスター").starts_with("pullcept-room-"));
-        assert_ne!(server_name_for("マスター"), server_name_for("ますたー"));
-        assert_ne!(server_name_for("Lin"), server_name_for("lin!"));
+        assert!(server_name_for("マスター", ROOM).starts_with("pullcept-room-"));
+        assert_ne!(server_name_for("マスター", ROOM), server_name_for("ますたー", ROOM));
+        assert_ne!(server_name_for("Lin", ROOM), server_name_for("lin!", ROOM));
         // Nothing outside the set a console and a JSON key both leave alone.
-        assert!(server_name_for("Lin さん / 2")
+        assert!(server_name_for("Lin さん / 2", "部屋 1")
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn one_account_in_two_rooms_keeps_both_entries() {
+        // The case #141 opens: a session left running in one topic while the
+        // same account is started in another. Both write into the account's own
+        // directory, and the second must not take the first one's room away
+        // from under it — nor sweep it as dead, since both carry this run's
+        // address.
+        let scratch = Scratch::new();
+        let entry = PathBuf::from(ENTRY);
+        let runner = PathBuf::from(RUNNER);
+
+        register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("first room");
+        let elsewhere = RoomRegistration {
+            room_id: OTHER_ROOM,
+            ..registration(&entry, &runner)
+        };
+        let path = register_sidecar(scratch.path(), &elsewhere).expect("second room");
+
+        let json = read(&path);
+        assert_eq!(json["mcpServers"].as_object().expect("servers").len(), 2);
+        assert_eq!(
+            json["mcpServers"][server_name_for(LIN, ROOM)]["env"]["PULLCEPT_ROOM_ID"],
+            ROOM,
+            "the first room's entry must survive the launch into the second"
+        );
+        assert_eq!(
+            json["mcpServers"][server_name_for(LIN, OTHER_ROOM)]["env"]["PULLCEPT_ROOM_ID"],
+            OTHER_ROOM
+        );
+
+        // And the session in the second room does not start the first room's
+        // sidecar: it is a registration this launch is not, whoever's it is.
+        assert_eq!(
+            other_room_servers(
+                scratch.path(),
+                "ws://127.0.0.1:1234",
+                &server_name_for(LIN, OTHER_ROOM)
+            )
+            .expect("read"),
+            vec![server_name_for(LIN, ROOM)]
+        );
     }
 
     #[test]
@@ -948,7 +1033,7 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
 
-        let room = server_name_for(LIN);
+        let room = server_name_for(LIN, ROOM);
         let merged = channel_launch_args(&base, &room);
         assert_eq!(
             merged,
@@ -968,7 +1053,7 @@ mod tests {
 
     #[test]
     fn does_not_add_the_room_twice() {
-        let room = server_name_for(LIN);
+        let room = server_name_for(LIN, ROOM);
         let base = vec![CHANNEL_FLAG.to_string(), format!("server:{room}")];
         assert_eq!(channel_launch_args(&base, &room), base);
     }
@@ -1014,7 +1099,7 @@ mod tests {
     fn a_sibling_registration_is_named_as_one_this_launch_does_not_start() {
         // The launch's own entry is not on the list: a session that disabled
         // its own room server would be a session with no room (#103).
-        let lay = server_name_for(LAY);
+        let lay = server_name_for(LAY, ROOM);
         let args = settings_launch_args(&[], Some("character_Lin"), std::slice::from_ref(&lay));
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
@@ -1026,7 +1111,7 @@ mod tests {
         // The pass-through condition moved: it is "nothing to stop", not
         // "declares no character". An account with no character in a shared
         // directory still has to stop the other account's sidecar (#103).
-        let lay = server_name_for(LAY);
+        let lay = server_name_for(LAY, ROOM);
         let args =
             settings_launch_args(&["--verbose".to_string()], None, std::slice::from_ref(&lay));
         assert_eq!(args[0], "--verbose");
@@ -1056,7 +1141,7 @@ mod tests {
         .expect("seed");
 
         let others =
-            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN, ROOM))
                 .expect("read");
         assert_eq!(
             others,
@@ -1074,7 +1159,7 @@ mod tests {
         let runner = PathBuf::from(RUNNER);
         register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
         assert_eq!(
-            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN, ROOM))
                 .expect("read"),
             others
         );
@@ -1084,7 +1169,7 @@ mod tests {
     fn a_directory_with_no_registrations_names_nothing() {
         let scratch = Scratch::new();
         assert!(
-            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN, ROOM))
                 .expect("read")
                 .is_empty(),
             "no file is not a failure: it is a directory nothing has been registered in yet"
@@ -1094,7 +1179,7 @@ mod tests {
         let runner = PathBuf::from(RUNNER);
         register_sidecar(scratch.path(), &registration(&entry, &runner)).expect("register");
         assert!(
-            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+            other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN, ROOM))
                 .expect("read")
                 .is_empty(),
             "the only entry is this account's own, and disabling it would leave it roomless"
@@ -1105,7 +1190,7 @@ mod tests {
     fn a_config_that_is_not_json_is_refused_before_anything_is_written() {
         let scratch = Scratch::new();
         std::fs::write(scratch.path().join(".mcp.json"), "{ not json").expect("seed");
-        let err = other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN))
+        let err = other_room_servers(scratch.path(), "ws://127.0.0.1:1234", &server_name_for(LIN, ROOM))
             .expect_err("must refuse");
         assert!(err.contains("not valid JSON"), "{err}");
     }
@@ -1123,7 +1208,7 @@ mod tests {
     fn one_line_carries_the_room_and_the_character_together() {
         // The preview and the spawn both come through here. A site composing
         // the two halves for itself is a site the other one can drift from.
-        let room = server_name_for(LIN);
+        let room = server_name_for(LIN, ROOM);
         let line = launch_args(
             &["--verbose".to_string()],
             &room,
@@ -1151,8 +1236,8 @@ mod tests {
         // The room entry names this session's own server and the settings name
         // the ones it must leave alone: the same file, read twice, must not
         // disagree about which entry is whose (#103).
-        let room = server_name_for(LIN);
-        let lay = server_name_for(LAY);
+        let room = server_name_for(LIN, ROOM);
+        let lay = server_name_for(LAY, ROOM);
         let line = launch_args(
             &[],
             &room,
@@ -1212,7 +1297,7 @@ mod tests {
             .expect("one entry")
             .clone();
 
-        let args = channel_launch_args(&["--verbose".to_string()], &server_name_for(LIN));
+        let args = channel_launch_args(&["--verbose".to_string()], &server_name_for(LIN, ROOM));
         assert_eq!(
             args,
             vec![
