@@ -2705,11 +2705,39 @@ function renderSessionId(): void {
   if (view && view.ptyId !== "") {
     known = true;
     id = topics.find((topic) => topic.topic_id === view.topicId)?.sessions[view.accountId] ?? null;
+  } else if (!view) {
+    // No pane on the glass: after a restart there is none, and the record is
+    // still there to read (#144, decision 1). Whose record is `idleAccount`'s
+    // answer; the topic is the one open, because no launch has named another.
+    const accountId = idleAccount();
+    const topic = topics.find((one) => one.topic_id === shownTopicId());
+    if (accountId !== null && topic) {
+      known = true;
+      id = topic.sessions[accountId] ?? null;
+    }
   }
   sessionIdEl.textContent = id ?? (known ? "なし" : "—");
   sessionIdEl.title = id ?? "";
   sessionIdCopyEl.hidden = id === null;
   sessionIdCopyEl.dataset.id = id ?? "";
+}
+
+/**
+ * The account the panel's values speak for while no terminal is on the glass.
+ *
+ * The row chosen in the list when there is one, and otherwise the first AI
+ * account in the order the list draws them (#144, decision 1). A `user` account
+ * has no session to have recorded, so it is never the fallback. Once a terminal
+ * is on the glass this is not asked: the values follow the pane again
+ * (decision 2).
+ */
+function idleAccount(): string | null {
+  const ai = members()
+    .filter((row) => row.account?.kind === "ai")
+    .sort((a, b) => memberName(a).localeCompare(memberName(b)))
+    .map((row) => row.account!.id);
+  if (shownAccount !== null && ai.includes(shownAccount)) return shownAccount;
+  return ai[0] ?? null;
 }
 
 /**
