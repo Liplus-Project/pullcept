@@ -41,7 +41,19 @@ import { randomUUID } from "node:crypto";
 const ROOM_URL = process.env.PULLCEPT_ROOM_URL ?? "";
 const AGENT_NAME = process.env.PULLCEPT_AGENT_NAME ?? "session";
 const ROOM_TOKEN = process.env.PULLCEPT_ROOM_TOKEN ?? "";
-const CHAT_ID = process.env.PULLCEPT_ROOM_ID ?? "pullcept";
+/**
+ * The room this session was started into, which is the topic's id, or null when
+ * it was launched without one.
+ *
+ * Named in `hello`, because the room's socket is one socket for every topic open
+ * in the app and the address cannot say which one this connection is for
+ * (#141). Null is sent as no key rather than as a guess: a room that is not
+ * named is one the app cannot seat this session in, and picking one here would
+ * put the session in a conversation it was not started into.
+ */
+const ROOM_ID = process.env.PULLCEPT_ROOM_ID?.trim() || null;
+/** The channel's `chat_id`: the room, or the fixed name it had while there was one. */
+const CHAT_ID = ROOM_ID ?? "pullcept";
 
 /**
  * The hue this session was launched under, in oklch degrees, or null when it
@@ -93,7 +105,7 @@ const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
  */
 const UNSEEN_HISTORY = process.env.PULLCEPT_UNSEEN_HISTORY === "1";
 
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
 
 /**
  * How long a post waits for the room to answer it.
@@ -112,7 +124,7 @@ function log(line: string): void {
 // ── Room frames ──────────────────────────────────────────────────────────────
 //
 // Sidecar -> room:
-//   { type: "hello", protocol, name, hue?, account_id? }
+//   { type: "hello", protocol, name, room?, hue?, account_id? }
 //   { type: "post",  message_id, content, to?, ts, last_seen? }
 // Room -> sidecar:
 //   { type: "post",  message_id, speaker, content, to?, ts }
@@ -141,6 +153,10 @@ function log(line: string): void {
 // room presumes nothing about one. Nothing here or in the room reads it to
 // decide identity, self-suppression or attribution — those stay on the
 // connection (#39 / #40 / #47).
+//
+// `room` names the topic this session was started into (#141). The room holds
+// one floor per topic behind one socket, and seats a connection only in the room
+// its `hello` names: posts, receipts and pulls are all that room's from then on.
 //
 // A participant never receives its own post. The room drops it on the way out,
 // judged on the connection it arrived on, so nothing here has to recognise
@@ -187,6 +203,9 @@ interface PostResultFrame {
   message_id?: string;
   delivered?: boolean;
   missed?: MissedPost[];
+  /** Set when the room had nowhere to put the post: this connection is in no
+   *  room it holds (#141). Not a refusal — nothing was judged. */
+  error?: string;
 }
 
 /** One post as the room's log kept it. No hue and no `own`: see room_log.rs. */
@@ -456,6 +475,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
             "It may or may not have been delivered. Do not repeat it blind.",
         },
       ],
+      isError: true,
+    };
+  }
+
+  if (typeof result.error === "string") {
+    // Nowhere to post, which is not the same answer as a refusal: nothing was
+    // missed, and posting again will not land either.
+    return {
+      content: [{ type: "text", text: `Not delivered: ${result.error}` }],
       isError: true,
     };
   }
@@ -758,6 +786,7 @@ function connectRoom(): void {
       type: "hello",
       protocol: PROTOCOL_VERSION,
       name: AGENT_NAME,
+      ...(ROOM_ID === null ? {} : { room: ROOM_ID }),
       ...(AGENT_HUE === null ? {} : { hue: AGENT_HUE }),
       ...(ACCOUNT_ID === null ? {} : { account_id: ACCOUNT_ID }),
     });

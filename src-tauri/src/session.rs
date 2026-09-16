@@ -77,26 +77,38 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
         .to_string())
 }
 
-/// Which seat in the room each account is holding.
+/// Which seat each account is holding, in which room.
 ///
 /// **One account, one seat per room.** An account is who someone is, and the
 /// same someone cannot be in one room twice: two connections under one account
 /// would put one identity in the roster twice, and a post addressed to that
 /// name would have two places to land.
 ///
-/// The rule is scoped to the room, not to the account. There is one room today
-/// — the sidecar's `PULLCEPT_ROOM_ID` is fixed to `pullcept` — so this map
-/// needs no room in its key yet, and with one room the refusal is
-/// indistinguishable from "an account runs once". They are not the same rule.
-/// Rooms are meant to become plural (`design/Vision.dc.html`), and one account
-/// holding a seat in each of two rooms is the intended shape rather than a
-/// violation of this one. The scope is written down here because the mechanism
-/// cannot show it: a rule remembered as "an account runs once" would outlive
-/// the reason for it and block that case later, when nobody remembers why the
-/// line was drawn.
+/// **The rule is scoped to the room, not to the account, and rooms are plural
+/// now (#141).** A room is a topic, and the key here is the pair — the topic a
+/// launch goes into, and the account launched. One account holding a seat in
+/// each of two topics is the intended shape and not a violation: a session left
+/// running in the topic the screen moved away from, and the same account
+/// started again in the topic the screen moved to (decisions 2 and 3). What is
+/// still refused is the same account twice in the same topic.
+///
+/// That scope was written down here while there was one room, precisely so a
+/// rule remembered as "an account runs once" would not outlive its reason and
+/// block this case. It did not: the key gained its room and the refusal kept
+/// its meaning.
 #[derive(Clone)]
 pub struct RoomSeats {
-    seats: Arc<Mutex<BTreeMap<String, Seat>>>,
+    seats: Arc<Mutex<BTreeMap<SeatKey, Seat>>>,
+}
+
+/// Which seat: the topic it is in, then the account holding it.
+///
+/// Topic first, so every seat of one topic sits together in the map — which is
+/// the order a topic delete reads them in (`running_in_topic`).
+type SeatKey = (String, String);
+
+fn seat_key(topic_id: &str, account_id: &str) -> SeatKey {
+    (topic_id.to_string(), account_id.to_string())
 }
 
 /// One account's seat, from the launch being decided to the session ending.
@@ -135,15 +147,16 @@ pub struct RunningSession {
     pub command: String,
     /// The working directory it was launched in.
     pub cwd: String,
-    /// The topic this session was started into.
+    /// The topic this session was started into, which is the room it is in.
     ///
     /// Which topic a session belongs to is a fact about the launch, not about
-    /// the account and not about the room now: the room moves between topics
-    /// while a session keeps running, and the seat stays where it was started
-    /// (#115). Recorded here because deleting a topic has to end the sessions
-    /// that were in it and nothing else (#119, decision 4) — read off the
-    /// topic's `sessions` map instead, a delete would reach an account that ran
-    /// in this topic once and is now running in another one.
+    /// the account and not about the screen now: the screen moves between
+    /// topics while a session keeps running in its own (#141, decision 2).
+    /// Half of the seat's key, and carried here as well so the screen can put
+    /// the session's terminal under its topic. Deleting a topic ends the
+    /// sessions that were in it and nothing else (#119, decision 4) — read off
+    /// the topic's `sessions` map instead, a delete would reach an account that
+    /// ran in this topic once and is now running in another one.
     ///
     /// A seat still being claimed (`Seat::Starting`) has no entry here at all,
     /// which is the one session a delete cannot see; see the accepted tradeoff
@@ -165,6 +178,12 @@ pub struct RunningSession {
 #[derive(Clone, serde::Serialize)]
 pub struct SeatedAccount {
     pub account_id: String,
+    /// The topic the seat is in.
+    ///
+    /// On the seat rather than only on the session under it: a seat whose
+    /// launch is still in flight has no session yet, and it is still a seat in
+    /// one topic and not in another (#141).
+    pub topic_id: String,
     /// What is running under the seat, or `null` while a launch is in flight.
     ///
     /// Null is a state, not a missing value: the seat is claimed before
@@ -196,8 +215,9 @@ impl RoomSeats {
         });
         seats
             .iter()
-            .map(|(account_id, seat)| SeatedAccount {
+            .map(|((topic_id, account_id), seat)| SeatedAccount {
                 account_id: account_id.clone(),
+                topic_id: topic_id.clone(),
                 session: match seat {
                     Seat::Starting => None,
                     Seat::Running(session) => Some(session.clone()),
@@ -206,13 +226,15 @@ impl RoomSeats {
             .collect()
     }
 
-    /// Claim the seat for `account_id`, or fail because it is taken.
+    /// Claim the seat for `account_id` in `topic_id`, or fail because it is
+    /// taken.
     ///
     /// The sweep and the claim are one acquisition of the lock: checking first
     /// and claiming after would let two launches pass the same empty seat.
-    fn claim(&self, account_id: &str, ptys: &PtyState) -> Result<(), ()> {
+    fn claim(&self, topic_id: &str, account_id: &str, ptys: &PtyState) -> Result<(), ()> {
+        let key = seat_key(topic_id, account_id);
         let mut seats = self.seats.lock();
-        let taken = match seats.get(account_id) {
+        let taken = match seats.get(&key) {
             Some(Seat::Starting) => true,
             Some(Seat::Running(session)) => ptys.is_running(&session.pty_id),
             None => false,
@@ -220,7 +242,7 @@ impl RoomSeats {
         if taken {
             return Err(());
         }
-        seats.insert(account_id.to_string(), Seat::Starting);
+        seats.insert(key, Seat::Starting);
         Ok(())
     }
 
@@ -241,31 +263,29 @@ impl RoomSeats {
             Seat::Running(session) => ptys.is_running(&session.pty_id),
         });
         seats
-            .values()
-            .filter_map(|seat| match seat {
+            .iter()
+            .filter(|((seat_topic, _), _)| seat_topic == topic_id)
+            .filter_map(|(_, seat)| match seat {
                 Seat::Starting => None,
-                Seat::Running(session) => {
-                    (session.topic_id == topic_id).then(|| session.pty_id.clone())
-                }
+                Seat::Running(session) => Some(session.pty_id.clone()),
             })
             .collect()
     }
 
     /// The launch got a session up; the seat is now held by that session.
     fn hold(&self, account_id: &str, session: RunningSession) {
-        self.seats
-            .lock()
-            .insert(account_id.to_string(), Seat::Running(session));
+        let key = seat_key(&session.topic_id, account_id);
+        self.seats.lock().insert(key, Seat::Running(session));
     }
 
     /// The launch failed. Nothing is running, so nothing holds the seat.
-    fn release(&self, account_id: &str) {
-        self.seats.lock().remove(account_id);
+    fn release(&self, topic_id: &str, account_id: &str) {
+        self.seats.lock().remove(&seat_key(topic_id, account_id));
     }
 }
 
-/// The accounts with a session in the room, for the screen to draw against its
-/// own list of accounts.
+/// The seats held in every room, for the screen to draw against its own list of
+/// accounts.
 ///
 /// Account ids, never names. The screen matches these against its accounts by
 /// id, so an account renamed while its session runs is still the same account
@@ -301,11 +321,13 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// that runs. This returns the line that runs, through the same function the
 /// launch itself goes through (`launch_args`).
 ///
-/// The entry names this account's own server, which is a function of the
-/// account id, so the preview changes when a different account is selected and
-/// holds still while that account's name is edited. Holding still is the point:
-/// the identity being launched is the account, and renaming it does not make it
-/// something else (#53).
+/// The entry names this account's own server in the topic the launch would go
+/// into, which is a function of the account id and the topic id, so the preview
+/// changes when a different account is selected and holds still while that
+/// account's name is edited. Holding still is the point: the identity being
+/// launched is the account, and renaming it does not make it something else
+/// (#53). The topic is the one the screen names, or the one it has open when it
+/// names none (#141).
 ///
 /// The working directory is read for the same reason the character is: the
 /// sibling registrations sitting in it are on the line too (#103), and a
@@ -318,10 +340,12 @@ pub fn preview_launch_args(
     room: tauri::State<RoomState>,
     args: Vec<String>,
     account_id: String,
+    topic_id: Option<String>,
     character: Option<String>,
     cwd: Option<String>,
 ) -> Vec<String> {
-    let server_name = server_name_for(account_id.trim());
+    let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
+    let server_name = server_name_for(account_id.trim(), &topic_id);
     let others = room
         .port()
         .zip(cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()))
@@ -518,9 +542,10 @@ pub struct StartedSession {
     /// The topic this launch went into, and the topic the record it may have to
     /// drop is on.
     ///
-    /// The launch's own, not the room's as it reads later: the room moves
-    /// between topics while a session runs, and a session that ends badly has
-    /// to reach the topic it started in (#127). Same fact the seat holds, sent
+    /// The launch's own, named by the screen, and not whichever topic the
+    /// screen has open later: the screen moves between topics while a session
+    /// runs in its own (#141), and a session that ends badly has to reach the
+    /// topic it started in (#127). Same fact the seat holds, sent
     /// here as well because the screen acts on the exit and the seat is gone by
     /// then.
     pub topic_id: String,
@@ -571,6 +596,7 @@ pub fn start_session(
     pty_state: tauri::State<PtyState>,
     seats: tauri::State<RoomSeats>,
     account: Account,
+    topic_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
@@ -595,11 +621,16 @@ pub fn start_session(
         ));
     }
 
-    // Which topic this seat is being started into. Read from the room rather
-    // than passed in by the screen: the room is where the current topic lives,
-    // and a value carried through the screen could name a topic the room has
-    // since left.
-    let topic = room.topic();
+    // Which topic this seat is being started into: the one the screen pressed
+    // ▶ in, named by it. Not the topic the app has open by the time this runs
+    // — the screen made this session's terminal under the topic it had on the
+    // glass, and a launch that went wherever the app had moved to since would
+    // put a session in one topic and its terminal in another (#141). Resolved
+    // against the rooms this run holds, so a topic deleted in between is a
+    // refusal rather than a session in nothing.
+    let topic = room.topic_of(&topic_id).ok_or_else(|| {
+        format!("トピック {topic_id} はこのアプリで開かれていません。削除されたトピックかもしれません。")
+    })?;
 
     // No fallback to the app's own process directory. Under `tauri dev` that
     // is `src-tauri`, and a session silently launched there is a session the
@@ -662,7 +693,7 @@ pub fn start_session(
         .ok_or_else(|| "The room socket is not listening yet.".to_string())?;
     let room_url = format!("ws://127.0.0.1:{port}");
 
-    let server_name = server_name_for(&account.id);
+    let server_name = server_name_for(&account.id, &topic.topic_id);
     // Read before anything is written, and answering for the file as the
     // registration below will leave it. The CLI starts every enabled server in
     // the working directory's `.mcp.json`, and a directory shared with another
@@ -701,10 +732,10 @@ pub fn start_session(
 
     // One account, one seat per room (`RoomSeats`). Claimed before anything is
     // written or spawned, so a refusal costs nothing and leaves nothing behind.
-    seats.claim(&account.id, &pty_state).map_err(|()| {
+    seats.claim(&topic.topic_id, &account.id, &pty_state).map_err(|()| {
         format!(
-            "Account \"{name}\" already holds a seat in this room. One account holds one seat \
-             per room: stop its running session before starting it again."
+            "Account \"{name}\" already holds a seat in this topic. One account holds one seat \
+             per topic: stop its running session here before starting it again."
         )
     })?;
 
@@ -737,10 +768,19 @@ pub fn start_session(
             // on the same surface a failed append is said on, for the same
             // reason: a record that quietly stopped being kept still looks like
             // one.
-            if let Some(session_id) = &launch_line.session_id {
-                if let Err(err) = room_log::record_session(&app, &topic, &account.id, session_id) {
-                    room_log::report(&app, err);
+            //
+            // A launch with no id to record still puts its topic in the index.
+            // The session stays in this topic whatever the screen opens next
+            // (#141, decision 2), and a topic the list does not carry is a
+            // running session nothing on the screen leads back to.
+            let recorded = match &launch_line.session_id {
+                Some(session_id) => {
+                    room_log::record_session(&app, &topic, &account.id, session_id)
                 }
+                None => room_log::realize_topic(&app, &topic),
+            };
+            if let Err(err) = recorded {
+                room_log::report(&app, err);
             }
             // The launch's own values, not the account's. The account may be
             // edited while this runs, and what is running would then be
@@ -769,7 +809,7 @@ pub fn start_session(
         Err(err) => {
             // Nothing is running, so nothing holds the seat. Without this the
             // account would stay locked out by a launch that never happened.
-            seats.release(&account.id);
+            seats.release(&topic.topic_id, &account.id);
             Err(err)
         }
     }
@@ -817,6 +857,7 @@ fn launch(
             room_url,
             token: &room.token(),
             account_id: &account.id,
+            room_id: topic_id,
             agent_name: name,
             agent_hue: account.hue,
             unseen_history,

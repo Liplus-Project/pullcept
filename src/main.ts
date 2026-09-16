@@ -19,6 +19,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 interface RoomMessage {
+  /** The room it was said in, which is its topic. Every topic open in the app
+   *  keeps talking, so a post arrives whether or not its topic is the one on the
+   *  glass, and this is what keeps it out of the one that is not (#141). */
+  topic_id: string;
   message_id: string;
   speaker: string;
   /** The hue the speaker declared, or null when they declared none. Stamped by
@@ -111,7 +115,7 @@ interface Topic {
 }
 
 /**
- * The topic the room is in.
+ * The topic on the glass (#141: one of the rooms, the one the screen shows).
  *
  * Held apart from the list because it may not be in the list: a launch opens a
  * new topic and nothing is written down until something is said in it, so the
@@ -148,6 +152,18 @@ interface Participant {
    */
   account: string | null;
   own: boolean;
+}
+
+/**
+ * One room's roster, as `room-participants` carries it.
+ *
+ * Named by its topic: a roster changes in a topic that is not on the glass — a
+ * session joining the topic it was started in — and it is kept for when that
+ * topic is opened (#141).
+ */
+interface Roster {
+  topic_id: string;
+  participants: Participant[];
 }
 
 /**
@@ -225,9 +241,8 @@ interface StartedSession {
   mcp_config: string;
   /** When the session was launched, stamped by the room's own clock. */
   started_at: string;
-  /** The topic this launch went into. The launch's own fact: the room moves
-   *  between topics while a session runs, so the topic a failed resume has to
-   *  be undone on is this one and not the room's current (#127). */
+  /** The topic this launch went into — the one the screen named (#141). The
+   *  topic a failed resume has to be undone on (#127). */
   topic_id: string;
   /** The session id this went back into, or null when it started fresh — the
    *  topic held a session for it, and the CLI came back carrying its own
@@ -263,10 +278,10 @@ interface RunningSession {
   started_at: string;
   command: string;
   cwd: string;
-  /** The topic this session was started into. A launch's own fact: the room
-   *  moves between topics while a session runs, and the seat stays where it
-   *  was started. Read when a topic is deleted, which ends the sessions that
-   *  were in that topic and no others (#119, decision 4). */
+  /** The topic this session was started into, and the room it is in. A
+   *  launch's own fact: the screen moves between topics while a session keeps
+   *  running in its own (#141, decision 2). What its terminal is filed under,
+   *  and what a topic delete ends it by (#119, decision 4). */
   topic_id: string;
   /** The session id this launch went back into, or null when it started fresh.
    *  A launch's own fact like the three above, and kept on the seat for the
@@ -275,9 +290,13 @@ interface RunningSession {
   resumed_from: string | null;
 }
 
-/** One account holding a seat, and what it is running. */
+/** One account holding a seat in one topic, and what it is running. */
 interface SeatedAccount {
   account_id: string;
+  /** The topic the seat is in. On the seat as well as on the session, because a
+   *  seat whose launch is in flight has no session yet and is still in one topic
+   *  and not another (#141). */
+  topic_id: string;
   /** Null while its launch is in flight: claimed seat, nothing spawned yet. */
   session: RunningSession | null;
 }
@@ -466,7 +485,7 @@ let accounts: Account[] = [];
  */
 let panels: PanelState = { history: true, participants: true };
 /**
- * The accounts holding a seat in the room, by id.
+ * The seats held in every topic, by `seatKey`.
  *
  * Ids, never names: this is matched against the account list to decide who is
  * offline, and a name match would tie the wrong account as soon as two share a
@@ -477,10 +496,21 @@ let panels: PanelState = { history: true, participants: true };
  * A map rather than a set of ids, because the answer carries what is running
  * under each seat as well. That is what a terminal is rebuilt from when this
  * screen has been reloaded out from under a running session (#84).
+ *
+ * Keyed on the topic and the account together (#141). One account may hold a
+ * seat in each of two topics — a session left running where the screen was, and
+ * the same account started where the screen is now — and what is refused is the
+ * same account twice in one topic.
  */
 let seated = new Map<string, SeatedAccount>();
-/** Everyone in the room, this screen's person included. */
-let participants: Participant[] = [];
+/**
+ * Every room's roster the screen has heard, by topic id.
+ *
+ * Kept for every topic rather than for the one on the glass: rosters move in
+ * topics nobody is looking at, and opening one of them should find who is there
+ * rather than an empty list waiting for the next change (#141).
+ */
+const rosters = new Map<string, Participant[]>();
 /**
  * The account the person at this screen is, or "" before it is resolved.
  *
@@ -502,7 +532,7 @@ let homeDir = "";
  * see and does not pretend to (#47).
  */
 /**
- * The topics as the index holds them, oldest first, and the one the room is in.
+ * The topics as the index holds them, oldest first, and the one on the glass.
  *
  * Two values because the current one may not be in the list: a launch opens a
  * new topic and nothing is written down until something is said in it (#115).
@@ -633,8 +663,10 @@ interface SessionView {
   fit: FitAddon;
   host: HTMLElement;
   unlisten: UnlistenFn[];
-  /** The topic this session was launched into, so its record can be reached
-   *  after it ends. Empty until the launch returns, like `ptyId`. */
+  /** The topic this terminal belongs to: the one ▶ was pressed in, which is the
+   *  one the launch goes into (#141). Set when the terminal is made, since it
+   *  decides where the terminal is shown before any launch has answered, and
+   *  what reaches this session's record after it ends. */
   topicId: string;
   /**
    * The session id this launch went back into, or null when it started fresh.
@@ -695,7 +727,14 @@ interface SessionView {
  */
 const OUTPUT_QUIET_MS = 1000;
 
-/** The terminals this screen holds, by account id, in launch order. */
+/**
+ * The terminals this screen holds, by `seatKey`, in launch order.
+ *
+ * One per account per topic (#141, decision 1). A topic is where a session was
+ * started and where it keeps running, so its terminal belongs to the topic:
+ * opening another topic puts that topic's terminals on the glass, and the ones
+ * left behind keep filling their own buffers (`showTopicTerminals`).
+ */
 const views = new Map<string, SessionView>();
 /**
  * The names the room is waiting on: addressed in a post, and not heard from
@@ -714,13 +753,23 @@ const views = new Map<string, SessionView>();
  * the failure this is allowed to have; a word for a state nobody observed is not
  * (#82).
  */
-const awaiting = new Set<string>();
-/** The account whose terminal is on the glass, or null when none is. */
+const awaiting = new Map<string, Set<string>>();
+/**
+ * The account whose terminal is on the glass, in the topic on the glass, or
+ * null when none is.
+ */
 let shownAccount: string | null = null;
+/**
+ * Which account's terminal each topic was showing when it was left, by topic id.
+ *
+ * So coming back to a topic finds the pane that was being watched in it, and
+ * not whichever pane the topic just left had on the glass (#141).
+ */
+const shownByTopic = new Map<string, string | null>();
 /** The size every terminal on this screen is currently drawn at, in `px`. */
 let terminalFontSize = DEFAULT_TERMINAL_FONT_SIZE;
 /**
- * Why an account's last launch failed, by account id, until it is tried again.
+ * Why an account's last launch failed, by `seatKey`, until it is tried again.
  *
  * The status line carries the app's own reason and is the full account of it,
  * but it is one line for the whole screen and the next thing written takes it.
@@ -730,12 +779,15 @@ let terminalFontSize = DEFAULT_TERMINAL_FONT_SIZE;
  */
 const launchFailures = new Map<string, string>();
 /**
- * The account the open 終了 dialog is asking about, or null while it is closed.
+ * The terminal the open 終了 dialog is asking about, by `seatKey`, or null while
+ * it is closed.
  *
- * The id rather than the view: the dialog stays open across whatever else the
+ * The key rather than the view: the dialog stays open across whatever else the
  * screen does, and a view can be discarded while it is (`showView`). Resolving
- * the id when the answer comes back finds a session that is still there, or
- * finds nothing and ends nothing.
+ * the key when the answer comes back finds a session that is still there, or
+ * finds nothing and ends nothing. The topic is in the key because the same
+ * account may be running in two topics, and the one asked about is the one whose
+ * ❌ was pressed (#141).
  */
 let endingAccount: string | null = null;
 /**
@@ -759,6 +811,36 @@ let quitAnswer: ((confirmed: boolean) => void) | null = null;
  * while the question stands is a normal thing to do, not a corner.
  */
 let quitPending = false;
+
+/**
+ * One seat, or one terminal: an account in a topic.
+ *
+ * The pair is the key because it is the unit (#141). A newline cannot occur in
+ * either id, so no two pairs join to the same string.
+ */
+function seatKey(topicId: string, accountId: string): string {
+  return `${topicId}\n${accountId}`;
+}
+
+/** The topic on the glass, or "" before the app has answered which it is. */
+function shownTopicId(): string {
+  return currentTopic?.topic_id ?? "";
+}
+
+/** The roster of the topic on the glass. */
+function shownRoster(): Participant[] {
+  return rosters.get(shownTopicId()) ?? [];
+}
+
+/** The terminals of the topic on the glass, in launch order. */
+function topicViews(): SessionView[] {
+  return [...views.values()].filter((view) => view.topicId === shownTopicId());
+}
+
+/** Whether an account holds a seat in any topic. */
+function seatedAnywhere(accountId: string): boolean {
+  return [...seated.values()].some((seat) => seat.account_id === accountId);
+}
 
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
@@ -821,7 +903,9 @@ function togglePanel(which: keyof PanelState): void {
 
 /** The terminal currently on the glass, or null when none is. */
 function shownView(): SessionView | null {
-  return shownAccount === null ? null : (views.get(shownAccount) ?? null);
+  return shownAccount === null
+    ? null
+    : (views.get(seatKey(shownTopicId(), shownAccount)) ?? null);
 }
 
 /** What a view is called now — its account's current name, renames included. */
@@ -1200,11 +1284,13 @@ function appendMessage(message: RoomMessage): void {
  * overwrites that line: the column is a list of topics now, and the room is
  * where a topic is read.
  *
- * The watermark is cleared rather than set to the last line drawn. These posts
- * are not on the floor: entering a topic empties it and puts the seats back to
- * its start (`RoomState::enter_topic`). A watermark naming a post the floor
- * does not hold resolves to position 0, which is the same answer as declaring
- * none — so clearing it says the true thing rather than the equivalent one.
+ * The watermark is the last line drawn. A topic's room keeps its floor while the
+ * screen is elsewhere (#141) — nothing empties it on the way in any more — and
+ * every post that floor holds was written to the log inside the acquisition
+ * that admitted it, so the newest line read back is the newest post on the
+ * floor whenever the floor holds any. When it holds none, or the line is from
+ * an earlier run, the room reads the watermark as naming nothing, which costs
+ * one refusal and draws nothing twice (`drawMissed`).
  *
  * The ids are kept, because they are on the glass: a refusal that hands back
  * the whole retained floor must not draw a line twice (#108).
@@ -1215,7 +1301,7 @@ function appendMessage(message: RoomMessage): void {
  */
 function drawTopic(posts: LoggedPost[]): void {
   roomEl.replaceChildren();
-  lastSeenId = null;
+  lastSeenId = posts[posts.length - 1]?.message_id ?? null;
   drawnIds.clear();
 
   for (const post of posts) {
@@ -1275,10 +1361,12 @@ function renderTopics(): void {
 
   const listed = [...topics].reverse();
   const current = currentTopic;
-  topicNewEl.classList.toggle(
-    "current",
-    current !== null && !listed.some((one) => one.topic_id === current.topic_id),
-  );
+  const unlisted = current !== null && !listed.some((one) => one.topic_id === current.topic_id);
+  topicNewEl.classList.toggle("current", unlisted);
+  // A launch realises its topic, so a session running in a topic the list does
+  // not carry is the moment between ▶ and the launch answering. 新規 is where
+  // that topic is drawn, so the mark goes there for that moment (#141).
+  topicNewEl.classList.toggle("running", unlisted && current !== null && runsIn(current.topic_id));
 
   if (listed.length === 0) {
     const empty = document.createElement("li");
@@ -1322,6 +1410,20 @@ function topicRow(topic: Topic): HTMLLIElement {
   name.textContent = topicName(topic);
   pick.appendChild(name);
 
+  // Sessions are left running when the topic is (#141, decision 2), so a topic
+  // not on the glass can be holding one — and a session nobody can see running
+  // is one nobody remembers to end. The list is the one place every topic is
+  // on screen at once, which is why the mark is here (AI 判断5).
+  if (runsIn(topic.topic_id)) {
+    row.classList.add("running");
+    const mark = document.createElement("span");
+    mark.className = "running-mark";
+    mark.textContent = "●";
+    mark.title = "セッションが走っています";
+    mark.setAttribute("aria-label", "セッションが走っています");
+    pick.appendChild(mark);
+  }
+
   const when = document.createElement("span");
   when.className = "when";
   when.textContent = topicWhen(topic.created_at);
@@ -1338,6 +1440,18 @@ function topicRow(topic: Topic): HTMLLIElement {
   row.appendChild(pick);
   row.appendChild(deleteButton(topic));
   return row;
+}
+
+/**
+ * Whether a topic holds a seat: a session running in it, or a launch into it
+ * still in flight.
+ *
+ * The launch counts. It is about to be a running session, and a mark that
+ * arrived only once the CLI had spawned would say nothing about the one
+ * pressed ▶ just now in a topic that was then left.
+ */
+function runsIn(topicId: string): boolean {
+  return [...seated.values()].some((seat) => seat.topic_id === topicId);
 }
 
 /**
@@ -1432,6 +1546,10 @@ function beginRename(row: HTMLLIElement, topic: Topic): void {
  * Nothing is launched. A topic opens whether or not the sessions it held can be
  * resumed, and resuming one is a press of ▶ on its row afterwards (#115,
  * decision 6).
+ *
+ * Nothing is stopped either (#141, decision 2). The topic being left keeps its
+ * sessions running and its terminals filling; what changes is which topic's
+ * conversation, roster and terminals are on the glass (`enterTopic`).
  */
 async function openTopic(topic: Topic): Promise<void> {
   if (topic.topic_id === currentTopic?.topic_id) return;
@@ -1440,13 +1558,57 @@ async function openTopic(topic: Topic): Promise<void> {
       topicId: topic.topic_id,
       createdAt: topic.created_at,
     });
-    currentTopic = { topic_id: topic.topic_id, created_at: topic.created_at };
+    await enterTopic({ topic_id: topic.topic_id, created_at: topic.created_at });
     drawTopic(await invoke<LoggedPost[]>("room_topic_log", { topicId: topic.topic_id }));
-    renderTopics();
     status(`トピック「${topicName(topic)}」を開きました。`);
   } catch (err) {
     status(`トピックを開けませんでした: ${err}`, "error");
   }
+}
+
+/**
+ * Put one topic on the glass: its roster, its terminals, and its place in the
+ * list. The conversation is the caller's to draw, since where it comes from
+ * differs — a topic's log, or nothing for a topic just made.
+ *
+ * The roster is asked for rather than taken from what this screen last heard,
+ * because a room made by opening its topic has had no event yet, and one heard
+ * long ago may have moved while the event was missed.
+ */
+async function enterTopic(topic: TopicRef): Promise<void> {
+  // The pane being watched in the topic being left, kept for coming back.
+  const leaving = shownTopicId();
+  if (leaving !== "") shownByTopic.set(leaving, shownAccount);
+  currentTopic = topic;
+  try {
+    renderRoster(
+      topic.topic_id,
+      await invoke<Participant[]>("room_participants", { topicId: topic.topic_id }),
+    );
+  } catch {
+    // What this screen last heard of that room stands, or nothing: a roster
+    // that failed to read is not a reason to leave the topic half opened.
+  }
+  showTopicTerminals();
+  renderTopics();
+}
+
+/**
+ * Show the terminals of the topic on the glass, and the pane that topic was
+ * last watching.
+ *
+ * The other topics' terminals are hidden, never discarded. Their sessions are
+ * running (#141, decision 2), their output keeps arriving into their own
+ * emulators, and coming back finds each scrollback where it was left.
+ */
+function showTopicTerminals(): void {
+  const remembered = shownByTopic.get(shownTopicId()) ?? null;
+  const here = topicViews();
+  const pick =
+    remembered !== null && here.some((view) => view.accountId === remembered)
+      ? remembered
+      : (here.pop()?.accountId ?? null);
+  showView(pick);
 }
 
 /**
@@ -1493,9 +1655,8 @@ async function openTopicDeleteDialog(topic: Topic): Promise<void> {
  * The names of the accounts whose sessions are running in one topic.
  *
  * A seat carries the topic it was started into, so this is the topic's own
- * sessions and not every seat in the room: the room moves between topics while
- * a session runs, and an account that ran here once may be running elsewhere
- * now (#119, decision 4).
+ * sessions and not every seat there is: an account that ran here once may be
+ * running in another topic now (#119, decision 4; #141).
  *
  * On a failed read this screen's own copy stands, for the reason
  * `runningSeatNames` keeps it: a read that failed says nothing about who is
@@ -1510,7 +1671,7 @@ async function runningNamesInTopic(topicId: string): Promise<string[]> {
     held = [...seated.values()];
   }
   return held
-    .filter((seat) => seat.session?.topic_id === topicId)
+    .filter((seat) => seat.session !== null && seat.topic_id === topicId)
     .map(
       (seat) =>
         accounts.find((one) => one.id === seat.account_id)?.name.trim() || seat.account_id,
@@ -1544,16 +1705,27 @@ function confirmTopicDeleteDialog(): void {
  *
  * The seats are re-read either way. Sessions running in the topic were ended by
  * the delete, and the panel is drawn from a copy that does not know it yet.
+ *
+ * The topic's terminals go with it. Their sessions were ended by the delete, and
+ * a terminal filed under a topic that no longer exists is one no list row and
+ * no tab could ever lead back to (#141).
  */
 async function deleteTopic(topic: Topic): Promise<void> {
   try {
     const moved = await invoke<TopicRef | null>("room_delete_topic", {
       topicId: topic.topic_id,
     });
+    for (const view of [...views.values()]) {
+      if (view.topicId === topic.topic_id) discardView(view);
+    }
     if (moved) {
-      currentTopic = moved;
+      await enterTopic(moved);
       drawTopic([]);
     }
+    // After the move, which records what the topic being left was showing.
+    rosters.delete(topic.topic_id);
+    awaiting.delete(topic.topic_id);
+    shownByTopic.delete(topic.topic_id);
     renderTopics();
     status(`トピック「${topicName(topic)}」を削除しました。`);
   } catch (err) {
@@ -1568,12 +1740,14 @@ async function deleteTopic(topic: Topic): Promise<void> {
  * The boundary is drawn by hand and by nothing else. Starting the app opens one
  * too, but the two are independent — one run may hold several topics, and one
  * topic may span several runs (#115, decision 1).
+ *
+ * The topic being left keeps running (#141, decision 2): its sessions, its
+ * terminals and its room all stay, and it is reached again from the list.
  */
 async function startNewTopic(): Promise<void> {
   try {
-    currentTopic = await invoke<TopicRef>("room_new_topic");
+    await enterTopic(await invoke<TopicRef>("room_new_topic"));
     drawTopic([]);
-    renderTopics();
     status("新しいトピックを始めました。");
   } catch (err) {
     status(`新しいトピックを始められませんでした: ${err}`, "error");
@@ -1620,6 +1794,9 @@ function drawMissed(missed: MissedPost[]): number {
   for (const one of missed) {
     if (drawnIds.has(one.message_id)) continue;
     appendMessage({
+      // Drawn into the topic on the glass, which is the one the refused post was
+      // written in (`send` checks that before calling this).
+      topic_id: shownTopicId(),
       message_id: one.message_id,
       speaker: one.speaker,
       hue: one.hue,
@@ -1686,7 +1863,7 @@ function members(): Member[] {
     // that launches it (`RoomSeats`), and this list is not the place to enforce
     // that: something joining from elsewhere could carry the same id, and
     // dropping the second one would hide a participant who is genuinely there.
-    const matches = participants.filter((one) => one.account === account.id);
+    const matches = shownRoster().filter((one) => one.account === account.id);
     for (const participant of matches) {
       placed.add(participant.id);
       rows.push({ account, participant });
@@ -1694,7 +1871,7 @@ function members(): Member[] {
     if (!matches.length) rows.push({ account, participant: null });
   }
 
-  for (const participant of participants) {
+  for (const participant of shownRoster()) {
     if (!placed.has(participant.id)) rows.push({ account: null, participant });
   }
   return rows;
@@ -1773,13 +1950,22 @@ function stopOutput(view: SessionView): void {
  * asked before it was even running.
  */
 function trackAddress(message: RoomMessage): void {
-  let moved = awaiting.delete(message.speaker);
+  // In the topic it was said in. A name asked in one topic is not being waited
+  // on in another, where someone else — or the same account's other session —
+  // answers to it (#141).
+  let waiting = awaiting.get(message.topic_id);
+  if (!waiting) {
+    waiting = new Set<string>();
+    awaiting.set(message.topic_id, waiting);
+  }
+  let moved = waiting.delete(message.speaker);
   const to = message.to;
-  if (to !== null && !awaiting.has(to) && participants.some((one) => one.name === to && !one.own)) {
-    awaiting.add(to);
+  const present = rosters.get(message.topic_id) ?? [];
+  if (to !== null && !waiting.has(to) && present.some((one) => one.name === to && !one.own)) {
+    waiting.add(to);
     moved = true;
   }
-  if (moved) renderPanel();
+  if (moved && message.topic_id === shownTopicId()) renderPanel();
 }
 
 /**
@@ -1789,10 +1975,14 @@ function trackAddress(message: RoomMessage): void {
  * session that exits with a question outstanding leaves the room, and this is
  * what takes its mark with it.
  */
-function pruneAwaiting(): void {
-  const present = new Set(participants.filter((one) => !one.own).map((one) => one.name));
-  for (const name of awaiting) {
-    if (!present.has(name)) awaiting.delete(name);
+function pruneAwaiting(topicId: string): void {
+  const waiting = awaiting.get(topicId);
+  if (!waiting) return;
+  const present = new Set(
+    (rosters.get(topicId) ?? []).filter((one) => !one.own).map((one) => one.name),
+  );
+  for (const name of waiting) {
+    if (!present.has(name)) waiting.delete(name);
   }
 }
 
@@ -1817,7 +2007,7 @@ function pruneAwaiting(): void {
  */
 function activityNote(name: string, view: SessionView | undefined): string {
   if (!view || view.ended !== null || !view.outputting) return "";
-  return awaiting.has(name) ? "考え中…" : "出力中";
+  return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
 }
 
 /**
@@ -1837,7 +2027,9 @@ function memberRow(row: Member): HTMLLIElement {
   // From the room, decided on the connection. A name test here would mark every
   // participant answering to this screen's name as oneself (#40).
   const own = row.participant?.own ?? false;
-  const view = row.account ? views.get(row.account.id) : undefined;
+  // This topic's terminal for the account. The same account may be running in
+  // another topic too, and that session is that topic's row (#141).
+  const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
 
   const entry = document.createElement("li");
   entry.className = "member";
@@ -1856,7 +2048,9 @@ function memberRow(row: Member): HTMLLIElement {
   // and its pty id arrives with the session, so this pair is exactly that
   // window (`startSession`).
   const launching = view != null && view.ended === null && view.ptyId === "";
-  const failure = row.account ? launchFailures.get(row.account.id) : undefined;
+  const failure = row.account
+    ? launchFailures.get(seatKey(shownTopicId(), row.account.id))
+    : undefined;
 
   // What this line says about itself beyond the name. Someone present and not
   // oneself says what they are doing, when this screen can observe it, and
@@ -2082,7 +2276,10 @@ function terminalTab(view: SessionView): HTMLElement {
  */
 function renderTerminalTabs(): void {
   tabsEl.replaceChildren();
-  for (const view of views.values()) tabsEl.appendChild(terminalTab(view));
+  // The topic on the glass only. The others' terminals are open and hidden, and
+  // a tab for one would switch the pane to a session of a conversation that is
+  // not the one being read (#141).
+  for (const view of topicViews()) tabsEl.appendChild(terminalTab(view));
 }
 
 /**
@@ -2099,10 +2296,10 @@ function renderTerminalTabs(): void {
  * answer too, and `showView(null)` is it.
  */
 function closeView(view: SessionView): void {
-  const wasShown = shownAccount === view.accountId;
+  const wasShown = view === shownView();
   discardView(view);
   if (wasShown) {
-    showView([...views.keys()].pop() ?? null);
+    showView(topicViews().pop()?.accountId ?? null);
     return;
   }
   renderPanel();
@@ -2171,19 +2368,21 @@ function renderPanel(): void {
  * second assignment to `participants` elsewhere would be a roster that arrived
  * without the two readings below happening to it.
  */
-function renderRoster(joined: Participant[]): void {
-  participants = joined;
+function renderRoster(topicId: string, joined: Participant[]): void {
+  rosters.set(topicId, joined);
   // Against the roster that just arrived, before it is drawn: who the room is
   // waiting on is only meaningful about someone who is in it (#82).
-  pruneAwaiting();
+  pruneAwaiting(topicId);
   // The other reading of the same roster: which sessions have arrived at all.
   // Kept on the view rather than asked at the exit, because by then the
   // connection is gone and the roster no longer remembers it was there (#127).
+  // This room's terminals only: the same account arriving in another topic is
+  // another session arriving (#141).
   for (const view of views.values()) {
-    if (view.seenInRoom) continue;
+    if (view.seenInRoom || view.topicId !== topicId) continue;
     if (joined.some((one) => one.account === view.accountId)) view.seenInRoom = true;
   }
-  renderPanel();
+  if (topicId === shownTopicId()) renderPanel();
 }
 
 /**
@@ -2197,7 +2396,7 @@ function renderRoster(joined: Participant[]): void {
 async function refreshSeats(): Promise<void> {
   try {
     const held = await invoke<SeatedAccount[]>("seated_accounts");
-    seated = new Map(held.map((seat) => [seat.account_id, seat]));
+    seated = new Map(held.map((seat) => [seatKey(seat.topic_id, seat.account_id), seat]));
   } catch {
     // The panel keeps the last answer rather than declaring everyone offline
     // on a failed read. It still redraws: what failed is this one value, and
@@ -2205,6 +2404,9 @@ async function refreshSeats(): Promise<void> {
   }
   await adoptSeats();
   renderPanel();
+  // The list marks the topics holding a seat, and this is the answer that
+  // changed (#141, AI 判断5).
+  renderTopics();
 }
 
 /**
@@ -2233,13 +2435,13 @@ async function adoptSeats(): Promise<void> {
     // No session yet: the seat is claimed and the launch is still in flight.
     // Nothing to subscribe to, and it is this screen's own launch in every case
     // but a reload landing inside that window.
-    if (!seat.session || views.has(seat.account_id)) continue;
+    if (!seat.session || views.has(seatKey(seat.topic_id, seat.account_id))) continue;
     const account = accounts.find((one) => one.id === seat.account_id);
     // An account this screen does not have is one it cannot draw a row for, and
     // the row is the only way that terminal could be reached. The app refuses
     // to delete a seated account, so this is a config edited from outside.
     if (!account) continue;
-    const view = openView(account, seat.session);
+    const view = openView(account, seat.topic_id, seat.session);
     view.term.writeln(RESUMED_NOTICE);
     await attachSession(view, seat.session.pty_id);
     adopted.push(viewName(view));
@@ -2353,7 +2555,7 @@ function renderAddressees(): void {
   // answering to one name are one option — listing it twice would offer a
   // choice between two identical things that address the same pair anyway.
   const addressable = [
-    ...new Set(participants.filter((one) => !one.own).map((one) => one.name)),
+    ...new Set(shownRoster().filter((one) => !one.own).map((one) => one.name)),
   ];
 
   // Left alone when the roster has not moved. The panel is now redrawn whenever
@@ -2393,6 +2595,10 @@ async function send(): Promise<void> {
   if (!content) return;
 
   const speaker = localName();
+  // The topic on the glass as this was typed, which is the conversation the
+  // watermark below belongs to. Read now, not after the round trip: the post is
+  // said where it was written (#141).
+  const topicId = shownTopicId();
   // Empty means the room as a whole. The app still delivers to everyone; the
   // addressee is judgment material for the participants, not a delivery filter.
   const to = toEl.value || null;
@@ -2402,6 +2608,7 @@ async function send(): Promise<void> {
   inputEl.value = "";
   try {
     const outcome = await invoke<PostOutcome>("room_post", {
+      topicId,
       speaker,
       content,
       to,
@@ -2413,7 +2620,9 @@ async function send(): Promise<void> {
       // unchanged, except that what it says to read is now there to read. The
       // reading is left where it belongs; only the means of doing it is added.
       inputEl.value = content;
-      const drew = drawMissed(outcome.missed);
+      // Drawn only into the conversation they belong to. A topic opened during
+      // the round trip is another conversation, and it has drawn its own log.
+      const drew = topicId === shownTopicId() ? drawMissed(outcome.missed) : 0;
       const speakers = [...new Set(outcome.missed.map((one) => one.speaker))];
       // What was drawn, and nothing about how much arrived. Beyond the floor's
       // 512 the room cannot enumerate what it dropped and this screen cannot
@@ -2479,10 +2688,11 @@ function renderSessionFacts(): void {
  * can resume into. Redrawn whenever the index is, since a launch records its id
  * after the pane already exists.
  *
- * The topic is the pane's own — the one its launch went into — and not the
- * room's current one: the room moves between topics while a session runs
- * (#119, decision 4). Before the launch answers there is no topic yet, and the
- * row reads — like the other values that wait on the launch.
+ * The topic is the pane's own — the one its launch went into. Every pane on the
+ * glass belongs to the topic on the glass (#141), and reading the pane's own is
+ * what keeps that true by construction rather than by agreement. Before the
+ * launch answers there is no record to read yet, and the row reads — like the
+ * other values that wait on the launch.
  *
  * なし is a value, not a blank: an account whose launch line declares no id, or
  * a record that is gone, leaves nothing to resume by hand, and saying so is
@@ -2492,7 +2702,7 @@ function renderSessionId(): void {
   const view = shownView();
   let id: string | null = null;
   let known = false;
-  if (view && view.topicId !== "") {
+  if (view && view.ptyId !== "") {
     known = true;
     id = topics.find((topic) => topic.topic_id === view.topicId)?.sessions[view.accountId] ?? null;
   }
@@ -2544,13 +2754,13 @@ function endButton(view: SessionView, name: string): HTMLButtonElement {
   end.textContent = "❌";
   end.title = `${name} のセッションを終了する`;
   end.setAttribute("aria-label", `${name} のセッションを終了する`);
-  end.addEventListener("click", () => openEndDialog(view.accountId, name));
+  end.addEventListener("click", () => openEndDialog(seatKey(view.topicId, view.accountId), name));
   return end;
 }
 
 /** Ask whether one account's session is to end. Nothing ends until answered. */
-function openEndDialog(accountId: string, name: string): void {
-  endingAccount = accountId;
+function openEndDialog(key: string, name: string): void {
+  endingAccount = key;
   endMessageEl.textContent = `${name} のセッションを終了します。よろしいですか？`;
   endDialogEl.showModal();
 }
@@ -2563,12 +2773,12 @@ function closeEndDialog(): void {
 
 /** The answer that acts. */
 function confirmEndDialog(): void {
-  const accountId = endingAccount;
+  const key = endingAccount;
   closeEndDialog();
-  if (accountId === null) return;
+  if (key === null) return;
   // Resolved now, not when the dialog opened: the session may have ended on its
   // own while the question stood, and there is then nothing left to end.
-  const view = views.get(accountId);
+  const view = views.get(key);
   if (view) void endSession(view);
 }
 
@@ -2624,10 +2834,17 @@ async function runningSeatNames(): Promise<string[]> {
   // app refuses to delete a seated account, so a seat with no account is a
   // config edited from outside — it is still running, so it is still counted,
   // and the id is what the app can be asked about it under.
-  return held.map(
-    (seat) =>
-      accounts.find((one) => one.id === seat.account_id)?.name.trim() || seat.account_id,
-  );
+  //
+  // Once per account, however many topics it is running in (#141): the question
+  // is who is running, and a name said twice reads as two people.
+  return [
+    ...new Set(
+      held.map(
+        (seat) =>
+          accounts.find((one) => one.id === seat.account_id)?.name.trim() || seat.account_id,
+      ),
+    ),
+  ];
 }
 
 /**
@@ -2722,13 +2939,18 @@ async function onQuitRequested(event: CloseRequestedEvent): Promise<void> {
  * being made for it rather than ahead of it — a session picked up again after
  * this screen was reloaded (#84). Its facts then come from the app's record of
  * the launch instead of from the account, which may have been edited since.
+ *
+ * `topicId` is the topic the terminal is filed under (#141). It is put on the
+ * glass only when that topic is; a session picked up in another topic after a
+ * reload is opened hidden, where coming back to its topic will find it.
  */
-function openView(account: Account, running?: RunningSession): SessionView {
-  // A relaunch replaces the previous run's pane. Two panes for one account
-  // would be two rows under one name, and the row is what the operations hang
-  // on; the scrollback that goes with it is the one the person just decided to
-  // start over from.
-  discardView(views.get(account.id));
+function openView(account: Account, topicId: string, running?: RunningSession): SessionView {
+  const key = seatKey(topicId, account.id);
+  // A relaunch replaces the previous run's pane. Two panes for one account in
+  // one topic would be two rows under one name, and the row is what the
+  // operations hang on; the scrollback that goes with it is the one the person
+  // just decided to start over from.
+  discardView(views.get(key));
 
   const host = document.createElement("div");
   host.className = "term";
@@ -2750,7 +2972,7 @@ function openView(account: Account, running?: RunningSession): SessionView {
     command: running?.command ?? account.command,
     cwd: running?.cwd ?? account.cwd,
     startedAt: running?.started_at ?? "",
-    topicId: running?.topic_id ?? "",
+    topicId,
     resumedFrom: running?.resumed_from ?? null,
     term,
     fit,
@@ -2801,8 +3023,9 @@ function openView(account: Account, running?: RunningSession): SessionView {
     return false;
   });
 
-  views.set(account.id, view);
-  showView(account.id);
+  views.set(key, view);
+  if (topicId === shownTopicId()) showView(account.id);
+  else host.hidden = true;
   return view;
 }
 
@@ -2814,8 +3037,9 @@ function discardView(view: SessionView | undefined): void {
   stopOutput(view);
   view.term.dispose();
   view.host.remove();
-  views.delete(view.accountId);
-  if (shownAccount === view.accountId) shownAccount = null;
+  views.delete(seatKey(view.topicId, view.accountId));
+  if (view.topicId === shownTopicId() && shownAccount === view.accountId) shownAccount = null;
+  if (shownByTopic.get(view.topicId) === view.accountId) shownByTopic.delete(view.topicId);
 }
 
 /**
@@ -2835,8 +3059,9 @@ function discardView(view: SessionView | undefined): void {
  */
 function showView(accountId: string | null): void {
   shownAccount = accountId;
+  const topicId = shownTopicId();
   for (const view of views.values()) {
-    view.host.hidden = view.accountId !== accountId;
+    view.host.hidden = view.topicId !== topicId || view.accountId !== accountId;
   }
   renderPanel();
   renderSessionFacts();
@@ -2894,7 +3119,7 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
       // panel says 未起動 again and the account can be started once more.
       void refreshSeats();
       renderPanel();
-      if (shownAccount === view.accountId) {
+      if (view === shownView()) {
         renderSessionFacts();
         revealDiagnostics();
       }
@@ -2945,7 +3170,7 @@ async function dropDeadResume(
   detail: string,
 ): Promise<void> {
   const dead = view.resumedFrom;
-  if (dead === null || view.seenInRoom || view.topicId === "" || code === null) return;
+  if (dead === null || view.seenInRoom || code === null) return;
   const name = viewName(view);
   try {
     const dropped = await invoke<boolean>("room_forget_session", {
@@ -2976,10 +3201,11 @@ async function dropDeadResume(
 async function followSession(view: SessionView, started: StartedSession): Promise<void> {
   view.ptyId = started.pty_id;
   view.startedAt = started.started_at;
-  // Which line ran and where it ran, both from the launch's own answer. They
-  // are what the exit reads, and the exit can arrive as soon as the listener
-  // below is attached, so they are set before it (#127).
-  view.topicId = started.topic_id;
+  // Which line ran, from the launch's own answer. It is what the exit reads,
+  // and the exit can arrive as soon as the listener below is attached, so it is
+  // set before it (#127). Where it ran is not set here: the terminal was filed
+  // under its topic when ▶ was pressed, and the launch went into the topic it
+  // was told (#141).
   view.resumedFrom = started.resumed_from;
   renderPanel();
   renderSessionFacts();
@@ -2989,7 +3215,7 @@ async function followSession(view: SessionView, started: StartedSession): Promis
   // The first thing a session shows is a question, so the pane that carries
   // the answer opens with it rather than waiting for a failure.
   revealDiagnostics();
-  if (shownAccount === view.accountId) view.term.focus();
+  if (view === shownView()) view.term.focus();
 }
 
 /**
@@ -3019,10 +3245,15 @@ async function startSession(account: Account): Promise<void> {
   // 開始 with nothing to end beside it. Asking again resolves that seat, and
   // resolving it is what puts 終了 on the row (`adoptSeats`), so the refusal
   // below now names something the person can act on (#84).
-  if (seated.has(account.id)) await refreshSeats();
-  if (seated.has(account.id)) {
+  //
+  // In this topic. The same account running in another topic is the shape
+  // #141 asks for, and is not refused.
+  const topicId = shownTopicId();
+  const key = seatKey(topicId, account.id);
+  if (seated.has(key)) await refreshSeats();
+  if (seated.has(key)) {
     status(
-      `「${name}」は既にこの部屋に居ます。一つのアカウントが持てる席は一つの部屋につき一つです。起動中のセッションを終了してから、もう一度起動してください。`,
+      `「${name}」は既にこのトピックに居ます。一つのアカウントが持てる席は一つのトピックにつき一つです。このトピックで起動中のセッションを終了してから、もう一度起動してください。`,
       "error",
     );
     return;
@@ -3051,16 +3282,17 @@ async function startSession(account: Account): Promise<void> {
   revealDiagnostics();
   // Cleared as the attempt starts rather than as it fails: 起動失敗 stands on
   // the row until this account is asked again, and this is that moment.
-  launchFailures.delete(account.id);
+  launchFailures.delete(key);
   // From here the row carries the launch. The view exists and has no pty id
   // yet, which is what puts its 開始 into 起動中; `openView` redraws through
   // `showView`.
-  const view = openView(account);
+  const view = openView(account, topicId);
 
   status(`${name} を起動しています…`);
   try {
     const started = await invoke<StartedSession>("start_session", {
       account,
+      topicId,
       cols: view.term.cols,
       rows: view.term.rows,
     });
@@ -3088,9 +3320,18 @@ async function startSession(account: Account): Promise<void> {
     // otherwise leave the row reading 未起動 as though it had never been
     // pressed. The row says 起動失敗 and holds the reason; the status line has
     // it in full.
-    launchFailures.set(account.id, String(err));
+    launchFailures.set(key, String(err));
     discardView(view);
-    showView(previous !== null && views.has(previous) ? previous : ([...views.keys()].pop() ?? null));
+    // Only when the topic it was pressed in is still on the glass. Otherwise
+    // the pane was hidden with its topic, and the topic on the glass has its
+    // own pane showing.
+    if (topicId === shownTopicId()) {
+      showView(
+        previous !== null && views.has(seatKey(topicId, previous))
+          ? previous
+          : (topicViews().pop()?.accountId ?? null),
+      );
+    }
     status(`${name} を起動できませんでした: ${err}`, "error");
     // A launch that failed after the app claimed the seat releases it there;
     // this keeps the panel in step with that.
@@ -3188,6 +3429,9 @@ async function refreshDialogPreview(): Promise<void> {
     const merged = await invoke<string[]>("preview_launch_args", {
       args: parsed,
       accountId: id,
+      // The topic on the glass, which is where ▶ would launch it: the entry is
+      // this account's in this topic (#141, decision 4).
+      topicId: shownTopicId() || null,
       // The field rather than the draft: the preview answers for what the form
       // holds now, and the draft is only written at 決定.
       character: dialogCharacterEl.value.trim() || null,
@@ -3277,7 +3521,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // A running account cannot change kind. Its session is in the room under this
   // account, and turning it into a person would drop the working directory and
   // options that session was launched from while it is still running.
-  if (target && kind !== target.kind && seated.has(target.id)) {
+  if (target && kind !== target.kind && seatedAnywhere(target.id)) {
     dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
     return false;
   }
@@ -3366,7 +3610,7 @@ function deleteFromDialog(): void {
   const account = editing;
   if (!account) return;
 
-  if (seated.has(account.id)) {
+  if (seatedAnywhere(account.id)) {
     dialogError(`「${account.name}」は起動中です。セッションを終了してから削除してください。`);
     disarmDelete();
     return;
@@ -3387,7 +3631,9 @@ function deleteFromDialog(): void {
   accounts = accounts.filter((candidate) => candidate.id !== account.id);
   // Its terminal goes with it. An account that no longer exists cannot be named
   // in the panel, and the row is the only way that pane could be reached.
-  discardView(views.get(account.id));
+  for (const view of [...views.values()]) {
+    if (view.accountId === account.id) discardView(view);
+  }
   saveConfig();
   closeAccountDialog();
   renderPanel();
@@ -3529,13 +3775,17 @@ async function main(): Promise<void> {
   });
 
   await listen<RoomMessage>("room-message", (event) => {
-    appendMessage(event.payload);
+    // Drawn only into the topic it was said in. The others' posts are in their
+    // own logs, and opening one of them reads them from there (#141).
+    if (event.payload.topic_id === shownTopicId()) appendMessage(event.payload);
     // The same post read twice: once as a line in the conversation, once for
     // who the room is now waiting on. The second reading is what puts 考え中…
     // on a row without anything having to read the CLI's output (#82).
     trackAddress(event.payload);
   });
-  await listen<Participant[]>("room-participants", (event) => renderRoster(event.payload));
+  await listen<Roster>("room-participants", (event) =>
+    renderRoster(event.payload.topic_id, event.payload.participants),
+  );
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and
   // the first is how a topic gets the name the list shows it under (#115).
@@ -3675,6 +3925,18 @@ async function main(): Promise<void> {
   } catch (err) {
     topicsFailed(String(err));
   }
+  // The open topic's conversation, which after a reload is one in progress: the
+  // sessions in it are picked up again below, and a room drawn empty over them
+  // would be a conversation the screen had forgotten while its speakers had
+  // not (#141). A topic nothing was said in reads back as nothing. Apart from
+  // the list's try, because a log that fails to read is not a list that did.
+  if (currentTopic) {
+    try {
+      drawTopic(await invoke<LoggedPost[]>("room_topic_log", { topicId: currentTopic.topic_id }));
+    } catch (err) {
+      status(`トピックの発言を読めませんでした: ${err}`, "error");
+    }
+  }
 
   // Before the room, and outside its try. A session running under a seat this
   // screen has forgotten is reachable again from the seats alone (`adoptSeats`),
@@ -3689,7 +3951,10 @@ async function main(): Promise<void> {
     // this first roster would be the one arrival the readings in `renderRoster`
     // never see — and a session adopted just above (`refreshSeats`) is exactly
     // what is on it (#127).
-    renderRoster(await invoke<Participant[]>("room_participants"));
+    renderRoster(
+      shownTopicId(),
+      await invoke<Participant[]>("room_participants", { topicId: shownTopicId() }),
+    );
     const port = await invoke<number | null>("room_port");
     if (port !== null) renderSocket(port);
     renderPanel();

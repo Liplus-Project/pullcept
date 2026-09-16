@@ -462,7 +462,10 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // (#59). It rides on `hello` and decides nothing: identity in the room is the
   // connection, and this frame cannot set that (#39 / #40).
   assert.equal(hello.account_id, TEST_ACCOUNT);
-  assert.equal(hello.protocol, 6);
+  // The room it was started into. One socket serves every topic open in the
+  // app, so this is what puts the connection in one of them (#141).
+  assert.equal(hello.room, "test-room");
+  assert.equal(hello.protocol, 7);
 
   roomSocket.send(
     JSON.stringify({
