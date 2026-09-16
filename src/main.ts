@@ -13,7 +13,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -104,8 +104,9 @@ interface Topic {
   title: string;
   created_at: string;
   /** Which session each account was in while this was open, by account id.
-   *  Read by the launch, never by the screen — it is here because the index
-   *  entry carries it, not because anything on this side decides on it. */
+   *  The launch decides on it. The screen only shows it — the セッション ID
+   *  row reads the shown pane's account here, so the value on screen is the
+   *  record's and nothing on this side decides on it (#139). */
   sessions: Record<string, string>;
 }
 
@@ -417,6 +418,8 @@ const commandEl = document.getElementById("session-command") as HTMLElement;
 const dirEl = document.getElementById("session-dir") as HTMLElement;
 const startedEl = document.getElementById("session-started") as HTMLElement;
 const windowEl = document.getElementById("session-window") as HTMLElement;
+const sessionIdEl = document.getElementById("session-id") as HTMLElement;
+const sessionIdCopyEl = document.getElementById("session-id-copy") as HTMLButtonElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
 const tabsEl = document.getElementById("terminal-tabs") as HTMLElement;
 const terminalFontSizeEl = document.getElementById("terminal-font-size") as HTMLSelectElement;
@@ -2451,6 +2454,7 @@ function renderSessionFacts(): void {
     dirEl.title = "";
     startedEl.textContent = "—";
     windowEl.textContent = "—";
+    renderSessionId();
     return;
   }
   const name = viewName(view);
@@ -2462,6 +2466,57 @@ function renderSessionFacts(): void {
   dirEl.title = view.cwd ?? "";
   startedEl.textContent = view.startedAt === "" ? "—" : shortTime(view.startedAt);
   showWindowSize();
+  renderSessionId();
+}
+
+/**
+ * The session id the topic index holds for the shown pane's account.
+ *
+ * Read from the index and not from the launch's answer (#139, decision 1). The
+ * record is what outlives the app, so reopening it and opening the topic shows
+ * the same value; and it is what `forget_session` takes away, so a record that
+ * went takes the value off the screen with it rather than leaving an id nothing
+ * can resume into. Redrawn whenever the index is, since a launch records its id
+ * after the pane already exists.
+ *
+ * The topic is the pane's own — the one its launch went into — and not the
+ * room's current one: the room moves between topics while a session runs
+ * (#119, decision 4). Before the launch answers there is no topic yet, and the
+ * row reads — like the other values that wait on the launch.
+ *
+ * なし is a value, not a blank: an account whose launch line declares no id, or
+ * a record that is gone, leaves nothing to resume by hand, and saying so is
+ * different from not yet knowing (#139, decision 2).
+ */
+function renderSessionId(): void {
+  const view = shownView();
+  let id: string | null = null;
+  let known = false;
+  if (view && view.topicId !== "") {
+    known = true;
+    id = topics.find((topic) => topic.topic_id === view.topicId)?.sessions[view.accountId] ?? null;
+  }
+  sessionIdEl.textContent = id ?? (known ? "なし" : "—");
+  sessionIdEl.title = id ?? "";
+  sessionIdCopyEl.hidden = id === null;
+  sessionIdCopyEl.dataset.id = id ?? "";
+}
+
+/**
+ * Copy the shown session id, for a `--resume` typed by hand (#139, decision 3).
+ *
+ * The value copied is the one on screen, not a re-read: what the person saw is
+ * what they get.
+ */
+async function copySessionId(): Promise<void> {
+  const id = sessionIdCopyEl.dataset.id ?? "";
+  if (id === "") return;
+  try {
+    await writeText(id);
+    status(`セッション ID をコピーしました: ${id}`);
+  } catch (err) {
+    status(`セッション ID をコピーできませんでした: ${err}`, "error");
+  }
 }
 
 /**
@@ -3487,6 +3542,7 @@ async function main(): Promise<void> {
   await listen<Topic[]>("room-topics", (event) => {
     topics = event.payload;
     renderTopics();
+    renderSessionId();
   });
   // The room went on without the log. Saying so is the whole of what this does
   // — a log that had quietly stopped recording would still look like a log, and
@@ -3523,6 +3579,7 @@ async function main(): Promise<void> {
   // Nothing here writes to an account. Every field edits the form's own draft,
   // and only 決定 puts that draft into the list.
   accountNewEl.addEventListener("click", () => openAccountDialog(null));
+  sessionIdCopyEl.addEventListener("click", () => void copySessionId());
   dialogKindEl.addEventListener("change", () => showDialogKind());
   dialogOptionsEl.addEventListener("input", () => void refreshDialogPreview());
   // The character ends up in the line that runs, so it redraws the preview for
@@ -3614,6 +3671,7 @@ async function main(): Promise<void> {
     topics = await invoke<Topic[]>("room_topics");
     currentTopic = await invoke<TopicRef>("room_current_topic");
     renderTopics();
+    renderSessionId();
   } catch (err) {
     topicsFailed(String(err));
   }
