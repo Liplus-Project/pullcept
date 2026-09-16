@@ -274,6 +274,16 @@
             <dd id="socket-state">確認中</dd>
             <dt>セッション</dt>
             <dd id="session-state">未起動</dd>
+            <!-- The id the topic index holds for this account in this pane's
+                 topic, so a session closed where the app cannot see it can be
+                 resumed by hand. Read from the record rather than from the
+                 launch, so it is the same value after the app is reopened and
+                 is gone once the record is (#139). -->
+            <dt>セッション ID</dt>
+            <dd id="session-id-row" class="session-id">
+              <span id="session-id">—</span>
+              <button id="session-id-copy" type="button" title="セッション ID をコピー" hidden>コピー</button>
+            </dd>
             <dt>接続方法</dt>
             <dd id="session-transport">—</dd>
             <dt>起動コマンド</dt>

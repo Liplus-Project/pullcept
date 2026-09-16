@@ -1044,6 +1044,30 @@ body {
   text-align: left;
 }
 
+/* A uuid is wider than the value column, and it is copied rather than read, so
+   it takes the whole width like a path and carries its copy control beside it
+   (#139). */
+#participants dd.session-id {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+#participants dd.session-id span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#participants dd.session-id button {
+  flex: none;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+}
+
 #participants dd[data-kind="ok"] {
   color: var(--accent);
 }
