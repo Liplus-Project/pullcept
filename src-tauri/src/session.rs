@@ -710,6 +710,11 @@ pub fn start_session(
     // as the sibling's sidecar started anyway (#103). Refused rather than
     // stripped, for the reason the flag guard above is: a launch that quietly
     // dropped half of what was asked for looks like it worked.
+    //
+    // The approval of this launch's own server rides in `--settings` too
+    // (#143), and does not widen this condition: a line with its own
+    // `--settings` and nothing else to declare is left untouched by
+    // `launch_args` rather than refused, so a line that ran before still runs.
     if (character.is_some() || !others.is_empty()) && declares_settings(&launch_line.args) {
         // Two refusals rather than one sentence with a hole in it: what the
         // person can do about it differs. A character is theirs to clear; a

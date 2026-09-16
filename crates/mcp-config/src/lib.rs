@@ -333,8 +333,8 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 }
 
 /// The launch arguments carrying what this session declares about itself,
-/// given its own: the character it speaks as, and the room registrations it
-/// must not start.
+/// given its own: the character it speaks as, the room registration it is,
+/// and the room registrations it must not start.
 ///
 /// The character is the `name:` of an output style in the working directory's
 /// `.claude/output-styles/`, and it is selected at launch rather than written
@@ -348,6 +348,23 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// directory's own default stays as it is and is simply not what this launch
 /// reads.
 ///
+/// `own_server` is named in `enabledMcpjsonServers`, which is the approval key
+/// (#143). The registration key is per room (`server_name_for`), so every topic
+/// is a server name the CLI has never been asked about, and the CLI holds an
+/// unapproved `.mcp.json` server at a "New MCP server found" prompt before the
+/// session starts. A launch line carrying `--dangerously-skip-permissions`
+/// passes that prompt only because the CLI approves pending project servers in
+/// that mode when the user settings skip its warning, and a resume line the
+/// person wrote without the flag does not — which is why a topic's first launch
+/// went straight in and its resume stopped. Approving on the line rather than
+/// relying on the mode is what makes both lines one state. It approves for this
+/// launch only and writes nothing: the CLI persists an approval into the
+/// directory's `settings.local.json`, and one key per topic there is the
+/// growth the shared directory is kept free of. It does not override a
+/// rejection: a "Continue without" answered earlier is persisted into
+/// `disabledMcpjsonServers` and wins over any approval (the CLI checks the
+/// rejection first), and it is the person's file to clear, not this app's.
+///
 /// `disabled` names the sibling accounts' entries (`other_room_servers`). A
 /// shared `.mcp.json` holds one entry per account by design (#40), and the CLI
 /// starts every enabled server it finds there — so a session in a shared
@@ -358,24 +375,29 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// only this account's own server there leaves the siblings starting anyway
 /// (measured, 2026-08-26).
 ///
-/// A launch with no character and nothing to stop is left untouched and takes
-/// the directory's own default. That is now the condition — nothing to stop —
-/// rather than "declares no character": a second registration in the directory
-/// puts `--settings` on the line whether a character was declared or not.
+/// Every launch now carries `--settings`, since there is always an own server to
+/// approve — with one exception. Options that pass a `--settings` of their own,
+/// with no character and nothing to stop, are left untouched: the launch
+/// refuses two `--settings` only when a character or a sibling needs the flag,
+/// and the approval is not allowed to widen that refusal onto a line that ran
+/// before it. Such a line approves through its own settings, or answers the
+/// prompt.
 pub fn settings_launch_args(
     base: &[String],
     character: Option<&str>,
+    own_server: &str,
     disabled: &[String],
 ) -> Vec<String> {
     let mut args = base.to_vec();
     let character = declared_character(character);
-    if character.is_none() && disabled.is_empty() {
+    if character.is_none() && disabled.is_empty() && declares_settings(base) {
         return args;
     }
     let mut settings = Map::new();
     if let Some(name) = character {
         settings.insert("outputStyle".into(), json!(name));
     }
+    settings.insert("enabledMcpjsonServers".into(), json!([own_server]));
     if !disabled.is_empty() {
         settings.insert("disabledMcpjsonServers".into(), json!(disabled));
     }
@@ -397,7 +419,12 @@ pub fn launch_args(
     character: Option<&str>,
     disabled: &[String],
 ) -> Vec<String> {
-    settings_launch_args(&channel_launch_args(base, server_name), character, disabled)
+    settings_launch_args(
+        &channel_launch_args(base, server_name),
+        character,
+        server_name,
+        disabled,
+    )
 }
 
 /// Split a launch-options string the way a shell would, minus the parts a
@@ -1058,17 +1085,18 @@ mod tests {
         assert_eq!(channel_launch_args(&base, &room), base);
     }
 
+    /// This launch's own registration, as the settings tests name it.
+    fn own() -> String {
+        server_name_for(LIN, ROOM)
+    }
+
     #[test]
     fn a_declared_character_rides_in_settings_json() {
-        let args = settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &[]);
-        assert_eq!(
-            args,
-            vec![
-                "--verbose".to_string(),
-                SETTINGS_FLAG.to_string(),
-                r#"{"outputStyle":"character_Lay"}"#.to_string(),
-            ]
-        );
+        let args =
+            settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &own(), &[]);
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "--verbose");
+        assert_eq!(args[1], SETTINGS_FLAG);
         // The value has to parse as JSON on the other side: it is handed to the
         // CLI inline rather than written to a file anyone could look at.
         let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
@@ -1079,20 +1107,53 @@ mod tests {
     fn a_character_with_a_quote_in_it_stays_one_json_string() {
         // Built rather than formatted, so a name that would otherwise close the
         // string early cannot make the value stop being JSON.
-        let args = settings_launch_args(&[], Some(r#"quote"style"#), &[]);
+        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[]);
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
     }
 
     #[test]
-    fn nothing_to_declare_means_the_line_is_left_alone() {
-        let base = vec!["--verbose".to_string()];
+    fn the_launch_approves_its_own_room_server() {
+        // The server name is per topic, so every topic is a name the CLI has
+        // never been asked about, and an unapproved one holds the session at a
+        // prompt before it starts. The first launch passed only because its
+        // line carried the bypass flag; a resume line without it stopped
+        // (#143). Approved on every line, so the two lines are one state.
+        let resume = split_launch_options("--resume 0f5a-uuid");
+        let line = launch_args(&resume, &own(), None, &[]);
+        let at = line
+            .iter()
+            .position(|arg| arg == SETTINGS_FLAG)
+            .expect("a line with nothing else to declare still carries settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
+        // Only the approval: an undeclared character is not an empty style,
+        // and nothing to stop is not an empty list.
+        assert_eq!(settled.as_object().expect("object").len(), 1);
+    }
+
+    #[test]
+    fn a_blank_character_is_not_an_empty_style() {
         // Absent and blank are one state: a cleared field must not launch
         // `{"outputStyle":""}`, which names no style at all.
-        assert_eq!(settings_launch_args(&base, None, &[]), base);
-        assert_eq!(settings_launch_args(&base, Some(""), &[]), base);
-        assert_eq!(settings_launch_args(&base, Some("   "), &[]), base);
+        for character in [None, Some(""), Some("   ")] {
+            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[]);
+            let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
+            assert!(settled.get("outputStyle").is_none(), "{character:?}");
+        }
         assert_eq!(declared_character(Some("  x  ")), Some("x"));
+    }
+
+    #[test]
+    fn a_line_with_its_own_settings_and_nothing_else_to_declare_is_left_alone() {
+        // The approval does not widen the two-`--settings` refusal: that stays
+        // where a character or a sibling needs the flag, so a line that ran
+        // before the approval was added runs the same after it.
+        let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
+        assert_eq!(settings_launch_args(&base, None, &own(), &[]), base);
+        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[]), base);
+        let written = vec!["--settings=C:/x/settings.json".to_string()];
+        assert_eq!(settings_launch_args(&written, None, &own(), &[]), written);
     }
 
     #[test]
@@ -1100,20 +1161,25 @@ mod tests {
         // The launch's own entry is not on the list: a session that disabled
         // its own room server would be a session with no room (#103).
         let lay = server_name_for(LAY, ROOM);
-        let args = settings_launch_args(&[], Some("character_Lin"), std::slice::from_ref(&lay));
+        let args =
+            settings_launch_args(&[], Some("character_Lin"), &own(), std::slice::from_ref(&lay));
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
+        assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
         assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
     }
 
     #[test]
     fn a_sibling_registration_puts_settings_on_a_line_with_no_character() {
-        // The pass-through condition moved: it is "nothing to stop", not
-        // "declares no character". An account with no character in a shared
-        // directory still has to stop the other account's sidecar (#103).
+        // An account with no character in a shared directory still has to stop
+        // the other account's sidecar (#103).
         let lay = server_name_for(LAY, ROOM);
-        let args =
-            settings_launch_args(&["--verbose".to_string()], None, std::slice::from_ref(&lay));
+        let args = settings_launch_args(
+            &["--verbose".to_string()],
+            None,
+            &own(),
+            std::slice::from_ref(&lay),
+        );
         assert_eq!(args[0], "--verbose");
         assert_eq!(args[1], SETTINGS_FLAG);
         let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
@@ -1216,19 +1282,20 @@ mod tests {
             &[],
         );
         assert_eq!(
-            line,
-            vec![
+            line[..4],
+            [
                 "--verbose".to_string(),
                 CHANNEL_FLAG.to_string(),
                 format!("server:{room}"),
                 SETTINGS_FLAG.to_string(),
-                r#"{"outputStyle":"character_Lin"}"#.to_string(),
             ]
         );
-        assert_eq!(
-            launch_args(&["--verbose".to_string()], &room, None, &[]),
-            channel_launch_args(&["--verbose".to_string()], &room)
-        );
+        assert_eq!(line.len(), 5);
+        let settled: Value = serde_json::from_str(&line[4]).expect("valid JSON");
+        assert_eq!(settled["outputStyle"], json!("character_Lin"));
+        // The approval rides with it, naming the server the channel flag names
+        // (#143): one fact in the `.mcp.json` key, the tag and the approval.
+        assert_eq!(settled["enabledMcpjsonServers"], json!([room]));
     }
 
     #[test]
@@ -1248,6 +1315,7 @@ mod tests {
         assert_eq!(line[1], format!("server:{room}"));
         assert_eq!(line[2], SETTINGS_FLAG);
         let settled: Value = serde_json::from_str(&line[3]).expect("valid JSON");
+        assert_eq!(settled["enabledMcpjsonServers"], json!([room]));
         assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
         assert_ne!(
             settled["disabledMcpjsonServers"][0],
