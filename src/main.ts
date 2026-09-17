@@ -179,6 +179,29 @@ interface LimitedSeat {
 }
 
 /**
+ * What one session says about itself, through its own status line (#155).
+ *
+ * Keyed on the seat the same way a limit is, and for the same reason: the JSON
+ * the CLI hands its status line names that CLI's session id, which is not what
+ * a terminal is keyed on here.
+ *
+ * Every value is nullable because every one of them is a field the CLI may not
+ * send — the rate limits are absent off a claude.ai plan and before the first
+ * API answer, the effort is absent on a model with no such parameter, and the
+ * context percentage is null early in a session. Null reaches the row as `—`,
+ * which is a different thing from `0%`.
+ */
+interface SessionStats {
+  topic_id: string;
+  account_id: string;
+  model: string | null;
+  effort: string | null;
+  five_hour: number | null;
+  seven_day: number | null;
+  context: number | null;
+}
+
+/**
  * What kind of participant an account is, declared when it is made.
  *
  * Never inferred from the connection: the room sees only what kind of
@@ -449,6 +472,14 @@ const commandEl = document.getElementById("session-command") as HTMLElement;
 const dirEl = document.getElementById("session-dir") as HTMLElement;
 const startedEl = document.getElementById("session-started") as HTMLElement;
 const windowEl = document.getElementById("session-window") as HTMLElement;
+// The five the session reports about itself (#155), in the order they are read.
+const statsEls = {
+  model: document.getElementById("session-model") as HTMLElement,
+  effort: document.getElementById("session-effort") as HTMLElement,
+  five_hour: document.getElementById("session-five-hour") as HTMLElement,
+  seven_day: document.getElementById("session-seven-day") as HTMLElement,
+  context: document.getElementById("session-context") as HTMLElement,
+};
 const sessionIdEl = document.getElementById("session-id") as HTMLElement;
 const sessionIdCopyEl = document.getElementById("session-id-copy") as HTMLButtonElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
@@ -739,6 +770,20 @@ interface SessionView {
    * word cleared by that print would be gone before it was read.
    */
   limited: boolean;
+  /**
+   * The last thing this session said about itself, or null while it has said
+   * nothing (#155).
+   *
+   * Held rather than recomputed, and never cleared on its own: the status line
+   * runs when the session runs, so a session sitting quiet keeps the values it
+   * last reported (decision 4). They survive its exit for the reason the rest
+   * of the facts do — the question that column answers is what ran.
+   *
+   * Null after a reload of this screen, until the next report arrives. The
+   * report is not replayed, the same as the address record and the limit
+   * (#84 / #86 / #149): what this screen did not see, it does not say.
+   */
+  stats: SessionStats | null;
   /** The pending fall back to silence, or undefined when none is armed. */
   quiet: number | undefined;
 }
@@ -2759,6 +2804,7 @@ function renderSessionFacts(): void {
     dirEl.title = "";
     startedEl.textContent = "—";
     windowEl.textContent = "—";
+    renderSessionStats();
     renderSessionId();
     return;
   }
@@ -2771,7 +2817,41 @@ function renderSessionFacts(): void {
   dirEl.title = view.cwd ?? "";
   startedEl.textContent = view.startedAt === "" ? "—" : shortTime(view.startedAt);
   showWindowSize();
+  renderSessionStats();
   renderSessionId();
+}
+
+/**
+ * A percentage as this column shows one: a whole number.
+ *
+ * The CLI sends a fraction (`23.5`), and the column is the narrow half of a
+ * 16.5rem panel. The tenth would cost a character in every one of three rows to
+ * say something nobody reads a usage bar that closely for.
+ */
+function usedPercent(value: number | null): string {
+  return value === null ? "—" : `${Math.round(value)}%`;
+}
+
+/**
+ * Show what the terminal on the glass last said about itself (#155).
+ *
+ * `—` for a pane with no terminal, and for one whose session has not reported
+ * yet. The two are the same answer here on purpose: what a row would otherwise
+ * show is a value this screen does not have, and #82's line — no word for a
+ * state nobody observed — is the same line one column over.
+ *
+ * Not cleared when the session ends or falls quiet. The status line runs when
+ * the session runs, so these rows stand at the last thing that was reported
+ * (decision 4); a row blanked on silence would say the session stopped using a
+ * context window it is still holding.
+ */
+function renderSessionStats(): void {
+  const stats = shownView()?.stats ?? null;
+  statsEls.model.textContent = stats?.model ?? "—";
+  statsEls.effort.textContent = stats?.effort ?? "—";
+  statsEls.five_hour.textContent = usedPercent(stats?.five_hour ?? null);
+  statsEls.seven_day.textContent = usedPercent(stats?.seven_day ?? null);
+  statsEls.context.textContent = usedPercent(stats?.context ?? null);
 }
 
 /**
@@ -3119,6 +3199,10 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // hook reached the screen that was open then, and this one did not see it
     // (#149).
     limited: false,
+    // Nothing reported yet, on a fresh terminal and on one picking a running
+    // session up again alike. The status line runs on the next assistant
+    // message, so the values arrive on their own (#155).
+    stats: null,
     quiet: undefined,
   };
 
@@ -3928,6 +4012,17 @@ async function main(): Promise<void> {
   await listen<LimitedSeat>("session-limited", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
     if (view) markLimited(view);
+  });
+  // A session reported what it is running on, through its own status line
+  // (#155). Keyed on the seat the same way the limit is, and dropped the same
+  // way for a seat this screen has no terminal for. Only the facts column is
+  // redrawn — the row's own note is not one of these values, and the roster is
+  // redrawn often enough without a report arriving every assistant message.
+  await listen<SessionStats>("session-stats", (event) => {
+    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
+    if (!view) return;
+    view.stats = event.payload;
+    if (view === shownView()) renderSessionStats();
   });
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and

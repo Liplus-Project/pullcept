@@ -15,7 +15,8 @@ use crate::room_log::{self, TopicRef};
 use mcp_config::{
     declared_character, declares_session_id, declares_settings, launch_args, limited_hook_url,
     other_room_servers, register_sidecar, reject_incompatible_flags, server_name_for,
-    split_launch_options, substitute_session_id, transcript_path, RoomRegistration, ROOM_TOKEN_ENV,
+    split_launch_options, status_hook_url, status_line_command, substitute_session_id,
+    transcript_path, RoomRegistration, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -75,6 +76,51 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
     Err("Could not find sidecar/src/index.ts next to node_modules/tsx. \
          Run npm install, or set PULLCEPT_SIDECAR_ENTRY and PULLCEPT_SIDECAR_RUNNER."
         .to_string())
+}
+
+/// The status-line script, which ships beside the sidecar entry point (#155).
+///
+/// Derived from the one walk above rather than looked for by a second one, and
+/// with no override of its own: an override that pointed the sidecar somewhere
+/// else and left this behind would be two halves of one distribution in two
+/// places.
+///
+/// `None` when the file is not there. A launch is not refused for it — the
+/// statusLine simply does not go on the line, and the panel's five values read
+/// `—` for that seat.
+fn status_script(entry: &Path) -> Option<PathBuf> {
+    let script = entry.parent()?.join("status.mjs");
+    script.is_file().then_some(script)
+}
+
+/// This seat's status-line command, given the sidecar entry it ships beside.
+///
+/// Two ways to have nothing: the script is not where the distribution puts it,
+/// or its own path holds a character a shell on the way acts on
+/// (`mcp_config::line_safe_word`). Both are the same answer here, because both
+/// leave the same rows reading `—`.
+fn status_command_beside(
+    entry: &Path,
+    port: u16,
+    topic_id: &str,
+    account_id: &str,
+) -> Option<String> {
+    status_line_command(
+        &status_script(entry)?,
+        &status_hook_url(port, topic_id, account_id),
+    )
+}
+
+/// The same command for a caller that is not holding a resolved sidecar — the
+/// preview, which answers for a launch that has not happened.
+///
+/// A third way to have nothing joins the two above: a room with no port to
+/// address, and a tree the sidecar cannot be found in at all. The launch
+/// resolves the sidecar for itself and passes it in, so the line it spawns and
+/// the line the form shows cannot come from two different walks.
+fn status_command(port: Option<u16>, topic_id: &str, account_id: &str) -> Option<String> {
+    let (entry, _) = resolve_sidecar_paths().ok()?;
+    status_command_beside(&entry, port?, topic_id, account_id)
 }
 
 /// Which seat each account is holding, in which room.
@@ -366,12 +412,14 @@ pub fn preview_launch_args(
     let hook = room
         .port()
         .map(|port| limited_hook_url(port, &topic_id, account_id.trim()));
+    let status = status_command(room.port(), &topic_id, account_id.trim());
     launch_args(
         &args,
         &server_name,
         character.as_deref(),
         &others,
         hook.as_deref(),
+        status.as_deref(),
     )
 }
 
@@ -895,6 +943,11 @@ fn launch(
     // address carries the topic and the account, because the CLI's hook input
     // carries neither (#149, decision 3).
     let hook = limited_hook_url(room_port, topic_id, &account.id);
+    // What this session reports about itself while it runs, addressed to the
+    // same seat on the same port (#155, decision 2). Absent leaves the panel's
+    // five values at `—` and stops nothing else. Beside the sidecar this launch
+    // resolved, not beside one a second walk found.
+    let status = status_command_beside(&sidecar_entry, room_port, topic_id, &account.id);
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
@@ -903,7 +956,14 @@ fn launch(
         // is what spawns. Nothing is written for the settings: `--settings`
         // takes the JSON inline, and a file per account would grow the very
         // directory this account is sharing (#99).
-        launch_args(&line.args, server_name, character, others, Some(&hook)),
+        launch_args(
+            &line.args,
+            server_name,
+            character,
+            others,
+            Some(&hook),
+            status.as_deref(),
+        ),
         // The token the hook presents, in the environment rather than in the
         // header on the line: the line is drawn on screen, and the token is
         // what makes the room this room (#149).
