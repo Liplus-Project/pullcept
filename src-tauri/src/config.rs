@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
 
-/// What kind of participant an account is.
+/// What kind of participant an account is, and for one that launches, which
+/// CLI.
 ///
 /// **Declared when the account is made, never inferred.** The room knows only
 /// what kind of connection someone arrived on, and a person joining from
@@ -13,17 +15,46 @@ use tauri::Manager;
 /// (#39). The one moment anyone can say which this is, is the moment the
 /// account is created, and there is already a form there (#59).
 ///
-/// It sorts the participant list into groups and does nothing else. Nothing in
-/// the room reads it; the room still has one kind of participant.
+/// **Two of the three launch, and what separates them is what this app knows
+/// about the command under them** (#156). `ClaudeCode` names a CLI whose
+/// conventions Pullcept holds (`mcp_config::Cli`) — how a session id is handed
+/// over, how a session is resumed, how it reports itself. `Cli` is an account
+/// this app knows nothing of the sort about: it launches, and the app puts
+/// nothing of its own on that line beyond what every session in the room needs.
+/// A second CLI is a second variant here and a second arm over there, not a
+/// second reading of somebody's launch options.
+///
+/// What it decides: which group the participant list draws the row under, and
+/// which conventions a launch carries. Nothing in the room reads it; the room
+/// still has one kind of participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AccountKind {
     /// A person. The one at this keyboard is one of these (#59, which is where
     /// #53 left this open).
     User,
-    /// A CLI session this app launches.
+    /// A Claude Code session this app launches, with that CLI's conventions on
+    /// its line.
+    ClaudeCode,
+    /// A session of some CLI this app knows no conventions of.
+    ///
+    /// The default, and it is the safe one rather than the common one: a kind
+    /// nobody declared is a command nobody described, and the line this kind
+    /// launches is the person's own.
     #[default]
-    Ai,
+    Cli,
+}
+
+impl AccountKind {
+    /// The CLI this kind launches, or `None` when it launches none this app
+    /// knows the conventions of — a person, or a command it was told nothing
+    /// about.
+    pub fn cli(self) -> Option<mcp_config::Cli> {
+        match self {
+            AccountKind::User | AccountKind::Cli => None,
+            AccountKind::ClaudeCode => Some(mcp_config::Cli::ClaudeCode),
+        }
+    }
 }
 
 /// One account: someone who exists in this app whether or not they are running.
@@ -64,10 +95,13 @@ pub struct Account {
     pub hue: Option<f64>,
     /// What kind of participant this account is, declared when it was made.
     ///
-    /// Defaulted to `Ai` for an account written before this field existed, and
-    /// that is a migration rather than a fallback: every account that could
-    /// have been saved then was a launch recipe for a CLI. The person at the
-    /// keyboard had no account at all until now.
+    /// An account written before the kinds were split carries the one kind
+    /// every launched account had, and one written before this field existed
+    /// carries nothing at all. Neither is answered here: both are read off the
+    /// launch command as the file is loaded
+    /// (`mcp_config::migrate_account_kinds`), because that command is what
+    /// still says which CLI was being launched, and serde cannot see a second
+    /// field while it is deciding this one (#156).
     #[serde(default)]
     pub kind: AccountKind,
     /// Which character this account speaks as: the `name:` of an output style
@@ -106,13 +140,17 @@ pub struct Account {
     /// be the same invocation: it is the line the person would type. It is split
     /// the way launch options are, and the first token is the command.
     ///
-    /// The other half of the pair is not a field. A fresh launch hands the CLI
-    /// an id this app decided, and where that id goes on the line is the same
-    /// per-CLI question this field answers — so it is written into the launch
-    /// options with the same `{session_id}` placeholder
-    /// (`mcp_config::SESSION_ID_PLACEHOLDER`). An account that writes it
-    /// nowhere is launched with no id at all, which is the state a CLI with no
-    /// resume of its own is permanently in.
+    /// **Read only on a kind that names no CLI** (#156, 決定6). How a session is
+    /// resumed is that CLI's business, so a kind that names one answers it
+    /// (`mcp_config::Cli::resume_command`) and this field is not shown for it —
+    /// a line the person has to keep in step with a convention the app already
+    /// holds is a line that can disagree with it. Where the kind has no answer,
+    /// this is the answer, and the same goes for the other half of the pair: a
+    /// fresh launch is handed the id through the conventions, or through a
+    /// `{session_id}` the person wrote into their own launch options
+    /// (`mcp_config::SESSION_ID_PLACEHOLDER`). A line that names it nowhere is
+    /// launched with no id at all, which is the state a CLI with no resume of
+    /// its own is permanently in.
     ///
     /// Absent is a real state and the common one. An account that declares no
     /// resume line is launched fresh into a reopened topic and reads back what
@@ -213,12 +251,12 @@ impl Default for AppConfig {
                 args: vec![],
                 cwd: None,
                 hue: None,
-                kind: AccountKind::Ai,
+                kind: AccountKind::ClaudeCode,
                 character: None,
-                // Nothing, rather than a line guessed from the command above.
-                // A resume line naming the wrong flag fails at the one moment
-                // it is needed, and the person has no reason to go looking at a
-                // field they never filled in.
+                // Nothing here, because the kind above holds the way back
+                // (`mcp_config::Cli::resume_command`). This field is the
+                // generic kind's, where the app has no line of its own to offer
+                // and the person writes theirs (#156, 決定6).
                 resume_command: None,
             }],
             panels: PanelState::default(),
@@ -257,36 +295,70 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
 
     // A config written before accounts existed parses here as it stands: the
     // `tabs` alias on `AppConfig` reads the old key, and `cli_kind` is an
-    // unknown field serde ignores. No migration step runs, because there is
-    // nothing left for one to do — the person's own working directory and
-    // launch options are what would have been lost, and they carry over.
+    // unknown field serde ignores. The person's own working directory and
+    // launch options are what would have been lost, and they carry over under
+    // the names they already had.
     //
-    // A config written before `kind` existed is the same shape of nothing: the
-    // field defaults to `Ai`, which every account saved then was. The account
-    // the person at the keyboard now has is made on the screen rather than
-    // migrated, because what it is made from — the name and hue they had been
-    // joining under — lives in the webview's own storage and never reached
-    // this file (#59).
+    // `resume_command` is the shape of nothing: an account saved before it
+    // existed declares no way of resuming, which is what every account did then
+    // — there was no topic for a session to be resumed into.
     //
-    // `resume_command` is the same shape of nothing again: an account saved
-    // before it existed declares no way of resuming, which is what every
-    // account did then — there was no topic for a session to be resumed into.
-    //
-    // `panels` is the same again: a config saved before it existed says nothing
-    // about which panels are folded, and both of them were open on every screen
-    // then (#118).
+    // `panels` is the same: a config saved before it existed says nothing about
+    // which panels are folded, and both of them were open on every screen then
+    // (#118).
     //
     // `character` is the same again, and its absence is the state it means:
     // an account saved before it existed declared no character, so its launch
     // reads whatever its working directory's own `settings.json` names — which
     // is what that launch did before this field was here (#99).
     //
+    // `kind` is the one that is not. Read as it stands, an account saved before
+    // the kinds were split would arrive as the default, and every launched
+    // account saved then was launching Claude Code without the app saying so —
+    // so the one step below runs before anything is typed (#156).
+    //
+    // The account the person at the keyboard has is made on the screen rather
+    // than migrated either way, because what it is made from — the name and hue
+    // they had been joining under — lives in the webview's own storage and
+    // never reached this file (#59).
+    //
     // No path exists for anything older than that. Pullcept has never
     // shipped a release, and its app data directory is keyed to its own
     // identifier (org.liplus-project.pullcept), so no config in the older
     // left/right pane format from liplus-desktop can reach this app.
-    serde_json::from_str::<AppConfig>(&content)
-        .map_err(|e| format!("Failed to parse config: {e}"))
+    let mut root: Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
+    mcp_config::migrate_account_kinds(&mut root, LEGACY_LAUNCHED_KIND, kind_of_cli);
+    serde_json::from_value::<AppConfig>(root).map_err(|e| format!("Failed to parse config: {e}"))
+}
+
+/// The kind every launched account carried while there was one of them (#156).
+///
+/// Read here and written nowhere. The kinds it splits into are what
+/// `AccountKind` has variants for, and a legacy variant beside them would be a
+/// state every reader of a kind has to carry from now on — the screen's own
+/// copy of the enum included.
+const LEGACY_LAUNCHED_KIND: &str = "ai";
+
+/// The mapping the load step hands `mcp_config::migrate_account_kinds`, which
+/// knows which CLI a saved account was launching and not what this app calls
+/// the kind that names it.
+///
+/// The inverse of `AccountKind::cli`, and both are `match`es the compiler
+/// checks: a second CLI is a second arm in each, named at the point it is
+/// missing rather than found later by a kind that migrated to the wrong one.
+fn kind_of_cli(cli: Option<mcp_config::Cli>) -> Value {
+    kind_value(match cli {
+        Some(mcp_config::Cli::ClaudeCode) => AccountKind::ClaudeCode,
+        None => AccountKind::Cli,
+    })
+}
+
+/// The JSON one kind is stored as, taken from the enum rather than spelled a
+/// second time: two spellings would have to agree, and only one of them is what
+/// is read back.
+fn kind_value(kind: AccountKind) -> Value {
+    serde_json::to_value(kind).expect("a unit variant serializes")
 }
 
 #[tauri::command]

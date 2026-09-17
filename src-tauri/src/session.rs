@@ -15,8 +15,8 @@ use crate::room_log::{self, TopicRef};
 use mcp_config::{
     declared_character, declares_session_id, declares_settings, launch_args, limited_hook_url,
     other_room_servers, register_sidecar, reject_incompatible_flags, server_name_for,
-    split_launch_options, status_hook_url, status_line_command, substitute_session_id,
-    transcript_path, RoomRegistration, ROOM_TOKEN_ENV,
+    session_id_launch_args, split_launch_options, status_hook_url, status_line_command,
+    substitute_session_id, Cli, RoomRegistration, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -386,11 +386,18 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// room's port. A room not listening names no port, so the preview shows the
 /// line without it — which is also the line a launch could not run at all, since
 /// a launch with no port is refused below.
+///
+/// The kind is read for the same reason all of those are: what its CLI's
+/// conventions put on the line is on the line (#156). It comes from the form
+/// rather than from the saved account, because the kind is one of the things
+/// being edited — and it is the field the person is most likely to be looking
+/// at while they wonder what changed.
 #[tauri::command]
 pub fn preview_launch_args(
     room: tauri::State<RoomState>,
     args: Vec<String>,
     account_id: String,
+    kind: AccountKind,
     topic_id: Option<String>,
     character: Option<String>,
     cwd: Option<String>,
@@ -415,6 +422,7 @@ pub fn preview_launch_args(
     let status = status_command(room.port(), &topic_id, account_id.trim());
     launch_args(
         &args,
+        kind.cli(),
         &server_name,
         character.as_deref(),
         &others,
@@ -432,6 +440,14 @@ pub fn preview_launch_args(
 /// whether *this topic* holds a session for it (#115, decisions 3 and 4B).
 struct LaunchLine {
     command: String,
+    /// The arguments of that line, with `{session_id}` still standing where an
+    /// id goes.
+    ///
+    /// Unfilled on purpose. What the CLI's conventions add goes on further
+    /// down, inside `launch_args`, and it carries the placeholder too (#156) —
+    /// so the substitution runs once over the whole composed line rather than
+    /// here over half of it, and neither half can be the one that ships the
+    /// placeholder to the CLI as a literal.
     args: Vec<String>,
     /// The session id this launch is handing the CLI, when it is handing one.
     ///
@@ -465,21 +481,30 @@ struct LaunchLine {
 /// the only party that knows whether the conversation was ever made.
 ///
 /// Answers true when the file is there — and also when this app cannot tell,
-/// which is a home directory it could not resolve or a working directory the
-/// CLI spells with a hash (`transcript_path`). Unknown falls on the side of
-/// keeping the record: the launch then goes in on the resume line exactly as it
-/// did before this check existed, and #127 still takes the record off if the
-/// CLI turns it away. Guessing the other way would drop a record that was fine
-/// on the strength of not having looked.
+/// which is a kind that names no CLI, a home directory it could not resolve, or
+/// a working directory the CLI spells with a hash
+/// (`mcp_config::Cli::transcript_path`). Unknown falls on the side of keeping
+/// the record: the launch then goes in on the resume line exactly as it did
+/// before this check existed, and #127 still takes the record off if the CLI
+/// turns it away. Guessing the other way would drop a record that was fine on
+/// the strength of not having looked.
+///
+/// The kind is the first of those three and the one #156 adds. Where a CLI
+/// keeps its conversations is that CLI's own layout, so an account whose kind
+/// names none is an account this app cannot look for a transcript of — not one
+/// whose transcript is missing.
 ///
 /// Nothing is read out of the file. Whether a transcript is intact is a
 /// question about its contents, and this one is about whether there is anything
 /// there at all (#131, 制約).
-fn transcript_found(app: &AppHandle, cwd: &Path, session_id: &str) -> bool {
+fn transcript_found(app: &AppHandle, cli: Option<Cli>, cwd: &Path, session_id: &str) -> bool {
+    let Some(cli) = cli else {
+        return true;
+    };
     let Ok(home) = app.path().home_dir() else {
         return true;
     };
-    match transcript_path(&home, cwd, session_id) {
+    match cli.transcript_path(&home, cwd, session_id) {
         Some(path) => path.is_file(),
         None => true,
     }
@@ -508,26 +533,36 @@ fn transcript_found(app: &AppHandle, cwd: &Path, session_id: &str) -> bool {
 /// #127 exists at the far end of. What is dropped is named on the way out, so
 /// the screen can say it happened.
 ///
-/// A fresh launch mints an id whenever the account's options name the
-/// placeholder, including when the topic already holds one. The old id is
-/// replaced rather than kept: without a resume line it can never be used again,
-/// and what a topic should hold is the session that is actually in it.
+/// A fresh launch mints an id whenever the composed line will have somewhere to
+/// put one — the CLI's conventions, or a placeholder in the account's own
+/// options — including when the topic already holds one. The old id is replaced
+/// rather than kept: without a resume line it can never be used again, and what
+/// a topic should hold is the session that is actually in it.
+///
+/// **Which line resumes is the kind's answer before it is the account's**
+/// (#156, 決定6). A kind naming a CLI holds the way back into one of its
+/// sessions, so that is the line; a kind naming none has only the field, which
+/// is the one the person writes and the one the form shows for that kind.
 fn resolve_launch(
     app: &AppHandle,
     account: &Account,
     topic: &TopicRef,
     cwd: &Path,
 ) -> Result<LaunchLine, String> {
+    let cli = account.kind.cli();
     let recorded = room_log::session_of(app, &topic.topic_id, &account.id);
-    let resume = account
-        .resume_command
-        .as_deref()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
+    let resume = match cli {
+        Some(cli) => cli.resume_command(),
+        None => account
+            .resume_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|line| !line.is_empty()),
+    };
 
     let mut dropped_resume = None;
     if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
-        if transcript_found(app, cwd, session_id) {
+        if transcript_found(app, cli, cwd, session_id) {
             let mut parts = split_launch_options(line);
             // The first token is the command, and a resume line whose first
             // token is empty would spawn nothing under a name the person never
@@ -546,7 +581,12 @@ fn resolve_launch(
             }
             return Ok(LaunchLine {
                 command,
-                args: substitute_session_id(&parts, session_id),
+                // Still holding the placeholder: the id this line goes back
+                // into is `resumed_from`, and one pass fills the composed line
+                // with it (`launch`). A line filled here would also be a line
+                // that no longer says where its id went, and the CLI's own
+                // convention would then be added on top of it (#156).
+                args: parts,
                 session_id: None,
                 resumed_from: Some(session_id.to_string()),
                 dropped_resume: None,
@@ -567,11 +607,14 @@ fn resolve_launch(
         }
     }
 
-    if declares_session_id(&account.args) {
+    // Asked of the line as the launch will carry it, not of the options as the
+    // person wrote them: on a kind whose CLI hands the id over itself, an
+    // account that writes nothing at all still has somewhere to put one (#156).
+    if declares_session_id(&session_id_launch_args(&account.args, cli)) {
         let session_id = uuid::Uuid::new_v4().to_string();
         return Ok(LaunchLine {
             command: account.command.clone(),
-            args: substitute_session_id(&account.args, &session_id),
+            args: account.args.clone(),
             session_id: Some(session_id),
             resumed_from: None,
             dropped_resume,
@@ -948,22 +991,34 @@ fn launch(
     // five values at `—` and stops nothing else. Beside the sidecar this launch
     // resolved, not beside one a second walk found.
     let status = status_command_beside(&sidecar_entry, room_port, topic_id, &account.id);
+    // The same function the preview goes through, so what the form showed is
+    // what spawns. Nothing is written for the settings: `--settings` takes the
+    // JSON inline, and a file per account would grow the very directory this
+    // account is sharing (#99).
+    let composed = launch_args(
+        &line.args,
+        account.kind.cli(),
+        server_name,
+        character,
+        others,
+        Some(&hook),
+        status.as_deref(),
+    );
+    // The id goes in last, over the whole line. The account's own options may
+    // name where it goes and the CLI's conventions may have put it there too
+    // (#156), and one pass over the composed line fills both — filling either
+    // half earlier leaves the other half handing the CLI the placeholder as a
+    // literal. Exactly one of the two ids is set: a fresh launch mints one, a
+    // resume carries the one it is going back into.
+    let composed = match line.session_id.as_deref().or(line.resumed_from.as_deref()) {
+        Some(session_id) => substitute_session_id(&composed, session_id),
+        None => composed,
+    };
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
         line.command.clone(),
-        // The same function the preview goes through, so what the form showed
-        // is what spawns. Nothing is written for the settings: `--settings`
-        // takes the JSON inline, and a file per account would grow the very
-        // directory this account is sharing (#99).
-        launch_args(
-            &line.args,
-            server_name,
-            character,
-            others,
-            Some(&hook),
-            status.as_deref(),
-        ),
+        composed,
         // The token the hook presents, in the environment rather than in the
         // header on the line: the line is drawn on screen, and the token is
         // what makes the room this room (#149).

@@ -13,11 +13,12 @@
 //!     `--settings`. The CLI starts every enabled server in the file, and a
 //!     shared working directory holds one per account (#103).
 //!
-//! What the app knows about the CLI itself is here too, for want of anywhere
-//! better: which flag carries a session id (`SESSION_ID_PLACEHOLDER`), and
-//! where the conversation under that id is kept (`transcript_path`). Both are
-//! per-CLI answers, and gathering them in one crate is what makes a second CLI
-//! a second answer rather than a search through the app (#131, decision 3).
+//! What the app knows about the CLI itself is here too, and it is one type:
+//! `Cli`, which answers how a session id is handed over, how a session is
+//! resumed, whether the CLI reports itself through `--settings`, and where the
+//! conversation under an id is kept. Every answer is a `match` on that enum, so
+//! a second CLI is a second arm in each rather than a search through the app for
+//! what assumed the first one (#131, decision 3; #156).
 //!
 //! This crate holds no tauri: it writes into the user's own project directory,
 //! which is the part of Pullcept that most needs test coverage, and a test
@@ -226,21 +227,322 @@ pub const SETTINGS_FLAG: &str = "--settings";
 /// `--settings=<value>` counts, the same way `reject_incompatible_flags` counts
 /// it: matching the bare flag alone would miss half the ways of writing it.
 pub fn declares_settings(args: &[String]) -> bool {
+    declares_flag(args, SETTINGS_FLAG)
+}
+
+/// Whether these arguments name `flag`, as `--flag value` or `--flag=value`.
+///
+/// Both spellings, for the reason `reject_incompatible_flags` reads both:
+/// matching the bare word alone would miss half the ways of writing it.
+fn declares_flag(args: &[String], flag: &str) -> bool {
     args.iter()
-        .any(|arg| arg.split('=').next().unwrap_or(arg) == SETTINGS_FLAG)
+        .any(|arg| arg.split('=').next().unwrap_or(arg) == flag)
+}
+
+/// These arguments with `flag`, and the value it carries, taken out.
+///
+/// `--flag value` loses both words and `--flag=value` loses the one it is. A
+/// trailing `--flag` with nothing behind it loses only itself, which is the
+/// same rule reaching the end of the line rather than a case of its own.
+fn without_flag(args: &[String], flag: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut drop_value = false;
+    for arg in args {
+        if drop_value {
+            drop_value = false;
+            continue;
+        }
+        if arg == flag {
+            drop_value = true;
+            continue;
+        }
+        if arg.split_once('=').is_some_and(|(head, _)| head == flag) {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
 }
 
 /// What an account writes where the id of a CLI session goes.
 ///
-/// The one thing this app knows about resuming a session is that the id is
-/// decided here rather than read back out of the CLI's output. Which flag
-/// carries it is the CLI's business, and the CLI is per-account
-/// (`Account::command`) — so the app substitutes into a line the person wrote
-/// instead of holding a flag of its own. `claude` spells the two halves
-/// `--session-id <uuid>` and `--resume <uuid>`; another CLI spells them
-/// otherwise, or not at all, and an account that writes the placeholder nowhere
-/// simply has no session id (#115, decision 4B).
+/// The one thing every CLI shares here is that the id is decided by this app
+/// rather than read back out of the CLI's output. Which flag carries it is the
+/// CLI's business, and that business is `Cli`'s below — the placeholder is what
+/// the two meet on, so a line carrying it is filled at spawn whether the
+/// conventions put it there or a person did (#115, decision 4B; #156).
 pub const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
+/// A CLI this app knows the conventions of.
+///
+/// **The conventions are the app's, not the person's** (#156). How a fresh
+/// session is handed the id this app minted, how one is resumed, whether the
+/// session reports itself through `--settings`, and where the conversation
+/// under an id is kept — every one of them is a per-CLI answer, and every one
+/// of them used to be either written by hand into an account's launch options
+/// or assumed of every launched account alike. A session id that never reached
+/// the CLI because nobody typed the flag is what ended that: handing the id
+/// over is this app's own doing, so a declaration of it is not the person's to
+/// remember.
+///
+/// One variant per CLI, and every answer below is a `match` on it: a second CLI
+/// is a second arm in each, and the compiler names the ones left unanswered.
+/// An account may also name no CLI at all, and that is not a variant here — it
+/// is the absence of one (`config::AccountKind::Cli`), and what it means is
+/// that this app has established nothing about the command under that account,
+/// so it puts nothing of its own on that line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cli {
+    /// Claude Code. The one vendor the room is built on — see the 成立条件 in
+    /// `docs/0-requirements.md`.
+    ClaudeCode,
+}
+
+impl Cli {
+    /// Which CLI a launch command names, or `None` when it names none this app
+    /// knows.
+    ///
+    /// **The one place a kind is inferred, and it runs once**: on an account
+    /// saved before the kinds were split, where the command is all that is left
+    /// to say what was being launched (#156, 決定4). Everything saved after
+    /// that carries a declared kind, for the reason the participant kind is
+    /// declared rather than read off the connection — an answer re-derived on
+    /// every read is an answer that can change under a session already running
+    /// on it.
+    ///
+    /// The file name without its extension, case-folded: `claude`,
+    /// `claude.exe` and an absolute path to either are one answer. Anything
+    /// else is `None`, a command that merely contains the word included.
+    pub fn of_command(command: &str) -> Option<Cli> {
+        let file = command
+            .trim()
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default();
+        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+        match stem.to_ascii_lowercase().as_str() {
+            "claude" => Some(Cli::ClaudeCode),
+            _ => None,
+        }
+    }
+
+    /// What this CLI's conventions put on a fresh launch to hand it the session
+    /// id this app minted, `{session_id}` and all.
+    ///
+    /// The placeholder rather than a slot filled in here: it is the same text a
+    /// person used to write into their launch options, so one substitution over
+    /// the whole line covers both (`substitute_session_id`), and the line drawn
+    /// on screen before anything is launched reads the way it always did.
+    ///
+    /// Empty for a CLI that has no way of being handed one. Such a launch is
+    /// given no id at all, which is the state a CLI with no resume of its own
+    /// is permanently in.
+    pub fn session_id_args(self) -> &'static [&'static str] {
+        match self {
+            Cli::ClaudeCode => &["--session-id", SESSION_ID_PLACEHOLDER],
+        }
+    }
+
+    /// The person's own launch options with what this CLI's conventions now put
+    /// on the line taken back out (#156).
+    ///
+    /// The migration's half of the split: the id used to ride a flag written
+    /// into the options by hand, and that field is the person's again. Taken
+    /// out rather than left for the merge to notice, because the field is read
+    /// as what its owner asked for — a convention sitting in it is one the
+    /// conventions can no longer change.
+    pub fn without_session_id_args(self, base: &[String]) -> Vec<String> {
+        match self.session_id_args().first() {
+            Some(flag) => without_flag(base, flag),
+            None => base.to_vec(),
+        }
+    }
+
+    /// The whole line that goes back into a session this CLI was already in,
+    /// with `{session_id}` where the id goes — or `None` when this CLI has no
+    /// way back.
+    ///
+    /// A whole line rather than options alone, for the reason the account field
+    /// it replaces held one: resuming may not be the same invocation, and the
+    /// first token is the command.
+    ///
+    /// `None` is a real state rather than a gap. A seat of that kind starts
+    /// fresh into a reopened topic and reads back what it needs through the
+    /// room's own pull, which is the second tier of the two-tier answer and not
+    /// a failure (#115, decision 4C).
+    pub fn resume_command(self) -> Option<&'static str> {
+        match self {
+            Cli::ClaudeCode => Some("claude --resume {session_id}"),
+        }
+    }
+
+    /// Whether this CLI reports what it is doing through the `hooks` and
+    /// `statusLine` this app writes into `--settings` (#149 / #155).
+    ///
+    /// What those two keys are spelled as is Claude Code's
+    /// (`limited_hook_settings` / `status_line_settings`). A CLI answering
+    /// false is not one that spells them otherwise — it is one this app has
+    /// established nothing about, and the safer side for an addition is not to
+    /// add it: what is lost is a row that never says 制限中 and five values
+    /// reading `—`, and what a settings key a CLI does not know can cost is the
+    /// launch.
+    pub fn reports_through_settings(self) -> bool {
+        match self {
+            Cli::ClaudeCode => true,
+        }
+    }
+
+    /// Where this CLI keeps the transcript of one session, or `None` when this
+    /// app cannot name the file.
+    ///
+    /// The layout itself is below (`transcript_path`), which is Claude Code's
+    /// and is the only one this app has.
+    pub fn transcript_path(self, home: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+        match self {
+            Cli::ClaudeCode => transcript_path(home, cwd, session_id),
+        }
+    }
+}
+
+/// Which CLI an account saved before the kinds were split should be read as
+/// naming, given its launch command and the resume line it carries.
+///
+/// `None` is the kind that names none: a command this app knows nothing about,
+/// or one it does know and an account with a way back of its own.
+///
+/// **A resume line that is not the CLI's own keeps the account off that CLI's
+/// kind** (#156, 決定6). The kind holds the way back, so an account whose line
+/// says the same thing has nothing of its own to keep; one that says something
+/// else has, and the kind that leaves that line standing — stored, shown, and
+/// the person's to edit — is the generic one. Reading it the other way would
+/// put the line in a field nothing shows and nothing reads.
+///
+/// Blank is absent, the way it is everywhere a field on that form is read
+/// (`declared_character`): a line cleared on screen arrives as an empty string.
+fn migrated_cli(command: &str, resume: Option<&str>) -> Option<Cli> {
+    let cli = Cli::of_command(command)?;
+    match resume.map(str::trim).filter(|line| !line.is_empty()) {
+        Some(line) if Some(line) != cli.resume_command() => None,
+        _ => Some(cli),
+    }
+}
+
+/// Give every account in a saved config that carries no declared kind the kind
+/// its launch command names, and move the fields that go with it
+/// (#156, 決定3 / 決定4 / 決定6).
+///
+/// **Here rather than beside the file it rewrites.** What this has to know is
+/// what this crate knows — which CLI a command names, and what that CLI's
+/// conventions carry now — and this crate is the one that can be tested (see
+/// the テストの配置 in `docs/0-requirements.md`). A step that rewrites a
+/// person's saved accounts is the kind of thing that has to be.
+///
+/// What it does not know is what the app calls a kind. `legacy_kind` is the
+/// value every launched account carried while there was one of them, and
+/// `kind_value` turns this crate's answer into the value the app stores. Both
+/// come from the app's own enum, so no second spelling of it lives here to be
+/// kept in step.
+///
+/// The two fields that move with the kind:
+///
+///   - the resume line is cleared where the kind holds one of its own (決定6).
+///     An account whose line said something else never reaches here with a CLI
+///     — that is what puts it on the kind with no conventions (`migrated_cli`),
+///     and that kind keeps every field it arrived with.
+///   - the CLI's own session-id argument comes back out of the launch options,
+///     which are the person's to write again (決定3). Left in, the flag would
+///     be on the line twice.
+///
+/// An account whose kind was declared is left alone. So is one that is not an
+/// object, and one whose `args` holds something that is not a string: the typed
+/// parse this runs ahead of is what refuses that file, and rewriting the list
+/// would drop the element that says why.
+pub fn migrate_account_kinds(
+    root: &mut Value,
+    legacy_kind: &str,
+    kind_value: impl Fn(Option<Cli>) -> Value,
+) {
+    // Under either name the account list has had. `tabs` is what it was called
+    // while an account was a launch recipe, and the app still reads that key —
+    // a config that old would otherwise arrive with no kind on any account.
+    let key = if root.get("accounts").is_some() {
+        "accounts"
+    } else {
+        "tabs"
+    };
+    let Some(accounts) = root.get_mut(key).and_then(Value::as_array_mut) else {
+        return;
+    };
+    for account in accounts.iter_mut() {
+        let Some(account) = account.as_object_mut() else {
+            continue;
+        };
+        // What is migrated is the one value the split replaced, and the absence
+        // of any value at all. A kind that was declared stands.
+        let declared = account.get("kind").and_then(Value::as_str);
+        if declared.is_some_and(|kind| kind != legacy_kind) {
+            continue;
+        }
+        migrate_one_account(account, &kind_value);
+    }
+}
+
+fn migrate_one_account(
+    account: &mut Map<String, Value>,
+    kind_value: &impl Fn(Option<Cli>) -> Value,
+) {
+    let command = account
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let resume = account.get("resume_command").and_then(Value::as_str);
+    let Some(cli) = migrated_cli(command, resume) else {
+        account.insert("kind".to_string(), kind_value(None));
+        return;
+    };
+
+    account.insert("kind".to_string(), kind_value(Some(cli)));
+    account.insert("resume_command".to_string(), Value::Null);
+    if let Some(args) = account.get("args").and_then(Value::as_array) {
+        let own: Vec<String> = args
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if own.len() == args.len() {
+            let kept = cli.without_session_id_args(&own);
+            account.insert("args".to_string(), Value::from(kept));
+        }
+    }
+}
+
+/// The launch arguments carrying the session id, given the account's own.
+///
+/// The CLI's convention is appended only when the line has nowhere to put an id
+/// yet. A resume line names the id itself, and a person who wrote the
+/// placeholder into their options has said where it goes — either way a second
+/// copy of the flag would hand the CLI two, and which of two copies of one flag
+/// a CLI reads is not something this app has established (the ground the
+/// two-`--settings` refusal stands on).
+///
+/// A kind naming no CLI adds nothing here. That is the whole of what the
+/// generic kind is: the line is the person's, and this app has nothing to put
+/// on it (#156, 決定5).
+pub fn session_id_launch_args(base: &[String], cli: Option<Cli>) -> Vec<String> {
+    let mut args = base.to_vec();
+    let Some(cli) = cli else {
+        return args;
+    };
+    let convention = cli.session_id_args();
+    let Some(flag) = convention.first() else {
+        return args;
+    };
+    if declares_session_id(base) || declares_flag(base, flag) {
+        return args;
+    }
+    args.extend(convention.iter().map(|word| (*word).to_string()));
+    args
+}
 
 /// Whether these arguments have somewhere to put a session id.
 ///
@@ -278,8 +580,8 @@ const SLUG_LIMIT: usize = 200;
 /// `<home>/.claude/projects/<slug of the working directory>/<session id>.jsonl`.
 /// Another CLI keeps them somewhere else entirely — `codex` writes
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — so a second CLI is a second
-/// answer from this function, and not a second reader grown somewhere else in
-/// the app. The dependency is accepted rather than avoided (Master 判断):
+/// arm of `Cli::transcript_path`, which is what callers ask and the only way in
+/// here (#156). The dependency is accepted rather than avoided (Master 判断):
 /// asking the file system whether the conversation is there is steadier than
 /// matching the CLI's refusal text, which is the thing #127 already refuses to
 /// read.
@@ -295,7 +597,7 @@ const SLUG_LIMIT: usize = 200;
 /// app cannot name the file. It is not "the transcript is missing" — the caller
 /// keeps whatever it would have done without this answer, because a guess that
 /// named the wrong file would read as a conversation that is gone.
-pub fn transcript_path(home: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+fn transcript_path(home: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
     Some(
         home.join(".claude")
             .join("projects")
@@ -666,28 +968,41 @@ pub fn settings_launch_args(
     args
 }
 
-/// The whole line one launch runs: the account's options, the room's channel
-/// entry, and the settings this session declares about itself.
+/// The whole line one launch runs: the account's options, what the CLI's own
+/// conventions put on every line of its kind, the room's channel entry, and the
+/// settings this session declares about itself.
 ///
 /// One function rather than two calls at each site, because the line shown on
 /// screen and the line spawned have to be the same line. They are produced in
 /// different places — a preview command and the launch — and every step either
-/// one composes for itself is a step the other can be missing.
+/// one composes for itself is a step the other can be missing. The conventions
+/// go through here for that same reason: they are on the line that runs, so
+/// they are on the line the form shows (#156).
+///
+/// `cli` is the CLI this account's kind names, or `None` when its kind names
+/// none. A kind naming none is left with the line it would have had before the
+/// kinds were split: the room's own entry and the settings the room needs, and
+/// nothing this app knows about a CLI. The hook and the status line are the
+/// visible half of that — both are Claude Code's spelling, and a kind this app
+/// has established nothing about does not get them written onto its line on the
+/// chance that they fit (#156, 決定5).
 pub fn launch_args(
     base: &[String],
+    cli: Option<Cli>,
     server_name: &str,
     character: Option<&str>,
     disabled: &[String],
     limited_hook: Option<&str>,
     status_command: Option<&str>,
 ) -> Vec<String> {
+    let reports = cli.is_some_and(Cli::reports_through_settings);
     settings_launch_args(
-        &channel_launch_args(base, server_name),
+        &channel_launch_args(&session_id_launch_args(base, cli), server_name),
         character,
         server_name,
         disabled,
-        limited_hook,
-        status_command,
+        limited_hook.filter(|_| reports),
+        status_command.filter(|_| reports),
     )
 }
 
@@ -1390,8 +1705,12 @@ mod tests {
         // prompt before it starts. The first launch passed only because its
         // line carried the bypass flag; a resume line without it stopped
         // (#143). Approved on every line, so the two lines are one state.
-        let resume = split_launch_options("--resume 0f5a-uuid");
-        let line = launch_args(&resume, &own(), None, &[], None, None);
+        let resume = split_launch_options("--resume {session_id}");
+        let line = launch_args(&resume, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        // And the CLI's own way of handing over an id is not added on top of
+        // it: the line already names where the id goes, and a second flag would
+        // hand the CLI two (#156).
+        assert!(!line.iter().any(|arg| arg == "--session-id"), "{line:?}");
         let at = line
             .iter()
             .position(|arg| arg == SETTINGS_FLAG)
@@ -1557,23 +1876,28 @@ mod tests {
         let room = server_name_for(LIN, ROOM);
         let line = launch_args(
             &["--verbose".to_string()],
+            Some(Cli::ClaudeCode),
             &room,
             Some("character_Lin"),
             &[],
             None,
             None,
         );
+        // The person's own options, then what the kind's conventions carry
+        // (#156), then the room's two halves.
         assert_eq!(
-            line[..4],
+            line[..6],
             [
                 "--verbose".to_string(),
+                "--session-id".to_string(),
+                SESSION_ID_PLACEHOLDER.to_string(),
                 CHANNEL_FLAG.to_string(),
                 format!("server:{room}"),
                 SETTINGS_FLAG.to_string(),
             ]
         );
-        assert_eq!(line.len(), 5);
-        let settled: Value = serde_json::from_str(&line[4]).expect("valid JSON");
+        assert_eq!(line.len(), 7);
+        let settled: Value = serde_json::from_str(&line[6]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
         // The approval rides with it, naming the server the channel flag names
         // (#143): one fact in the `.mcp.json` key, the tag and the approval.
@@ -1587,8 +1911,11 @@ mod tests {
         // disagree about which entry is whose (#103).
         let room = server_name_for(LIN, ROOM);
         let lay = server_name_for(LAY, ROOM);
+        // On the kind that carries no conventions of its own, so the line is
+        // the room's two halves and nothing else — which is what this reads.
         let line = launch_args(
             &[],
+            None,
             &room,
             Some("character_Lin"),
             std::slice::from_ref(&lay),
@@ -1667,7 +1994,7 @@ mod tests {
     #[test]
     fn the_limit_hook_rides_in_settings_and_fires_on_the_rate_limit_only() {
         let url = limited_hook_url(1234, ROOM, LIN);
-        let line = launch_args(&[], &own(), None, &[], Some(&url), None);
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], Some(&url), None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         let groups = settled["hooks"]["StopFailure"].as_array().expect("StopFailure");
@@ -1691,7 +2018,7 @@ mod tests {
 
     #[test]
     fn a_line_with_no_room_port_carries_no_hook() {
-        let line = launch_args(&[], &own(), None, &[], None, None);
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert!(settled.get("hooks").is_none());
@@ -1770,7 +2097,7 @@ mod tests {
         // Forward slashes: Git Bash eats an unquoted `\` before the script is
         // ever run (Claude Code docs, `statusline`, read 2026-09-17).
         assert_eq!(command, format!("node C:/pullcept/sidecar/src/status.mjs {url}"));
-        let line = launch_args(&[], &own(), None, &[], None, Some(&command));
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, Some(&command));
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert_eq!(settled["statusLine"]["type"], json!("command"));
@@ -1803,6 +2130,7 @@ mod tests {
         .expect("safe path");
         let line = launch_args(
             &[],
+            Some(Cli::ClaudeCode),
             &own(),
             Some("character_Lin"),
             std::slice::from_ref(&lay),
@@ -1830,7 +2158,7 @@ mod tests {
         let url = status_hook_url(1234, ROOM, LIN);
         let script = PathBuf::from(r"C:\Program Files (x86)\pullcept\status.mjs");
         assert_eq!(status_line_command(&script, &url), None);
-        let line = launch_args(&[], &own(), None, &[], None, None);
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert!(settled.get("statusLine").is_none());
@@ -1975,5 +2303,259 @@ mod tests {
         );
         let edge = format!("C:\\{}", "d".repeat(SLUG_LIMIT - 3));
         assert!(transcript_path(Path::new("C:\\home"), Path::new(&edge), "id").is_some());
+    }
+
+    /// The layout above is one CLI's, and the way in is that CLI (#156). The
+    /// two answers are the same answer, which is what keeps the kind from
+    /// having a layout of its own to drift from.
+    #[test]
+    fn the_transcript_a_kind_names_is_the_layout_of_the_cli_it_names() {
+        let home = PathBuf::from(r"C:\Users\smile");
+        let cwd = Path::new(r"C:\Users\smile\Code");
+        assert_eq!(
+            Cli::ClaudeCode.transcript_path(&home, cwd, "0f5a-uuid"),
+            transcript_path(&home, cwd, "0f5a-uuid")
+        );
+    }
+
+    /// The one inference, and what it reads (#156, 決定4). An account saved
+    /// before the kinds were split says nothing about which CLI it launches
+    /// except by the command it launches.
+    #[test]
+    fn a_launch_command_names_the_cli_it_is() {
+        assert_eq!(Cli::of_command("claude"), Some(Cli::ClaudeCode));
+        assert_eq!(Cli::of_command("claude.exe"), Some(Cli::ClaudeCode));
+        assert_eq!(Cli::of_command("Claude.CMD"), Some(Cli::ClaudeCode));
+        assert_eq!(
+            Cli::of_command(r"C:\Users\smile\AppData\claude.exe"),
+            Some(Cli::ClaudeCode)
+        );
+        assert_eq!(Cli::of_command("/usr/local/bin/claude"), Some(Cli::ClaudeCode));
+        assert_eq!(Cli::of_command("  claude  "), Some(Cli::ClaudeCode));
+        // Not the word wherever it appears: a different program is a different
+        // program, and the kind it gets is the one that assumes nothing.
+        assert_eq!(Cli::of_command("claude-wrapper"), None);
+        assert_eq!(Cli::of_command("codex"), None);
+        assert_eq!(Cli::of_command(""), None);
+    }
+
+    /// The failure this split is for: the id reached no CLI because nobody had
+    /// typed the flag. The kind types it now (#156).
+    #[test]
+    fn the_claude_code_kind_hands_over_the_session_id_itself() {
+        let base = split_launch_options("--dangerously-skip-permissions");
+        let line = session_id_launch_args(&base, Some(Cli::ClaudeCode));
+        assert_eq!(
+            line,
+            vec!["--dangerously-skip-permissions", "--session-id", "{session_id}"]
+        );
+        // And it is the placeholder that lands there, so the one substitution
+        // over the composed line fills it.
+        assert!(declares_session_id(&line));
+        assert_eq!(
+            substitute_session_id(&line, "0f5a-uuid").last().map(String::as_str),
+            Some("0f5a-uuid")
+        );
+    }
+
+    /// 決定5: the kind that names no CLI keeps the line it had before the split
+    /// — the room's own halves, and nothing this app knows about a CLI.
+    #[test]
+    fn a_kind_naming_no_cli_is_handed_nothing_of_the_apps() {
+        let base = split_launch_options("--dangerously-skip-permissions");
+        assert_eq!(session_id_launch_args(&base, None), base);
+
+        let limited = limited_hook_url(1234, ROOM, LIN);
+        let status = status_line_command(
+            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
+            &status_hook_url(1234, ROOM, LIN),
+        )
+        .expect("safe path");
+        let line = launch_args(
+            &base,
+            None,
+            &own(),
+            None,
+            &[],
+            Some(&limited),
+            Some(&status),
+        );
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        // The room's own approval still rides: that is what every session in
+        // the room needs, whatever CLI it is (#143).
+        assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
+        assert!(settled.get("hooks").is_none(), "{settled}");
+        assert!(settled.get("statusLine").is_none(), "{settled}");
+    }
+
+    /// Either spelling of the flag is somewhere to put an id, so neither is
+    /// given a second one. Both are what the migration takes back out.
+    #[test]
+    fn a_line_that_already_names_the_flag_is_not_given_a_second_one() {
+        for written in ["--session-id {session_id}", "--session-id=abc", "--session-id abc"] {
+            let base = split_launch_options(written);
+            assert_eq!(
+                session_id_launch_args(&base, Some(Cli::ClaudeCode)),
+                base,
+                "{written}"
+            );
+        }
+    }
+
+    /// The field is the person's again, so what the conventions now carry comes
+    /// back out of it (#156, 決定3).
+    #[test]
+    fn the_conventions_take_their_own_argument_back_out_of_the_options() {
+        let written = split_launch_options(
+            "--dangerously-skip-permissions --session-id {session_id} --verbose",
+        );
+        assert_eq!(
+            Cli::ClaudeCode.without_session_id_args(&written),
+            vec!["--dangerously-skip-permissions", "--verbose"]
+        );
+        let joined = split_launch_options("--session-id={session_id} --verbose");
+        assert_eq!(
+            Cli::ClaudeCode.without_session_id_args(&joined),
+            vec!["--verbose"]
+        );
+        // Nothing of the person's own goes with it.
+        let theirs = split_launch_options("--verbose");
+        assert_eq!(Cli::ClaudeCode.without_session_id_args(&theirs), theirs);
+    }
+
+    /// What an account saved before the split is read as, across the four
+    /// states it can be in (#156, 決定4 / 決定6).
+    #[test]
+    fn an_account_with_a_way_back_of_its_own_keeps_it_and_the_generic_kind() {
+        let theirs = "claude --resume {session_id} --dangerously-skip-permissions";
+        assert_eq!(migrated_cli("claude", Some(theirs)), None);
+        // The line the kind itself would use says nothing the kind does not,
+        // so it is not a line of their own.
+        assert_eq!(
+            migrated_cli("claude", Cli::ClaudeCode.resume_command()),
+            Some(Cli::ClaudeCode)
+        );
+        assert_eq!(migrated_cli("claude", None), Some(Cli::ClaudeCode));
+        // Cleared on screen arrives as an empty string, and that is the same
+        // state as never having written one.
+        assert_eq!(migrated_cli("claude", Some("  ")), Some(Cli::ClaudeCode));
+        // A command this app knows nothing about, whatever it carries.
+        assert_eq!(migrated_cli("codex", None), None);
+        assert_eq!(migrated_cli("codex", Some(theirs)), None);
+    }
+
+    /// What the app calls its kinds, as the test's stand-in for the enum the
+    /// app hands in. The migration is told these rather than spelling them.
+    fn kind_of_cli(cli: Option<Cli>) -> Value {
+        match cli {
+            Some(Cli::ClaudeCode) => json!("claude_code"),
+            None => json!("cli"),
+        }
+    }
+
+    fn migrated(raw: &str) -> Value {
+        let mut root: Value = serde_json::from_str(raw).expect("valid JSON");
+        migrate_account_kinds(&mut root, "ai", kind_of_cli);
+        root
+    }
+
+    /// The shape read off a running install (2026-09-17): the session id was
+    /// written into the launch options by hand and the resume line said what
+    /// the kind now says. Both come back out, and nothing else moves (#156).
+    #[test]
+    fn an_account_saved_before_the_split_moves_onto_the_kind_of_its_command() {
+        let root = migrated(
+            r#"{"accounts":[{
+                "id":"a","name":"Claude Lay","command":"claude",
+                "args":["--dangerously-skip-permissions","--session-id","{session_id}"],
+                "cwd":"C:\\Users\\smile\\Claude","hue":250.0,"kind":"ai",
+                "character":"character_Lay","resume_command":"claude --resume {session_id}"
+            }]}"#,
+        );
+        let account = &root["accounts"][0];
+        assert_eq!(account["kind"], json!("claude_code"));
+        assert_eq!(account["resume_command"], Value::Null);
+        assert_eq!(account["args"], json!(["--dangerously-skip-permissions"]));
+        // Everything that was not about the split is where it was.
+        assert_eq!(account["character"], json!("character_Lay"));
+        assert_eq!(account["hue"], json!(250.0));
+        assert_eq!(account["cwd"], json!(r"C:\Users\smile\Claude"));
+    }
+
+    /// 決定6, from the other side: a line of the person's own is a thing to
+    /// keep, and the kind that keeps it is the one whose form shows it. Nothing
+    /// of that account is rewritten.
+    #[test]
+    fn an_account_with_its_own_way_back_keeps_every_field_it_arrived_with() {
+        let root = migrated(
+            r#"{"accounts":[{
+                "id":"b","command":"claude","args":["--session-id","{session_id}"],
+                "kind":"ai","resume_command":"claude --resume {session_id} --verbose"
+            }]}"#,
+        );
+        let account = &root["accounts"][0];
+        assert_eq!(account["kind"], json!("cli"));
+        assert_eq!(
+            account["resume_command"],
+            json!("claude --resume {session_id} --verbose")
+        );
+        assert_eq!(account["args"], json!(["--session-id", "{session_id}"]));
+    }
+
+    /// A kind that was declared is not a kind to decide, and the one value the
+    /// split replaced is (#156, 決定4). An account saved before the field
+    /// existed says nothing, which is the same question as the legacy value.
+    #[test]
+    fn only_the_accounts_that_declared_no_kind_of_their_own_are_moved() {
+        let root = migrated(
+            r#"{"accounts":[
+                {"id":"person","command":"claude","args":[],"kind":"user","resume_command":null},
+                {"id":"declared","command":"claude","args":[],"kind":"cli","resume_command":"mine"},
+                {"id":"absent","command":"claude","args":["--session-id={session_id}"]},
+                {"id":"unknown","command":"codex","args":["--session-id","{session_id}"],"kind":"ai"}
+            ]}"#,
+        );
+        let accounts = root["accounts"].as_array().expect("accounts");
+        // A person stays a person, and their fields are not touched either.
+        assert_eq!(accounts[0]["kind"], json!("user"));
+        // A declared kind stands, resume line and all.
+        assert_eq!(accounts[1]["kind"], json!("cli"));
+        assert_eq!(accounts[1]["resume_command"], json!("mine"));
+        // No kind at all is the same question the legacy value asks.
+        assert_eq!(accounts[2]["kind"], json!("claude_code"));
+        assert_eq!(accounts[2]["args"], json!([]));
+        // A command this app knows nothing about keeps its own line, the id it
+        // passes by hand included — nothing here knows where else it would go.
+        assert_eq!(accounts[3]["kind"], json!("cli"));
+        assert_eq!(accounts[3]["args"], json!(["--session-id", "{session_id}"]));
+    }
+
+    /// The list under the name it had while an account was a launch recipe. A
+    /// config that old would otherwise arrive with no kind on any account.
+    #[test]
+    fn the_account_list_is_found_under_the_name_it_was_saved_with() {
+        let root = migrated(r#"{"tabs":[{"id":"a","command":"claude","args":[]}]}"#);
+        assert_eq!(root["tabs"][0]["kind"], json!("claude_code"));
+    }
+
+    /// A file the typed parse is going to refuse is left for it to refuse.
+    /// Rewriting the list would drop the element that says why.
+    #[test]
+    fn an_argument_that_is_not_a_string_is_left_where_it_is() {
+        let root = migrated(r#"{"accounts":[{"id":"a","command":"claude","args":["--session-id",7]}]}"#);
+        assert_eq!(root["accounts"][0]["kind"], json!("claude_code"));
+        assert_eq!(root["accounts"][0]["args"], json!(["--session-id", 7]));
+    }
+
+    /// The way back is the kind's, and it names where the id goes — the same
+    /// placeholder every other line of this app is filled through (#156, 決定6).
+    #[test]
+    fn the_resume_line_of_a_kind_names_where_the_id_goes() {
+        let line = Cli::ClaudeCode.resume_command().expect("Claude Code resumes");
+        assert!(line.contains(SESSION_ID_PLACEHOLDER), "{line}");
+        let mut parts = split_launch_options(line);
+        assert_eq!(parts.remove(0), "claude");
+        assert!(declares_session_id(&parts), "{parts:?}");
     }
 }

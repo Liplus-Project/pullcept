@@ -1224,6 +1224,14 @@ body {
   color: var(--muted);
 }
 
+/* `display: none` written out, for the reason the `.launch` rule below needs
+   it: the rule above gives every field a `display`, and that beats what
+   `[hidden]` brings on its own. The resume line is the field this is for — it
+   belongs to the kind that has no way back of its own (#156). */
+#account-dialog .field[hidden] {
+  display: none;
+}
+
 #account-dialog input,
 #account-dialog select {
   font: inherit;

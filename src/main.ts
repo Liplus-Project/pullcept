@@ -208,8 +208,27 @@ interface SessionStats {
  * connection someone arrived on, and a person joining from another client
  * arrives the same way a session does. The account form is the one moment
  * anyone can say which this is (#59).
+ *
+ * Two of the three launch, and what separates them is what the app knows about
+ * the command under them (#156). `claude_code` names a CLI whose conventions
+ * the app holds — how a session id is handed over, how one is resumed, how the
+ * session reports itself — so none of that is written by hand. `cli` is an
+ * account the app knows nothing of the sort about: it launches, and the line is
+ * the person's own. A second CLI is a third value here, not a second reading of
+ * somebody's launch options.
  */
-type AccountKind = "user" | "ai";
+type AccountKind = "user" | "claude_code" | "cli";
+
+/**
+ * Whether this account launches a session.
+ *
+ * Every kind but `user`: what the two launched kinds differ in is what the app
+ * puts on their line, which is not this question. A person has no command under
+ * them to spawn at all (#59).
+ */
+function launches(account: Account): boolean {
+  return account.kind !== "user";
+}
 
 /**
  * One account: someone who exists whether or not they are running.
@@ -497,6 +516,7 @@ const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
 const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
+const dialogResumeFieldEl = document.getElementById("dialog-resume-field") as HTMLElement;
 const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
 const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
@@ -1915,7 +1935,11 @@ interface Member {
 /** Which group a row falls in, and the heading it is drawn under. */
 const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
   { kind: "user", label: "user" },
-  { kind: "ai", label: "AI" },
+  // One heading per launched kind (#156). A group with nobody in it is not
+  // drawn, so a screen whose accounts are all one kind reads as it did before
+  // the split — the second heading appears when a second kind does.
+  { kind: "claude_code", label: "Claude Code" },
+  { kind: "cli", label: "CLI" },
   // Not a kind: the absence of one. A connection carrying no account has
   // declared nothing, and inferring a kind from how it arrived is the mistake
   // the declaration exists to avoid (#59).
@@ -2289,10 +2313,10 @@ function memberRow(row: Member): HTMLLIElement {
     // yet, and a kill aimed at an empty id reports success having done nothing
     // (#57).
     lifecycle.appendChild(endButton(view, name));
-  } else if (row.account?.kind === "ai") {
-    // Kind `ai` only. A `user` account is a person and there is no CLI under a
-    // person to spawn; `start_session` refuses one and that refusal is the
-    // authority, but a refusal is the wrong way for the person to find out
+  } else if (row.account && launches(row.account)) {
+    // A launched kind only. A `user` account is a person and there is no CLI
+    // under a person to spawn; `start_session` refuses one and that refusal is
+    // the authority, but a refusal is the wrong way for the person to find out
     // (#59). Their row keeps the empty column, and their 編集 with it.
     lifecycle.appendChild(startButton(row.account, launching));
   }
@@ -2901,19 +2925,19 @@ function renderSessionId(): void {
 /**
  * The account the panel's values speak for while no terminal is on the glass.
  *
- * The row chosen in the list when there is one, and otherwise the first AI
- * account in the order the list draws them (#144, decision 1). A `user` account
- * has no session to have recorded, so it is never the fallback. Once a terminal
- * is on the glass this is not asked: the values follow the pane again
- * (decision 2).
+ * The row chosen in the list when there is one, and otherwise the first account
+ * that launches, in the order the list draws them (#144, decision 1). A `user`
+ * account has no session to have recorded, so it is never the fallback; which
+ * CLI the others launch does not enter into it. Once a terminal is on the glass
+ * this is not asked: the values follow the pane again (decision 2).
  */
 function idleAccount(): string | null {
-  const ai = members()
-    .filter((row) => row.account?.kind === "ai")
+  const launched = members()
+    .filter((row) => row.account !== null && launches(row.account))
     .sort((a, b) => memberName(a).localeCompare(memberName(b)))
     .map((row) => row.account!.id);
-  if (shownAccount !== null && ai.includes(shownAccount)) return shownAccount;
-  return ai[0] ?? null;
+  if (shownAccount !== null && launched.includes(shownAccount)) return shownAccount;
+  return launched[0] ?? null;
 }
 
 /**
@@ -3610,11 +3634,17 @@ function disarmDelete(): void {
  *
  * A person has no command under them, so a working directory and launch options
  * would be two fields that never do anything.
+ *
+ * The resume line is the same judgment one level in (#156, 決定6). A kind that
+ * names a CLI holds the way back into one of its sessions, so the field would
+ * be a second answer to a question already answered — and a second answer is
+ * one that can disagree. The kind that names none has only the field.
  */
 function showDialogKind(): void {
   const kind = dialogKindEl.value as AccountKind;
-  dialogLaunchEl.hidden = kind !== "ai";
-  if (kind === "ai") void refreshDialogPreview();
+  dialogLaunchEl.hidden = kind === "user";
+  dialogResumeFieldEl.hidden = kind !== "cli";
+  if (kind !== "user") void refreshDialogPreview();
 }
 
 /**
@@ -3646,6 +3676,10 @@ async function refreshDialogPreview(): Promise<void> {
     const merged = await invoke<string[]>("preview_launch_args", {
       args: parsed,
       accountId: id,
+      // The field rather than the draft, for the reason the character is read
+      // that way: what the kind's conventions put on the line is on the line
+      // shown, and the kind is being edited right there (#156).
+      kind: dialogKindEl.value as AccountKind,
       // The topic on the glass, which is where ▶ would launch it: the entry is
       // this account's in this topic (#141, decision 4).
       topicId: shownTopicId() || null,
@@ -3678,21 +3712,23 @@ function openAccountDialog(account: Account | null): void {
         // `.mcp.json` derives from it precisely so renaming is free (#53).
         id: crypto.randomUUID(),
         name: unusedAccountName(),
-        // The one vendor the room is built on. See src-tauri/src/config.rs.
+        // The command the kind below names. See src-tauri/src/config.rs.
         command: "claude",
         args: [],
         // A prefill, not a default: the app launches nothing in a directory the
         // person has not seen on screen (#20).
         cwd: homeDir || null,
         hue: null,
-        kind: "ai",
+        // The one vendor the room is built on, and the kind that knows how to
+        // drive it (#156). See src-tauri/src/config.rs.
+        kind: "claude_code",
         // Nothing, rather than a guess at a style name: an unnamed character
         // launches on whatever the working directory's own settings say, which
         // is an answer. A guessed name that resolves to no style is not.
         character: null,
-        // Nothing, for the same shape of reason: a resume line naming the wrong
-        // flag fails at the one moment it is needed, and the person has no
-        // reason to go looking at a field they never filled in.
+        // Nothing, because the kind above holds the way back. This field is
+        // the generic kind's, and it is blank there too until someone writes
+        // the line the app has none of (#156, 決定6).
         resume_command: null,
       };
 
@@ -3742,9 +3778,9 @@ async function commitAccountDialog(): Promise<boolean> {
     dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
     return false;
   }
-  // The person at this screen is a person. Turning their account into an `ai`
-  // would list them under the wrong heading and offer to launch a CLI under
-  // their name, which is not a thing there is one of.
+  // The person at this screen is a person. Turning their account into one that
+  // launches would list them under the wrong heading and offer to start a CLI
+  // under their name, which is not a thing there is one of.
   if (target && target.id === localAccountId && kind !== "user") {
     dialogError("この画面の本人のアカウントは種別 user のままです。");
     return false;
@@ -3755,9 +3791,9 @@ async function commitAccountDialog(): Promise<boolean> {
   // would be values nothing ever reads, kept alive by an edit that once set
   // them. A person is not launched, so nothing selects a style for them.
   const args =
-    kind === "ai"
-      ? await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value })
-      : [];
+    kind === "user"
+      ? []
+      : await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value });
 
   // The character rides in `--settings`, so one written by hand up in the
   // options is the same setting declared twice. Said here because this is the
@@ -3777,14 +3813,17 @@ async function commitAccountDialog(): Promise<boolean> {
     name,
     kind,
     hue: declaredHue(dialogHueEl),
-    cwd: kind === "ai" ? cwd || null : null,
+    cwd: kind === "user" ? null : cwd || null,
     // Blank clears it, and clearing it is a state: the account goes back to
     // launching on whatever its working directory's own settings name.
-    character: kind === "ai" ? character || null : null,
-    // Blank is a state here too, and the common one: an account with no resume
-    // line joins a reopened topic as a new session and reads back what it needs
-    // through the room's own pull instead (#115, decision 4C).
-    resume_command: kind === "ai" ? dialogResumeEl.value.trim() || null : null,
+    character: kind === "user" ? null : character || null,
+    // Only the kind whose form shows this field keeps it (#156, 決定6). On a
+    // kind that holds its own way back, a line stored here would be one nothing
+    // reads and nobody can see to correct. Blank is a state on the kind that
+    // does keep it, and the common one: an account with no resume line joins a
+    // reopened topic as a new session and reads back what it needs through the
+    // room's own pull instead (#115, decision 4C).
+    resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
     args,
   };
 

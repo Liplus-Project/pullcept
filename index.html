@@ -337,12 +337,19 @@
           <!-- Declared here, and only here. The room sees what kind of
                connection someone arrived on, which says nothing about whether
                they are a person — a human joining from another client arrives
-               the same way a session does (#59). -->
+               the same way a session does (#59).
+
+               起動する種別は CLI ごとに在る（#156）。その CLI の作法——
+               セッション id の渡し方、再開の仕方、`--settings` に載せる hook
+               とステータスライン——を種別が持つため、下の欄に書くのは、その
+               人が足したいものだけになる。どれにも当てはまらない起動は
+               `CLI（汎用）` であり、アプリは何も足さない。 -->
           <label class="field">
             種別
             <select id="dialog-kind">
               <option value="user">user（人間）</option>
-              <option value="ai">AI（セッション）</option>
+              <option value="claude_code">Claude Code</option>
+              <option value="cli">CLI（汎用）</option>
             </select>
           </label>
 
@@ -351,9 +358,9 @@
             <select id="dialog-hue"></select>
           </label>
 
-          <!-- How to start a session. Shown for an AI account only: a person is
-               not launched, and there is no command under them to write options
-               for. -->
+          <!-- How to start a session. Shown for a launched kind only: a person
+               is not launched, and there is no command under them to write
+               options for. -->
           <div id="dialog-launch" class="launch">
             <label class="field">
               作業ディレクトリ
@@ -379,23 +386,23 @@
                 placeholder="例: character_Lay（output style の name）"
               />
             </label>
-            <!-- 起動オプション。`{session_id}` を書くと、そこへこのアプリが
-                 決めた UUID が入る。新しいトピックでセッションを始めるときに
-                 使う側であり、`claude` では `--session-id {session_id}` と
-                 書く。どのフラグが id を運ぶかは CLI ごとの問いであるため、
-                 アプリ側は欄を持たず、書かれた場所へ差し込む。
+            <!-- 起動オプション。**その人が足したいものだけを書く欄である**
+                 （#156、決定3）。セッション id の渡し方は種別が持つため、
+                 `Claude Code` では `--session-id {session_id}` をここへ書かな
+                 い——書いたものと走る行は違い、走る行は下の表示が見せる。
 
-                 書かなければ id を配らない。それは resume を持たない CLI が
-                 恒常的に置かれる状態であり、失敗ではない——その場合の参加者
-                 は、部屋の読み出し（`read_room_history`）で自分から辿る
-                 (#115)。 -->
+                 `CLI（汎用）` にはその作法が無い。`{session_id}` をここへ書
+                 けば、そこへこのアプリが決めた UUID が入る。書かなければ id
+                 を配らない。それは resume を持たない CLI が恒常的に置かれる
+                 状態であり、失敗ではない——その場合の参加者は、部屋の読み出
+                 し（`read_room_history`）で自分から辿る (#115)。 -->
             <label class="field">
               起動オプション
               <input
                 id="dialog-options"
                 type="text"
                 spellcheck="false"
-                placeholder="例: --dangerously-skip-permissions --session-id {session_id}"
+                placeholder="例: --dangerously-skip-permissions"
               />
             </label>
             <!-- 再開コマンド。トピックが持っているセッションへ戻る一行であり、
@@ -406,8 +413,12 @@
                  起動コマンドと別の欄なのは、戻り方が起動と同じ呼び出しとは
                  限らないためである。空なら resume 無しであり、そのアカウント
                  は開き直したトピックへ新規のセッションとして着席する。席が
-                 一つ戻らなくてもトピックは開く（決定6）。 -->
-            <label class="field">
+                 一つ戻らなくてもトピックは開く（決定6）。
+
+                 **`CLI（汎用）` にだけ出す**（#156、決定6）。CLI を名指す種
+                 別は戻り方を作法として持っており、そこへ欄を出せば、既に答え
+                 のある問いに二つ目の答えを置くことになる。 -->
+            <label id="dialog-resume-field" class="field">
               再開コマンド
               <input
                 id="dialog-resume"
