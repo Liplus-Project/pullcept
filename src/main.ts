@@ -167,6 +167,18 @@ interface Roster {
 }
 
 /**
+ * The seat whose turn ended on a usage limit (#149).
+ *
+ * A topic and an account, which is what a terminal is keyed on here: the CLI's
+ * hook knows neither, so the launch wrote both into the address its hook posts
+ * to and the app reads them back off it (`mcp-config`, `limited_hook_url`).
+ */
+interface LimitedSeat {
+  topic_id: string;
+  account_id: string;
+}
+
+/**
  * What kind of participant an account is, declared when it is made.
  *
  * Never inferred from the connection: the room sees only what kind of
@@ -713,6 +725,20 @@ interface SessionView {
    * claims a silence this screen measured, never one it assumed (#148).
    */
   silent: boolean;
+  /**
+   * True from the moment this session's turn ended on a usage limit until its
+   * terminal starts printing again (#149).
+   *
+   * Set by the `session-limited` event, which is a Claude Code `StopFailure`
+   * hook matched on `rate_limit` reaching the app (`room.rs`). Nothing of the
+   * CLI's output is read for it — the signal arrives beside the terminal, not
+   * out of it, which is what lets this screen say 制限中 while #82 stands.
+   *
+   * Lowered at the edge where a new burst of output begins rather than by the
+   * next byte: the CLI prints its own error while the hook is in flight, and a
+   * word cleared by that print would be gone before it was read.
+   */
+  limited: boolean;
   /** The pending fall back to silence, or undefined when none is armed. */
   quiet: number | undefined;
 }
@@ -1926,7 +1952,25 @@ function markOutput(view: SessionView): void {
   armQuiet(view);
   view.silent = false;
   if (view.outputting) return;
+  // A burst begins here, and that is where 制限中 ends (#149, decision 4). The
+  // burst the limit itself printed is not this edge — it was already under way
+  // when the hook arrived — so the word survives it and goes when the session
+  // is spoken to again, or when the person types into the terminal.
+  view.limited = false;
   view.outputting = true;
+  renderPanel();
+}
+
+/**
+ * Note that this session's turn ended on a usage limit.
+ *
+ * Kept even while the terminal is still printing the error: what clears it is
+ * the next burst (`markOutput`), and the panel is redrawn here because the word
+ * it shows changes as soon as that printing stops.
+ */
+function markLimited(view: SessionView): void {
+  if (view.ended !== null || view.limited) return;
+  view.limited = true;
   renderPanel();
 }
 
@@ -1959,6 +2003,9 @@ function stopOutput(view: SessionView): void {
   view.quiet = undefined;
   view.outputting = false;
   view.silent = false;
+  // The session is over. A limit that stopped one of its turns is not something
+  // to keep saying about a terminal nothing is running behind (#149).
+  view.limited = false;
 }
 
 /**
@@ -2017,11 +2064,17 @@ function pruneAwaiting(topicId: string): void {
  * 考え中… when the room is waiting on this name, 出力中 otherwise, and 待機 once
  * the terminal has been silent for a whole quiet window (#148).
  *
- * 待機 says that the terminal is silent and nothing more. A CLI waiting for input,
- * one stopped at a confirmation prompt and one stopped by a usage limit all read
- * as 待機 — telling them apart means reading what the CLI printed, which #82
- * refused and #148 keeps refused. It is left uncoloured: the coloured words are
- * the ones that say an utterance is still under way, and 待機 is where that ends.
+ * 待機 says that the terminal is silent and nothing more. A CLI waiting for input
+ * and one stopped at a confirmation prompt both read as 待機 — telling them apart
+ * means reading what the CLI printed, which #82 refused and #148 keeps refused.
+ * It is left uncoloured: the coloured words are the ones that say an utterance is
+ * still under way, and 待機 is where that ends.
+ *
+ * 制限中 is the one silence that is told apart, and it is told apart without
+ * reading anything: the CLI itself reports the stop through a `StopFailure` hook
+ * the launch put on its line, matched on `rate_limit` alone (#149). The word is
+ * as narrow as that signal — a limit that stopped a turn, not a session that is
+ * unable to run. It stays uncoloured beside 待機 for the same reason.
  *
  * The order is not a preference between two equal signals. Both words stand on
  * the same observation — this terminal is printing — and the address is what says
@@ -2039,6 +2092,12 @@ function pruneAwaiting(topicId: string): void {
 function activityNote(name: string, view: SessionView | undefined): string {
   if (!view || view.ended !== null) return "";
   if (view.outputting) return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
+  // 制限中 over 待機, because it says what 待機 cannot: which of the silences
+  // this is (#149, decision 5). It loses to the two words above for the same
+  // reason 待機 does — output arriving is this screen's own observation of a
+  // session that is going again, and the limit is then over whatever the hook
+  // said a moment ago.
+  if (view.limited) return "制限中";
   return view.silent ? "待機" : "";
 }
 
@@ -2099,7 +2158,10 @@ function memberRow(row: Member): HTMLLIElement {
   else if (launching) noteText = "起動中";
   else if (row.participant) {
     noteText = activityNote(name, view);
-    if (noteText && noteText !== "待機") noteKind = "active";
+    // 待機 and 制限中 both stand where an utterance has ended, so both stay the
+    // ground colour; the coloured words are the ones saying one is still under
+    // way (#148 / #149).
+    if (noteText && noteText !== "待機" && noteText !== "制限中") noteKind = "active";
   } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
@@ -3052,6 +3114,11 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // what this screen can say about it begins at the next byte (#86).
     outputting: false,
     silent: false,
+    // A limit belongs to the turn it stopped, and a terminal made now has had
+    // no turn. A reload picking a running session up again starts here too: the
+    // hook reached the screen that was open then, and this one did not see it
+    // (#149).
+    limited: false,
     quiet: undefined,
   };
 
@@ -3852,6 +3919,16 @@ async function main(): Promise<void> {
   await listen<Roster>("room-participants", (event) =>
     renderRoster(event.payload.topic_id, event.payload.participants),
   );
+  // A session said, through its own hook, that its turn stopped on a usage
+  // limit (#149). Keyed on the seat, so it reaches the terminal of the topic
+  // that session is in and not whichever topic is on the glass — the same way
+  // a post does (#141). A seat this screen has no terminal for is dropped:
+  // nothing is drawn from it, and nothing is kept for a terminal that may be
+  // made later, because the limit belongs to a turn that has already ended.
+  await listen<LimitedSeat>("session-limited", (event) => {
+    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
+    if (view) markLimited(view);
+  });
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and
   // the first is how a topic gets the name the list shows it under (#115).

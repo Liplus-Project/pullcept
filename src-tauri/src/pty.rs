@@ -103,6 +103,26 @@ pub fn spawn_pty(
     rows: u16,
     cwd: Option<String>,
 ) -> Result<String, String> {
+    spawn_pty_with_env(app, state, command, args, &[], cols, rows, cwd)
+}
+
+/// `spawn_pty` with variables set on the child's environment.
+///
+/// The variables reach the CLI and everything it starts, which is what a launch
+/// needs for the values it must hand over without writing them onto the command
+/// line: the line is drawn on screen (`session::preview_launch_args`), and the
+/// room's token is not a thing to draw (#149).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_pty_with_env(
+    app: AppHandle,
+    state: tauri::State<PtyState>,
+    command: String,
+    args: Vec<String>,
+    env: &[(&str, String)],
+    cols: u16,
+    rows: u16,
+    cwd: Option<String>,
+) -> Result<String, String> {
     let pty_system = NativePtySystem::default();
 
     let size = PtySize {
@@ -136,6 +156,12 @@ pub fn spawn_pty(
 
     if let Some(dir) = cwd {
         cmd.cwd(dir);
+    }
+
+    // On top of this process's own environment, which `CommandBuilder` starts
+    // from: these are additions, and nothing the person's shell set is removed.
+    for (key, value) in env {
+        cmd.env(key, value);
     }
 
     // Spawn the child process in the PTY

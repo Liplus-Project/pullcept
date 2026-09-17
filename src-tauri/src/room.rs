@@ -74,6 +74,13 @@
 //! Everything the frontend needs arrives as a `room-message` event. The room
 //! never reads a CLI's terminal output; that is not a message source.
 //!
+//! **The socket answers one thing that is not the protocol.** A session whose
+//! turn ended on a usage limit posts to `/hooks/limited` on this same port, from
+//! a Claude Code `StopFailure` hook the launch put on its line (#149). It is not
+//! a frame and not a participant: no seat, no floor, no log — the app emits
+//! `session-limited` for the named seat and answers. The two callers are told
+//! apart by their first bytes, since a WebSocket upgrade is a `GET`.
+//!
 //! **There are several rooms, one per topic (#141, decision 3).** A room is a
 //! topic's floor and the participants in it, and a topic that is not on the
 //! screen is still a room: a session started in it keeps running, keeps being
@@ -921,7 +928,19 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
             let app = app.clone();
             let room = room.clone();
             tokio::spawn(async move {
-                if let Err(err) = serve_participant(app, room, stream).await {
+                // Two kinds of caller on one address. A sidecar opens a
+                // WebSocket, which is a `GET` upgrade; a session's usage-limit
+                // hook posts (#149). One listener because the port is what a
+                // launch already carries — a second one would be a second
+                // address to hand out, hold and hand back on every launch.
+                let mut head = [0u8; 4];
+                let posted = matches!(stream.peek(&mut head).await, Ok(n) if head[..n].starts_with(b"POST"));
+                let ended = if posted {
+                    serve_hook(app, room, stream).await
+                } else {
+                    serve_participant(app, room, stream).await
+                };
+                if let Err(err) = ended {
                     eprintln!("[room] participant connection ended: {err}");
                 }
             });
@@ -929,6 +948,148 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
     });
 
     Ok(port)
+}
+
+/// The event the screen reads a session's usage limit off.
+///
+/// The seat, and nothing else. What stopped the turn is already decided by the
+/// time this is emitted — the CLI's hook matcher fired on the rate limit and on
+/// no other API error (#149, decision 1) — and the app adds no reading of its
+/// own on top of it.
+#[derive(Debug, Clone, Serialize)]
+pub struct LimitedSeat {
+    pub topic_id: String,
+    pub account_id: String,
+}
+
+/// The most of a hook request this reads before giving up on it.
+///
+/// The head is a few hundred bytes and the body is the CLI's hook input, which
+/// carries the assistant's last message. Nothing here is read, so the body is
+/// taken only to leave the client a completed request to close on.
+const HOOK_HEAD_MAX: usize = 16 * 1024;
+const HOOK_BODY_MAX: usize = 4 * 1024 * 1024;
+
+/// How long one hook request may take before the connection is dropped.
+const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Answer one session's usage-limit signal (#149, decision 3).
+///
+/// **Nothing of what the CLI sent is read.** The path names the seat and the
+/// header carries the room's token; the body is the CLI's hook input, whose
+/// field names are the CLI's own and would be a second thing to keep in step
+/// with it. The signal is that a request arrived at this address at all — which
+/// is the same shape as the rest of the panel's observations: a fact about
+/// arrival, not a reading of output (#82).
+async fn serve_hook(
+    app: AppHandle,
+    room: RoomState,
+    stream: tokio::net::TcpStream,
+) -> Result<(), String> {
+    match tokio::time::timeout(HOOK_TIMEOUT, read_hook(&app, &room, stream)).await {
+        Ok(result) => result,
+        Err(_) => Err("a hook request did not finish within its window".to_string()),
+    }
+}
+
+async fn read_hook(
+    app: &AppHandle,
+    room: &RoomState,
+    stream: tokio::net::TcpStream,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("hook request could not be read: {e}"))?;
+        if read == 0 {
+            return Err("hook request ended before its head did".to_string());
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        head.push_str(&line);
+        if head.len() > HOOK_HEAD_MAX {
+            return Err("hook request head is longer than this app reads".to_string());
+        }
+    }
+
+    let mut lines = head.lines();
+    let target = lines
+        .next()
+        .and_then(|request| request.split(' ').nth(1))
+        .unwrap_or("")
+        .to_string();
+    let mut authorization = None;
+    let mut length = 0usize;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "authorization" => authorization = Some(value.to_string()),
+            "content-length" => length = value.parse().unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    // Read before answering, so the client has a finished request to close on
+    // rather than a reset in the middle of sending one.
+    if length > 0 {
+        let mut body = Vec::new();
+        reader
+            .take(length.min(HOOK_BODY_MAX) as u64)
+            .read_to_end(&mut body)
+            .await
+            .map_err(|e| format!("hook request body could not be read: {e}"))?;
+    }
+
+    // The same token the sidecars present. The listener is on loopback, and
+    // any local process can reach loopback — without this, anything on the
+    // machine could put 制限中 on a row.
+    let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
+    let seat = mcp_config::parse_limited_hook_target(&target);
+    let status = match (&authorized, &seat) {
+        (false, _) => "401 Unauthorized",
+        (true, None) => "404 Not Found",
+        (true, Some(_)) => "200 OK",
+    };
+    if let (true, Some((room_id, account_id))) = (authorized, seat) {
+        // Emitted whether or not this app holds the room. The screen keys its
+        // terminals on the pair, and a seat it does not have is a payload it
+        // drops — the same as a post arriving for a topic it is not drawing.
+        let _ = app.emit(
+            "session-limited",
+            LimitedSeat {
+                topic_id: room_id,
+                account_id,
+            },
+        );
+    }
+
+    // A JSON body, because the CLI reads a hook's answer as its JSON output.
+    // An empty object decides nothing, which is what this hook is for: it
+    // observes, and the turn has already ended.
+    let answer = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    writer
+        .write_all(answer.as_bytes())
+        .await
+        .map_err(|e| format!("hook answer could not be sent: {e}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("hook answer could not be flushed: {e}"))?;
+    Ok(())
 }
 
 async fn serve_participant(
