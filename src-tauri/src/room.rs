@@ -962,25 +962,77 @@ pub struct LimitedSeat {
     pub account_id: String,
 }
 
+/// The event the screen reads one session's own account of itself off (#155).
+///
+/// The seat, and the five values the panel shows. Every one of them is
+/// `Option`, because every one of them is a field the CLI may not send: the
+/// rate limits are absent off a claude.ai plan and until the session's first
+/// API answer, the effort is absent on a model with no such parameter, and the
+/// context percentage is null early in a session (Claude Code docs,
+/// `statusline`, read 2026-09-17; not measured on a live CLI). Absent reaches
+/// the screen as absent, so a row reads `—` rather than `0%`.
+///
+/// **This is where the app reads what a CLI sent, and it is the only place.**
+/// The usage-limit hook above reads nothing of its body on purpose (#149) —
+/// there the arrival was the whole signal. Here the values are what was asked
+/// for, so the field names below are the CLI's and are a thing to keep in step
+/// with it. The terminal's own output is still not read (#82); what is read is
+/// a structured report the CLI hands out for this.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionStats {
+    pub topic_id: String,
+    pub account_id: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub five_hour: Option<f64>,
+    pub seven_day: Option<f64>,
+    pub context: Option<f64>,
+}
+
+impl SessionStats {
+    /// Read one status-line report, or `None` when it is not JSON at all.
+    ///
+    /// A field this does not find is left absent rather than defaulted. The
+    /// two model fields are one value on the screen — the display name is what
+    /// a person reads, and the id is what is there when a CLI sends no display
+    /// name.
+    fn read(topic_id: String, account_id: String, body: &[u8]) -> Option<Self> {
+        let data: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let text = |value: &serde_json::Value| {
+            value.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+        };
+        Some(SessionStats {
+            topic_id,
+            account_id,
+            model: text(&data["model"]["display_name"]).or_else(|| text(&data["model"]["id"])),
+            effort: text(&data["effort"]["level"]),
+            five_hour: data["rate_limits"]["five_hour"]["used_percentage"].as_f64(),
+            seven_day: data["rate_limits"]["seven_day"]["used_percentage"].as_f64(),
+            context: data["context_window"]["used_percentage"].as_f64(),
+        })
+    }
+}
+
 /// The most of a hook request this reads before giving up on it.
 ///
-/// The head is a few hundred bytes and the body is the CLI's hook input, which
-/// carries the assistant's last message. Nothing here is read, so the body is
-/// taken only to leave the client a completed request to close on.
+/// The head is a few hundred bytes. The body is the CLI's own input: read and
+/// dropped for the usage-limit path, read and parsed for the status-line one
+/// (`SessionStats`).
 const HOOK_HEAD_MAX: usize = 16 * 1024;
 const HOOK_BODY_MAX: usize = 4 * 1024 * 1024;
 
 /// How long one hook request may take before the connection is dropped.
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Answer one session's usage-limit signal (#149, decision 3).
+/// Answer one POST from a session: its usage-limit signal (#149, decision 3),
+/// or its status-line report (#155, decision 2).
 ///
-/// **Nothing of what the CLI sent is read.** The path names the seat and the
-/// header carries the room's token; the body is the CLI's hook input, whose
-/// field names are the CLI's own and would be a second thing to keep in step
-/// with it. The signal is that a request arrived at this address at all — which
-/// is the same shape as the rest of the panel's observations: a fact about
-/// arrival, not a reading of output (#82).
+/// **The path is what says which, and the path names the seat.** The header
+/// carries the room's token either way. What the two do with the body is where
+/// they part: the usage-limit signal reads nothing of it, because the arrival
+/// is the whole signal and the field names would be a second thing to keep in
+/// step with the CLI (#82); the status-line report is read, because its values
+/// are what was asked for (`SessionStats`).
 async fn serve_hook(
     app: AppHandle,
     room: RoomState,
@@ -1042,9 +1094,11 @@ async fn read_hook(
     }
 
     // Read before answering, so the client has a finished request to close on
-    // rather than a reset in the middle of sending one.
+    // rather than a reset in the middle of sending one. Kept rather than
+    // dropped now: the status-line path reads it (`SessionStats`), and the
+    // usage-limit path still does not.
+    let mut body = Vec::new();
     if length > 0 {
-        let mut body = Vec::new();
         reader
             .take(length.min(HOOK_BODY_MAX) as u64)
             .read_to_end(&mut body)
@@ -1054,30 +1108,43 @@ async fn read_hook(
 
     // The same token the sidecars present. The listener is on loopback, and
     // any local process can reach loopback — without this, anything on the
-    // machine could put 制限中 on a row.
+    // machine could put 制限中 on a row, or any five values it liked.
     let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
-    let seat = mcp_config::parse_limited_hook_target(&target);
-    let status = match (&authorized, &seat) {
+    let limited = mcp_config::parse_limited_hook_target(&target);
+    let reported = mcp_config::parse_status_hook_target(&target);
+    let status = match (authorized, limited.is_some() || reported.is_some()) {
         (false, _) => "401 Unauthorized",
-        (true, None) => "404 Not Found",
-        (true, Some(_)) => "200 OK",
+        (true, false) => "404 Not Found",
+        (true, true) => "200 OK",
     };
-    if let (true, Some((room_id, account_id))) = (authorized, seat) {
+    if authorized {
         // Emitted whether or not this app holds the room. The screen keys its
         // terminals on the pair, and a seat it does not have is a payload it
         // drops — the same as a post arriving for a topic it is not drawing.
-        let _ = app.emit(
-            "session-limited",
-            LimitedSeat {
-                topic_id: room_id,
-                account_id,
-            },
-        );
+        if let Some((room_id, account_id)) = limited {
+            let _ = app.emit(
+                "session-limited",
+                LimitedSeat {
+                    topic_id: room_id,
+                    account_id,
+                },
+            );
+        }
+        // A body this cannot read emits nothing at all. Leaving the panel on
+        // its last values is what decision 4 already says happens while a
+        // session is quiet, and it is better than five rows going blank
+        // because one report arrived malformed.
+        if let Some((room_id, account_id)) = reported {
+            if let Some(stats) = SessionStats::read(room_id, account_id, &body) {
+                let _ = app.emit("session-stats", stats);
+            }
+        }
     }
 
     // A JSON body, because the CLI reads a hook's answer as its JSON output.
-    // An empty object decides nothing, which is what this hook is for: it
-    // observes, and the turn has already ended.
+    // An empty object decides nothing, which is what both of these are for:
+    // they observe. The status line draws what its own script printed, not
+    // this.
     let answer = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );

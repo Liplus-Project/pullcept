@@ -333,7 +333,10 @@ pub const ROOM_TOKEN_ENV: &str = "PULLCEPT_ROOM_TOKEN";
 /// The path the app answers a session's usage-limit signal on.
 pub const LIMITED_HOOK_PATH: &str = "/hooks/limited";
 
-/// Where one seat's usage-limit hook posts to.
+/// The path the app answers a session's status-line report on (#155).
+pub const STATUS_HOOK_PATH: &str = "/hooks/status";
+
+/// Where one seat posts to, under one of the paths above.
 ///
 /// **The seat is named in the address, and not read out of what the CLI sends**
 /// (#149, decision 3). The CLI's hook input names its own session id, which is
@@ -365,19 +368,24 @@ pub const LIMITED_HOOK_PATH: &str = "/hooks/limited";
 /// text between them — undefined names are left alone on a command line, and
 /// the ids this is called with are uuids, which `percent_encode` does not
 /// touch at all. Not closed, and measured on neither side.
-pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
+///
+/// One composer for both paths, rather than a second `format!` beside the
+/// second address (#155). Everything above is a property of the address's
+/// shape and not of what is posted to it, so a copy would be this paragraph's
+/// reasoning held twice and dropped once.
+fn seat_url(port: u16, path: &str, room_id: &str, account_id: &str) -> String {
     format!(
-        "http://127.0.0.1:{port}{LIMITED_HOOK_PATH}/{}/{}",
+        "http://127.0.0.1:{port}{path}/{}/{}",
         percent_encode(room_id),
         percent_encode(account_id)
     )
 }
 
 /// The seat a request target names, as `(room id, account id)`, or `None` when
-/// it is not the usage-limit path or does not name both halves.
+/// it is not under `path` or does not name both halves.
 ///
-/// The inverse of `limited_hook_url`, kept beside it so the two cannot drift:
-/// the URL is written into a launch line in one place and read off a socket in
+/// The inverse of `seat_url`, kept beside it so the two cannot drift: the URL
+/// is written into a launch line in one place and read off a socket in
 /// another.
 ///
 /// A query is dropped before the path is read, because a request target may
@@ -385,9 +393,9 @@ pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
 /// hook's path and exactly two more segments, and a third segment names no
 /// seat. `percent_encode` leaves no `/` inside a half, so the split cannot cut
 /// an id in two.
-pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
-    let path = target.split_once('?').map_or(target, |(path, _)| path);
-    let rest = path.strip_prefix(LIMITED_HOOK_PATH)?.strip_prefix('/')?;
+fn parse_seat_target(path: &str, target: &str) -> Option<(String, String)> {
+    let target = target.split_once('?').map_or(target, |(path, _)| path);
+    let rest = target.strip_prefix(path)?.strip_prefix('/')?;
     let (room, account) = rest.split_once('/')?;
     if account.contains('/') {
         return None;
@@ -395,6 +403,26 @@ pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
     let room = percent_decode(room).filter(|id| !id.is_empty())?;
     let account = percent_decode(account).filter(|id| !id.is_empty())?;
     Some((room, account))
+}
+
+/// Where one seat's usage-limit hook posts to (#149).
+pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
+    seat_url(port, LIMITED_HOOK_PATH, room_id, account_id)
+}
+
+/// The seat a usage-limit request names, or `None` when it names no seat.
+pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
+    parse_seat_target(LIMITED_HOOK_PATH, target)
+}
+
+/// Where one seat's status line posts to (#155).
+pub fn status_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
+    seat_url(port, STATUS_HOOK_PATH, room_id, account_id)
+}
+
+/// The seat a status-line request names, or `None` when it names no seat.
+pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
+    parse_seat_target(STATUS_HOOK_PATH, target)
 }
 
 /// Every byte outside the unreserved set as `%XX`.
@@ -460,6 +488,78 @@ pub fn limited_hook_settings(url: &str) -> Value {
             }],
         }],
     })
+}
+
+/// Whether one word may be put on a launch line as it is written (#155).
+///
+/// ASCII letters and digits, and `/ : . _ -`. Everything else is refused,
+/// including the space: this word rides inside the `--settings` JSON, and the
+/// contents of a JSON string sit outside `cmd.exe`'s quotes (`seat_url`), where
+/// `& | < > ^ ( )` are characters it acts on. A directory such as
+/// `C:/Program Files (x86)/…` ends the launch line at the `(` — the break #151
+/// shipped, one axis over.
+///
+/// Three shells rather than one, which is why the set is this narrow. The
+/// `--settings` argument passes through `cmd.exe`; the status-line command is
+/// then run by the CLI through Git Bash where it is installed and PowerShell
+/// where it is not (Claude Code docs, `statusline`, read 2026-09-17; not
+/// measured on a live CLI). Git Bash reads an unquoted `\` as an escape, so a
+/// path arrives with its separators gone — hence a caller folds `\` to `/`
+/// before asking. Quoting the word instead would take the parity of the
+/// `cmd.exe` scan back the other way, which is a thing to reason about at every
+/// later edit; refusing the word costs one row reading `—`.
+///
+/// Non-ASCII is refused with the rest. A path under a name written in kana
+/// reaches `cmd.exe` through a code page this app does not choose, and that is
+/// the same unmeasured ground the `%` note in `seat_url` stands on — except
+/// that here nothing is lost by declining it.
+pub fn line_safe_word(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | ':' | '.' | '_' | '-'))
+}
+
+/// The program that runs the status-line script.
+///
+/// By name, the way the sidecar's own `command` is (`spawn_form`): it is an
+/// executable rather than a shell script, and the CLI resolves it from the
+/// environment the launch handed it.
+const STATUS_RUNNER: &str = "node";
+
+/// The status-line command for one seat, or `None` when it cannot be written
+/// onto the launch line as it stands (#155).
+///
+/// `node <script> <url>`, and nothing else on the line: the token is not here,
+/// because the line is drawn on screen (`session::preview_launch_args`) and the
+/// script reads `ROOM_TOKEN_ENV` out of the environment the launch set, the
+/// same place the usage-limit hook's header resolves from.
+///
+/// `None` rather than a quoted form when either word fails `line_safe_word`.
+/// The seat's own address passes by construction — `percent_encode` leaves
+/// `%XX`, and `%` is refused here although `seat_url` leaves it standing. The
+/// two answers are not in conflict: the hook's address is composed
+/// unconditionally and a refusal there would be a launch that cannot report its
+/// limit, while this line is an addition, and the safer side for an addition is
+/// not to add it.
+pub fn status_line_command(script: &Path, url: &str) -> Option<String> {
+    let script = script.to_string_lossy().replace('\\', "/");
+    (line_safe_word(&script) && line_safe_word(url))
+        .then(|| format!("{STATUS_RUNNER} {script} {url}"))
+}
+
+/// The `statusLine` value that has the CLI report what it knows about itself.
+///
+/// **Selected, not merged.** `statusLine` is one value and not a list, so the
+/// `--settings` level takes it whole over the user's, the project's and the
+/// local file's (Claude Code docs, `settings`, read 2026-09-17; not measured on
+/// a live CLI). A session launched from here therefore does not show the status
+/// line its person wrote. That is the shape `outputStyle` already has
+/// (`settings_launch_args`) rather than the one `hooks` has, and composing the
+/// two would mean reading the person's settings files — a second thing to keep
+/// in step with the CLI, for a line this app is the only reader of.
+pub fn status_line_settings(command: &str) -> Value {
+    json!({ "type": "command", "command": command })
 }
 
 /// The character an account speaks as, or `None` when it declares none.
@@ -528,12 +628,19 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// rides the same way the approval does, and under the same exception: a line
 /// left untouched above carries no hook, and its row does not say 制限中
 /// (#149). Widening the refusal for it would stop a line that ran before.
+///
+/// `status_command` is this seat's status-line command (`status_line_command`),
+/// or `None` when there is no port to address, or when the script's own path
+/// cannot be written onto the line (`line_safe_word`). It rides under the same
+/// exception as the two above, and its absence costs the same kind of thing: the
+/// panel's five values read `—` for that seat (#155).
 pub fn settings_launch_args(
     base: &[String],
     character: Option<&str>,
     own_server: &str,
     disabled: &[String],
     limited_hook: Option<&str>,
+    status_command: Option<&str>,
 ) -> Vec<String> {
     let mut args = base.to_vec();
     let character = declared_character(character);
@@ -550,6 +657,9 @@ pub fn settings_launch_args(
     }
     if let Some(url) = limited_hook {
         settings.insert("hooks".into(), limited_hook_settings(url));
+    }
+    if let Some(command) = status_command {
+        settings.insert("statusLine".into(), status_line_settings(command));
     }
     args.push(SETTINGS_FLAG.to_string());
     args.push(Value::Object(settings).to_string());
@@ -569,6 +679,7 @@ pub fn launch_args(
     character: Option<&str>,
     disabled: &[String],
     limited_hook: Option<&str>,
+    status_command: Option<&str>,
 ) -> Vec<String> {
     settings_launch_args(
         &channel_launch_args(base, server_name),
@@ -576,6 +687,7 @@ pub fn launch_args(
         server_name,
         disabled,
         limited_hook,
+        status_command,
     )
 }
 
@@ -1245,7 +1357,14 @@ mod tests {
     #[test]
     fn a_declared_character_rides_in_settings_json() {
         let args =
-            settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &own(), &[], None);
+            settings_launch_args(
+            &["--verbose".to_string()],
+            Some("character_Lay"),
+            &own(),
+            &[],
+            None,
+            None,
+        );
         assert_eq!(args.len(), 3);
         assert_eq!(args[0], "--verbose");
         assert_eq!(args[1], SETTINGS_FLAG);
@@ -1259,7 +1378,7 @@ mod tests {
     fn a_character_with_a_quote_in_it_stays_one_json_string() {
         // Built rather than formatted, so a name that would otherwise close the
         // string early cannot make the value stop being JSON.
-        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[], None);
+        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[], None, None);
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
     }
@@ -1272,7 +1391,7 @@ mod tests {
         // line carried the bypass flag; a resume line without it stopped
         // (#143). Approved on every line, so the two lines are one state.
         let resume = split_launch_options("--resume 0f5a-uuid");
-        let line = launch_args(&resume, &own(), None, &[], None);
+        let line = launch_args(&resume, &own(), None, &[], None, None);
         let at = line
             .iter()
             .position(|arg| arg == SETTINGS_FLAG)
@@ -1289,7 +1408,7 @@ mod tests {
         // Absent and blank are one state: a cleared field must not launch
         // `{"outputStyle":""}`, which names no style at all.
         for character in [None, Some(""), Some("   ")] {
-            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[], None);
+            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[], None, None);
             let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
             assert!(settled.get("outputStyle").is_none(), "{character:?}");
         }
@@ -1302,10 +1421,10 @@ mod tests {
         // where a character or a sibling needs the flag, so a line that ran
         // before the approval was added runs the same after it.
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
-        assert_eq!(settings_launch_args(&base, None, &own(), &[], None), base);
-        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[], None), base);
+        assert_eq!(settings_launch_args(&base, None, &own(), &[], None, None), base);
+        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[], None, None), base);
         let written = vec!["--settings=C:/x/settings.json".to_string()];
-        assert_eq!(settings_launch_args(&written, None, &own(), &[], None), written);
+        assert_eq!(settings_launch_args(&written, None, &own(), &[], None, None), written);
     }
 
     #[test]
@@ -1314,7 +1433,14 @@ mod tests {
         // its own room server would be a session with no room (#103).
         let lay = server_name_for(LAY, ROOM);
         let args =
-            settings_launch_args(&[], Some("character_Lin"), &own(), std::slice::from_ref(&lay), None);
+            settings_launch_args(
+            &[],
+            Some("character_Lin"),
+            &own(),
+            std::slice::from_ref(&lay),
+            None,
+            None,
+        );
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
         assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
@@ -1331,6 +1457,7 @@ mod tests {
             None,
             &own(),
             std::slice::from_ref(&lay),
+            None,
             None,
         );
         assert_eq!(args[0], "--verbose");
@@ -1434,6 +1561,7 @@ mod tests {
             Some("character_Lin"),
             &[],
             None,
+            None,
         );
         assert_eq!(
             line[..4],
@@ -1464,6 +1592,7 @@ mod tests {
             &room,
             Some("character_Lin"),
             std::slice::from_ref(&lay),
+            None,
             None,
         );
         assert_eq!(line[0], CHANNEL_FLAG);
@@ -1538,7 +1667,7 @@ mod tests {
     #[test]
     fn the_limit_hook_rides_in_settings_and_fires_on_the_rate_limit_only() {
         let url = limited_hook_url(1234, ROOM, LIN);
-        let line = launch_args(&[], &own(), None, &[], Some(&url));
+        let line = launch_args(&[], &own(), None, &[], Some(&url), None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         let groups = settled["hooks"]["StopFailure"].as_array().expect("StopFailure");
@@ -1562,7 +1691,7 @@ mod tests {
 
     #[test]
     fn a_line_with_no_room_port_carries_no_hook() {
-        let line = launch_args(&[], &own(), None, &[], None);
+        let line = launch_args(&[], &own(), None, &[], None, None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert!(settled.get("hooks").is_none());
@@ -1574,7 +1703,151 @@ mod tests {
         // the approval does (#143 / #149).
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
         let url = limited_hook_url(1234, ROOM, LIN);
-        assert_eq!(settings_launch_args(&base, None, &own(), &[], Some(&url)), base);
+        assert_eq!(settings_launch_args(&base, None, &own(), &[], Some(&url), None), base);
+    }
+
+    #[test]
+    fn the_status_line_names_the_seat_it_was_launched_for() {
+        // The same shape as the limit hook's address, and read back onto the
+        // same pair — the status line's own JSON names the CLI's session id,
+        // which is not what a seat is keyed on (#155, decision 2).
+        let url = status_hook_url(1234, ROOM, LIN);
+        let target = url
+            .strip_prefix("http://127.0.0.1:1234")
+            .expect("the address is the room's own port on loopback");
+        assert_eq!(target, format!("{STATUS_HOOK_PATH}/{ROOM}/{LIN}"));
+        assert_eq!(
+            parse_status_hook_target(target),
+            Some((ROOM.to_string(), LIN.to_string()))
+        );
+    }
+
+    #[test]
+    fn the_two_seat_paths_do_not_answer_for_each_other() {
+        // One listener, two paths. A status report read as a usage limit would
+        // put 制限中 on a row every time the model answered.
+        let limited = limited_hook_url(1234, ROOM, LIN);
+        let status = status_hook_url(1234, ROOM, LIN);
+        let limited = limited.strip_prefix("http://127.0.0.1:1234").expect("prefix");
+        let status = status.strip_prefix("http://127.0.0.1:1234").expect("prefix");
+        assert_ne!(limited, status);
+        assert_eq!(parse_status_hook_target(limited), None);
+        assert_eq!(parse_limited_hook_target(status), None);
+    }
+
+    #[test]
+    fn a_status_line_command_carries_nothing_a_shell_on_the_way_acts_on() {
+        // The word set, both directions. Every character here is one `cmd.exe`
+        // acts on where it stands outside the quotes — which is where the
+        // contents of a JSON string stand (#152) — or one Git Bash reads as an
+        // escape.
+        assert!(line_safe_word("C:/pullcept/sidecar/src/status.mjs"));
+        for hazard in [
+            "C:/Program Files (x86)/p/status.mjs",
+            "C:/a&b/status.mjs",
+            "C:/a|b/status.mjs",
+            "C:/a^b/status.mjs",
+            "C:/a<b/status.mjs",
+            "C:/a>b/status.mjs",
+            // A space is refused with them: quoting the word back would take
+            // the parity of the `cmd.exe` scan the other way again.
+            "C:/my files/status.mjs",
+            // A backslash never reaches the line — the caller folds it — and a
+            // word still holding one is refused rather than repaired here.
+            "C:\\pullcept\\status.mjs",
+            "C:/ゆーざ/status.mjs",
+            "",
+        ] {
+            assert!(!line_safe_word(hazard), "{hazard}");
+        }
+    }
+
+    #[test]
+    fn the_status_line_rides_in_settings_and_names_the_script_and_the_seat() {
+        let url = status_hook_url(1234, ROOM, LIN);
+        let script = PathBuf::from(r"C:\pullcept\sidecar\src\status.mjs");
+        let command = status_line_command(&script, &url).expect("a path with nothing to escape");
+        // Forward slashes: Git Bash eats an unquoted `\` before the script is
+        // ever run (Claude Code docs, `statusline`, read 2026-09-17).
+        assert_eq!(command, format!("node C:/pullcept/sidecar/src/status.mjs {url}"));
+        let line = launch_args(&[], &own(), None, &[], None, Some(&command));
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        assert_eq!(settled["statusLine"]["type"], json!("command"));
+        assert_eq!(settled["statusLine"]["command"], json!(command));
+        // The token is not on the line, and neither is the variable that would
+        // resolve to it: the script reads it out of the environment the launch
+        // set, rather than being handed it the way the hook's header is.
+        assert!(!command.contains(ROOM_TOKEN_ENV), "{command}");
+        assert!(!command.contains("Bearer"), "{command}");
+    }
+
+    #[test]
+    fn the_whole_settings_argument_carries_nothing_cmd_exe_acts_on() {
+        // What the two word-level checks above are for, asserted on the thing
+        // that actually reaches `cmd.exe`: the composed `--settings` value,
+        // with everything this launch declares on it at once.
+        //
+        // `"` is not in the set. `cmd.exe` counts quotes rather than acting on
+        // them, and the JSON cannot be written without them — the parity that
+        // counting produces is what puts these contents outside the quotes in
+        // the first place (`seat_url`), which is why the rest of the set is
+        // checked here at all (#152).
+        let lay = server_name_for(LAY, ROOM);
+        let limited = limited_hook_url(62361, ROOM, LIN);
+        let status = status_hook_url(62361, ROOM, LIN);
+        let command = status_line_command(
+            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
+            &status,
+        )
+        .expect("safe path");
+        let line = launch_args(
+            &[],
+            &own(),
+            Some("character_Lin"),
+            std::slice::from_ref(&lay),
+            Some(&limited),
+            Some(&command),
+        );
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settings = &line[at + 1];
+        for ch in ['&', '|', '<', '>', '^', '(', ')'] {
+            assert!(
+                !settings.contains(ch),
+                "{ch:?} is acted on by cmd.exe and must not reach the launch line: {settings}"
+            );
+        }
+        // And it is still JSON on the other side.
+        let settled: Value = serde_json::from_str(settings).expect("valid JSON");
+        assert_eq!(settled["statusLine"]["command"], json!(command));
+        assert_eq!(settled["hooks"]["StopFailure"][0]["hooks"][0]["url"], json!(limited));
+    }
+
+    #[test]
+    fn a_script_path_that_cannot_be_written_onto_the_line_carries_no_status_line() {
+        // The launch still runs; the panel's five values read `—` for that
+        // seat. Refusing the line instead would be #151 again.
+        let url = status_hook_url(1234, ROOM, LIN);
+        let script = PathBuf::from(r"C:\Program Files (x86)\pullcept\status.mjs");
+        assert_eq!(status_line_command(&script, &url), None);
+        let line = launch_args(&[], &own(), None, &[], None, None);
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        assert!(settled.get("statusLine").is_none());
+    }
+
+    #[test]
+    fn a_line_left_alone_for_its_own_settings_carries_no_status_line_either() {
+        // Same exception as the approval and the hook: a line that ran before
+        // this was added runs the same after it (#143 / #149 / #155).
+        let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
+        let url = status_hook_url(1234, ROOM, LIN);
+        let script = PathBuf::from("C:/pullcept/sidecar/src/status.mjs");
+        let command = status_line_command(&script, &url).expect("safe path");
+        assert_eq!(
+            settings_launch_args(&base, None, &own(), &[], None, Some(&command)),
+            base
+        );
     }
 
     #[test]
