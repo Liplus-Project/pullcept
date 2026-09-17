@@ -395,7 +395,7 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 - アカウント（作成・編集・削除、種別、名前と色と作業ディレクトリと起動オプション、リストでのオフライン表示、一つのアカウントは一つの部屋に一席まで、`config.json` からの移行）
 - アカウントのキャラクター（output style の `name:` を持つ欄、起動時の `--settings` による選択、ファイルを書き出さない形、起動オプションの `--settings` との併記の拒否、宣言しないアカウントは既定のまま）
 - 他のアカウントの部屋サーバを起動しないこと（`--settings` の `disabledMcpjsonServers`、名指しの出所は `.mcp.json` の実物、止めるものが無ければ素通し）
-- セッションの利用制限の合図（#149。起動する行の `StopFailure` hook、matcher は `rate_limit` のみ、部屋のポートの `/hooks/limited` への POST、アドレスが名指す席、環境から解決するトークン、行の note の「制限中」と次のバーストでの消失）
+- セッションの利用制限の合図（#149 / #152。起動する行の `StopFailure` hook、matcher は `rate_limit` のみ、部屋のポートの `/hooks/limited/<トピック>/<アカウント>` への POST、アドレスが名指す席、`cmd.exe` が反応する文字を載せないこと、環境から解決するトークン、行の note の「制限中」と次のバーストでの消失）
 - 参加の時点の名乗り（人間側。種別 `user` のアカウントの名前と色）
 - 宣言色（`hello` の `hue` / `room_join` の `hue`。宣言 > 自分の accent > 名前からの導出）
 - 部屋が運ぶアカウント id（`hello` / `room_join` の `account_id`、`Participant.account`。任意であり、判定には使わない）
@@ -1079,7 +1079,9 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 **絞りは matcher の `rate_limit` だけである**（Master、2026-09-17、方式2）。`StopFailure` は API エラーでターンが終わったときに発火し、matcher は error type で絞れる——`rate_limit` / `overloaded` / `authentication_failed` / `oauth_org_not_allowed` / `account_on_hold` / `billing_error` / `invalid_request` / `model_not_found` / `server_error` / `max_output_tokens` / `cloud_credential_error` / `unknown`（公式 docs `code.claude.com/docs/en/hooks`、2026-09-17 に読んだ）。同日、利用上限に達した実例の種別は `rate_limit`（HTTP 429）であった。他の種別は同じ「制限中」に混ぜない——語が言うのは利用制限であって、API が答えなかったこと一般ではない。
 
-**受け口は部屋のソケットと同じ一本である。** hook の型は `http` であり、`http://127.0.0.1:<部屋のポート>/hooks/limited?room=…&account=…` へ POST する。部屋は WebSocket の upgrade（`GET`）で始まるため、最初のバイトで二つの呼び手を分けられる。別のポートを開かないのは、起動の行が既に部屋のポートを運んでいるためである——第二のアドレスは、起動のたびに配り、持ち、返す対象が一つ増えることになる。
+**受け口は部屋のソケットと同じ一本である。** hook の型は `http` であり、`http://127.0.0.1:<部屋のポート>/hooks/limited/<トピック>/<アカウント>` へ POST する。部屋は WebSocket の upgrade（`GET`）で始まるため、最初のバイトで二つの呼び手を分けられる。別のポートを開かないのは、起動の行が既に部屋のポートを運んでいるためである——第二のアドレスは、起動のたびに配り、持ち、返す対象が一つ増えることになる。
+
+**席の二つはパスの区分であり、アドレスはクエリを持たない**（#152）。このアドレスは `--settings` の JSON の文字列の中身として起動の行に載り、Windows ではその行が `cmd.exe /C` を通って CLI へ届く。引数は自前の `"` を持つため、引用は各々を `\"` に直して全体を `"` で包む——`cmd.exe` は `\` を逃がしと読まず、`"` の数だけを数える。包んだ側の `"` が偶奇を反転させるため、**JSON の文字列の中身は `cmd.exe` から見て引用の外側に立つ**。そこでの `&` はコマンドの区切りであり、`?room=…&account=…` は起動の行をその位置で終わらせ、残りを別のコマンドとして走らせた——#151 が出したのはこの形であり、アカウントは一つも起動できなかった。したがってこのアドレスには `cmd.exe` が反応する文字を置かない：区分が `/` を担い、残りは percent encode が `%XX` にする。`%` だけは encode 自身のものとして残る（`%NAME%` の展開。未定義の名はコマンドラインでは素通しであり、id は uuid で encode の対象にならない。両側とも未計測）。
 
 **席は アドレスが名指す。** hook の入力が運ぶのは CLI のセッション id であって、このアプリが席を鍵にしている（トピック, アカウント）ではない。`{session_id}` の置換子を書いていないアカウントにはセッション id がそもそも配られない（上記「トピック」の決定4B）。起動はどちらも知っているため、起動が書く。
 
