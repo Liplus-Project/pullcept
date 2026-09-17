@@ -343,9 +343,31 @@ pub const LIMITED_HOOK_PATH: &str = "/hooks/limited";
 ///
 /// Loopback and the room's own port: one listener, which answers a WebSocket
 /// upgrade as the room and a POST as this (`room.rs`).
+///
+/// **The two halves are path segments, and the address carries no query**
+/// (#152). This URL is a JSON string value inside the `--settings` argument,
+/// and on Windows that argument reaches the CLI through `cmd.exe /C`
+/// (`pty::spawn_pty_with_env`). The argument holds `"` of its own, so the
+/// quoting escapes each as `\"` and wraps the whole in `"` — and `cmd.exe`
+/// does not read `\` as an escape, it only counts `"`. The wrapping quote
+/// therefore inverts the parity: every JSON string's *contents* sit outside
+/// `cmd.exe`'s quotes, where `&` is a command separator. A `?room=…&account=…`
+/// ends the launch line at the `&` and runs the rest as a command, which is
+/// what #151 shipped and what stopped every account from starting.
+///
+/// So nothing on this address may be a character `cmd.exe` acts on. Segments
+/// keep it to `/`, and `percent_encode` covers the rest: an id carrying `&`,
+/// `|`, `<`, `>`, `^`, `(`, `)` or `/` arrives here as `%XX`. Do not put the
+/// halves back in a query — the same break returns.
+///
+/// `%` is the one character left standing, and it is the encoding's own.
+/// `cmd.exe` expands `%NAME%`, so two adjacent escapes are a lookup of the
+/// text between them — undefined names are left alone on a command line, and
+/// the ids this is called with are uuids, which `percent_encode` does not
+/// touch at all. Not closed, and measured on neither side.
 pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
     format!(
-        "http://127.0.0.1:{port}{LIMITED_HOOK_PATH}?room={}&account={}",
+        "http://127.0.0.1:{port}{LIMITED_HOOK_PATH}/{}/{}",
         percent_encode(room_id),
         percent_encode(account_id)
     )
@@ -357,24 +379,21 @@ pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
 /// The inverse of `limited_hook_url`, kept beside it so the two cannot drift:
 /// the URL is written into a launch line in one place and read off a socket in
 /// another.
+///
+/// A query is dropped before the path is read, because a request target may
+/// carry one whatever this app writes. Nothing above it is: the path is the
+/// hook's path and exactly two more segments, and a third segment names no
+/// seat. `percent_encode` leaves no `/` inside a half, so the split cannot cut
+/// an id in two.
 pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
-    let (path, query) = target.split_once('?')?;
-    if path != LIMITED_HOOK_PATH {
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    let rest = path.strip_prefix(LIMITED_HOOK_PATH)?.strip_prefix('/')?;
+    let (room, account) = rest.split_once('/')?;
+    if account.contains('/') {
         return None;
     }
-    let mut room = None;
-    let mut account = None;
-    for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        let value = percent_decode(value)?;
-        match key {
-            "room" => room = Some(value),
-            "account" => account = Some(value),
-            _ => {}
-        }
-    }
-    let room = room.filter(|id| !id.is_empty())?;
-    let account = account.filter(|id| !id.is_empty())?;
+    let room = percent_decode(room).filter(|id| !id.is_empty())?;
+    let account = percent_decode(account).filter(|id| !id.is_empty())?;
     Some((room, account))
 }
 
@@ -1473,24 +1492,47 @@ mod tests {
             parse_limited_hook_target(target),
             Some((ROOM.to_string(), LIN.to_string()))
         );
-        // An id is opaque to the app; one that is not a uuid still comes back
-        // whole, separators and all.
-        let odd = "a&b=c d/%";
-        let url = limited_hook_url(1, "部屋 1", odd);
-        let target = url.strip_prefix("http://127.0.0.1:1").expect("prefix");
-        assert_eq!(
-            parse_limited_hook_target(target),
-            Some(("部屋 1".to_string(), odd.to_string()))
-        );
     }
 
     #[test]
     fn a_target_that_is_not_the_limit_hook_names_no_seat() {
         assert_eq!(parse_limited_hook_target("/hooks/limited"), None);
-        assert_eq!(parse_limited_hook_target("/other?room=a&account=b"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited?room=a"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited?room=&account=b"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited?room=%zz&account=b"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited/"), None);
+        assert_eq!(parse_limited_hook_target("/other/a/b"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited-x/a/b"), None);
+        // One half is not a seat, and neither is an empty one.
+        assert_eq!(parse_limited_hook_target("/hooks/limited/a"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited//b"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited/a/"), None);
+        // A third segment names no seat: `percent_encode` writes no `/` inside
+        // a half, so this is not one.
+        assert_eq!(parse_limited_hook_target("/hooks/limited/a/b/c"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited/%zz/b"), None);
+        // The query form #151 shipped is not read back as a seat (#152).
+        assert_eq!(parse_limited_hook_target("/hooks/limited?room=a&account=b"), None);
+    }
+
+    #[test]
+    fn the_limit_hook_address_carries_nothing_a_windows_shell_acts_on() {
+        // The address rides in the `--settings` JSON, which reaches the CLI
+        // through `cmd.exe /C` on Windows, and the quoting puts every JSON
+        // string's contents outside `cmd.exe`'s quotes (see
+        // `limited_hook_url`). A `&` there ended the launch line and no
+        // account could start (#152).
+        let odd = "a&b|c<d>e^f(g)h i/j";
+        let url = limited_hook_url(62361, "部屋 1", odd);
+        for ch in ['&', '|', '<', '>', '^', '(', ')', '"', ' '] {
+            assert!(
+                !url.contains(ch),
+                "{ch:?} is acted on by cmd.exe and must not reach the launch line: {url}"
+            );
+        }
+        // Encoded rather than dropped: the halves still name the seat.
+        let target = url.strip_prefix("http://127.0.0.1:62361").expect("prefix");
+        assert_eq!(
+            parse_limited_hook_target(target),
+            Some(("部屋 1".to_string(), odd.to_string()))
+        );
     }
 
     #[test]
