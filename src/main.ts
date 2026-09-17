@@ -703,13 +703,23 @@ interface SessionView {
    * arrived (#82).
    */
   outputting: boolean;
+  /**
+   * True once this terminal has been observed silent for `OUTPUT_QUIET_MS`, and
+   * false again from the next byte.
+   *
+   * Not the negation of `outputting`. Both are false in the window before a
+   * silence has been timed — right after the session is attached, and after a
+   * reload picks a running session up again — and that window says nothing: 待機
+   * claims a silence this screen measured, never one it assumed (#148).
+   */
+  silent: boolean;
   /** The pending fall back to silence, or undefined when none is armed. */
   quiet: number | undefined;
 }
 
 /**
- * How long a terminal must stay silent before its row stops saying anything
- * about it, in milliseconds.
+ * How long a terminal must stay silent before its row stops saying that it is
+ * printing, and says 待機 instead (#148), in milliseconds.
  *
  * Both halves of this number are load-bearing. Long enough that the gaps inside
  * one burst of output — a TUI's spinner frame, a pause between two paragraphs of
@@ -1903,7 +1913,8 @@ function memberName(row: Member): string {
 // session that is asked something and then sits at a confirmation prompt never
 // answers, so 考え中 on the address alone would stand there for as long as the
 // app is open — which is exactly the shape the issue named as the worst one.
-// Silence is what this says instead, and silence is allowed to be wrong.
+// What stands there instead is 待機, and it claims only the silence itself —
+// a quiet window this screen timed — not what the CLI is silent about (#148).
 
 /**
  * Note that this session is printing, and arm its fall back to silence.
@@ -1912,15 +1923,28 @@ function memberName(row: Member): string {
  * time, and the panel is redrawn only on the edge where the word appears.
  */
 function markOutput(view: SessionView): void {
+  armQuiet(view);
+  view.silent = false;
+  if (view.outputting) return;
+  view.outputting = true;
+  renderPanel();
+}
+
+/**
+ * Start (or restart) the clock that turns this terminal's silence into 待機.
+ *
+ * Armed by every byte, and once when the session is attached, so a session that
+ * prints nothing at all after starting still reaches 待機 after one quiet window
+ * rather than saying nothing forever (#148).
+ */
+function armQuiet(view: SessionView): void {
   if (view.quiet !== undefined) clearTimeout(view.quiet);
   view.quiet = window.setTimeout(() => {
     view.quiet = undefined;
     view.outputting = false;
+    view.silent = true;
     renderPanel();
   }, OUTPUT_QUIET_MS);
-  if (view.outputting) return;
-  view.outputting = true;
-  renderPanel();
 }
 
 /**
@@ -1934,6 +1958,7 @@ function stopOutput(view: SessionView): void {
   if (view.quiet !== undefined) clearTimeout(view.quiet);
   view.quiet = undefined;
   view.outputting = false;
+  view.silent = false;
 }
 
 /**
@@ -1989,8 +2014,14 @@ function pruneAwaiting(topicId: string): void {
 /**
  * What a running account is doing, in the one word the row has room for.
  *
- * 考え中… when the room is waiting on this name, 出力中 otherwise, and nothing at
- * all while the terminal is quiet.
+ * 考え中… when the room is waiting on this name, 出力中 otherwise, and 待機 once
+ * the terminal has been silent for a whole quiet window (#148).
+ *
+ * 待機 says that the terminal is silent and nothing more. A CLI waiting for input,
+ * one stopped at a confirmation prompt and one stopped by a usage limit all read
+ * as 待機 — telling them apart means reading what the CLI printed, which #82
+ * refused and #148 keeps refused. It is left uncoloured: the coloured words are
+ * the ones that say an utterance is still under way, and 待機 is where that ends.
  *
  * The order is not a preference between two equal signals. Both words stand on
  * the same observation — this terminal is printing — and the address is what says
@@ -2006,8 +2037,9 @@ function pruneAwaiting(topicId: string): void {
  * so neither buys anything back at the panel's 16.5rem (#71).
  */
 function activityNote(name: string, view: SessionView | undefined): string {
-  if (!view || view.ended !== null || !view.outputting) return "";
-  return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
+  if (!view || view.ended !== null) return "";
+  if (view.outputting) return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
+  return view.silent ? "待機" : "";
 }
 
 /**
@@ -2055,6 +2087,8 @@ function memberRow(row: Member): HTMLLIElement {
   // What this line says about itself beyond the name. Someone present and not
   // oneself says what they are doing, when this screen can observe it, and
   // otherwise says nothing — being in the list is what it would have said (#82).
+  // A terminal timed silent is something this screen observes, so 待機 is said
+  // here too (#148); the window before that silence is timed still says nothing.
   //
   // One note, in one place. 未起動 and 考え中… are mutually exclusive states of
   // the same account, so they need no second slot, and the two fixed tracks #71
@@ -2065,7 +2099,7 @@ function memberRow(row: Member): HTMLLIElement {
   else if (launching) noteText = "起動中";
   else if (row.participant) {
     noteText = activityNote(name, view);
-    if (noteText) noteKind = "active";
+    if (noteText && noteText !== "待機") noteKind = "active";
   } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
@@ -3017,6 +3051,7 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // starts here too: its terminal is new even though its process is not, so
     // what this screen can say about it begins at the next byte (#86).
     outputting: false,
+    silent: false,
     quiet: undefined,
   };
 
@@ -3124,6 +3159,9 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
       markOutput(view);
     }),
   );
+  // From here the silence is being timed. A session that has printed nothing
+  // yet reaches 待機 after one quiet window, the same as one that stopped (#148).
+  if (view.ended === null && view.quiet === undefined) armQuiet(view);
   view.unlisten.push(
     await listen<number | null>(`pty-exit-${ptyId}`, (event) => {
       const code = event.payload;
