@@ -322,6 +322,127 @@ fn project_slug(cwd: &str) -> Option<String> {
     (slug.len() <= SLUG_LIMIT).then_some(slug)
 }
 
+/// The environment variable a launched CLI carries the room token in.
+///
+/// Set on the spawned process rather than written onto the line, because the
+/// line is shown on screen (`preview_launch_args`) and the token is what makes
+/// the room this room. The hook below names the variable, and the CLI resolves
+/// it into the header when the hook fires (#149).
+pub const ROOM_TOKEN_ENV: &str = "PULLCEPT_ROOM_TOKEN";
+
+/// The path the app answers a session's usage-limit signal on.
+pub const LIMITED_HOOK_PATH: &str = "/hooks/limited";
+
+/// Where one seat's usage-limit hook posts to.
+///
+/// **The seat is named in the address, and not read out of what the CLI sends**
+/// (#149, decision 3). The CLI's hook input names its own session id, which is
+/// not what the app keys a seat on — a seat is a topic and an account, and a
+/// launch with no `{session_id}` placeholder has no id the app knows at all.
+/// The launch knows both halves, so the launch writes them here.
+///
+/// Loopback and the room's own port: one listener, which answers a WebSocket
+/// upgrade as the room and a POST as this (`room.rs`).
+pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}{LIMITED_HOOK_PATH}?room={}&account={}",
+        percent_encode(room_id),
+        percent_encode(account_id)
+    )
+}
+
+/// The seat a request target names, as `(room id, account id)`, or `None` when
+/// it is not the usage-limit path or does not name both halves.
+///
+/// The inverse of `limited_hook_url`, kept beside it so the two cannot drift:
+/// the URL is written into a launch line in one place and read off a socket in
+/// another.
+pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
+    let (path, query) = target.split_once('?')?;
+    if path != LIMITED_HOOK_PATH {
+        return None;
+    }
+    let mut room = None;
+    let mut account = None;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        let value = percent_decode(value)?;
+        match key {
+            "room" => room = Some(value),
+            "account" => account = Some(value),
+            _ => {}
+        }
+    }
+    let room = room.filter(|id| !id.is_empty())?;
+    let account = account.filter(|id| !id.is_empty())?;
+    Some((room, account))
+}
+
+/// Every byte outside the unreserved set as `%XX`.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// `%XX` back to bytes, or `None` for a malformed escape or a result that is not
+/// UTF-8. Nothing else is interpreted: `+` is a plus.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The `hooks` value that has the CLI tell the app its turn stopped on a usage
+/// limit.
+///
+/// `StopFailure`, matched on the error type `rate_limit` and on nothing else
+/// (#149, decision 1): the event fires when a turn ends on an API error, and the
+/// matcher is what narrows it to the limit. Nothing the CLI printed is read —
+/// the signal is the hook firing at this address (#82).
+///
+/// An HTTP hook rather than a command: the app is already listening, and a
+/// command would start a process per signal and put a shell between the CLI
+/// and the app. The token reaches the header through the environment
+/// (`ROOM_TOKEN_ENV`), so the line carries the variable's name and not its
+/// value.
+///
+/// Added to the user's and the project's hooks rather than in place of them:
+/// hook entries merge across settings levels, and `--settings` is merged by the
+/// same rules as the files (Claude Code docs, `hooks` and `settings`, read
+/// 2026-09-17; not measured on a live CLI).
+pub fn limited_hook_settings(url: &str) -> Value {
+    json!({
+        "StopFailure": [{
+            "matcher": "rate_limit",
+            "hooks": [{
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}") },
+                "allowedEnvVars": [ROOM_TOKEN_ENV],
+                "timeout": 5,
+            }],
+        }],
+    })
+}
+
 /// The character an account speaks as, or `None` when it declares none.
 ///
 /// Blank is the same state as absent. The field is a text input on the screen,
@@ -382,11 +503,18 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// and the approval is not allowed to widen that refusal onto a line that ran
 /// before it. Such a line approves through its own settings, or answers the
 /// prompt.
+///
+/// `limited_hook` is the address of this seat's usage-limit signal
+/// (`limited_hook_url`), or `None` when the room has no port to name yet. It
+/// rides the same way the approval does, and under the same exception: a line
+/// left untouched above carries no hook, and its row does not say 制限中
+/// (#149). Widening the refusal for it would stop a line that ran before.
 pub fn settings_launch_args(
     base: &[String],
     character: Option<&str>,
     own_server: &str,
     disabled: &[String],
+    limited_hook: Option<&str>,
 ) -> Vec<String> {
     let mut args = base.to_vec();
     let character = declared_character(character);
@@ -400,6 +528,9 @@ pub fn settings_launch_args(
     settings.insert("enabledMcpjsonServers".into(), json!([own_server]));
     if !disabled.is_empty() {
         settings.insert("disabledMcpjsonServers".into(), json!(disabled));
+    }
+    if let Some(url) = limited_hook {
+        settings.insert("hooks".into(), limited_hook_settings(url));
     }
     args.push(SETTINGS_FLAG.to_string());
     args.push(Value::Object(settings).to_string());
@@ -418,12 +549,14 @@ pub fn launch_args(
     server_name: &str,
     character: Option<&str>,
     disabled: &[String],
+    limited_hook: Option<&str>,
 ) -> Vec<String> {
     settings_launch_args(
         &channel_launch_args(base, server_name),
         character,
         server_name,
         disabled,
+        limited_hook,
     )
 }
 
@@ -1093,7 +1226,7 @@ mod tests {
     #[test]
     fn a_declared_character_rides_in_settings_json() {
         let args =
-            settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &own(), &[]);
+            settings_launch_args(&["--verbose".to_string()], Some("character_Lay"), &own(), &[], None);
         assert_eq!(args.len(), 3);
         assert_eq!(args[0], "--verbose");
         assert_eq!(args[1], SETTINGS_FLAG);
@@ -1107,7 +1240,7 @@ mod tests {
     fn a_character_with_a_quote_in_it_stays_one_json_string() {
         // Built rather than formatted, so a name that would otherwise close the
         // string early cannot make the value stop being JSON.
-        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[]);
+        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[], None);
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
     }
@@ -1120,7 +1253,7 @@ mod tests {
         // line carried the bypass flag; a resume line without it stopped
         // (#143). Approved on every line, so the two lines are one state.
         let resume = split_launch_options("--resume 0f5a-uuid");
-        let line = launch_args(&resume, &own(), None, &[]);
+        let line = launch_args(&resume, &own(), None, &[], None);
         let at = line
             .iter()
             .position(|arg| arg == SETTINGS_FLAG)
@@ -1137,7 +1270,7 @@ mod tests {
         // Absent and blank are one state: a cleared field must not launch
         // `{"outputStyle":""}`, which names no style at all.
         for character in [None, Some(""), Some("   ")] {
-            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[]);
+            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[], None);
             let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
             assert!(settled.get("outputStyle").is_none(), "{character:?}");
         }
@@ -1150,10 +1283,10 @@ mod tests {
         // where a character or a sibling needs the flag, so a line that ran
         // before the approval was added runs the same after it.
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
-        assert_eq!(settings_launch_args(&base, None, &own(), &[]), base);
-        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[]), base);
+        assert_eq!(settings_launch_args(&base, None, &own(), &[], None), base);
+        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[], None), base);
         let written = vec!["--settings=C:/x/settings.json".to_string()];
-        assert_eq!(settings_launch_args(&written, None, &own(), &[]), written);
+        assert_eq!(settings_launch_args(&written, None, &own(), &[], None), written);
     }
 
     #[test]
@@ -1162,7 +1295,7 @@ mod tests {
         // its own room server would be a session with no room (#103).
         let lay = server_name_for(LAY, ROOM);
         let args =
-            settings_launch_args(&[], Some("character_Lin"), &own(), std::slice::from_ref(&lay));
+            settings_launch_args(&[], Some("character_Lin"), &own(), std::slice::from_ref(&lay), None);
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
         assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
@@ -1179,6 +1312,7 @@ mod tests {
             None,
             &own(),
             std::slice::from_ref(&lay),
+            None,
         );
         assert_eq!(args[0], "--verbose");
         assert_eq!(args[1], SETTINGS_FLAG);
@@ -1280,6 +1414,7 @@ mod tests {
             &room,
             Some("character_Lin"),
             &[],
+            None,
         );
         assert_eq!(
             line[..4],
@@ -1310,6 +1445,7 @@ mod tests {
             &room,
             Some("character_Lin"),
             std::slice::from_ref(&lay),
+            None,
         );
         assert_eq!(line[0], CHANNEL_FLAG);
         assert_eq!(line[1], format!("server:{room}"));
@@ -1322,6 +1458,81 @@ mod tests {
             json!(room),
             "the server the channel flag just named must not be disabled"
         );
+    }
+
+    #[test]
+    fn the_limit_hook_names_the_seat_it_was_launched_for() {
+        // The seat is a topic and an account, and the CLI's own hook input
+        // carries neither — so the address carries both, and reading it back
+        // has to land on the same pair (#149).
+        let url = limited_hook_url(1234, ROOM, LIN);
+        let target = url
+            .strip_prefix("http://127.0.0.1:1234")
+            .expect("loopback, on the room's port");
+        assert_eq!(
+            parse_limited_hook_target(target),
+            Some((ROOM.to_string(), LIN.to_string()))
+        );
+        // An id is opaque to the app; one that is not a uuid still comes back
+        // whole, separators and all.
+        let odd = "a&b=c d/%";
+        let url = limited_hook_url(1, "部屋 1", odd);
+        let target = url.strip_prefix("http://127.0.0.1:1").expect("prefix");
+        assert_eq!(
+            parse_limited_hook_target(target),
+            Some(("部屋 1".to_string(), odd.to_string()))
+        );
+    }
+
+    #[test]
+    fn a_target_that_is_not_the_limit_hook_names_no_seat() {
+        assert_eq!(parse_limited_hook_target("/hooks/limited"), None);
+        assert_eq!(parse_limited_hook_target("/other?room=a&account=b"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited?room=a"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited?room=&account=b"), None);
+        assert_eq!(parse_limited_hook_target("/hooks/limited?room=%zz&account=b"), None);
+    }
+
+    #[test]
+    fn the_limit_hook_rides_in_settings_and_fires_on_the_rate_limit_only() {
+        let url = limited_hook_url(1234, ROOM, LIN);
+        let line = launch_args(&[], &own(), None, &[], Some(&url));
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        let groups = settled["hooks"]["StopFailure"].as_array().expect("StopFailure");
+        assert_eq!(groups.len(), 1);
+        // Decision 1: the limit, and no other API error.
+        assert_eq!(groups[0]["matcher"], json!("rate_limit"));
+        let hook = &groups[0]["hooks"][0];
+        assert_eq!(hook["type"], json!("http"));
+        assert_eq!(hook["url"], json!(url));
+        // The variable's name is on the line, never the token: the line is
+        // drawn on screen.
+        assert_eq!(
+            hook["headers"]["Authorization"],
+            json!(format!("Bearer ${{{ROOM_TOKEN_ENV}}}"))
+        );
+        assert_eq!(hook["allowedEnvVars"], json!([ROOM_TOKEN_ENV]));
+        // Nothing else of the hooks is declared, so nothing of the person's
+        // own is named here to be replaced.
+        assert_eq!(settled["hooks"].as_object().expect("hooks").len(), 1);
+    }
+
+    #[test]
+    fn a_line_with_no_room_port_carries_no_hook() {
+        let line = launch_args(&[], &own(), None, &[], None);
+        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
+        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
+        assert!(settled.get("hooks").is_none());
+    }
+
+    #[test]
+    fn a_line_left_alone_for_its_own_settings_carries_no_hook_either() {
+        // The hook does not widen the two-`--settings` refusal any more than
+        // the approval does (#143 / #149).
+        let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
+        let url = limited_hook_url(1234, ROOM, LIN);
+        assert_eq!(settings_launch_args(&base, None, &own(), &[], Some(&url)), base);
     }
 
     #[test]

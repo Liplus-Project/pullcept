@@ -13,9 +13,9 @@ use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use crate::room_log::{self, TopicRef};
 use mcp_config::{
-    declared_character, declares_session_id, declares_settings, launch_args, other_room_servers,
-    register_sidecar, reject_incompatible_flags, server_name_for, split_launch_options,
-    substitute_session_id, transcript_path, RoomRegistration,
+    declared_character, declares_session_id, declares_settings, launch_args, limited_hook_url,
+    other_room_servers, register_sidecar, reject_incompatible_flags, server_name_for,
+    split_launch_options, substitute_session_id, transcript_path, RoomRegistration, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -335,6 +335,11 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
 /// needs to see that before starting. A directory that does not exist yet, or
 /// a room not listening, names nothing — the preview answers for what it can
 /// see, and the launch reads the directory again for itself.
+///
+/// The usage-limit hook is on the line too (#149), addressed to this seat on the
+/// room's port. A room not listening names no port, so the preview shows the
+/// line without it — which is also the line a launch could not run at all, since
+/// a launch with no port is refused below.
 #[tauri::command]
 pub fn preview_launch_args(
     room: tauri::State<RoomState>,
@@ -358,7 +363,16 @@ pub fn preview_launch_args(
             .ok()
         })
         .unwrap_or_default();
-    launch_args(&args, &server_name, character.as_deref(), &others)
+    let hook = room
+        .port()
+        .map(|port| limited_hook_url(port, &topic_id, account_id.trim()));
+    launch_args(
+        &args,
+        &server_name,
+        character.as_deref(),
+        &others,
+        hook.as_deref(),
+    )
 }
 
 /// The line one launch runs, resolved against the topic it is being started
@@ -755,6 +769,7 @@ pub fn start_session(
         &others,
         &server_name,
         &room_url,
+        port,
         &cwd,
         &topic.topic_id,
         unseen_history,
@@ -845,6 +860,10 @@ fn launch(
     // session running on it (#53).
     server_name: &str,
     room_url: &str,
+    // The port `room_url` names, as the caller read it. Read again here it
+    // could be a different run's, and the hook on the line would then be
+    // addressed somewhere other than the room this session was registered into.
+    room_port: u16,
     cwd: &Path,
     // The topic this launch is going into, carried through so the answer names
     // the topic a failed resume would have to be undone on (#127).
@@ -872,7 +891,11 @@ fn launch(
     )?;
 
     let started_at = crate::room::now_iso();
-    let pty_id = pty::spawn_pty(
+    // Where this seat's usage limit is reported, and it is this seat's own: the
+    // address carries the topic and the account, because the CLI's hook input
+    // carries neither (#149, decision 3).
+    let hook = limited_hook_url(room_port, topic_id, &account.id);
+    let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
         line.command.clone(),
@@ -880,7 +903,11 @@ fn launch(
         // is what spawns. Nothing is written for the settings: `--settings`
         // takes the JSON inline, and a file per account would grow the very
         // directory this account is sharing (#99).
-        launch_args(&line.args, server_name, character, others),
+        launch_args(&line.args, server_name, character, others, Some(&hook)),
+        // The token the hook presents, in the environment rather than in the
+        // header on the line: the line is drawn on screen, and the token is
+        // what makes the room this room (#149).
+        &[(ROOM_TOKEN_ENV, room.token())],
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),
