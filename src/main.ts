@@ -316,6 +316,23 @@ interface StartedSession {
 }
 
 /**
+ * What a launch would do with each value the account form holds (#154, 決定4).
+ *
+ * Four answers because what a value costs differs by which one it is: a
+ * character and launch options the Windows launch line cannot carry are left
+ * off it and the session still starts, while a command it cannot carry is a
+ * session that does not start at all. The judgment is the app's — the same
+ * functions the launch itself goes through — and the sentences are here,
+ * because they are read here.
+ */
+interface LaunchFieldReport {
+  character: boolean;
+  options: boolean;
+  command: boolean;
+  resume: boolean;
+}
+
+/**
  * What is running under one held seat, as the app reports it.
  *
  * The same facts a `SessionView` holds, from the side that survives a reload of
@@ -518,6 +535,7 @@ const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputEl
 const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
 const dialogResumeFieldEl = document.getElementById("dialog-resume-field") as HTMLElement;
 const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
+const dialogNoticeEl = document.getElementById("dialog-notice") as HTMLElement;
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
 const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
 const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
@@ -3644,7 +3662,7 @@ function showDialogKind(): void {
   const kind = dialogKindEl.value as AccountKind;
   dialogLaunchEl.hidden = kind === "user";
   dialogResumeFieldEl.hidden = kind !== "cli";
-  if (kind !== "user") void refreshDialogPreview();
+  if (kind !== "user") refreshDialogLine();
 }
 
 /**
@@ -3696,6 +3714,90 @@ async function refreshDialogPreview(): Promise<void> {
   }
 }
 
+/** The characters `cmd.exe` acts on, as the sentences below name them. */
+const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
+
+/**
+ * Say what a launch would do with what the form holds (#154, 決定4).
+ *
+ * The line that runs is drawn above this, and it is where the result is
+ * visible — an account whose character was left off it shows a line with no
+ * `outputStyle` in the JSON, and one whose options were left off shows a line
+ * without them. That is legible once the person already knows what to look
+ * for. This says it: what is missing from that line, and what happens at 起動.
+ *
+ * It does not refuse anything. The value is one the person wrote and the
+ * account saves as written — what they can act on is knowing, before the
+ * launch, which of these four things it will do. The launch itself refuses the
+ * two it has to (`session::start_session`), and that refusal is the authority;
+ * this only gets there first, at the moment it can be fixed rather than at the
+ * moment it fails — the shape the two-`--settings` check here already has
+ * (#99).
+ */
+async function refreshDialogNotice(): Promise<void> {
+  const kind = dialogKindEl.value as AccountKind;
+  if (!draft || kind === "user") {
+    dialogNoticeEl.textContent = "";
+    return;
+  }
+  const id = draft.id;
+  try {
+    const report = await invoke<LaunchFieldReport>("launch_field_report", {
+      character: dialogCharacterEl.value.trim() || null,
+      options: dialogOptionsEl.value,
+      // The draft's, because no field writes it: it is the command the kind
+      // names (`config.rs`), and an account carrying one from an older file is
+      // the way an unlaunchable one is reached.
+      command: draft.command,
+      // Only where the field is the answer. On a kind that holds its own way
+      // back, a line stored here is not the one that runs (#156, 決定6).
+      resume: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
+    });
+    if (draft?.id !== id) return;
+    const said: string[] = [];
+    if (!report.character) {
+      said.push(
+        "キャラクター名に、Windows の起動の行へ載せられない文字があります。" +
+          "保存はできますが、起動時はキャラクターを指定せず、作業ディレクトリの既定で立ちます" +
+          "（載せられるのは ASCII の英数字と空白と / : . _ - です）。",
+      );
+    }
+    if (!report.options) {
+      said.push(
+        `起動オプションに、Windows の起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
+          "保存はできますが、起動時はこの欄を丸ごと載せずに起動します。",
+      );
+    }
+    if (!report.command) {
+      said.push(
+        `このアカウントの起動コマンドに、起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
+          "このままでは起動できません。",
+      );
+    }
+    if (!report.resume) {
+      said.push(
+        `再開コマンドに、起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
+          "載せずに起動すれば戻る先へ戻らないため、このトピックが持つセッションへは戻れません。",
+      );
+    }
+    dialogNoticeEl.textContent = said.join("\n");
+  } catch {
+    dialogNoticeEl.textContent = "";
+  }
+}
+
+/**
+ * Redraw both halves of what the form says about the line that would run.
+ *
+ * One call rather than two at each field, so a field wired to one of them
+ * cannot be missing the other — which is the same reason the line itself is
+ * composed in one place (`mcp_config::launch_args`).
+ */
+function refreshDialogLine(): void {
+  void refreshDialogPreview();
+  void refreshDialogNotice();
+}
+
 /**
  * Open the form on one account, or on a new one when given none.
  *
@@ -3743,6 +3845,9 @@ function openAccountDialog(account: Account | null): void {
   dialogDeleteEl.hidden = account === null;
   disarmDelete();
   dialogError("");
+  // Cleared before the round trip that refills it, so the account being opened
+  // is never read against the last one's notice.
+  dialogNoticeEl.textContent = "";
   showDialogKind();
   dialogEl.showModal();
   dialogNameEl.focus();
@@ -4108,13 +4213,17 @@ async function main(): Promise<void> {
   accountNewEl.addEventListener("click", () => openAccountDialog(null));
   sessionIdCopyEl.addEventListener("click", () => void copySessionId());
   dialogKindEl.addEventListener("change", () => showDialogKind());
-  dialogOptionsEl.addEventListener("input", () => void refreshDialogPreview());
+  dialogOptionsEl.addEventListener("input", () => refreshDialogLine());
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
-  dialogCharacterEl.addEventListener("input", () => void refreshDialogPreview());
+  dialogCharacterEl.addEventListener("input", () => refreshDialogLine());
   // So does the working directory: which registrations the line stops is read
   // out of the directory it is pointed at (#103).
-  dialogCwdEl.addEventListener("input", () => void refreshDialogPreview());
+  dialogCwdEl.addEventListener("input", () => refreshDialogLine());
+  // The resume line is not in the preview — the preview answers for a fresh
+  // launch — but it is a line that runs, and what it cannot carry is a topic
+  // this account cannot go back into (#154, 決定4).
+  dialogResumeEl.addEventListener("input", () => refreshDialogLine());
   // Anything but the second click of 削除 disarms it: an arm left standing is
   // one that an unrelated click fires later.
   for (const field of [

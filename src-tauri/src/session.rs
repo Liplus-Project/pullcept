@@ -13,10 +13,11 @@ use crate::pty::{self, PtyState};
 use crate::room::RoomState;
 use crate::room_log::{self, TopicRef};
 use mcp_config::{
-    declared_character, declares_session_id, declares_settings, launch_args, limited_hook_url,
-    other_room_servers, register_sidecar, reject_incompatible_flags, server_name_for,
-    session_id_launch_args, split_launch_options, status_hook_url, status_line_command,
-    substitute_session_id, Cli, RoomRegistration, ROOM_TOKEN_ENV,
+    carried_launch_options, console_safe, declared_character, declares_session_id,
+    declares_settings, launch_args, limited_hook_url, other_room_servers, register_sidecar,
+    reject_incompatible_flags, server_name_for, session_id_launch_args, split_launch_options,
+    status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
+    ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -360,6 +361,57 @@ pub fn parse_launch_options(text: String) -> Vec<String> {
     mcp_config::split_launch_options(&text)
 }
 
+/// What a launch would do with each value the form holds (#154, 決定4).
+///
+/// Four answers rather than one, because what is at stake differs per field:
+/// three of them cost what they name and the fourth costs the launch. The form
+/// says which before 決定, and saving is still allowed — the person is the one
+/// who can tell whether a name they meant is worth rewriting.
+#[derive(serde::Serialize)]
+pub struct LaunchFieldReport {
+    /// The character will be selected, or the session speaks as the working
+    /// directory's own default.
+    pub character: bool,
+    /// The launch options are on the line, or none of them are.
+    pub options: bool,
+    /// The account's command can be written onto the line at all.
+    pub command: bool,
+    /// The resume line can be, or there is none.
+    pub resume: bool,
+}
+
+/// Answer for the four, through the same functions the launch goes through.
+///
+/// The judgment stays in Rust for the reason the splitter does
+/// (`parse_launch_options`): a second copy in TypeScript is one that drifts
+/// from the tested one, and this one is the character set two of these fields
+/// are refused by. The sentences are the screen's — they are read in Japanese,
+/// and which of them to show is what these four booleans decide.
+#[tauri::command]
+pub fn launch_field_report(
+    character: Option<String>,
+    options: String,
+    command: String,
+    resume: Option<String>,
+) -> LaunchFieldReport {
+    let character = character.unwrap_or_default();
+    let character = character.trim();
+    let options = split_launch_options(&options);
+    let resume = split_launch_options(resume.as_deref().unwrap_or_default());
+    LaunchFieldReport {
+        // Blank declares no character, and declaring none is not a refusal —
+        // the working directory's own default is an answer (#99).
+        character: character.is_empty() || declared_character(Some(character)).is_some(),
+        // As many as were written, since the set is carried whole or not at all.
+        options: carried_launch_options(&options).len() == options.len(),
+        command: console_safe(&command),
+        // The whole line, because the whole line is what is refused: its
+        // arguments are how it goes back, and a resume that lost them is a
+        // fresh session (`start_session`).
+        resume: resume.iter().all(|word| console_safe(word)),
+    }
+}
+
 /// The arguments a launch would actually use, for display.
 ///
 /// The app merges its own channel entry into what the person wrote and selects
@@ -610,7 +662,13 @@ fn resolve_launch(
     // Asked of the line as the launch will carry it, not of the options as the
     // person wrote them: on a kind whose CLI hands the id over itself, an
     // account that writes nothing at all still has somewhere to put one (#156).
-    if declares_session_id(&session_id_launch_args(&account.args, cli)) {
+    // Options the line cannot carry are left off whole (#154), and a placeholder
+    // that went with them is not somewhere to put an id — minting one anyway
+    // would record on the topic a session the CLI was never handed.
+    if declares_session_id(&session_id_launch_args(
+        carried_launch_options(&account.args),
+        cli,
+    )) {
         let session_id = uuid::Uuid::new_v4().to_string();
         return Ok(LaunchLine {
             command: account.command.clone(),
@@ -783,6 +841,29 @@ pub fn start_session(
     // is handed over is that there is some.
     let unseen_history = launch_line.resumed_from.is_none()
         && room_log::topic_has_posts(&app, &topic.topic_id);
+
+    // The one value on this line with no way of being left off (#154, 決定3).
+    // A character the line cannot carry costs the character and launch options
+    // it cannot carry cost the options, because in both cases there is a line
+    // left to run; a command that cannot be written onto the line leaves none.
+    // Said in the language it is read in: this reaches the screen whole, inside
+    // a Japanese sentence (`main.ts`, `startSession`).
+    if !console_safe(&launch_line.command) {
+        return Err(format!(
+            "「{name}」の起動コマンド `{}` には、Windows の起動の行に載せられない文字があります（`& | < > ^ ( ) \"`）。この行は `cmd.exe` を通るため、そこでコマンドが途中で切れます。",
+            launch_line.command
+        ));
+    }
+    // A resume line is one line the person wrote, and its arguments are how it
+    // goes back: dropping them the way launch options are dropped would leave
+    // the resume command starting a fresh session instead, which is the shape
+    // this app refuses everywhere — a launch that quietly did half of what was
+    // asked looks like it worked.
+    if launch_line.resumed_from.is_some() && !launch_line.args.iter().all(|arg| console_safe(arg)) {
+        return Err(format!(
+            "「{name}」の再開コマンドには、Windows の起動の行に載せられない文字があります（`& | < > ^ ( ) \"`）。載せずに起動すれば戻る先へ戻らないため、この起動は行いません。"
+        ));
+    }
 
     if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
