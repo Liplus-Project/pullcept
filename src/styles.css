@@ -1277,6 +1277,30 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* What a launch would do with a value the line cannot carry (#154). Not
+   `--danger`: the form can still be decided and the account can still be
+   saved, and a value the person meant is not an error of theirs.
+
+   It goes when there is nothing to say, rather than holding its line the way
+   the error below does. That one is empty most of the time and a jump under
+   it would move the buttons; this one is rare, and a bordered box standing
+   empty reads as something missing. */
+#account-dialog .notice {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 0.74rem;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+#account-dialog .notice:empty {
+  display: none;
+}
+
 /* Why the form cannot be decided yet, or why a delete was refused. Empty most
    of the time and holding its line, so the buttons do not jump when it fills. */
 #account-dialog .error {

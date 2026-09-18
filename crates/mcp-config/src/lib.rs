@@ -947,6 +947,66 @@ pub fn line_safe_text(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|ch| ch == ' ' || line_safe_char(ch))
 }
 
+/// Whether `cmd.exe` would take this text as written, rather than act on part
+/// of it (#154).
+///
+/// A different question from the two above, and asked of different values: the
+/// account's own command and the launch options its person wrote. Those are a
+/// command line, and the set above is not one a command line can be held to —
+/// a Windows path carries `\`, a flag carries `=`, and `{session_id}`, this
+/// app's own placeholder, carries braces. `cmd.exe` acts on none of them, so
+/// holding the person's line to that set would refuse what they meant and what
+/// runs today. The set above governs what this app composes and can do
+/// without; this one governs what it only carries.
+///
+/// Not a fourth spelling of that set (#154, 決定5). It is the other set — the
+/// characters `cmd.exe` acts on where they stand outside its quotes — and it
+/// is spelled once here: `seat_url` names them in prose and keeps its address
+/// clear of them through `percent_encode`.
+///
+/// `"` is in although `split_launch_options` leaves none inside an argument:
+/// the quoting escapes it as `\"` and `cmd.exe` counts it all the same, which
+/// inverts the parity for everything written after it (`seat_url`) — and the
+/// file these values are read from is the person's to edit by hand. Control
+/// characters are in because a line break ends the command line itself.
+///
+/// `%` is left standing, as it is on the address: `cmd.exe` expands `%NAME%`,
+/// an undefined name passes a command line untouched, and a person who wrote
+/// one wrote it to be expanded. Not closed, and measured on neither side.
+pub fn console_safe(text: &str) -> bool {
+    !text
+        .chars()
+        .any(|ch| matches!(ch, '&' | '|' | '<' | '>' | '^' | '(' | ')' | '"') || ch.is_control())
+}
+
+/// The person's launch options as the launch will carry them: all of them, or
+/// none at all (#154, 決定3 / 決定6).
+///
+/// The whole set rather than the one argument that fails. An option is a flag
+/// and the value after it, and dropping only the value leaves the flag to take
+/// the next argument on the line as its own — which by then is one this app
+/// put there. The person writes these as one field, so one field is what is
+/// not carried.
+///
+/// Nothing is repaired and nothing is partly carried. The value is the
+/// person's, and an app that drops a character out of the middle of it hands
+/// the CLI a line nobody wrote. What being left off costs is readable before
+/// it happens: the form says so while the field is being written
+/// (`session::launch_field_report`), and the line that would run is drawn
+/// beside it (`session::preview_launch_args`).
+///
+/// The launch is not stopped for it, the way the status line and the room's
+/// own name are not stopped for (#155 / #147). The one value with no way of
+/// being left off is the command, and that one does stop the launch
+/// (`session::start_session`).
+pub fn carried_launch_options(options: &[String]) -> &[String] {
+    if options.iter().all(|option| console_safe(option)) {
+        options
+    } else {
+        &[]
+    }
+}
+
 /// The program that runs the status-line script.
 ///
 /// By name, the way the sidecar's own `command` is (`spawn_form`): it is an
@@ -989,14 +1049,29 @@ pub fn status_line_settings(command: &str) -> Value {
     json!({ "type": "command", "command": command })
 }
 
-/// The character an account speaks as, or `None` when it declares none.
+/// The character an account speaks as, or `None` when it declares none — or
+/// when the launch line cannot carry the name (#154).
 ///
 /// Blank is the same state as absent. The field is a text input on the screen,
 /// so an account that had a character and lost it arrives here as an empty
 /// string rather than as nothing, and the two have to mean one thing or a
 /// cleared field would launch `{"outputStyle":""}`.
+///
+/// **A name the line cannot carry is the same state again**, and it is folded
+/// in here so that there is one answer rather than a check at each site. The
+/// name rides inside the `--settings` JSON, whose contents stand outside
+/// `cmd.exe`'s quotes (`seat_url`), and what may stand there is
+/// `line_safe_text`'s set — the app's own two values in that position are held
+/// to it already (#155 / #147). What is lost is the character: the session
+/// speaks as the working directory's own default, the way an account
+/// declaring none does. The launch is not lost (#154, 決定3), and the form
+/// says which of the two will happen before 決定
+/// (`session::launch_field_report`).
 pub fn declared_character(character: Option<&str>) -> Option<&str> {
-    character.map(str::trim).filter(|name| !name.is_empty())
+    character
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter(|name| line_safe_text(name))
 }
 
 /// The launch arguments carrying what this session declares about itself,
@@ -1118,6 +1193,12 @@ pub fn settings_launch_args(
 /// visible half of that — both are Claude Code's spelling, and a kind this app
 /// has established nothing about does not get them written onto its line on the
 /// chance that they fit (#156, 決定5).
+///
+/// `base` is the person's own options, and it enters as the line can carry it
+/// (`carried_launch_options`). Here rather than at each caller, for the reason
+/// the composition is here at all: the line shown on screen and the line
+/// spawned have to be the same line, and a step either one takes for itself is
+/// a step the other can be missing (#154).
 pub fn launch_args(
     base: &[String],
     cli: Option<Cli>,
@@ -1128,6 +1209,7 @@ pub fn launch_args(
     status_command: Option<&str>,
 ) -> Vec<String> {
     let reports = cli.is_some_and(Cli::reports_through_settings);
+    let base = carried_launch_options(base);
     settings_launch_args(
         &channel_launch_args(
             &system_prompt_launch_args(&session_id_launch_args(base, cli), cli, server_name),
@@ -1825,12 +1907,26 @@ mod tests {
     }
 
     #[test]
-    fn a_character_with_a_quote_in_it_stays_one_json_string() {
-        // Built rather than formatted, so a name that would otherwise close the
-        // string early cannot make the value stop being JSON.
-        let args = settings_launch_args(&[], Some(r#"quote"style"#), &own(), &[], None, None);
-        let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
-        assert_eq!(settled["outputStyle"], json!(r#"quote"style"#));
+    fn a_character_the_line_cannot_carry_is_not_carried_and_the_launch_stands() {
+        // A name holding a `"` stayed one JSON string — the value is built
+        // rather than formatted — and the JSON was still the argument whose
+        // contents stand outside `cmd.exe`'s quotes, where that `"` inverts the
+        // parity for everything after it (#152 / #154). Refused before it gets
+        // there, on the set the app's own two values in that position are held
+        // to (#155 / #147).
+        for name in [r#"quote"style"#, "style(1)", "a&b", "キャラクター"] {
+            assert_eq!(declared_character(Some(name)), None, "{name}");
+            let args = settings_launch_args(&[], Some(name), &own(), &[], None, None);
+            let at = args
+                .iter()
+                .position(|arg| arg == SETTINGS_FLAG)
+                .expect("the launch still stands, and still approves its own server");
+            let settled: Value = serde_json::from_str(&args[at + 1]).expect("valid JSON");
+            assert!(settled.get("outputStyle").is_none(), "{name}");
+            assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
+        }
+        // The set is `line_safe_text`'s, so a name holding a space is carried.
+        assert_eq!(declared_character(Some("character Lay")), Some("character Lay"));
     }
 
     #[test]
@@ -2739,6 +2835,68 @@ mod tests {
         for ch in ['&', '|', '<', '>', '^', '(', ')', '"', '%'] {
             assert!(!told.contains(ch), "{ch:?} must not reach the launch line: {told}");
         }
+    }
+
+    #[test]
+    fn what_the_console_acts_on_is_refused_and_what_it_reads_as_written_is_not() {
+        // The set this app carries the person's own line by (#154). Every
+        // character here is one `cmd.exe` acts on where it stands outside the
+        // quotes, and an argument holding no space is written onto the line
+        // bare (`append_quoted`).
+        for hazard in [
+            "C:/Program Files (x86)/cli/claude.cmd",
+            "a&b",
+            "a|b",
+            "a^b",
+            "a<b",
+            "a>b",
+            // Escaped as `\"` by the quoting, and counted all the same.
+            r#"say"hi"#,
+            "two\nlines",
+        ] {
+            assert!(!console_safe(hazard), "{hazard}");
+        }
+        // And the other direction, which is why this set is not the one above:
+        // each of these is a value the person meant, and `cmd.exe` acts on none
+        // of them. Holding their line to `line_safe_text` would drop all four.
+        for written in [
+            r"C:\Users\smile\AppData\Local\claude.cmd",
+            "--model=opus",
+            SESSION_ID_PLACEHOLDER,
+            "--add-dir C:/ゆーざ/proj",
+            // Left standing, as it is on the seat address: an undefined name
+            // passes a command line untouched, and a written one was written to
+            // be expanded.
+            "%USERPROFILE%/proj",
+            "",
+        ] {
+            assert!(console_safe(written), "{written}");
+            assert!(!line_safe_text(written) || written.is_empty());
+        }
+    }
+
+    #[test]
+    fn launch_options_the_line_cannot_carry_are_left_off_whole_and_the_launch_stands() {
+        // One argument fails and the field goes with it (#154, 決定3 / 決定6).
+        // Not the one argument: `--add-dir` alone would take the next argument
+        // on the line as its own, and the next one is this app's.
+        let base = split_launch_options("--add-dir C:/Program(1) --dangerously-skip-permissions");
+        assert_eq!(carried_launch_options(&base), &[] as &[String]);
+        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        assert!(!line.iter().any(|arg| arg.contains("Program(1)")), "{line:?}");
+        assert!(!line.iter().any(|arg| arg == "--dangerously-skip-permissions"), "{line:?}");
+        // What the room itself needs is still on it: the launch is not what is
+        // lost here, and the app's own additions were never the person's to
+        // break.
+        assert!(line.iter().any(|arg| arg == CHANNEL_FLAG), "{line:?}");
+        assert!(line.iter().any(|arg| arg == SETTINGS_FLAG), "{line:?}");
+        assert!(line.iter().any(|arg| arg == "--session-id"), "{line:?}");
+
+        // Nothing is dropped from a field the line can carry, whatever it holds.
+        let base = split_launch_options(r"--add-dir C:\proj --session-id {session_id}");
+        assert_eq!(carried_launch_options(&base), base.as_slice());
+        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        assert_eq!(&line[..base.len()], base.as_slice());
     }
 
     #[test]

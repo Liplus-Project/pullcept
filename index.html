@@ -432,6 +432,16 @@
                  the line that launches; showing the result is cheaper than
                  explaining the merge. It sits beside the field it explains. -->
             <span id="dialog-preview" class="preview"></span>
+            <!-- 上の欄に、Windows の起動の行へ載せられない文字が入ったときに
+                 出る（#154、決定4）。保存は止めない——欄を直すかどうかはその
+                 人の判断であり、ここが言うのは起動した時に何が起きるかであ
+                 る。キャラクターと起動オプションは載らないだけで起動は成り立
+                 ち、コマンドと再開コマンドは起動そのものが成り立たない。
+
+                 何も無ければ消える。空のまま行を占めるのは下の `.error` の役
+                 であり、あちらは決定を止める理由を出す場所で、ここは止めない
+                 知らせを出す場所である。 -->
+            <p id="dialog-notice" class="notice" role="status"></p>
           </div>
 
           <p id="dialog-error" class="error" role="alert"></p>
