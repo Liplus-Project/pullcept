@@ -316,7 +316,7 @@ interface StartedSession {
 }
 
 /**
- * What a launch would do with each value the account form holds (#154、決定4).
+ * What a launch would do with each value the account form holds (#154, 決定4).
  *
  * Four answers because what a value costs differs by which one it is: a
  * character and launch options the Windows launch line cannot carry are left
@@ -3718,7 +3718,7 @@ async function refreshDialogPreview(): Promise<void> {
 const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
 
 /**
- * Say what a launch would do with what the form holds (#154、決定4).
+ * Say what a launch would do with what the form holds (#154, 決定4).
  *
  * The line that runs is drawn above this, and it is where the result is
  * visible — an account whose character was left off it shows a line with no
@@ -3731,7 +3731,8 @@ const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
  * launch, which of these four things it will do. The launch itself refuses the
  * two it has to (`session::start_session`), and that refusal is the authority;
  * this only gets there first, at the moment it can be fixed rather than at the
- * moment it fails (#99 と同じ形).
+ * moment it fails — the shape the two-`--settings` check here already has
+ * (#99).
  */
 async function refreshDialogNotice(): Promise<void> {
   const kind = dialogKindEl.value as AccountKind;
@@ -3749,7 +3750,7 @@ async function refreshDialogNotice(): Promise<void> {
       // the way an unlaunchable one is reached.
       command: draft.command,
       // Only where the field is the answer. On a kind that holds its own way
-      // back, a line stored here is not the one that runs (#156、決定6).
+      // back, a line stored here is not the one that runs (#156, 決定6).
       resume: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
     });
     if (draft?.id !== id) return;
@@ -4221,7 +4222,7 @@ async function main(): Promise<void> {
   dialogCwdEl.addEventListener("input", () => refreshDialogLine());
   // The resume line is not in the preview — the preview answers for a fresh
   // launch — but it is a line that runs, and what it cannot carry is a topic
-  // this account cannot go back into (#154、決定4).
+  // this account cannot go back into (#154, 決定4).
   dialogResumeEl.addEventListener("input", () => refreshDialogLine());
   // Anything but the second click of 削除 disarms it: an arm left standing is
   // one that an unrelated click fires later.
