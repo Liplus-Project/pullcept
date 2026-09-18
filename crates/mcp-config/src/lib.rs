@@ -285,6 +285,10 @@ pub const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 /// over is this app's own doing, so a declaration of it is not the person's to
 /// remember.
 ///
+/// What this app tells it about the room before its first turn is a per-CLI
+/// answer too, and for the same reason the other four are: the flag that
+/// carries it is the CLI's (#147).
+///
 /// One variant per CLI, and every answer below is a `match` on it: a second CLI
 /// is a second arm in each, and the compiler names the ones left unanswered.
 /// An account may also name no CLI at all, and that is not a variant here — it
@@ -390,6 +394,44 @@ impl Cli {
         match self {
             Cli::ClaudeCode => true,
         }
+    }
+
+    /// What this CLI is told about the room before its first turn, or `None`
+    /// when it cannot be written onto the launch line (#147).
+    ///
+    /// **The tool is named in full, because a name is what a session can act
+    /// on before it has been handed a tool list.** A session woken only by a
+    /// room post calls nothing, and the CLI's tool list and the sidecar's own
+    /// `instructions` arrive after the first tool call — so a session that
+    /// answers a post and stops never learns the room has a tool at all, and
+    /// writes its answer to the terminal where nobody reads it (#147, measured
+    /// across three sessions, 2026-09-17). The sidecar's text says the same
+    /// thing and says it too late; this says it on the launch line, where it is
+    /// there before the first turn.
+    ///
+    /// **Path-independent, and short.** What it states is that the room is
+    /// spoken to through this tool and that terminal output does not reach it —
+    /// facts about the room rather than about the channel that delivered the
+    /// post, so a room reached some other way does not make this text wrong
+    /// (#147, 決定4). Nothing about how to converse: that is the sidecar's
+    /// `instructions`, which every session that calls the tool once has, and a
+    /// second copy of it here would be paid for on every launch and would drift
+    /// from the first.
+    ///
+    /// `None` on a text this launch line cannot carry (`line_safe_text`). The
+    /// safer side for an addition is not to add it, the way the status line
+    /// already does it: the launch still runs, and what is lost is the state
+    /// this exists to prevent rather than the session.
+    pub fn room_system_prompt(self, server_name: &str) -> Option<String> {
+        let text = match self {
+            Cli::ClaudeCode => format!(
+                "You are a participant in a Pullcept room. Terminal output \
+                 does not reach the room. The only way to be heard there is \
+                 the tool mcp__{server_name}__say_to_room. Call it by that \
+                 full name even before any tool list has arrived."
+            ),
+        };
+        line_safe_text(&text).then_some(text)
     }
 
     /// Where this CLI keeps the transcript of one session, or `None` when this
@@ -551,6 +593,55 @@ pub fn session_id_launch_args(base: &[String], cli: Option<Cli>) -> Vec<String> 
 /// session that never existed under that name.
 pub fn declares_session_id(args: &[String]) -> bool {
     args.iter().any(|arg| arg.contains(SESSION_ID_PLACEHOLDER))
+}
+
+/// The flag that adds to what a launch tells its session about itself (#147).
+pub const APPEND_SYSTEM_PROMPT_FLAG: &str = "--append-system-prompt";
+
+/// The same thing written as a path to a file.
+///
+/// Named although this app never writes it, because the CLI refuses a launch
+/// carrying both forms at once ("Cannot use both --append-system-prompt and
+/// --append-system-prompt-file", read out of the CLI's own strings, v2.1.273).
+/// A line that already names it is therefore a line this app leaves alone: the
+/// cost of adding to it is not a text nobody reads, it is the launch.
+const APPEND_SYSTEM_PROMPT_FILE_FLAG: &str = "--append-system-prompt-file";
+
+/// The launch arguments carrying what this CLI's conventions tell a session
+/// about the room it is joining, given the account's own (#147).
+///
+/// The room's own entry and the approval ride on every launched line whatever
+/// its kind, because they are what a seat in the room needs. This does not: the
+/// flag is the CLI's spelling, and a kind this app has established nothing
+/// about is a kind whose launch an unknown flag ends (#156, 決定5). Same line
+/// the hook and the status line are drawn on.
+///
+/// A line already naming either form of the flag is left as it is. The file
+/// form would end the launch outright; a second copy of this one is the ground
+/// the two-`--settings` refusal stands on — which of two copies of one flag a
+/// CLI reads is not something this app has established. Left alone rather than
+/// refused, because what the person wrote is about this session and this is an
+/// addition to it.
+pub fn system_prompt_launch_args(
+    base: &[String],
+    cli: Option<Cli>,
+    server_name: &str,
+) -> Vec<String> {
+    let mut args = base.to_vec();
+    let Some(cli) = cli else {
+        return args;
+    };
+    if declares_flag(base, APPEND_SYSTEM_PROMPT_FLAG)
+        || declares_flag(base, APPEND_SYSTEM_PROMPT_FILE_FLAG)
+    {
+        return args;
+    }
+    let Some(text) = cli.room_system_prompt(server_name) else {
+        return args;
+    };
+    args.push(APPEND_SYSTEM_PROMPT_FLAG.to_string());
+    args.push(text);
+    args
 }
 
 /// Put the session id where the account said it goes.
@@ -816,10 +907,44 @@ pub fn limited_hook_settings(url: &str) -> Value {
 /// the same unmeasured ground the `%` note in `seat_url` stands on — except
 /// that here nothing is lost by declining it.
 pub fn line_safe_word(text: &str) -> bool {
-    !text.is_empty()
-        && text
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | ':' | '.' | '_' | '-'))
+    !text.is_empty() && text.chars().all(line_safe_char)
+}
+
+/// One character of the set the two checks around it are built from.
+///
+/// One predicate rather than two spellings of one set: the pair differ by
+/// whether the space is in, and a set written twice is a set that drifts once.
+fn line_safe_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '/' | ':' | '.' | '_' | '-')
+}
+
+/// Whether a whole argument may be put on a launch line as it is written
+/// (#147).
+///
+/// `line_safe_word`'s set with the space added, and that difference is the
+/// scope difference between the two. A word rides *inside* the `--settings`
+/// JSON, whose contents sit outside `cmd.exe`'s quotes (`seat_url`); and a word
+/// carrying no space is written onto the line bare, because the Windows quoting
+/// only wraps an argument holding a space, a tab or a `"`
+/// (`portable-pty-patch/src/cmdbuilder.rs`, `append_quoted`). Either way there
+/// is nothing around it, so `& | < > ^ ( )` are characters `cmd.exe` acts on.
+///
+/// This is a whole argument of its own, and one holding a space is wrapped in
+/// `"` by that same quoting — so its contents would sit *inside* `cmd.exe`'s
+/// quotes as long as the quote parity reaching it is even. The set is refused
+/// anyway rather than rested on that parity: the parity is a property of every
+/// argument written before this one, and what sits before this one is a JSON
+/// value whose quote count is even only while it stays JSON. Refusing the set
+/// costs nothing here and does not have to be re-reasoned at each later edit,
+/// which is the same trade `line_safe_word` takes against quoting the word.
+///
+/// Non-ASCII is refused with the rest, for the reason it is refused there: a
+/// launch line reaches `cmd.exe` through a code page this app does not choose,
+/// and this app has not measured what survives it. Nothing is lost by declining
+/// it — the reader of this argument is the model, and what it is told is a tool
+/// name and one fact about where output goes.
+pub fn line_safe_text(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|ch| ch == ' ' || line_safe_char(ch))
 }
 
 /// The program that runs the status-line script.
@@ -979,6 +1104,13 @@ pub fn settings_launch_args(
 /// go through here for that same reason: they are on the line that runs, so
 /// they are on the line the form shows (#156).
 ///
+/// What the kind's conventions put onto the line itself is two things by now:
+/// where the session id goes, and what the session is told about the room
+/// before its first turn (#147). Both sit between the person's own options and
+/// the room's entry. The kind's third contribution here is a gate rather than
+/// an argument — whether the hook and the status line ride in the settings at
+/// all (`reports_through_settings`).
+///
 /// `cli` is the CLI this account's kind names, or `None` when its kind names
 /// none. A kind naming none is left with the line it would have had before the
 /// kinds were split: the room's own entry and the settings the room needs, and
@@ -997,7 +1129,10 @@ pub fn launch_args(
 ) -> Vec<String> {
     let reports = cli.is_some_and(Cli::reports_through_settings);
     settings_launch_args(
-        &channel_launch_args(&session_id_launch_args(base, cli), server_name),
+        &channel_launch_args(
+            &system_prompt_launch_args(&session_id_launch_args(base, cli), cli, server_name),
+            server_name,
+        ),
         character,
         server_name,
         disabled,
@@ -1884,20 +2019,23 @@ mod tests {
             None,
         );
         // The person's own options, then what the kind's conventions carry
-        // (#156), then the room's two halves.
+        // (#156 / #147), then the room's two halves.
+        let told = Cli::ClaudeCode.room_system_prompt(&room).expect("a safe text");
         assert_eq!(
-            line[..6],
+            line[..8],
             [
                 "--verbose".to_string(),
                 "--session-id".to_string(),
                 SESSION_ID_PLACEHOLDER.to_string(),
+                APPEND_SYSTEM_PROMPT_FLAG.to_string(),
+                told,
                 CHANNEL_FLAG.to_string(),
                 format!("server:{room}"),
                 SETTINGS_FLAG.to_string(),
             ]
         );
-        assert_eq!(line.len(), 7);
-        let settled: Value = serde_json::from_str(&line[6]).expect("valid JSON");
+        assert_eq!(line.len(), 9);
+        let settled: Value = serde_json::from_str(&line[8]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
         // The approval rides with it, naming the server the channel flag names
         // (#143): one fact in the `.mcp.json` key, the tag and the approval.
@@ -2387,6 +2525,10 @@ mod tests {
         assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
         assert!(settled.get("hooks").is_none(), "{settled}");
         assert!(settled.get("statusLine").is_none(), "{settled}");
+        // And neither is it told what the room's tool is called: the flag that
+        // would carry it is Claude Code's, and an unknown flag ends a launch
+        // (#147).
+        assert!(!line.iter().any(|arg| arg == APPEND_SYSTEM_PROMPT_FLAG), "{line:?}");
     }
 
     /// Either spelling of the flag is somewhere to put an id, so neither is
@@ -2550,6 +2692,75 @@ mod tests {
 
     /// The way back is the kind's, and it names where the id goes — the same
     /// placeholder every other line of this app is filled through (#156, 決定6).
+    #[test]
+    fn a_seat_is_told_the_full_name_of_the_tool_the_room_is_spoken_to_through() {
+        // The whole point is the name: a session woken only by a room post
+        // calls nothing, so the tool list and the sidecar's `instructions`
+        // never arrive, and it answers into its terminal (#147). A name it can
+        // call before either has arrived is what this puts on the line.
+        let room = server_name_for(LIN, ROOM);
+        let told = Cli::ClaudeCode.room_system_prompt(&room).expect("a safe text");
+        assert!(told.contains(&format!("mcp__{room}__say_to_room")), "{told}");
+        // The room's tool, not the channel that delivered the post: a room
+        // reached some other way does not make the text wrong (#147, 決定4).
+        assert!(!told.contains("channel"), "{told}");
+        // And the fact the terminal is not a way of being heard, which is the
+        // half that says why the tool has to be called at all.
+        assert!(told.contains("Terminal output does not reach the room"), "{told}");
+    }
+
+    #[test]
+    fn what_a_seat_is_told_carries_nothing_a_shell_on_the_way_acts_on() {
+        // The text set, both directions. Same characters as the word set, plus
+        // the space: this is a whole argument rather than a word inside the
+        // `--settings` JSON, and one holding a space is what the Windows
+        // quoting wraps (`line_safe_text`).
+        assert!(line_safe_text("You are a participant in a Pullcept room."));
+        for hazard in [
+            "a & b",
+            "a | b",
+            "a ^ b",
+            "a < b",
+            "a > b",
+            "(a) b",
+            // A quote would invert the parity of the `cmd.exe` scan, which is
+            // the break #152 shipped.
+            "say \"hello\"",
+            "100% done",
+            "部屋へ発言する",
+            "",
+        ] {
+            assert!(!line_safe_text(hazard), "{hazard}");
+        }
+        // And on the thing that actually reaches `cmd.exe`.
+        let told = Cli::ClaudeCode
+            .room_system_prompt(&server_name_for(LIN, ROOM))
+            .expect("a safe text");
+        for ch in ['&', '|', '<', '>', '^', '(', ')', '"', '%'] {
+            assert!(!told.contains(ch), "{ch:?} must not reach the launch line: {told}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_already_appends_a_system_prompt_is_not_given_a_second_one() {
+        // Which of two copies of one flag a CLI reads is not something this app
+        // has established — the ground the two-`--settings` refusal stands on.
+        let room = server_name_for(LIN, ROOM);
+        let base = split_launch_options("--append-system-prompt \"be brief\"");
+        assert_eq!(
+            system_prompt_launch_args(&base, Some(Cli::ClaudeCode), &room),
+            base
+        );
+        // The file form for a harder reason: the CLI refuses a launch carrying
+        // both at once, so adding to it would cost the launch rather than a
+        // text nobody reads.
+        let base = split_launch_options("--append-system-prompt-file=C:/p/prompt.txt");
+        assert_eq!(
+            system_prompt_launch_args(&base, Some(Cli::ClaudeCode), &room),
+            base
+        );
+    }
+
     #[test]
     fn the_resume_line_of_a_kind_names_where_the_id_goes() {
         let line = Cli::ClaudeCode.resume_command().expect("Claude Code resumes");
