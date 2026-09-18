@@ -167,29 +167,22 @@ interface Roster {
 }
 
 /**
- * The seat whose turn ended on a usage limit (#149).
- *
- * A topic and an account, which is what a terminal is keyed on here: the CLI's
- * hook knows neither, so the launch wrote both into the address its hook posts
- * to and the app reads them back off it (`mcp-config`, `limited_hook_url`).
- */
-interface LimitedSeat {
-  topic_id: string;
-  account_id: string;
-}
-
-/**
  * What one session says about itself, through its own status line (#155).
  *
- * Keyed on the seat the same way a limit is, and for the same reason: the JSON
- * the CLI hands its status line names that CLI's session id, which is not what
- * a terminal is keyed on here.
+ * Keyed on the seat: the JSON the CLI hands its status line names that CLI's
+ * session id, which is not what a terminal is keyed on here, so the launch
+ * wrote the topic and the account into the address it posts to and the app
+ * reads them back off it (`mcp-config`, `status_hook_url`).
  *
  * Every value is nullable because every one of them is a field the CLI may not
  * send — the rate limits are absent off a claude.ai plan and before the first
  * API answer, the effort is absent on a model with no such parameter, and the
  * context percentage is null early in a session. Null reaches the row as `—`,
  * which is a different thing from `0%`.
+ *
+ * `five_hour` and `seven_day` are read twice over: as two rows of the panel,
+ * and as the row's own 制限中 (`limitedByUsage`). That second reading is what
+ * replaced the `StopFailure` hook #149 had put on the launch line (#161).
  */
 interface SessionStats {
   topic_id: string;
@@ -795,20 +788,6 @@ interface SessionView {
    */
   silent: boolean;
   /**
-   * True from the moment this session's turn ended on a usage limit until its
-   * terminal starts printing again (#149).
-   *
-   * Set by the `session-limited` event, which is a Claude Code `StopFailure`
-   * hook matched on `rate_limit` reaching the app (`room.rs`). Nothing of the
-   * CLI's output is read for it — the signal arrives beside the terminal, not
-   * out of it, which is what lets this screen say 制限中 while #82 stands.
-   *
-   * Lowered at the edge where a new burst of output begins rather than by the
-   * next byte: the CLI prints its own error while the hook is in flight, and a
-   * word cleared by that print would be gone before it was read.
-   */
-  limited: boolean;
-  /**
    * The last thing this session said about itself, or null while it has said
    * nothing (#155).
    *
@@ -818,8 +797,9 @@ interface SessionView {
    * of the facts do — the question that column answers is what ran.
    *
    * Null after a reload of this screen, until the next report arrives. The
-   * report is not replayed, the same as the address record and the limit
-   * (#84 / #86 / #149): what this screen did not see, it does not say.
+   * report is not replayed, the same as the address record (#84 / #86): what
+   * this screen did not see, it does not say. 制限中 goes with it, since the
+   * word is read off two of these values (#161).
    */
   stats: SessionStats | null;
   /** The pending fall back to silence, or undefined when none is armed. */
@@ -2039,25 +2019,7 @@ function markOutput(view: SessionView): void {
   armQuiet(view);
   view.silent = false;
   if (view.outputting) return;
-  // A burst begins here, and that is where 制限中 ends (#149, decision 4). The
-  // burst the limit itself printed is not this edge — it was already under way
-  // when the hook arrived — so the word survives it and goes when the session
-  // is spoken to again, or when the person types into the terminal.
-  view.limited = false;
   view.outputting = true;
-  renderPanel();
-}
-
-/**
- * Note that this session's turn ended on a usage limit.
- *
- * Kept even while the terminal is still printing the error: what clears it is
- * the next burst (`markOutput`), and the panel is redrawn here because the word
- * it shows changes as soon as that printing stops.
- */
-function markLimited(view: SessionView): void {
-  if (view.ended !== null || view.limited) return;
-  view.limited = true;
   renderPanel();
 }
 
@@ -2090,9 +2052,6 @@ function stopOutput(view: SessionView): void {
   view.quiet = undefined;
   view.outputting = false;
   view.silent = false;
-  // The session is over. A limit that stopped one of its turns is not something
-  // to keep saying about a terminal nothing is running behind (#149).
-  view.limited = false;
 }
 
 /**
@@ -2146,6 +2105,31 @@ function pruneAwaiting(topicId: string): void {
 }
 
 /**
+ * Whether the account behind this report has a rate-limit window that is full
+ * (#161).
+ *
+ * Either window is enough, and neither is weighted against the other: a session
+ * that cannot spend against its five-hour window is stopped whether or not its
+ * week has room, and the other way round (決定1).
+ *
+ * `>=` rather than `===`, because a spend limit may report past 100% (決定7;
+ * the docs line is the issue's citation, not one read here). A window the CLI
+ * did not report is not a window at 0: null is absent, and an absent window
+ * says nothing either way — the same line the panel's `—` stands on.
+ *
+ * Read off the last report and nothing else, which is what makes the word clear
+ * itself: the next report carrying a lower percentage is the word going away,
+ * with no edge to catch and no burst to wait for (決定2). What it costs is what
+ * 決定4 accepted — a report arrives only while the session is moving, so an
+ * account that stopped and then hit its limit says nothing until it moves
+ * again, and one whose limit has lifted keeps the word until then.
+ */
+function limitedByUsage(stats: SessionStats | null): boolean {
+  if (!stats) return false;
+  return (stats.five_hour ?? 0) >= 100 || (stats.seven_day ?? 0) >= 100;
+}
+
+/**
  * What a running account is doing, in the one word the row has room for.
  *
  * 考え中… when the room is waiting on this name, 出力中 otherwise, and 待機 once
@@ -2158,10 +2142,11 @@ function pruneAwaiting(topicId: string): void {
  * still under way, and 待機 is where that ends.
  *
  * 制限中 is the one silence that is told apart, and it is told apart without
- * reading anything: the CLI itself reports the stop through a `StopFailure` hook
- * the launch put on its line, matched on `rate_limit` alone (#149). The word is
- * as narrow as that signal — a limit that stopped a turn, not a session that is
- * unable to run. It stays uncoloured beside 待機 for the same reason.
+ * reading anything: the CLI's own status line reports its rate-limit
+ * percentages, and 100% of either window is the limit (`limitedByUsage`, #161).
+ * The word says that the account's window is full, which is narrower than
+ * "cannot run" and wider than the turn-level signal it replaced. It stays
+ * uncoloured beside 待機 for the same reason.
  *
  * The order is not a preference between two equal signals. Both words stand on
  * the same observation — this terminal is printing — and the address is what says
@@ -2180,11 +2165,10 @@ function activityNote(name: string, view: SessionView | undefined): string {
   if (!view || view.ended !== null) return "";
   if (view.outputting) return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
   // 制限中 over 待機, because it says what 待機 cannot: which of the silences
-  // this is (#149, decision 5). It loses to the two words above for the same
-  // reason 待機 does — output arriving is this screen's own observation of a
-  // session that is going again, and the limit is then over whatever the hook
-  // said a moment ago.
-  if (view.limited) return "制限中";
+  // this is (#161, 決定6, carried over from #149). It loses to the two words
+  // above for the same reason 待機 does — output arriving is this screen's own
+  // observation of a session that is going again.
+  if (limitedByUsage(view.stats)) return "制限中";
   return view.silent ? "待機" : "";
 }
 
@@ -3236,14 +3220,10 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // what this screen can say about it begins at the next byte (#86).
     outputting: false,
     silent: false,
-    // A limit belongs to the turn it stopped, and a terminal made now has had
-    // no turn. A reload picking a running session up again starts here too: the
-    // hook reached the screen that was open then, and this one did not see it
-    // (#149).
-    limited: false,
     // Nothing reported yet, on a fresh terminal and on one picking a running
     // session up again alike. The status line runs on the next assistant
-    // message, so the values arrive on their own (#155).
+    // message, so the values arrive on their own (#155) — and 制限中 arrives
+    // with them, since the word is read off two of these values (#161).
     stats: null,
     quiet: undefined,
   };
@@ -4147,26 +4127,24 @@ async function main(): Promise<void> {
   await listen<Roster>("room-participants", (event) =>
     renderRoster(event.payload.topic_id, event.payload.participants),
   );
-  // A session said, through its own hook, that its turn stopped on a usage
-  // limit (#149). Keyed on the seat, so it reaches the terminal of the topic
-  // that session is in and not whichever topic is on the glass — the same way
-  // a post does (#141). A seat this screen has no terminal for is dropped:
-  // nothing is drawn from it, and nothing is kept for a terminal that may be
-  // made later, because the limit belongs to a turn that has already ended.
-  await listen<LimitedSeat>("session-limited", (event) => {
-    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
-    if (view) markLimited(view);
-  });
   // A session reported what it is running on, through its own status line
-  // (#155). Keyed on the seat the same way the limit is, and dropped the same
-  // way for a seat this screen has no terminal for. Only the facts column is
-  // redrawn — the row's own note is not one of these values, and the roster is
-  // redrawn often enough without a report arriving every assistant message.
+  // (#155). Keyed on the seat, so it reaches the terminal of the topic that
+  // session is in and not whichever topic is on the glass — the same way a post
+  // does (#141). A seat this screen has no terminal for is dropped: nothing is
+  // drawn from it, and nothing is kept for a terminal that may be made later.
+  //
+  // The roster is redrawn only when 制限中 turns over, which is the same rule
+  // the output words are drawn under: the word changes, or nothing is drawn
+  // (#82). A report arrives on every assistant message, and the two that cross
+  // the threshold are the only ones the row has anything to say about — the
+  // rest move the facts column alone.
   await listen<SessionStats>("session-stats", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
     if (!view) return;
+    const was = limitedByUsage(view.stats);
     view.stats = event.payload;
     if (view === shownView()) renderSessionStats();
+    if (limitedByUsage(view.stats) !== was) renderPanel();
   });
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and
