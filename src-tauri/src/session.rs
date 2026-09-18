@@ -14,7 +14,7 @@ use crate::room::RoomState;
 use crate::room_log::{self, TopicRef};
 use mcp_config::{
     carried_launch_options, console_safe, declared_character, declares_session_id,
-    declares_settings, launch_args, limited_hook_url, other_room_servers, register_sidecar,
+    declares_settings, launch_args, other_room_servers, register_sidecar,
     reject_incompatible_flags, server_name_for, session_id_launch_args, split_launch_options,
     status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
     ROOM_TOKEN_ENV,
@@ -434,7 +434,7 @@ pub fn launch_field_report(
 /// a room not listening, names nothing — the preview answers for what it can
 /// see, and the launch reads the directory again for itself.
 ///
-/// The usage-limit hook is on the line too (#149), addressed to this seat on the
+/// The status line is on the line too (#155), addressed to this seat on the
 /// room's port. A room not listening names no port, so the preview shows the
 /// line without it — which is also the line a launch could not run at all, since
 /// a launch with no port is refused below.
@@ -468,9 +468,6 @@ pub fn preview_launch_args(
             .ok()
         })
         .unwrap_or_default();
-    let hook = room
-        .port()
-        .map(|port| limited_hook_url(port, &topic_id, account_id.trim()));
     let status = status_command(room.port(), &topic_id, account_id.trim());
     launch_args(
         &args,
@@ -478,7 +475,6 @@ pub fn preview_launch_args(
         &server_name,
         character.as_deref(),
         &others,
-        hook.as_deref(),
         status.as_deref(),
     )
 }
@@ -1033,8 +1029,9 @@ fn launch(
     server_name: &str,
     room_url: &str,
     // The port `room_url` names, as the caller read it. Read again here it
-    // could be a different run's, and the hook on the line would then be
-    // addressed somewhere other than the room this session was registered into.
+    // could be a different run's, and the status line's address on the line
+    // would then point somewhere other than the room this session was
+    // registered into.
     room_port: u16,
     cwd: &Path,
     // The topic this launch is going into, carried through so the answer names
@@ -1063,13 +1060,12 @@ fn launch(
     )?;
 
     let started_at = crate::room::now_iso();
-    // Where this seat's usage limit is reported, and it is this seat's own: the
-    // address carries the topic and the account, because the CLI's hook input
-    // carries neither (#149, decision 3).
-    let hook = limited_hook_url(room_port, topic_id, &account.id);
-    // What this session reports about itself while it runs, addressed to the
-    // same seat on the same port (#155, decision 2). Absent leaves the panel's
-    // five values at `—` and stops nothing else. Beside the sidecar this launch
+    // What this session reports about itself while it runs, addressed to this
+    // seat's own path on the room's port: the address carries the topic and the
+    // account, because the JSON the CLI hands its status line carries neither
+    // (#155, decision 2). Absent leaves the panel's five values at `—`, and the
+    // row's note never says 制限中, because that word is read off two of those
+    // five (#161). It stops nothing else. Beside the sidecar this launch
     // resolved, not beside one a second walk found.
     let status = status_command_beside(&sidecar_entry, room_port, topic_id, &account.id);
     // The same function the preview goes through, so what the form showed is
@@ -1082,7 +1078,6 @@ fn launch(
         server_name,
         character,
         others,
-        Some(&hook),
         status.as_deref(),
     );
     // The id goes in last, over the whole line. The account's own options may
@@ -1100,9 +1095,9 @@ fn launch(
         pty_state,
         line.command.clone(),
         composed,
-        // The token the hook presents, in the environment rather than in the
-        // header on the line: the line is drawn on screen, and the token is
-        // what makes the room this room (#149).
+        // The token the status-line script presents, in the environment rather
+        // than on the line: the line is drawn on screen, and the token is what
+        // makes the room this room (#155).
         &[(ROOM_TOKEN_ENV, room.token())],
         cols,
         rows,

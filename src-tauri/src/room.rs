@@ -74,12 +74,18 @@
 //! Everything the frontend needs arrives as a `room-message` event. The room
 //! never reads a CLI's terminal output; that is not a message source.
 //!
-//! **The socket answers one thing that is not the protocol.** A session whose
-//! turn ended on a usage limit posts to `/hooks/limited` on this same port, from
-//! a Claude Code `StopFailure` hook the launch put on its line (#149). It is not
-//! a frame and not a participant: no seat, no floor, no log — the app emits
-//! `session-limited` for the named seat and answers. The two callers are told
+//! **The socket answers one thing that is not the protocol.** A session posts
+//! its status line to `/hooks/status` on this same port, from a Claude Code
+//! `statusLine` command the launch put on its line (#155). It is not a frame
+//! and not a participant: no seat, no floor, no log — the app emits
+//! `session-stats` for the named seat and answers. The two callers are told
 //! apart by their first bytes, since a WebSocket upgrade is a `GET`.
+//!
+//! One POST path, where #149 had put a second for a `StopFailure` hook. That
+//! path went out with the hook (#161): 制限中 is read off the two rate-limit
+//! percentages this same report already carries, so nothing is left for a
+//! second POST to say. The first-byte split above is unchanged — it divides
+//! the protocol from a POST, and what has gone is a second kind of POST.
 //!
 //! **There are several rooms, one per topic (#141, decision 3).** A room is a
 //! topic's floor and the participants in it, and a topic that is not on the
@@ -929,10 +935,10 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
             let room = room.clone();
             tokio::spawn(async move {
                 // Two kinds of caller on one address. A sidecar opens a
-                // WebSocket, which is a `GET` upgrade; a session's usage-limit
-                // hook posts (#149). One listener because the port is what a
-                // launch already carries — a second one would be a second
-                // address to hand out, hold and hand back on every launch.
+                // WebSocket, which is a `GET` upgrade; a session's status line
+                // posts (#155). One listener because the port is what a launch
+                // already carries — a second one would be a second address to
+                // hand out, hold and hand back on every launch.
                 let mut head = [0u8; 4];
                 let posted = matches!(stream.peek(&mut head).await, Ok(n) if head[..n].starts_with(b"POST"));
                 let ended = if posted {
@@ -950,18 +956,6 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
     Ok(port)
 }
 
-/// The event the screen reads a session's usage limit off.
-///
-/// The seat, and nothing else. What stopped the turn is already decided by the
-/// time this is emitted — the CLI's hook matcher fired on the rate limit and on
-/// no other API error (#149, decision 1) — and the app adds no reading of its
-/// own on top of it.
-#[derive(Debug, Clone, Serialize)]
-pub struct LimitedSeat {
-    pub topic_id: String,
-    pub account_id: String,
-}
-
 /// The event the screen reads one session's own account of itself off (#155).
 ///
 /// The seat, and the five values the panel shows. Every one of them is
@@ -973,11 +967,17 @@ pub struct LimitedSeat {
 /// the screen as absent, so a row reads `—` rather than `0%`.
 ///
 /// **This is where the app reads what a CLI sent, and it is the only place.**
-/// The usage-limit hook above reads nothing of its body on purpose (#149) —
-/// there the arrival was the whole signal. Here the values are what was asked
-/// for, so the field names below are the CLI's and are a thing to keep in step
-/// with it. The terminal's own output is still not read (#82); what is read is
-/// a structured report the CLI hands out for this.
+/// The values are what was asked for, so the field names below are the CLI's
+/// and are a thing to keep in step with it. The terminal's own output is still
+/// not read (#82); what is read is a structured report the CLI hands out for
+/// this.
+///
+/// **Two of the five are also where 制限中 comes from** (#161). The screen reads
+/// the word off `five_hour` and `seven_day` rather than off a signal of its own:
+/// a turn that stopped on the limit used to arrive as a `StopFailure` hook on a
+/// second path (#149), and that path is gone. Nothing is added here for it —
+/// the percentages were already being sent, and the reading is the screen's
+/// (`main.ts`, `activityNote`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionStats {
     pub topic_id: String,
@@ -1015,24 +1015,20 @@ impl SessionStats {
 
 /// The most of a hook request this reads before giving up on it.
 ///
-/// The head is a few hundred bytes. The body is the CLI's own input: read and
-/// dropped for the usage-limit path, read and parsed for the status-line one
-/// (`SessionStats`).
+/// The head is a few hundred bytes. The body is the CLI's own input, read and
+/// parsed (`SessionStats`).
 const HOOK_HEAD_MAX: usize = 16 * 1024;
 const HOOK_BODY_MAX: usize = 4 * 1024 * 1024;
 
 /// How long one hook request may take before the connection is dropped.
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Answer one POST from a session: its usage-limit signal (#149, decision 3),
-/// or its status-line report (#155, decision 2).
+/// Answer one POST from a session: its status-line report (#155, decision 2).
 ///
-/// **The path is what says which, and the path names the seat.** The header
-/// carries the room's token either way. What the two do with the body is where
-/// they part: the usage-limit signal reads nothing of it, because the arrival
-/// is the whole signal and the field names would be a second thing to keep in
-/// step with the CLI (#82); the status-line report is read, because its values
-/// are what was asked for (`SessionStats`).
+/// **The path names the seat**, and the header carries the room's token. The
+/// body is read, because its values are what was asked for (`SessionStats`) —
+/// which is what makes this the one path (#161): the usage limit is two of
+/// those values, so there is nothing left for a second POST to say.
 async fn serve_hook(
     app: AppHandle,
     room: RoomState,
@@ -1094,9 +1090,7 @@ async fn read_hook(
     }
 
     // Read before answering, so the client has a finished request to close on
-    // rather than a reset in the middle of sending one. Kept rather than
-    // dropped now: the status-line path reads it (`SessionStats`), and the
-    // usage-limit path still does not.
+    // rather than a reset in the middle of sending one.
     let mut body = Vec::new();
     if length > 0 {
         reader
@@ -1108,11 +1102,11 @@ async fn read_hook(
 
     // The same token the sidecars present. The listener is on loopback, and
     // any local process can reach loopback — without this, anything on the
-    // machine could put 制限中 on a row, or any five values it liked.
+    // machine could put any five values it liked on a row, 制限中 among them
+    // (#161).
     let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
-    let limited = mcp_config::parse_limited_hook_target(&target);
     let reported = mcp_config::parse_status_hook_target(&target);
-    let status = match (authorized, limited.is_some() || reported.is_some()) {
+    let status = match (authorized, reported.is_some()) {
         (false, _) => "401 Unauthorized",
         (true, false) => "404 Not Found",
         (true, true) => "200 OK",
@@ -1121,15 +1115,7 @@ async fn read_hook(
         // Emitted whether or not this app holds the room. The screen keys its
         // terminals on the pair, and a seat it does not have is a payload it
         // drops — the same as a post arriving for a topic it is not drawing.
-        if let Some((room_id, account_id)) = limited {
-            let _ = app.emit(
-                "session-limited",
-                LimitedSeat {
-                    topic_id: room_id,
-                    account_id,
-                },
-            );
-        }
+        //
         // A body this cannot read emits nothing at all. Leaving the panel on
         // its last values is what decision 4 already says happens while a
         // session is quiet, and it is better than five rows going blank
@@ -1142,9 +1128,8 @@ async fn read_hook(
     }
 
     // A JSON body, because the CLI reads a hook's answer as its JSON output.
-    // An empty object decides nothing, which is what both of these are for:
-    // they observe. The status line draws what its own script printed, not
-    // this.
+    // An empty object decides nothing, which is what this is for: it observes.
+    // The status line draws what its own script printed, not this.
     let answer = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );

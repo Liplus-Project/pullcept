@@ -380,15 +380,15 @@ impl Cli {
         }
     }
 
-    /// Whether this CLI reports what it is doing through the `hooks` and
-    /// `statusLine` this app writes into `--settings` (#149 / #155).
+    /// Whether this CLI reports what it is doing through the `statusLine` this
+    /// app writes into `--settings` (#155).
     ///
-    /// What those two keys are spelled as is Claude Code's
-    /// (`limited_hook_settings` / `status_line_settings`). A CLI answering
-    /// false is not one that spells them otherwise — it is one this app has
-    /// established nothing about, and the safer side for an addition is not to
-    /// add it: what is lost is a row that never says 制限中 and five values
-    /// reading `—`, and what a settings key a CLI does not know can cost is the
+    /// What that key is spelled as is Claude Code's (`status_line_settings`).
+    /// A CLI answering false is not one that spells it otherwise — it is one
+    /// this app has established nothing about, and the safer side for an
+    /// addition is not to add it: what is lost is five values reading `—` and
+    /// a row that never says 制限中, since the limit is read off two of those
+    /// five (#161), and what a settings key a CLI does not know can cost is the
     /// launch.
     pub fn reports_through_settings(self) -> bool {
         match self {
@@ -614,7 +614,7 @@ const APPEND_SYSTEM_PROMPT_FILE_FLAG: &str = "--append-system-prompt-file";
 /// its kind, because they are what a seat in the room needs. This does not: the
 /// flag is the CLI's spelling, and a kind this app has established nothing
 /// about is a kind whose launch an unknown flag ends (#156, 決定5). Same line
-/// the hook and the status line are drawn on.
+/// the status line is drawn on.
 ///
 /// A line already naming either form of the flag is left as it is. The file
 /// form would end the launch outright; a second copy of this one is the ground
@@ -719,20 +719,17 @@ fn project_slug(cwd: &str) -> Option<String> {
 ///
 /// Set on the spawned process rather than written onto the line, because the
 /// line is shown on screen (`preview_launch_args`) and the token is what makes
-/// the room this room. The hook below names the variable, and the CLI resolves
-/// it into the header when the hook fires (#149).
+/// the room this room. The status-line script below reads the variable out of
+/// the environment the launch set and presents it as the POST's header (#155).
 pub const ROOM_TOKEN_ENV: &str = "PULLCEPT_ROOM_TOKEN";
-
-/// The path the app answers a session's usage-limit signal on.
-pub const LIMITED_HOOK_PATH: &str = "/hooks/limited";
 
 /// The path the app answers a session's status-line report on (#155).
 pub const STATUS_HOOK_PATH: &str = "/hooks/status";
 
-/// Where one seat posts to, under one of the paths above.
+/// Where one seat's status line posts to (#155).
 ///
-/// **The seat is named in the address, and not read out of what the CLI sends**
-/// (#149, decision 3). The CLI's hook input names its own session id, which is
+/// **The seat is named in the address, and not read out of what the CLI sends.**
+/// The JSON the CLI hands its status line names its own session id, which is
 /// not what the app keys a seat on — a seat is a topic and an account, and a
 /// launch with no `{session_id}` placeholder has no id the app knows at all.
 /// The launch knows both halves, so the launch writes them here.
@@ -762,23 +759,23 @@ pub const STATUS_HOOK_PATH: &str = "/hooks/status";
 /// the ids this is called with are uuids, which `percent_encode` does not
 /// touch at all. Not closed, and measured on neither side.
 ///
-/// One composer for both paths, rather than a second `format!` beside the
-/// second address (#155). Everything above is a property of the address's
-/// shape and not of what is posted to it, so a copy would be this paragraph's
-/// reasoning held twice and dropped once.
-fn seat_url(port: u16, path: &str, room_id: &str, account_id: &str) -> String {
+/// One address rather than two. A second path stood here for the usage-limit
+/// hook (#149) and was taken out with it (#161): the limit is read off the
+/// percentages this report already carries, so the launch has one place to
+/// post to and everything above is said once.
+pub fn status_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
     format!(
-        "http://127.0.0.1:{port}{path}/{}/{}",
+        "http://127.0.0.1:{port}{STATUS_HOOK_PATH}/{}/{}",
         percent_encode(room_id),
         percent_encode(account_id)
     )
 }
 
-/// The seat a request target names, as `(room id, account id)`, or `None` when
-/// it is not under `path` or does not name both halves.
+/// The seat a status-line request names, as `(room id, account id)`, or `None`
+/// when it is not under `STATUS_HOOK_PATH` or does not name both halves.
 ///
-/// The inverse of `seat_url`, kept beside it so the two cannot drift: the URL
-/// is written into a launch line in one place and read off a socket in
+/// The inverse of `status_hook_url`, kept beside it so the two cannot drift:
+/// the URL is written into a launch line in one place and read off a socket in
 /// another.
 ///
 /// A query is dropped before the path is read, because a request target may
@@ -786,9 +783,9 @@ fn seat_url(port: u16, path: &str, room_id: &str, account_id: &str) -> String {
 /// hook's path and exactly two more segments, and a third segment names no
 /// seat. `percent_encode` leaves no `/` inside a half, so the split cannot cut
 /// an id in two.
-fn parse_seat_target(path: &str, target: &str) -> Option<(String, String)> {
+pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
     let target = target.split_once('?').map_or(target, |(path, _)| path);
-    let rest = target.strip_prefix(path)?.strip_prefix('/')?;
+    let rest = target.strip_prefix(STATUS_HOOK_PATH)?.strip_prefix('/')?;
     let (room, account) = rest.split_once('/')?;
     if account.contains('/') {
         return None;
@@ -796,26 +793,6 @@ fn parse_seat_target(path: &str, target: &str) -> Option<(String, String)> {
     let room = percent_decode(room).filter(|id| !id.is_empty())?;
     let account = percent_decode(account).filter(|id| !id.is_empty())?;
     Some((room, account))
-}
-
-/// Where one seat's usage-limit hook posts to (#149).
-pub fn limited_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
-    seat_url(port, LIMITED_HOOK_PATH, room_id, account_id)
-}
-
-/// The seat a usage-limit request names, or `None` when it names no seat.
-pub fn parse_limited_hook_target(target: &str) -> Option<(String, String)> {
-    parse_seat_target(LIMITED_HOOK_PATH, target)
-}
-
-/// Where one seat's status line posts to (#155).
-pub fn status_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
-    seat_url(port, STATUS_HOOK_PATH, room_id, account_id)
-}
-
-/// The seat a status-line request names, or `None` when it names no seat.
-pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
-    parse_seat_target(STATUS_HOOK_PATH, target)
 }
 
 /// Every byte outside the unreserved set as `%XX`.
@@ -850,45 +827,12 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The `hooks` value that has the CLI tell the app its turn stopped on a usage
-/// limit.
-///
-/// `StopFailure`, matched on the error type `rate_limit` and on nothing else
-/// (#149, decision 1): the event fires when a turn ends on an API error, and the
-/// matcher is what narrows it to the limit. Nothing the CLI printed is read —
-/// the signal is the hook firing at this address (#82).
-///
-/// An HTTP hook rather than a command: the app is already listening, and a
-/// command would start a process per signal and put a shell between the CLI
-/// and the app. The token reaches the header through the environment
-/// (`ROOM_TOKEN_ENV`), so the line carries the variable's name and not its
-/// value.
-///
-/// Added to the user's and the project's hooks rather than in place of them:
-/// hook entries merge across settings levels, and `--settings` is merged by the
-/// same rules as the files (Claude Code docs, `hooks` and `settings`, read
-/// 2026-09-17; not measured on a live CLI).
-pub fn limited_hook_settings(url: &str) -> Value {
-    json!({
-        "StopFailure": [{
-            "matcher": "rate_limit",
-            "hooks": [{
-                "type": "http",
-                "url": url,
-                "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}") },
-                "allowedEnvVars": [ROOM_TOKEN_ENV],
-                "timeout": 5,
-            }],
-        }],
-    })
-}
-
 /// Whether one word may be put on a launch line as it is written (#155).
 ///
 /// ASCII letters and digits, and `/ : . _ -`. Everything else is refused,
 /// including the space: this word rides inside the `--settings` JSON, and the
-/// contents of a JSON string sit outside `cmd.exe`'s quotes (`seat_url`), where
-/// `& | < > ^ ( )` are characters it acts on. A directory such as
+/// contents of a JSON string sit outside `cmd.exe`'s quotes
+/// (`status_hook_url`), where `& | < > ^ ( )` are characters it acts on. A directory such as
 /// `C:/Program Files (x86)/…` ends the launch line at the `(` — the break #151
 /// shipped, one axis over.
 ///
@@ -904,8 +848,8 @@ pub fn limited_hook_settings(url: &str) -> Value {
 ///
 /// Non-ASCII is refused with the rest. A path under a name written in kana
 /// reaches `cmd.exe` through a code page this app does not choose, and that is
-/// the same unmeasured ground the `%` note in `seat_url` stands on — except
-/// that here nothing is lost by declining it.
+/// the same unmeasured ground the `%` note in `status_hook_url` stands on —
+/// except that here nothing is lost by declining it.
 pub fn line_safe_word(text: &str) -> bool {
     !text.is_empty() && text.chars().all(line_safe_char)
 }
@@ -923,9 +867,9 @@ fn line_safe_char(ch: char) -> bool {
 ///
 /// `line_safe_word`'s set with the space added, and that difference is the
 /// scope difference between the two. A word rides *inside* the `--settings`
-/// JSON, whose contents sit outside `cmd.exe`'s quotes (`seat_url`); and a word
-/// carrying no space is written onto the line bare, because the Windows quoting
-/// only wraps an argument holding a space, a tab or a `"`
+/// JSON, whose contents sit outside `cmd.exe`'s quotes (`status_hook_url`);
+/// and a word carrying no space is written onto the line bare, because the
+/// Windows quoting only wraps an argument holding a space, a tab or a `"`
 /// (`portable-pty-patch/src/cmdbuilder.rs`, `append_quoted`). Either way there
 /// is nothing around it, so `& | < > ^ ( )` are characters `cmd.exe` acts on.
 ///
@@ -961,13 +905,13 @@ pub fn line_safe_text(text: &str) -> bool {
 ///
 /// Not a fourth spelling of that set (#154, 決定5). It is the other set — the
 /// characters `cmd.exe` acts on where they stand outside its quotes — and it
-/// is spelled once here: `seat_url` names them in prose and keeps its address
-/// clear of them through `percent_encode`.
+/// is spelled once here: `status_hook_url` names them in prose and keeps its
+/// address clear of them through `percent_encode`.
 ///
 /// `"` is in although `split_launch_options` leaves none inside an argument:
 /// the quoting escapes it as `\"` and `cmd.exe` counts it all the same, which
-/// inverts the parity for everything written after it (`seat_url`) — and the
-/// file these values are read from is the person's to edit by hand. Control
+/// inverts the parity for everything written after it (`status_hook_url`) —
+/// and the file these values are read from is the person's to edit by hand. Control
 /// characters are in because a line break ends the command line itself.
 ///
 /// `%` is left standing, as it is on the address: `cmd.exe` expands `%NAME%`,
@@ -1019,16 +963,14 @@ const STATUS_RUNNER: &str = "node";
 ///
 /// `node <script> <url>`, and nothing else on the line: the token is not here,
 /// because the line is drawn on screen (`session::preview_launch_args`) and the
-/// script reads `ROOM_TOKEN_ENV` out of the environment the launch set, the
-/// same place the usage-limit hook's header resolves from.
+/// script reads `ROOM_TOKEN_ENV` out of the environment the launch set.
 ///
 /// `None` rather than a quoted form when either word fails `line_safe_word`.
 /// The seat's own address passes by construction — `percent_encode` leaves
-/// `%XX`, and `%` is refused here although `seat_url` leaves it standing. The
-/// two answers are not in conflict: the hook's address is composed
-/// unconditionally and a refusal there would be a launch that cannot report its
-/// limit, while this line is an addition, and the safer side for an addition is
-/// not to add it.
+/// `%XX`, and `%` is refused here although `status_hook_url` leaves it
+/// standing. The two answers are not in conflict: the address is composed
+/// unconditionally and has no caller that could decline it, while this line is
+/// an addition, and the safer side for an addition is not to add it.
 pub fn status_line_command(script: &Path, url: &str) -> Option<String> {
     let script = script.to_string_lossy().replace('\\', "/");
     (line_safe_word(&script) && line_safe_word(url))
@@ -1042,9 +984,9 @@ pub fn status_line_command(script: &Path, url: &str) -> Option<String> {
 /// local file's (Claude Code docs, `settings`, read 2026-09-17; not measured on
 /// a live CLI). A session launched from here therefore does not show the status
 /// line its person wrote. That is the shape `outputStyle` already has
-/// (`settings_launch_args`) rather than the one `hooks` has, and composing the
-/// two would mean reading the person's settings files — a second thing to keep
-/// in step with the CLI, for a line this app is the only reader of.
+/// (`settings_launch_args`), and composing the two would mean reading the
+/// person's settings files — a second thing to keep in step with the CLI, for a
+/// line this app is the only reader of.
 pub fn status_line_settings(command: &str) -> Value {
     json!({ "type": "command", "command": command })
 }
@@ -1060,7 +1002,7 @@ pub fn status_line_settings(command: &str) -> Value {
 /// **A name the line cannot carry is the same state again**, and it is folded
 /// in here so that there is one answer rather than a check at each site. The
 /// name rides inside the `--settings` JSON, whose contents stand outside
-/// `cmd.exe`'s quotes (`seat_url`), and what may stand there is
+/// `cmd.exe`'s quotes (`status_hook_url`), and what may stand there is
 /// `line_safe_text`'s set — the app's own two values in that position are held
 /// to it already (#155 / #147). What is lost is the character: the session
 /// speaks as the working directory's own default, the way an account
@@ -1125,23 +1067,18 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// before it. Such a line approves through its own settings, or answers the
 /// prompt.
 ///
-/// `limited_hook` is the address of this seat's usage-limit signal
-/// (`limited_hook_url`), or `None` when the room has no port to name yet. It
-/// rides the same way the approval does, and under the same exception: a line
-/// left untouched above carries no hook, and its row does not say 制限中
-/// (#149). Widening the refusal for it would stop a line that ran before.
-///
 /// `status_command` is this seat's status-line command (`status_line_command`),
 /// or `None` when there is no port to address, or when the script's own path
-/// cannot be written onto the line (`line_safe_word`). It rides under the same
-/// exception as the two above, and its absence costs the same kind of thing: the
-/// panel's five values read `—` for that seat (#155).
+/// cannot be written onto the line (`line_safe_word`). It rides the same way
+/// the approval does, and under the same exception: a line left untouched above
+/// carries no status line, and its row's five values read `—` while its note
+/// never says 制限中 — the limit is read off those same percentages (#161).
+/// Widening the refusal for it would stop a line that ran before.
 pub fn settings_launch_args(
     base: &[String],
     character: Option<&str>,
     own_server: &str,
     disabled: &[String],
-    limited_hook: Option<&str>,
     status_command: Option<&str>,
 ) -> Vec<String> {
     let mut args = base.to_vec();
@@ -1156,9 +1093,6 @@ pub fn settings_launch_args(
     settings.insert("enabledMcpjsonServers".into(), json!([own_server]));
     if !disabled.is_empty() {
         settings.insert("disabledMcpjsonServers".into(), json!(disabled));
-    }
-    if let Some(url) = limited_hook {
-        settings.insert("hooks".into(), limited_hook_settings(url));
     }
     if let Some(command) = status_command {
         settings.insert("statusLine".into(), status_line_settings(command));
@@ -1183,16 +1117,16 @@ pub fn settings_launch_args(
 /// where the session id goes, and what the session is told about the room
 /// before its first turn (#147). Both sit between the person's own options and
 /// the room's entry. The kind's third contribution here is a gate rather than
-/// an argument — whether the hook and the status line ride in the settings at
-/// all (`reports_through_settings`).
+/// an argument — whether the status line rides in the settings at all
+/// (`reports_through_settings`).
 ///
 /// `cli` is the CLI this account's kind names, or `None` when its kind names
 /// none. A kind naming none is left with the line it would have had before the
 /// kinds were split: the room's own entry and the settings the room needs, and
-/// nothing this app knows about a CLI. The hook and the status line are the
-/// visible half of that — both are Claude Code's spelling, and a kind this app
-/// has established nothing about does not get them written onto its line on the
-/// chance that they fit (#156, 決定5).
+/// nothing this app knows about a CLI. The status line is the visible half of
+/// that — it is Claude Code's spelling, and a kind this app has established
+/// nothing about does not get it written onto its line on the chance that it
+/// fits (#156, 決定5).
 ///
 /// `base` is the person's own options, and it enters as the line can carry it
 /// (`carried_launch_options`). Here rather than at each caller, for the reason
@@ -1205,7 +1139,6 @@ pub fn launch_args(
     server_name: &str,
     character: Option<&str>,
     disabled: &[String],
-    limited_hook: Option<&str>,
     status_command: Option<&str>,
 ) -> Vec<String> {
     let reports = cli.is_some_and(Cli::reports_through_settings);
@@ -1218,7 +1151,6 @@ pub fn launch_args(
         character,
         server_name,
         disabled,
-        limited_hook.filter(|_| reports),
         status_command.filter(|_| reports),
     )
 }
@@ -1888,13 +1820,11 @@ mod tests {
 
     #[test]
     fn a_declared_character_rides_in_settings_json() {
-        let args =
-            settings_launch_args(
+        let args = settings_launch_args(
             &["--verbose".to_string()],
             Some("character_Lay"),
             &own(),
             &[],
-            None,
             None,
         );
         assert_eq!(args.len(), 3);
@@ -1916,7 +1846,7 @@ mod tests {
         // to (#155 / #147).
         for name in [r#"quote"style"#, "style(1)", "a&b", "キャラクター"] {
             assert_eq!(declared_character(Some(name)), None, "{name}");
-            let args = settings_launch_args(&[], Some(name), &own(), &[], None, None);
+            let args = settings_launch_args(&[], Some(name), &own(), &[], None);
             let at = args
                 .iter()
                 .position(|arg| arg == SETTINGS_FLAG)
@@ -1937,7 +1867,7 @@ mod tests {
         // line carried the bypass flag; a resume line without it stopped
         // (#143). Approved on every line, so the two lines are one state.
         let resume = split_launch_options("--resume {session_id}");
-        let line = launch_args(&resume, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        let line = launch_args(&resume, Some(Cli::ClaudeCode), &own(), None, &[], None);
         // And the CLI's own way of handing over an id is not added on top of
         // it: the line already names where the id goes, and a second flag would
         // hand the CLI two (#156).
@@ -1958,7 +1888,7 @@ mod tests {
         // Absent and blank are one state: a cleared field must not launch
         // `{"outputStyle":""}`, which names no style at all.
         for character in [None, Some(""), Some("   ")] {
-            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[], None, None);
+            let args = settings_launch_args(&["--verbose".to_string()], character, &own(), &[], None);
             let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
             assert!(settled.get("outputStyle").is_none(), "{character:?}");
         }
@@ -1971,10 +1901,10 @@ mod tests {
         // where a character or a sibling needs the flag, so a line that ran
         // before the approval was added runs the same after it.
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
-        assert_eq!(settings_launch_args(&base, None, &own(), &[], None, None), base);
-        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[], None, None), base);
+        assert_eq!(settings_launch_args(&base, None, &own(), &[], None), base);
+        assert_eq!(settings_launch_args(&base, Some("  "), &own(), &[], None), base);
         let written = vec!["--settings=C:/x/settings.json".to_string()];
-        assert_eq!(settings_launch_args(&written, None, &own(), &[], None, None), written);
+        assert_eq!(settings_launch_args(&written, None, &own(), &[], None), written);
     }
 
     #[test]
@@ -1982,13 +1912,11 @@ mod tests {
         // The launch's own entry is not on the list: a session that disabled
         // its own room server would be a session with no room (#103).
         let lay = server_name_for(LAY, ROOM);
-        let args =
-            settings_launch_args(
+        let args = settings_launch_args(
             &[],
             Some("character_Lin"),
             &own(),
             std::slice::from_ref(&lay),
-            None,
             None,
         );
         let settled: Value = serde_json::from_str(&args[1]).expect("valid JSON");
@@ -2007,7 +1935,6 @@ mod tests {
             None,
             &own(),
             std::slice::from_ref(&lay),
-            None,
             None,
         );
         assert_eq!(args[0], "--verbose");
@@ -2112,7 +2039,6 @@ mod tests {
             Some("character_Lin"),
             &[],
             None,
-            None,
         );
         // The person's own options, then what the kind's conventions carry
         // (#156 / #147), then the room's two halves.
@@ -2154,7 +2080,6 @@ mod tests {
             Some("character_Lin"),
             std::slice::from_ref(&lay),
             None,
-            None,
         );
         assert_eq!(line[0], CHANNEL_FLAG);
         assert_eq!(line[1], format!("server:{room}"));
@@ -2170,47 +2095,34 @@ mod tests {
     }
 
     #[test]
-    fn the_limit_hook_names_the_seat_it_was_launched_for() {
-        // The seat is a topic and an account, and the CLI's own hook input
-        // carries neither — so the address carries both, and reading it back
-        // has to land on the same pair (#149).
-        let url = limited_hook_url(1234, ROOM, LIN);
-        let target = url
-            .strip_prefix("http://127.0.0.1:1234")
-            .expect("loopback, on the room's port");
-        assert_eq!(
-            parse_limited_hook_target(target),
-            Some((ROOM.to_string(), LIN.to_string()))
-        );
-    }
-
-    #[test]
-    fn a_target_that_is_not_the_limit_hook_names_no_seat() {
-        assert_eq!(parse_limited_hook_target("/hooks/limited"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited/"), None);
-        assert_eq!(parse_limited_hook_target("/other/a/b"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited-x/a/b"), None);
+    fn a_target_that_is_not_the_status_hook_names_no_seat() {
+        assert_eq!(parse_status_hook_target("/hooks/status"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status/"), None);
+        assert_eq!(parse_status_hook_target("/other/a/b"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status-x/a/b"), None);
+        // The path the usage-limit hook stood on went out with it, and nothing
+        // answers for it (#161).
+        assert_eq!(parse_status_hook_target("/hooks/limited/a/b"), None);
         // One half is not a seat, and neither is an empty one.
-        assert_eq!(parse_limited_hook_target("/hooks/limited/a"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited//b"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited/a/"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status/a"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status//b"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status/a/"), None);
         // A third segment names no seat: `percent_encode` writes no `/` inside
         // a half, so this is not one.
-        assert_eq!(parse_limited_hook_target("/hooks/limited/a/b/c"), None);
-        assert_eq!(parse_limited_hook_target("/hooks/limited/%zz/b"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status/a/b/c"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status/%zz/b"), None);
         // The query form #151 shipped is not read back as a seat (#152).
-        assert_eq!(parse_limited_hook_target("/hooks/limited?room=a&account=b"), None);
+        assert_eq!(parse_status_hook_target("/hooks/status?room=a&account=b"), None);
     }
 
     #[test]
-    fn the_limit_hook_address_carries_nothing_a_windows_shell_acts_on() {
+    fn the_status_hook_address_carries_nothing_a_windows_shell_acts_on() {
         // The address rides in the `--settings` JSON, which reaches the CLI
         // through `cmd.exe /C` on Windows, and the quoting puts every JSON
-        // string's contents outside `cmd.exe`'s quotes (see
-        // `limited_hook_url`). A `&` there ended the launch line and no
-        // account could start (#152).
+        // string's contents outside `cmd.exe`'s quotes (see `status_hook_url`).
+        // A `&` there ended the launch line and no account could start (#152).
         let odd = "a&b|c<d>e^f(g)h i/j";
-        let url = limited_hook_url(62361, "部屋 1", odd);
+        let url = status_hook_url(62361, "部屋 1", odd);
         for ch in ['&', '|', '<', '>', '^', '(', ')', '"', ' '] {
             assert!(
                 !url.contains(ch),
@@ -2220,51 +2132,34 @@ mod tests {
         // Encoded rather than dropped: the halves still name the seat.
         let target = url.strip_prefix("http://127.0.0.1:62361").expect("prefix");
         assert_eq!(
-            parse_limited_hook_target(target),
+            parse_status_hook_target(target),
             Some(("部屋 1".to_string(), odd.to_string()))
         );
     }
 
     #[test]
-    fn the_limit_hook_rides_in_settings_and_fires_on_the_rate_limit_only() {
-        let url = limited_hook_url(1234, ROOM, LIN);
-        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], Some(&url), None);
-        let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
-        let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
-        let groups = settled["hooks"]["StopFailure"].as_array().expect("StopFailure");
-        assert_eq!(groups.len(), 1);
-        // Decision 1: the limit, and no other API error.
-        assert_eq!(groups[0]["matcher"], json!("rate_limit"));
-        let hook = &groups[0]["hooks"][0];
-        assert_eq!(hook["type"], json!("http"));
-        assert_eq!(hook["url"], json!(url));
-        // The variable's name is on the line, never the token: the line is
-        // drawn on screen.
-        assert_eq!(
-            hook["headers"]["Authorization"],
-            json!(format!("Bearer ${{{ROOM_TOKEN_ENV}}}"))
+    fn no_line_declares_a_hook_of_any_kind() {
+        // The `StopFailure` entry #149 put on the line is gone (#161): the
+        // limit is read off the percentages the status line already reports,
+        // so nothing of the person's own `hooks` is named here at all.
+        let status = status_line_command(
+            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
+            &status_hook_url(1234, ROOM, LIN),
+        )
+        .expect("safe path");
+        let line = launch_args(
+            &[],
+            Some(Cli::ClaudeCode),
+            &own(),
+            Some("character_Lin"),
+            &[],
+            Some(&status),
         );
-        assert_eq!(hook["allowedEnvVars"], json!([ROOM_TOKEN_ENV]));
-        // Nothing else of the hooks is declared, so nothing of the person's
-        // own is named here to be replaced.
-        assert_eq!(settled["hooks"].as_object().expect("hooks").len(), 1);
-    }
-
-    #[test]
-    fn a_line_with_no_room_port_carries_no_hook() {
-        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
-        assert!(settled.get("hooks").is_none());
-    }
-
-    #[test]
-    fn a_line_left_alone_for_its_own_settings_carries_no_hook_either() {
-        // The hook does not widen the two-`--settings` refusal any more than
-        // the approval does (#143 / #149).
-        let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
-        let url = limited_hook_url(1234, ROOM, LIN);
-        assert_eq!(settings_launch_args(&base, None, &own(), &[], Some(&url), None), base);
+        assert!(settled.get("hooks").is_none(), "{settled}");
+        assert!(!line.iter().any(|arg| arg.contains("StopFailure")), "{line:?}");
+        assert!(!line.iter().any(|arg| arg.contains("rate_limit")), "{line:?}");
     }
 
     #[test]
@@ -2281,19 +2176,6 @@ mod tests {
             parse_status_hook_target(target),
             Some((ROOM.to_string(), LIN.to_string()))
         );
-    }
-
-    #[test]
-    fn the_two_seat_paths_do_not_answer_for_each_other() {
-        // One listener, two paths. A status report read as a usage limit would
-        // put 制限中 on a row every time the model answered.
-        let limited = limited_hook_url(1234, ROOM, LIN);
-        let status = status_hook_url(1234, ROOM, LIN);
-        let limited = limited.strip_prefix("http://127.0.0.1:1234").expect("prefix");
-        let status = status.strip_prefix("http://127.0.0.1:1234").expect("prefix");
-        assert_ne!(limited, status);
-        assert_eq!(parse_status_hook_target(limited), None);
-        assert_eq!(parse_limited_hook_target(status), None);
     }
 
     #[test]
@@ -2331,7 +2213,7 @@ mod tests {
         // Forward slashes: Git Bash eats an unquoted `\` before the script is
         // ever run (Claude Code docs, `statusline`, read 2026-09-17).
         assert_eq!(command, format!("node C:/pullcept/sidecar/src/status.mjs {url}"));
-        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, Some(&command));
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], Some(&command));
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert_eq!(settled["statusLine"]["type"], json!("command"));
@@ -2352,10 +2234,9 @@ mod tests {
         // `"` is not in the set. `cmd.exe` counts quotes rather than acting on
         // them, and the JSON cannot be written without them — the parity that
         // counting produces is what puts these contents outside the quotes in
-        // the first place (`seat_url`), which is why the rest of the set is
-        // checked here at all (#152).
+        // the first place (`status_hook_url`), which is why the rest of the set
+        // is checked here at all (#152).
         let lay = server_name_for(LAY, ROOM);
-        let limited = limited_hook_url(62361, ROOM, LIN);
         let status = status_hook_url(62361, ROOM, LIN);
         let command = status_line_command(
             &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
@@ -2368,7 +2249,6 @@ mod tests {
             &own(),
             Some("character_Lin"),
             std::slice::from_ref(&lay),
-            Some(&limited),
             Some(&command),
         );
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
@@ -2382,7 +2262,7 @@ mod tests {
         // And it is still JSON on the other side.
         let settled: Value = serde_json::from_str(settings).expect("valid JSON");
         assert_eq!(settled["statusLine"]["command"], json!(command));
-        assert_eq!(settled["hooks"]["StopFailure"][0]["hooks"][0]["url"], json!(limited));
+        assert_eq!(settled["enabledMcpjsonServers"], json!([own()]));
     }
 
     #[test]
@@ -2392,7 +2272,7 @@ mod tests {
         let url = status_hook_url(1234, ROOM, LIN);
         let script = PathBuf::from(r"C:\Program Files (x86)\pullcept\status.mjs");
         assert_eq!(status_line_command(&script, &url), None);
-        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], None);
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert!(settled.get("statusLine").is_none());
@@ -2407,7 +2287,7 @@ mod tests {
         let script = PathBuf::from("C:/pullcept/sidecar/src/status.mjs");
         let command = status_line_command(&script, &url).expect("safe path");
         assert_eq!(
-            settings_launch_args(&base, None, &own(), &[], None, Some(&command)),
+            settings_launch_args(&base, None, &own(), &[], Some(&command)),
             base
         );
     }
@@ -2599,21 +2479,12 @@ mod tests {
         let base = split_launch_options("--dangerously-skip-permissions");
         assert_eq!(session_id_launch_args(&base, None), base);
 
-        let limited = limited_hook_url(1234, ROOM, LIN);
         let status = status_line_command(
             &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
             &status_hook_url(1234, ROOM, LIN),
         )
         .expect("safe path");
-        let line = launch_args(
-            &base,
-            None,
-            &own(),
-            None,
-            &[],
-            Some(&limited),
-            Some(&status),
-        );
+        let line = launch_args(&base, None, &own(), None, &[], Some(&status));
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         // The room's own approval still rides: that is what every session in
@@ -2882,7 +2753,7 @@ mod tests {
         // on the line as its own, and the next one is this app's.
         let base = split_launch_options("--add-dir C:/Program(1) --dangerously-skip-permissions");
         assert_eq!(carried_launch_options(&base), &[] as &[String]);
-        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None);
         assert!(!line.iter().any(|arg| arg.contains("Program(1)")), "{line:?}");
         assert!(!line.iter().any(|arg| arg == "--dangerously-skip-permissions"), "{line:?}");
         // What the room itself needs is still on it: the launch is not what is
@@ -2895,7 +2766,7 @@ mod tests {
         // Nothing is dropped from a field the line can carry, whatever it holds.
         let base = split_launch_options(r"--add-dir C:\proj --session-id {session_id}");
         assert_eq!(carried_launch_options(&base), base.as_slice());
-        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None, None);
+        let line = launch_args(&base, Some(Cli::ClaudeCode), &own(), None, &[], None);
         assert_eq!(&line[..base.len()], base.as_slice());
     }
 
