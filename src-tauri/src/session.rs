@@ -917,6 +917,15 @@ pub fn start_session(
         });
     }
 
+    // The account's own environment, opened here and nowhere earlier (#163).
+    // Before the seat is claimed, for the reason the checks above are: a value
+    // that will not open is a refusal, and a refusal should cost nothing. A
+    // launch without it would start a CLI missing a token or a config directory
+    // it was declared to have — running as somebody else, and looking fine.
+    // The refusal names the variable, never its value.
+    let account_env = account_env::open_all(&account.env)
+        .map_err(|err| format!("「{name}」は起動できません。{err}"))?;
+
     // One account, one seat per room (`RoomSeats`). Claimed before anything is
     // written or spawned, so a refusal costs nothing and leaves nothing behind.
     seats.claim(&topic.topic_id, &account.id, &pty_state).map_err(|()| {
@@ -941,6 +950,7 @@ pub fn start_session(
         &cwd,
         &topic.topic_id,
         unseen_history,
+        &account_env,
         cols,
         rows,
     ) {
@@ -1040,6 +1050,8 @@ fn launch(
     // Whether the topic already holds posts this session was not seated with,
     // decided by the caller against the line that resolved (#133).
     unseen_history: bool,
+    // The account's environment, already opened by the caller (#163).
+    account_env: &[(String, String)],
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
@@ -1090,15 +1102,24 @@ fn launch(
         Some(session_id) => substitute_session_id(&composed, session_id),
         None => composed,
     };
+    // The account's variables first and the app's own last. The app's cannot
+    // be overridden by an account in any case — a name it sets is refused when
+    // the field is saved (`config::seal_account_env`) — so the order is only
+    // what would hold if that refusal were ever bypassed: the room's token wins.
+    let mut env: Vec<(&str, String)> = account_env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    // The token the status-line script presents, in the environment rather
+    // than on the line: the line is drawn on screen, and the token is what
+    // makes the room this room (#155).
+    env.push((ROOM_TOKEN_ENV, room.token()));
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
         line.command.clone(),
         composed,
-        // The token the status-line script presents, in the environment rather
-        // than on the line: the line is drawn on screen, and the token is what
-        // makes the room this room (#155).
-        &[(ROOM_TOKEN_ENV, room.token())],
+        &env,
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),

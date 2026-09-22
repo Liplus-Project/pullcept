@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "account-env"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2900,6 +2908,7 @@ dependencies = [
 name = "pullcept"
 version = "0.1.0"
 dependencies = [
+ "account-env",
  "futures-util",
  "mcp-config",
  "parking_lot",

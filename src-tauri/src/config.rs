@@ -157,6 +157,25 @@ pub struct Account {
     /// it needs through the room's own pull instead (#115, decision 4C).
     #[serde(default)]
     pub resume_command: Option<String>,
+    /// Variables set on the environment of the CLI this account launches, each
+    /// value sealed with DPAPI (`account_env`, #163).
+    ///
+    /// The environment rather than the line: the line is drawn on screen
+    /// (`session::preview_launch_args`), so a value written there — `--settings`
+    /// `env` included — is a value drawn on screen. And a field of the account
+    /// rather than a file beside it, because the working directory is shared
+    /// between accounts and a file per account is what that sharing was for not
+    /// needing (#99).
+    ///
+    /// The screen never holds a stored value in the clear. It is handed the
+    /// masks (`account_env_text`) and hands back what the person typed
+    /// (`seal_account_env`); the one place a value is opened for use is the
+    /// launch (`session::start_session`).
+    ///
+    /// Empty for an account saved before this field existed, which is what
+    /// every launch then had: nothing added to the environment.
+    #[serde(default)]
+    pub env: Vec<account_env::EnvVar>,
 }
 
 /// Which of the two panels flanking the room are open.
@@ -258,6 +277,7 @@ impl Default for AppConfig {
                 // generic kind's, where the app has no line of its own to offer
                 // and the person writes theirs (#156, 決定6).
                 resume_command: None,
+                env: Vec::new(),
             }],
             panels: PanelState::default(),
         }
@@ -370,6 +390,32 @@ pub fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     let content = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {e}"))?;
     std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))
+}
+
+/// The environment field as the account form draws it: `NAME=<mask>` per line
+/// (`account_env::render`, #163).
+///
+/// Opened here, on this side, so the webview is handed a mask and never a
+/// stored value. A value that will not open is drawn as
+/// `account_env::UNREADABLE` rather than failing the form.
+#[tauri::command]
+pub fn account_env_text(env: Vec<account_env::EnvVar>) -> String {
+    account_env::render(&env)
+}
+
+/// Turn what the form's environment field holds back into sealed variables
+/// (`account_env::settle`, #163).
+///
+/// A line left as `account_env_text` drew it keeps the value it had, so an
+/// edit that touches other fields never needs the secrets typed again. A line
+/// the person wrote is sealed here, before it is stored — the plaintext lives
+/// only in the form and this call.
+#[tauri::command]
+pub fn seal_account_env(
+    text: String,
+    previous: Vec<account_env::EnvVar>,
+) -> Result<Vec<account_env::EnvVar>, String> {
+    account_env::settle(&text, &previous, &[mcp_config::ROOM_TOKEN_ENV])
 }
 
 // ---------------------------------------------------------------------------

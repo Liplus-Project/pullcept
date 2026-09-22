@@ -262,6 +262,19 @@ interface Account {
    *  topic as a new session and pulls what it needs out of the room instead
    *  (#115, decision 4C). */
   resume_command: string | null;
+  /** Variables set on the environment of the CLI this account launches (#163).
+   *  The name in the clear and the value sealed with DPAPI: this screen never
+   *  holds a stored value, only its mask (`account_env_text`), and hands what
+   *  was typed back to be sealed (`seal_account_env`). Opened only at launch,
+   *  and never onto the launch line. */
+  env: EnvVar[];
+}
+
+/** One stored environment variable. `sealed` is opaque here — ciphertext this
+ *  screen neither reads nor makes. */
+interface EnvVar {
+  name: string;
+  sealed: string;
 }
 
 /**
@@ -527,6 +540,7 @@ const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInp
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
 const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
 const dialogResumeFieldEl = document.getElementById("dialog-resume-field") as HTMLElement;
+const dialogEnvEl = document.getElementById("dialog-env") as HTMLTextAreaElement;
 const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
 const dialogNoticeEl = document.getElementById("dialog-notice") as HTMLElement;
 const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
@@ -2692,6 +2706,8 @@ function resolveLocalAccount(): void {
       // And for the same reason again: a person is not resumed into a topic,
       // they are at the screen when it is opened.
       resume_command: null,
+      // Nothing is launched under a person, so nothing has an environment.
+      env: [],
     };
     accounts.push(account);
     saveConfig();
@@ -3614,6 +3630,17 @@ let editing: Account | null = null;
 let draft: Account | null = null;
 /** True once 削除 has been armed. The shape 終了 held until #71; see #72. */
 let deleteArmed = false;
+/**
+ * The environment field exactly as it was drawn for the draft (masks, one line
+ * per variable), or null while it has not been drawn — still loading, or the
+ * drawing failed (#163).
+ *
+ * What 決定 compares the field against. Unchanged, the draft's sealed values
+ * stand as they are and nothing is sent to be sealed. Null, the field is not
+ * read at all: an empty box that never received the stored lines is not the
+ * person clearing them, and reading it as that would delete every variable.
+ */
+let dialogEnvDrawn: string | null = null;
 
 /** Say why the form cannot be decided yet, or clear that. */
 function dialogError(text: string): void {
@@ -3812,6 +3839,8 @@ function openAccountDialog(account: Account | null): void {
         // the generic kind's, and it is blank there too until someone writes
         // the line the app has none of (#156, 決定6).
         resume_command: null,
+        // Nothing added to the environment until someone writes a line (#163).
+        env: [],
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
@@ -3822,6 +3851,7 @@ function openAccountDialog(account: Account | null): void {
   dialogCharacterEl.value = draft.character ?? "";
   dialogOptionsEl.value = joinArgs(draft.args);
   dialogResumeEl.value = draft.resume_command ?? "";
+  void drawDialogEnv(draft);
   dialogDeleteEl.hidden = account === null;
   disarmDelete();
   dialogError("");
@@ -3832,6 +3862,35 @@ function openAccountDialog(account: Account | null): void {
   dialogEl.showModal();
   dialogNameEl.focus();
   dialogNameEl.select();
+}
+
+/**
+ * Draw the draft's environment into the form: `NAME=<mask>` per line (#163).
+ *
+ * The masks are made on the app's side, which is the only side that can open a
+ * value; this screen is handed the drawing and nothing else. The field is
+ * read-only until it arrives, so nothing typed into it is overwritten by a
+ * drawing that lands late, and a drawing for a form that has since been opened
+ * on another account is dropped.
+ */
+async function drawDialogEnv(forDraft: Account): Promise<void> {
+  dialogEnvDrawn = null;
+  dialogEnvEl.value = "";
+  dialogEnvEl.readOnly = true;
+  let text: string;
+  try {
+    text = await invoke<string>("account_env_text", { env: forDraft.env });
+  } catch (err) {
+    if (draft !== forDraft) return;
+    // Left read-only and undrawn: 決定 then keeps the stored variables as they
+    // are rather than reading an empty box as their removal.
+    dialogError(`環境変数を表示できませんでした: ${err}`);
+    return;
+  }
+  if (draft !== forDraft) return;
+  dialogEnvEl.value = text;
+  dialogEnvDrawn = text;
+  dialogEnvEl.readOnly = false;
 }
 
 /**
@@ -3893,6 +3952,25 @@ async function commitAccountDialog(): Promise<boolean> {
     return false;
   }
 
+  // Sealed on the app's side before anything is stored (#163). Only when the
+  // field was drawn and then changed: a field left as drawn is the stored
+  // values, and one that was never drawn says nothing about them.
+  let env = settling.env;
+  if (kind === "user") {
+    env = [];
+  } else if (dialogEnvDrawn !== null && dialogEnvEl.value !== dialogEnvDrawn) {
+    try {
+      env = await invoke<EnvVar[]>("seal_account_env", {
+        text: dialogEnvEl.value,
+        previous: settling.env,
+      });
+    } catch (err) {
+      dialogError(String(err));
+      dialogEnvEl.focus();
+      return false;
+    }
+  }
+
   const settled: Account = {
     ...settling,
     name,
@@ -3910,6 +3988,7 @@ async function commitAccountDialog(): Promise<boolean> {
     // room's own pull instead (#115, decision 4C).
     resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
     args,
+    env,
   };
 
   if (target) {
@@ -4212,6 +4291,7 @@ async function main(): Promise<void> {
     dialogCharacterEl,
     dialogOptionsEl,
     dialogResumeEl,
+    dialogEnvEl,
   ]) {
     field.addEventListener("input", () => disarmDelete());
   }
