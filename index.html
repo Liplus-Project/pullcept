@@ -442,6 +442,25 @@
                  であり、あちらは決定を止める理由を出す場所で、ここは止めない
                  知らせを出す場所である。 -->
             <p id="dialog-notice" class="notice" role="status"></p>
+            <!-- 環境変数（#163）。`名前=値` を一行ずつ書く欄であり、欄は一つ
+                 である。普通の値と秘密の値を区別しない。
+
+                 値は起動する CLI のプロセスの環境変数として渡り、起動の行に
+                 は載らない——上の表示に出ないのはそのためである。保存の前に
+                 DPAPI で暗号化され、画面には先頭と末尾だけが出る
+                 （`GH_TOKEN=github_pat...Nx4h`）。
+
+                 出たままの行は、保存しても元の値を保つ。値を入れ直す必要が
+                 あるのは、変えたい行だけである。行を消せば変数も消える。 -->
+            <label class="field env">
+              環境変数
+              <textarea
+                id="dialog-env"
+                rows="3"
+                spellcheck="false"
+                placeholder="例: GH_CONFIG_DIR=C:\Users\me\.config\gh-lin"
+              ></textarea>
+            </label>
           </div>
 
           <p id="dialog-error" class="error" role="alert"></p>

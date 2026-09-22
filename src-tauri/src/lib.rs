@@ -41,6 +41,8 @@ pub fn run() {
             config::home_dir,
             config::load_config,
             config::save_config,
+            config::account_env_text,
+            config::seal_account_env,
             config::save_sessions,
             config::load_sessions,
             room::room_port,

@@ -1233,7 +1233,8 @@ body {
 }
 
 #account-dialog input,
-#account-dialog select {
+#account-dialog select,
+#account-dialog textarea {
   font: inherit;
   width: 100%;
   color: var(--fg);
@@ -1244,9 +1245,22 @@ body {
 }
 
 #account-dialog #dialog-cwd,
-#account-dialog #dialog-options {
+#account-dialog #dialog-options,
+#account-dialog #dialog-env {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 0.78rem;
+}
+
+/* One variable per line, so the label sits at the top of the lines rather than
+   in the middle of them, and the box grows downward only (#163). */
+#account-dialog .field.env {
+  align-items: start;
+}
+
+#account-dialog #dialog-env {
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
 }
 
 /* Only for a session. A person has no command under them, so these would be

@@ -31,6 +31,7 @@ jobs:
             src-tauri/target
             crates/mcp-config/target
             crates/room-floor/target
+            crates/account-env/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -68,6 +69,12 @@ jobs:
 
       - name: Test the topic-index crate
         working-directory: crates/topic-index
+        run: cargo test
+
+      # Includes the DPAPI seal/open round trip, which runs only on Windows —
+      # the runner this job is on (#163).
+      - name: Test the account-env crate
+        working-directory: crates/account-env
         run: cargo test
 
   # Gate job: single Required status check for branch protection.

@@ -1,0 +1,19 @@
+[package]
+name = "account-env"
+version = "0.1.0"
+description = "Per-account environment variables for a Pullcept launch: parsed, masked, and sealed with DPAPI"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Deliberately free of tauri, for the reason docs/0-requirements.md gives under
+# テストの配置: a test binary that links the tauri dependency tree does not load
+# on the GNU target. What is here is the part that holds a person's secrets —
+# how a value is sealed, and what of it is ever shown — and that is the part
+# least fit to be left to "read it and check" (#163).
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
