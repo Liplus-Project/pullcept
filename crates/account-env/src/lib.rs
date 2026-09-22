@@ -64,8 +64,21 @@ const TAIL: usize = 4;
 /// whitespace or NUL in it, a value with NUL in it, and a name written twice.
 /// Names are compared ignoring case, because Windows reads them that way and
 /// the second of two spellings would silently be the one that won.
+///
+/// The value comes back as written: surrounding quotes are not taken off
+/// here. `settle` takes them off, after it has matched a line left alone
+/// against its mask — a mask drawn from a value stored with a quote in it
+/// carries that quote, and must still read back as untouched.
 pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out: Vec<(String, String)> = Vec::new();
+    Ok(parse_lines(text)?
+        .into_iter()
+        .map(|(_, name, value)| (name, value))
+        .collect())
+}
+
+/// `parse`, keeping each variable's line number for the errors `settle` names.
+fn parse_lines(text: &str) -> Result<Vec<(usize, String, String)>, String> {
+    let mut out: Vec<(usize, String, String)> = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line_no = index + 1;
         let line = raw.trim();
@@ -92,12 +105,12 @@ pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
                 "環境変数 `{name}` の値に使えない文字（NUL）が含まれています。"
             ));
         }
-        if out.iter().any(|(seen, _)| seen.eq_ignore_ascii_case(name)) {
+        if out.iter().any(|(_, seen, _)| seen.eq_ignore_ascii_case(name)) {
             return Err(format!(
                 "環境変数 `{name}` が二度書かれています。一つにしてください。"
             ));
         }
-        out.push((name.to_string(), value.to_string()));
+        out.push((line_no, name.to_string(), value.to_string()));
     }
     Ok(out)
 }
@@ -154,12 +167,29 @@ pub fn render(vars: &[EnvVar]) -> String {
 /// what `shown` draws for it. Anything else was typed, including a value that
 /// happens to begin and end like the old one.
 ///
+/// A typed value is taken as written, with two exceptions (#165):
+///
+/// - One pair of matching quotes around it (`"..."` or `'...'`) is taken off.
+///   A quote at one end only is refused, naming the line: it is a paste that
+///   lost its partner, and guessing which end was meant would seal a value
+///   nobody wrote. A value that really ends in a quote is written inside the
+///   other kind (`"abc'"`).
+/// - A value for a name already stored that is a damaged form of that name's
+///   mask — the mask with a quote added or taken away, or anything that keeps
+///   its head and tail around `...` — is refused, naming the line. Sealed, it
+///   would replace the real value with the mask's few characters, and the real
+///   value is gone for good (the incident in #165). Only names already stored
+///   are checked: a new variable, or a value that merely contains `...`, is
+///   an ordinary value (paths and options may hold `...`).
+///
+/// No value appears in any error.
+///
 /// `reserved` names the variables the app sets on every launch itself. Refused
 /// here rather than overwritten at launch: a variable the person set that the
 /// launch then quietly replaced would look set and not be.
 pub fn settle(text: &str, previous: &[EnvVar], reserved: &[&str]) -> Result<Vec<EnvVar>, String> {
     let mut out = Vec::new();
-    for (name, value) in parse(text)? {
+    for (line_no, name, value) in parse_lines(text)? {
         if reserved.iter().any(|r| r.eq_ignore_ascii_case(&name)) {
             return Err(format!(
                 "環境変数 `{name}` はアプリが起動のたびに自分で設定する名前です。別の名前にしてください。"
@@ -170,11 +200,80 @@ pub fn settle(text: &str, previous: &[EnvVar], reserved: &[&str]) -> Result<Vec<
             .find(|old| old.name == name && shown(old) == value);
         let sealed = match kept {
             Some(old) => old.sealed.clone(),
-            None => seal(&value).map_err(|err| format!("環境変数 `{name}` を暗号化できませんでした: {err}"))?,
+            None => {
+                let edited_mask = previous
+                    .iter()
+                    .any(|old| old.name.eq_ignore_ascii_case(&name) && is_damaged_mask(&value, &shown(old)));
+                if edited_mask {
+                    return Err(format!(
+                        "環境変数の {line_no} 行目（`{name}`）は、保存済みの値の隠し表示を書き換えたものに見えます。このまま決定すると、本当の値が隠し表示の文字列で上書きされて失われます。値を変えないなら隠し表示をそのまま残し、変えるなら本当の値を貼り直してください。"
+                    ));
+                }
+                let value = unquote(&value).ok_or_else(|| {
+                    format!(
+                        "環境変数の {line_no} 行目（`{name}`）の値は、片方の端にだけ引用符があります。引用符を外すか、両端を同じ引用符で囲んでください。"
+                    )
+                })?;
+                seal(value).map_err(|err| format!("環境変数 `{name}` を暗号化できませんでした: {err}"))?
+            }
         };
         out.push(EnvVar { name, sealed });
     }
     Ok(out)
+}
+
+/// How many characters longer than a mask a value may be and still read as
+/// that mask retyped (`is_damaged_mask`).
+const RETYPE_SLACK: usize = 4;
+
+const QUOTES: [char; 2] = ['"', '\''];
+
+/// The value with one pair of matching surrounding quotes taken off, or as it
+/// is when it has none. `None` when a quote stands at one end only (or the two
+/// ends hold different quotes): that value is refused, not guessed at.
+fn unquote(value: &str) -> Option<&str> {
+    let first = value.chars().next();
+    let last = value.chars().next_back();
+    let opens = first.is_some_and(|c| QUOTES.contains(&c));
+    let closes = last.is_some_and(|c| QUOTES.contains(&c));
+    match (opens, closes) {
+        (false, false) => Some(value),
+        (true, true) if value.chars().count() >= 2 && first == last => Some(&value[1..value.len() - 1]),
+        _ => None,
+    }
+}
+
+/// Whether `value` is a damaged form of `mask`, the one `shown` draws for the
+/// same name. Quotes at either end are set aside on both sides first, so a
+/// quote added to or taken off the mask still reads as the mask. Beyond the
+/// mask itself, anything holding `...` that begins with the mask's head and
+/// ends with its tail counts, as long as it is no more than `RETYPE_SLACK`
+/// characters longer than the mask — the shape of a mask retyped around the
+/// ellipsis, not a new value that happens to share a short head and tail
+/// (`C:\gh\...\lin` against `C:...in`). A mask that shows no head and no tail (`...`, from a short value)
+/// is matched only exactly, so that such a name can still take a value
+/// containing `...`.
+fn is_damaged_mask(value: &str, mask: &str) -> bool {
+    let value = value.trim_matches(QUOTES);
+    let mask = mask.trim_matches(QUOTES);
+    if mask.is_empty() {
+        return false;
+    }
+    if value == mask {
+        return true;
+    }
+    let Some((head, tail)) = mask.split_once("...") else {
+        return false;
+    };
+    if head.is_empty() && tail.is_empty() {
+        return false;
+    }
+    let (len, mask_len) = (value.chars().count(), mask.chars().count());
+    value.contains("...")
+        && len >= head.chars().count() + 3 + tail.chars().count()
+        && len <= mask_len + RETYPE_SLACK
+        && value.starts_with(head)
+        && value.ends_with(tail)
 }
 
 /// Open every stored variable for a launch, in the order stored.
@@ -451,6 +550,78 @@ mod tests {
         assert!(settle("", &[broken], &[]).unwrap().is_empty());
     }
 
+    #[test]
+    fn unquote_takes_off_one_matching_pair_only() {
+        assert_eq!(unquote("abc"), Some("abc"));
+        assert_eq!(unquote("\"abc\""), Some("abc"));
+        assert_eq!(unquote("'abc'"), Some("abc"));
+        assert_eq!(unquote("\"\"abc\"\""), Some("\"abc\""));
+        assert_eq!(unquote("\"\""), Some(""));
+        assert_eq!(unquote("\" a b \""), Some(" a b "));
+        assert_eq!(unquote("\"abc'\""), Some("abc'"));
+        assert_eq!(unquote("it's"), Some("it's"));
+        assert_eq!(unquote(""), Some(""));
+    }
+
+    #[test]
+    fn unquote_refuses_a_quote_at_one_end_only() {
+        assert_eq!(unquote("\"github_pat_11ABC"), None);
+        assert_eq!(unquote("github_pat_11ABC\""), None);
+        assert_eq!(unquote("'abc"), None);
+        assert_eq!(unquote("\"abc'"), None);
+        assert_eq!(unquote("\""), None);
+    }
+
+    #[test]
+    fn a_damaged_mask_is_told_from_an_ordinary_value() {
+        let mask = "github_pat...Nx4h";
+        // The mask itself, with quotes added or taken away.
+        assert!(is_damaged_mask(mask, mask));
+        assert!(is_damaged_mask("\"github_pat...Nx4h", mask));
+        assert!(is_damaged_mask("\"github_pat...Nx4h\"", mask));
+        assert!(is_damaged_mask("github_pa...Nx4h", "\"github_pa...Nx4h"));
+        // Retyped around the ellipsis, head and tail kept.
+        assert!(is_damaged_mask("github_pat_11...Nx4h", mask));
+        assert!(is_damaged_mask("github_pat......Nx4h", mask));
+        // A real value, or one that merely holds `...`.
+        assert!(!is_damaged_mask("github_pat_11ABCDEFG0123456789Nx4h", mask));
+        assert!(!is_damaged_mask("github_pat...Zz9q", mask));
+        assert!(!is_damaged_mask("C:\\gh\\...\\lin", "C:...in"));
+        assert!(is_damaged_mask("C:x...in", "C:...in"));
+        assert!(!is_damaged_mask("github_pat_11ABCDEF...Nx4h", mask));
+        // A mask that shows nothing is matched only exactly.
+        assert!(is_damaged_mask("...", "..."));
+        assert!(is_damaged_mask("'...'", "..."));
+        assert!(!is_damaged_mask("a...b", "..."));
+        assert!(!is_damaged_mask("", ""));
+        // The unreadable marker, with quotes added.
+        assert!(is_damaged_mask("\"（復号できません）\"", UNREADABLE));
+    }
+
+    #[test]
+    fn settle_refuses_a_lone_quote_naming_the_line_and_not_the_value() {
+        // The incident's first half (#165): the token pasted with a leading
+        // quote and no closing one.
+        let text = "LI_PLUS_AGENT_KEY=lin\nGH_TOKEN=\"github_pat_11ABCDEFG0123456789";
+        let err = settle(text, &[], &[]).unwrap_err();
+        assert!(err.contains("2 行目"), "{err}");
+        assert!(err.contains("GH_TOKEN"), "{err}");
+        assert!(!err.contains("github_pat"), "{err}");
+        assert!(settle("A='abc", &[], &[]).unwrap_err().contains("1 行目"));
+        assert!(settle("A=abc\"", &[], &[]).is_err());
+    }
+
+    #[test]
+    fn settle_refuses_an_edited_unreadable_marker() {
+        let broken = EnvVar {
+            name: "GH_TOKEN".to_string(),
+            sealed: "dpapi:00".to_string(),
+        };
+        let err = settle(&format!("GH_TOKEN=\"{UNREADABLE}\""), std::slice::from_ref(&broken), &[])
+            .unwrap_err();
+        assert!(err.contains("1 行目") && err.contains("GH_TOKEN"), "{err}");
+    }
+
     #[cfg(windows)]
     mod windows {
         use super::super::*;
@@ -501,6 +672,83 @@ mod tests {
                     ("GH_CONFIG_DIR".to_string(), "C:\\gh\\lin".to_string()),
                 ]
             );
+        }
+
+        #[test]
+        fn settle_takes_off_matching_surrounding_quotes() {
+            let text = format!("GH_TOKEN=\"{TOKEN}\"\nLI_PLUS_AGENT_KEY='lin'\nOPTS=\"a b'\"\nEMPTY=\"\"");
+            let opened = open_all(&settle(&text, &[], &[]).unwrap()).unwrap();
+            assert_eq!(
+                opened,
+                vec![
+                    ("GH_TOKEN".to_string(), TOKEN.to_string()),
+                    ("LI_PLUS_AGENT_KEY".to_string(), "lin".to_string()),
+                    ("OPTS".to_string(), "a b'".to_string()),
+                    ("EMPTY".to_string(), String::new()),
+                ]
+            );
+        }
+
+        /// The incident in #165, end to end: a token stored with a stray
+        /// leading quote, then its mask edited to take the quote away.
+        #[test]
+        fn the_incident_mask_edit_is_refused_and_the_value_survives() {
+            // What the pre-#165 app stored: the value with its leading quote.
+            let quoted = format!("\"{TOKEN}");
+            let stored = vec![EnvVar {
+                name: "GH_TOKEN".to_string(),
+                sealed: seal(&quoted).unwrap(),
+            }];
+            let drawn = render(&stored);
+            assert_eq!(drawn, "GH_TOKEN=\"github_pa...Nx4h");
+
+            // Left alone, it still reads back as untouched, quote and all.
+            assert_eq!(settle(&drawn, &stored, &[]).unwrap(), stored);
+
+            // The quote taken off the mask: refused, naming the line only.
+            let err = settle("GH_TOKEN=github_pa...Nx4h", &stored, &[]).unwrap_err();
+            assert!(err.contains("1 行目") && err.contains("GH_TOKEN"), "{err}");
+            assert!(!err.contains("github_pa"), "{err}");
+
+            // The real value pasted again goes through, without the quote.
+            let fixed = settle(&format!("GH_TOKEN={TOKEN}"), &stored, &[]).unwrap();
+            assert_eq!(open_all(&fixed).unwrap(), vec![("GH_TOKEN".to_string(), TOKEN.to_string())]);
+        }
+
+        #[test]
+        fn edited_masks_of_a_stored_name_are_refused() {
+            let stored = settle(&format!("GH_TOKEN={TOKEN}\nLI_PLUS_AGENT_KEY=lin"), &[], &[]).unwrap();
+            for line in [
+                "GH_TOKEN=\"github_pat...Nx4h\"",
+                "GH_TOKEN=\"github_pat...Nx4h",
+                "GH_TOKEN=github_pat_11...Nx4h",
+                "gh_token=github_pat...Nx4h",
+                "LI_PLUS_AGENT_KEY='...'",
+            ] {
+                let err = settle(line, &stored, &[]).unwrap_err();
+                assert!(err.contains("1 行目"), "{line}: {err}");
+            }
+        }
+
+        #[test]
+        fn values_holding_an_ellipsis_are_ordinary_values() {
+            let stored = settle("GH_CONFIG_DIR=C:\\gh\\lin\nLI_PLUS_AGENT_KEY=lin", &[], &[]).unwrap();
+            // A new variable, and new values for stored names that are not
+            // their masks, all hold `...` and all go through.
+            let text = "GH_CONFIG_DIR=D:\\a\\...\\b\nLI_PLUS_AGENT_KEY=a...b\nOPTS=--include=src/...";
+            let opened = open_all(&settle(text, &stored, &[]).unwrap()).unwrap();
+            assert_eq!(
+                opened,
+                vec![
+                    ("GH_CONFIG_DIR".to_string(), "D:\\a\\...\\b".to_string()),
+                    ("LI_PLUS_AGENT_KEY".to_string(), "a...b".to_string()),
+                    ("OPTS".to_string(), "--include=src/...".to_string()),
+                ]
+            );
+            // A new variable whose value is shaped like a mask is not checked:
+            // only names already stored have a mask to be damaged.
+            let fresh = settle("NEW_KEY=github_pat...Nx4h", &stored, &[]).unwrap();
+            assert_eq!(open_all(&fresh).unwrap(), vec![("NEW_KEY".to_string(), "github_pat...Nx4h".to_string())]);
         }
 
         #[test]
