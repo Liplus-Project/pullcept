@@ -586,6 +586,40 @@ pub fn session_id_launch_args(base: &[String], cli: Option<Cli>) -> Vec<String> 
     args
 }
 
+/// The arguments of the line that goes back into a session, with the person's
+/// own launch options carried onto it (#167).
+///
+/// `resume` is what follows the command on this CLI's way back
+/// (`Cli::resume_command`), and it comes first and whole: those words are how
+/// the line goes back, and nothing added after them changes where it goes.
+/// The options follow. Resuming is the same CLI in the same seat, so what the
+/// person asked of every launch — `--dangerously-skip-permissions` above all —
+/// is asked of this one too; a resume line without them is a session that
+/// comes back in a different mode from the one it left.
+///
+/// The options enter as the launch line carries them (`carried_launch_options`)
+/// and they enter here, before the resume words join them. Left to
+/// `launch_args` they would be judged together with the resume words, and an
+/// option the line cannot carry would then take the way back off with it —
+/// the fresh session this app refuses to start in place of a resume. Here an
+/// option that cannot be carried costs the options, as it does on a fresh
+/// launch, and the resume words stand.
+///
+/// What the CLI's conventions put on a fresh launch to hand it an id is taken
+/// out of the options (`Cli::without_session_id_args`). The resume words
+/// already name the id, and a second flag naming one is the pair the fresh
+/// launch never builds either (`session_id_launch_args`).
+///
+/// Only a kind naming a CLI comes through here. A kind naming none has a resume
+/// field the person writes whole, options and all, and this app has
+/// established nothing about whether that CLI's way back takes the options of
+/// its launch (#156, 決定5).
+pub fn resume_launch_args(resume: &[String], options: &[String], cli: Cli) -> Vec<String> {
+    let mut args = resume.to_vec();
+    args.extend(cli.without_session_id_args(carried_launch_options(options)));
+    args
+}
+
 /// Whether these arguments have somewhere to put a session id.
 ///
 /// What decides whether one is minted at all. Minting unconditionally would
@@ -2496,6 +2530,61 @@ mod tests {
         // would carry it is Claude Code's, and an unknown flag ends a launch
         // (#147).
         assert!(!line.iter().any(|arg| arg == APPEND_SYSTEM_PROMPT_FLAG), "{line:?}");
+    }
+
+    /// The failure #167 observed: a resumed session came back without
+    /// `--dangerously-skip-permissions`, because the resume line was the CLI's
+    /// way back and nothing else.
+    #[test]
+    fn a_resume_line_carries_the_accounts_launch_options() {
+        let resume = split_launch_options("--resume {session_id}");
+        let options = split_launch_options(
+            "--dangerously-skip-permissions --dangerously-load-development-channels server:github-webhook-mcp --rc",
+        );
+        let line = resume_launch_args(&resume, &options, Cli::ClaudeCode);
+        assert_eq!(
+            line,
+            vec![
+                "--resume",
+                "{session_id}",
+                "--dangerously-skip-permissions",
+                "--dangerously-load-development-channels",
+                "server:github-webhook-mcp",
+                "--rc",
+            ]
+        );
+        // Still the one place for an id, so the composition hands the CLI no
+        // `--session-id` beside `--resume`.
+        let composed = launch_args(&line, Some(Cli::ClaudeCode), &own(), None, &[], None);
+        assert!(!composed.iter().any(|arg| arg == "--session-id"), "{composed:?}");
+        assert_eq!(&composed[..3], &["--resume", "{session_id}", "--dangerously-skip-permissions"]);
+    }
+
+    /// 制約: the convention's own flag names an id, and the resume words
+    /// already name one.
+    #[test]
+    fn a_resume_line_does_not_carry_the_session_id_flag() {
+        let resume = split_launch_options("--resume {session_id}");
+        for written in [
+            "--verbose --session-id {session_id}",
+            "--verbose --session-id={session_id}",
+        ] {
+            let line =
+                resume_launch_args(&resume, &split_launch_options(written), Cli::ClaudeCode);
+            assert_eq!(line, vec!["--resume", "{session_id}", "--verbose"], "{written}");
+        }
+    }
+
+    /// 制約: options the line cannot carry are left off whole, as on a fresh
+    /// launch — and the way back stays on the line (#154).
+    #[test]
+    fn options_the_line_cannot_carry_cost_the_options_not_the_resume() {
+        let resume = split_launch_options("--resume {session_id}");
+        let options = split_launch_options(r#"--dangerously-skip-permissions --add-dir "C:\a&b""#);
+        let line = resume_launch_args(&resume, &options, Cli::ClaudeCode);
+        assert_eq!(line, vec!["--resume", "{session_id}"]);
+        let composed = launch_args(&line, Some(Cli::ClaudeCode), &own(), None, &[], None);
+        assert_eq!(&composed[..2], &["--resume", "{session_id}"]);
     }
 
     /// Either spelling of the flag is somewhere to put an id, so neither is

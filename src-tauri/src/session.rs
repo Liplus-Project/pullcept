@@ -15,7 +15,7 @@ use crate::room_log::{self, TopicRef};
 use mcp_config::{
     carried_launch_options, console_safe, declared_character, declares_session_id,
     declares_settings, launch_args, other_room_servers, register_sidecar,
-    reject_incompatible_flags, server_name_for, session_id_launch_args, split_launch_options,
+    reject_incompatible_flags, resume_launch_args, server_name_for, session_id_launch_args, split_launch_options,
     status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
     ROOM_TOKEN_ENV,
 };
@@ -634,7 +634,16 @@ fn resolve_launch(
                 // with it (`launch`). A line filled here would also be a line
                 // that no longer says where its id went, and the CLI's own
                 // convention would then be added on top of it (#156).
-                args: parts,
+                //
+                // On a kind naming a CLI the account's own options ride behind
+                // the way back, as they ride on its fresh line (#167): the line
+                // is the kind's and shows no field a person could add a flag
+                // to. A kind naming none resumes on the line its field holds,
+                // whole, as the person wrote it.
+                args: match cli {
+                    Some(cli) => resume_launch_args(&parts, &account.args, cli),
+                    None => parts,
+                },
                 session_id: None,
                 resumed_from: Some(session_id.to_string()),
                 dropped_resume: None,
