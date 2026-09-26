@@ -189,9 +189,12 @@ impl McpServers {
             Some(run) if run.generation == generation && run.state_is_live() => {
                 run.task = Some(task)
             }
-            // Finished before the handle got here, or replaced already. Nothing
-            // to keep.
-            _ => {}
+            // Finished before the handle got here, in which case aborting it is
+            // nothing; or replaced already by a restart that ran between the
+            // spawn and this lock, which found no handle to abort. Left running,
+            // that run would go on posting into the rooms beside the one that
+            // replaced it, so it is ended here.
+            _ => task.abort(),
         }
     }
 
