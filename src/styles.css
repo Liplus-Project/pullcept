@@ -294,6 +294,30 @@ body {
   margin-top: 0.15rem;
 }
 
+/* Webhook notices, folded (#169). A run of them is one fold, drawn as a single
+   quiet line in the notices' colour until it is opened; opened, the notices are
+   ordinary lines, spaced as the room spaces lines. What makes the fold a fold
+   is the screen's alone — each notice is still its own post (src/main.ts,
+   `placeLine`). */
+.notice-fold {
+  font-size: var(--room-font-size);
+  max-width: 46em;
+}
+
+.notice-fold > summary {
+  cursor: pointer;
+  font-size: 0.78em;
+  color: var(--muted);
+  border-left: 3px solid var(--speaker, var(--line));
+  padding-left: 0.7rem;
+}
+
+.notice-fold[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 /* ── composer ────────────────────────────────────────────────────────────── */
 
 #composer {

@@ -2924,6 +2924,7 @@ dependencies = [
  "tokio-tungstenite",
  "topic-index",
  "uuid",
+ "webhook-bridge",
 ]
 
 [[package]]
@@ -4125,6 +4126,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -4776,6 +4778,13 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
+]
+
+[[package]]
+name = "webhook-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
