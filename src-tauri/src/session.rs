@@ -94,6 +94,21 @@ fn status_script(entry: &Path) -> Option<PathBuf> {
     script.is_file().then_some(script)
 }
 
+/// The app's own webhook receiver, which ships beside the sidecar entry point
+/// the same way the status-line script does (#169).
+///
+/// From the same walk, for the same reason `status_script` gives: one
+/// distribution, found once. The error names what was not found, and the app
+/// says it and carries on without webhooks.
+pub fn webhook_bridge_script() -> Result<PathBuf, String> {
+    let (entry, _) = resolve_sidecar_paths()?;
+    let script = entry
+        .parent()
+        .map(|dir| dir.join("webhook-bridge.mjs"))
+        .filter(|script| script.is_file());
+    script.ok_or_else(|| format!("webhook-bridge.mjs is not beside {}", entry.display()))
+}
+
 /// This seat's status-line command, given the sidecar entry it ships beside.
 ///
 /// Two ways to have nothing: the script is not where the distribution puts it,

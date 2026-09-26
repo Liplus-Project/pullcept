@@ -1,0 +1,15 @@
+[package]
+name = "webhook-bridge"
+version = "0.1.0"
+description = "What Pullcept says to, and reads from, the github-webhook-mcp bridge it runs itself"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Free of tauri for the reason docs/0-requirements.md gives: a test binary that
+# links the tauri dependency tree does not load on the GNU target. Which line
+# is an event, which answer is a failure, and which rooms a notice goes into
+# are the parts of #169 a reader cannot settle by reading.
+
+[dependencies]
+serde_json = "1"

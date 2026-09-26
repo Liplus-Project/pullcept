@@ -108,6 +108,12 @@
 //! (`room_log`). A post is never held back on account of that write: it is in
 //! the room before the disk is touched, and a failure there costs the record,
 //! not the utterance (#48).
+//!
+//! **One post comes from no connection: a webhook notice (#169).** The app
+//! receives it itself (`webhook`) and puts it into every room an AI session is
+//! seated in, through the same `deliver` as everything else — so it is logged
+//! and fanned out like any post. It takes no seat and is spoken from an origin
+//! no connection holds, so nobody is skipped and nobody can address it.
 
 use crate::pty::PtyState;
 use crate::room_log::{self, TopicRef};
@@ -389,6 +395,14 @@ pub struct RoomState {
     /// room the screen has opened, and each of those seats is in its own
     /// room's roster.
     local_origin: String,
+    /// The origin a webhook notice is posted from (#169).
+    ///
+    /// Minted here like the screen's, and belonging to no connection, so the
+    /// fan-out skips nobody: every session in the room hears the notice, and so
+    /// does the screen. It takes no seat. A notice is something from outside
+    /// put on the wall, not a participant — it is on no roster and no one can
+    /// address it.
+    notice_origin: String,
 }
 
 impl RoomState {
@@ -411,7 +425,25 @@ impl RoomState {
             to_participants,
             token: Uuid::new_v4().to_string(),
             local_origin: Uuid::new_v4().to_string(),
+            notice_origin: Uuid::new_v4().to_string(),
         }
+    }
+
+    /// The rooms a webhook notice goes into now: every room an AI session is
+    /// seated in (`webhook_bridge::holds_session`).
+    fn rooms_in_session(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .rooms
+            .iter()
+            .filter(|(_, room)| {
+                webhook_bridge::holds_session(
+                    room.participants.keys().map(String::as_str),
+                    &self.local_origin,
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub fn token(&self) -> String {
@@ -763,6 +795,11 @@ fn deliver(
         };
         let (since, hue) = match inner.participants.get(origin) {
             Some(seat) => (seat.since, seat.hue),
+            // A webhook notice (#169). It was not composed against anything
+            // said here, so there is nothing it could have missed: it stands
+            // where a participant taking a seat this instant would stand, and
+            // the floor holds nothing against it.
+            None if origin == room.notice_origin => (inner.floor.seq(), None),
             // Unseated: nothing was ever delivered here, so nothing is
             // presumed read. Speaking seats a participant, and the screen's
             // command does that before it reaches this point.
@@ -864,6 +901,49 @@ fn deliver(
         message_id: Some(message_id),
         missed: Vec::new(),
     })
+}
+
+/// Put one webhook notice into every room an AI session is seated in, and
+/// answer how many it went into (#169).
+///
+/// One post per room, each through `deliver` like any other: the same frame,
+/// the same fan-out, the same log, the same `room-message`. Nothing about who
+/// the event concerns is read — a notice is handed round, not sorted (#32).
+/// Each room gets its own `message_id`, because each is a post of its own room.
+///
+/// **No room, no post (Master 判断, 2026-09-27).** A room with only the screen
+/// in it is not written to, and the caller leaves the event unmarked, so it
+/// stays pending on the worker. A session that sits down afterwards is not
+/// handed it: the room does not push its past to a participant, and a notice
+/// is no exception.
+pub fn post_notice(app: &AppHandle, room: &RoomState, content: &str) -> usize {
+    let mut delivered = 0;
+    for room_id in room.rooms_in_session() {
+        let outcome = deliver(
+            app,
+            room,
+            &room_id,
+            &room.notice_origin,
+            Post {
+                message_id: Uuid::new_v4().to_string(),
+                speaker: webhook_bridge::SPEAKER.to_string(),
+                hue: None,
+                content: content.to_string(),
+                to: None,
+                ts: now_iso(),
+            },
+            None,
+        );
+        match outcome {
+            Ok(outcome) if outcome.delivered => delivered += 1,
+            // The floor holds nothing against a notice, so this is not reached.
+            // Said rather than assumed, in case that ever changes.
+            Ok(_) => eprintln!("[webhook] the floor of room {room_id} refused a notice"),
+            // Deleted between the list and the post.
+            Err(err) => eprintln!("[webhook] {err}"),
+        }
+    }
+    delivered
 }
 
 /// How many posts one pull answers with when the asker names no number.

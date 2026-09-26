@@ -3,6 +3,7 @@ mod pty;
 mod room;
 mod room_log;
 mod session;
+mod webhook;
 
 use pty::PtyState;
 use room::RoomState;
@@ -30,6 +31,13 @@ pub fn run() {
                     Err(err) => eprintln!("[room] failed to start: {err}"),
                 }
             });
+            // Webhooks the app receives itself, posted into the rooms (#169).
+            // Independent of the socket: a notice goes through the room's own
+            // path, not over the wire.
+            webhook::start(
+                app.handle().clone(),
+                app.handle().state::<RoomState>().inner().clone(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

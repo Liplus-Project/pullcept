@@ -1361,12 +1361,51 @@ function roomLine(line: {
   return article;
 }
 
+/**
+ * The name a webhook notice is posted under (#169). The same literal as
+ * `webhook_bridge::SPEAKER` on the Rust side.
+ */
+const WEBHOOK_SPEAKER = "webhook";
+
+/**
+ * Put one line in the room, folding webhook notices away (#169).
+ *
+ * A notice is drawn folded, and a run of them — everything under `webhook` until
+ * someone else speaks — is one fold, headed with how many it holds and opened
+ * by a click. The fold is the screen's alone: each notice is still its own post
+ * in the room, in the log and on every session's channel, and nothing but this
+ * drawing groups them.
+ *
+ * Decided by the name, which is all a line read back from the log carries. The
+ * room seats no one under `webhook` — a notice takes no seat — so on the glass
+ * the name is the notice's, unless someone joins under it by hand.
+ */
+function placeLine(line: HTMLElement, speaker: string): void {
+  if (speaker !== WEBHOOK_SPEAKER) {
+    roomEl.appendChild(line);
+    return;
+  }
+  const last = roomEl.lastElementChild;
+  let fold =
+    last instanceof HTMLDetailsElement && last.classList.contains("notice-fold") ? last : null;
+  if (!fold) {
+    fold = document.createElement("details");
+    fold.className = "notice-fold";
+    fold.style.setProperty("--speaker", speakerColor(WEBHOOK_SPEAKER, null, false));
+    fold.appendChild(document.createElement("summary"));
+    roomEl.appendChild(fold);
+  }
+  fold.appendChild(line);
+  const count = fold.querySelectorAll(":scope > .message").length;
+  fold.querySelector("summary")!.textContent = `${WEBHOOK_SPEAKER} ${count} 件`;
+}
+
 function appendMessage(message: RoomMessage): void {
   // The room is scrolled to the bottom only when it already was, so reading
   // back through the log is not yanked away by an arriving message.
   const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
 
-  roomEl.appendChild(
+  placeLine(
     roomLine({
       speaker: message.speaker,
       // `own` rather than a name test: the room decides self on the connection
@@ -1378,6 +1417,7 @@ function appendMessage(message: RoomMessage): void {
       content: message.content,
       past: false,
     }),
+    message.speaker,
   );
   // On the glass, so it is what this screen can declare having seen. Own posts
   // included: the room does not hold a speaker's own posts against them, and
@@ -1418,7 +1458,7 @@ function drawTopic(posts: LoggedPost[]): void {
   drawnIds.clear();
 
   for (const post of posts) {
-    roomEl.appendChild(
+    placeLine(
       roomLine({
         speaker: post.speaker,
         colour: speakerColor(post.speaker, null, false),
@@ -1430,6 +1470,7 @@ function drawTopic(posts: LoggedPost[]): void {
         content: post.content,
         past: true,
       }),
+      post.speaker,
     );
     drawnIds.add(post.message_id);
   }
