@@ -33,6 +33,7 @@ Pullcept は、人間と複数の独立した AI / Li+ セッションが、一�
 - 部屋のログ（`logs/main/{トピック}.jsonl` への追記と `logs/main/index.json` の索引）と、会話面の左の列に並ぶトピックの一覧
 - トピックの再開。一覧から選ぶとそのトピックが部屋へ戻り、アカウントに `再開コマンド` があればそこに居た CLI セッションも戻ります
 - 参加者が自分でトピックの過去発言を引く道具（サイドカーの `read_room_history`）
+- 設定メニュー。アプリ本体が起動するローカル MCP サーバ（同梱の `github-webhook-mcp` ブリッジなど）の一覧・実行状態・コマンドと引数と環境変数の編集・ログを扱い、設定はアプリのデータディレクトリの `mcp-servers.json` に保存します
 - Windows 上で `npm ci` と Rust のコンパイル確認を行う CI
 - GitHub Release 公開時に Tauri バンドルを作成する CD
 
@@ -196,6 +197,7 @@ src-tauri/src/        Tauri、部屋ソケット、PTY、設定・セッショ�
 crates/mcp-config/    .mcp.json 登録と起動フラグ検査（tauri 非依存、テスト対象）
 crates/room-floor/    同時発話の順序付け（tauri 非依存、テスト対象）
 crates/topic-index/   トピックの保存と索引の照合（tauri 非依存、テスト対象）
+crates/mcp-servers/   アプリ本体が起動する MCP サーバの設定ファイルと欄の読み方（tauri 非依存、テスト対象）
 portable-pty-patch/   Windows 対応を含む portable-pty のローカルパッチ
 .github/workflows/    Windows CI とリリース用 CD
 ```

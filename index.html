@@ -74,6 +74,9 @@
           title="会話の文字サイズ（Ctrl + = / - / 0）"
         ></select>
         <button id="toggle-diagnostics" type="button" aria-expanded="false">端末</button>
+        <!-- The app's own settings (#172). A word, like 端末 beside it, and
+             not ⚙️: that drawing already means 編集 on every account row. -->
+        <button id="open-settings" type="button" aria-haspopup="dialog">設定</button>
         <!-- Folding the right panel away. Last on the bar, so it sits over the
              column it reaches — the same reason its pair is first. See that
              one for the shape, the mirror and why this one has no shortcut. -->
@@ -477,6 +480,94 @@
             <button id="dialog-commit" type="submit" value="commit">決定</button>
           </menu>
         </form>
+      </dialog>
+
+      <!-- The app's settings (#172). In this webview, for the reason the account
+           dialog is: a step inside the app, not a window to find behind it.
+
+           A list of sections on the left, as Claude Desktop's settings have,
+           holding one section for now: the MCP servers the app runs itself.
+           The section is Desktop's ローカル MCP サーバー screen in shape — the
+           servers, whether each is running, what each is started with, its
+           log, and the file they are listed in.
+
+           Nothing here takes effect as it is typed. 保存 writes the file;
+           再起動 starts the server again from what the file holds. They are
+           two buttons because they are two acts: an edit is saved while the
+           server keeps running, and it is started when the person says so. -->
+      <dialog id="settings-dialog" aria-labelledby="settings-title">
+        <div class="settings">
+          <nav class="settings-nav" aria-label="設定の項目">
+            <h2 id="settings-title">設定</h2>
+            <button type="button" class="section" aria-current="page">MCP サーバ</button>
+          </nav>
+
+          <section class="settings-body" aria-labelledby="mcp-title">
+            <div class="settings-head">
+              <h3 id="mcp-title">ローカル MCP サーバ</h3>
+              <button id="mcp-open-file" type="button">設定ファイルを開く</button>
+            </div>
+            <p class="hint">
+              アプリ本体が自分のクライアントとして起動する MCP サーバです。セッションが読み込む
+              MCP サーバはここには出ません。
+            </p>
+            <p id="mcp-file" class="path"></p>
+            <p id="mcp-file-error" class="error" role="alert"></p>
+
+            <div class="mcp">
+              <ul id="mcp-list" class="mcp-list" aria-label="サーバ"></ul>
+
+              <div id="mcp-detail" class="mcp-detail" hidden>
+                <div class="mcp-detail-head">
+                  <h4 id="mcp-name"></h4>
+                  <span id="mcp-state" class="state"></span>
+                  <span class="spacer"></span>
+                  <button id="mcp-restart" type="button">再起動</button>
+                </div>
+                <!-- The file no longer holds what the running server was
+                     started from. Empty, and gone, when it does. -->
+                <p id="mcp-stale" class="notice" role="status"></p>
+
+                <div id="mcp-fields" class="mcp-fields">
+                  <label class="field">
+                    コマンド
+                    <input id="mcp-command" type="text" spellcheck="false" />
+                  </label>
+                  <!-- One argument per line. Nothing splits a line, so a path
+                       with spaces in it is one line as it is. -->
+                  <label class="field multi">
+                    引数
+                    <textarea id="mcp-args" rows="3" spellcheck="false"></textarea>
+                  </label>
+                  <!-- One NAME=value per line, added to the app's own
+                       environment. Stored in the file as written, the way
+                       Claude Desktop stores its own. -->
+                  <label class="field multi">
+                    環境変数
+                    <textarea
+                      id="mcp-env"
+                      rows="3"
+                      spellcheck="false"
+                      placeholder="例: WEBHOOK_WORKER_URL=https://github-webhook.example.com"
+                    ></textarea>
+                  </label>
+                  <p id="mcp-error" class="error" role="alert"></p>
+                  <menu class="actions">
+                    <span class="spacer"></span>
+                    <button id="mcp-save" type="button">保存</button>
+                  </menu>
+                </div>
+
+                <h5>ログ</h5>
+                <pre id="mcp-log" class="log" tabindex="0" aria-label="サーバのログ"></pre>
+              </div>
+            </div>
+          </section>
+        </div>
+        <menu class="settings-actions">
+          <span class="spacer"></span>
+          <button id="settings-close" type="button">閉じる</button>
+        </menu>
       </dialog>
 
       <!-- The 終了 confirmation. One click on the row opens this, and the

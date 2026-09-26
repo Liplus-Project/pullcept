@@ -1485,3 +1485,300 @@ body {
   background: var(--danger);
   border-color: var(--danger);
 }
+
+/* ── the settings dialog (#172) ──────────────────────────────────────────── */
+
+/* The account dialog's frame, wider: a list of sections on the left and the
+   section on the right, the way Claude Desktop's settings are laid out. Its
+   own rules rather than a third selector on the account dialog's, because the
+   body inside is a different shape. */
+#settings-dialog {
+  width: min(52rem, calc(100vw - 3rem));
+  height: min(38rem, calc(100vh - 3rem));
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+#settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#settings-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+#settings-dialog .settings {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr);
+}
+
+/* The sections. The panel's tint, as the participant panel carries it: this
+   column is a surface, and the section on the right is the window's ground. */
+#settings-dialog .settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 0.6rem;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+
+#settings-dialog h2 {
+  margin: 0 0 0.5rem 0.4rem;
+  font-size: 0.95rem;
+}
+
+#settings-dialog .settings-nav .section {
+  font: inherit;
+  text-align: left;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+/* Picked the way a picked account row is: a box of the window's ground with a
+   border (#75). */
+#settings-dialog .settings-nav .section[aria-current] {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+#settings-dialog .settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  padding: 1rem 1.1rem 0.6rem;
+}
+
+#settings-dialog .settings-head,
+#settings-dialog .mcp-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+#settings-dialog .settings-head {
+  justify-content: space-between;
+}
+
+#settings-dialog h3,
+#settings-dialog h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+#settings-dialog h5 {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+#settings-dialog .hint,
+#settings-dialog .path {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+#settings-dialog .path {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+/* Why the file or an act failed. Gone when empty: unlike the account form's,
+   nothing below it is a row of buttons that would jump. */
+#settings-dialog .error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.78rem;
+  white-space: pre-line;
+}
+
+#settings-dialog .error:empty,
+#settings-dialog .notice:empty {
+  display: none;
+}
+
+/* Said, not refused — the account form's notice, in the same shape. */
+#settings-dialog .notice {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 0.74rem;
+}
+
+/* The servers on the left of the section, the one open on the right. */
+#settings-dialog .mcp {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+#settings-dialog .mcp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  overflow-y: auto;
+}
+
+#settings-dialog .mcp-row {
+  font: inherit;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+#settings-dialog .mcp-row[aria-current] {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+#settings-dialog .mcp-row .name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#settings-dialog .state {
+  color: var(--muted);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+/* The socket row's two colours (#participants dd[data-kind]). */
+#settings-dialog .state[data-kind="ok"] {
+  color: var(--accent);
+}
+
+#settings-dialog .state[data-kind="error"] {
+  color: var(--danger);
+}
+
+#settings-dialog .mcp-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  min-width: 0;
+}
+
+#settings-dialog .mcp-detail[hidden],
+#settings-dialog .mcp-fields[hidden] {
+  display: none;
+}
+
+#settings-dialog .mcp-detail-head .spacer,
+#settings-dialog .actions .spacer,
+#settings-dialog .settings-actions .spacer {
+  flex: 1;
+}
+
+#settings-dialog .mcp-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+#settings-dialog .field {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--muted);
+}
+
+#settings-dialog .field.multi {
+  align-items: start;
+}
+
+#settings-dialog input,
+#settings-dialog textarea {
+  font: inherit;
+  width: 100%;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.78rem;
+}
+
+#settings-dialog textarea {
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+#settings-dialog .actions,
+#settings-dialog .settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+}
+
+#settings-dialog .settings-actions {
+  padding: 0.6rem 1.1rem 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+#settings-dialog button:not(.section):not(.mcp-row) {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+
+/* What the server has said on stderr, and what the app has said about it. It
+   takes whatever height the section leaves, and scrolls inside it. */
+#settings-dialog .log {
+  flex: 1;
+  min-height: 6rem;
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
