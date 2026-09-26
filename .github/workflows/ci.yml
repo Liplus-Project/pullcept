@@ -33,6 +33,7 @@ jobs:
             crates/room-floor/target
             crates/account-env/target
             crates/webhook-bridge/target
+            crates/mcp-servers/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -82,6 +83,12 @@ jobs:
       # runs itself, and which rooms a notice goes into (#169).
       - name: Test the webhook-bridge crate
         working-directory: crates/webhook-bridge
+        run: cargo test
+
+      # The file the app's own MCP servers are listed in, and the text the
+      # settings panel edits them through (#172).
+      - name: Test the mcp-servers crate
+        working-directory: crates/mcp-servers
         run: cargo test
 
   # Gate job: single Required status check for branch protection.

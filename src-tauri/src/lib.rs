@@ -1,3 +1,4 @@
+mod app_mcp;
 mod config;
 mod pty;
 mod room;
@@ -5,6 +6,7 @@ mod room_log;
 mod session;
 mod webhook;
 
+use app_mcp::McpServers;
 use pty::PtyState;
 use room::RoomState;
 use session::RoomSeats;
@@ -20,6 +22,8 @@ pub fn run() {
         // Which account is in the room, so a second launch of one account is
         // refused rather than seating one identity twice (session::RoomSeats).
         .manage(RoomSeats::new())
+        // The MCP servers the app runs itself, by name (#172).
+        .manage(McpServers::new())
         .setup(|app| {
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
@@ -31,13 +35,11 @@ pub fn run() {
                     Err(err) => eprintln!("[room] failed to start: {err}"),
                 }
             });
-            // Webhooks the app receives itself, posted into the rooms (#169).
-            // Independent of the socket: a notice goes through the room's own
-            // path, not over the wire.
-            webhook::start(
-                app.handle().clone(),
-                app.handle().state::<RoomState>().inner().clone(),
-            );
+            // The servers listed in `mcp-servers.json`, the webhook bridge
+            // among them: webhooks the app receives itself, posted into the
+            // rooms (#169 / #172). Independent of the socket: a notice goes
+            // through the room's own path, not over the wire.
+            app_mcp::start_all(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -70,6 +72,10 @@ pub fn run() {
             session::launch_field_report,
             session::preview_launch_args,
             session::start_session,
+            app_mcp::mcp_servers,
+            app_mcp::save_mcp_server,
+            app_mcp::restart_mcp_server,
+            app_mcp::open_mcp_servers_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

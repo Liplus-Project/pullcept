@@ -1,0 +1,17 @@
+[package]
+name = "mcp-servers"
+version = "0.1.0"
+description = "The MCP servers Pullcept runs itself: the file that lists them, and the text the settings panel edits them through"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Free of tauri for the reason docs/0-requirements.md gives under テストの配置:
+# a test binary that links the tauri dependency tree does not load on the GNU
+# target. What is here rewrites a file the person may also have edited by hand,
+# and what it must not lose there is the part a reader cannot settle by reading
+# (#172).
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

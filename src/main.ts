@@ -561,6 +561,25 @@ const topicDeleteMessageEl = document.getElementById("topic-delete-message") as 
 const topicDeleteSessionsEl = document.getElementById("topic-delete-sessions") as HTMLElement;
 const topicDeleteCancelEl = document.getElementById("topic-delete-cancel") as HTMLButtonElement;
 const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HTMLButtonElement;
+const openSettingsEl = document.getElementById("open-settings") as HTMLButtonElement;
+const settingsDialogEl = document.getElementById("settings-dialog") as HTMLDialogElement;
+const settingsCloseEl = document.getElementById("settings-close") as HTMLButtonElement;
+const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
+const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
+const mcpFileErrorEl = document.getElementById("mcp-file-error") as HTMLElement;
+const mcpListEl = document.getElementById("mcp-list") as HTMLElement;
+const mcpDetailEl = document.getElementById("mcp-detail") as HTMLElement;
+const mcpNameEl = document.getElementById("mcp-name") as HTMLElement;
+const mcpStateEl = document.getElementById("mcp-state") as HTMLElement;
+const mcpRestartEl = document.getElementById("mcp-restart") as HTMLButtonElement;
+const mcpStaleEl = document.getElementById("mcp-stale") as HTMLElement;
+const mcpFieldsEl = document.getElementById("mcp-fields") as HTMLElement;
+const mcpCommandEl = document.getElementById("mcp-command") as HTMLInputElement;
+const mcpArgsEl = document.getElementById("mcp-args") as HTMLTextAreaElement;
+const mcpEnvEl = document.getElementById("mcp-env") as HTMLTextAreaElement;
+const mcpErrorEl = document.getElementById("mcp-error") as HTMLElement;
+const mcpSaveEl = document.getElementById("mcp-save") as HTMLButtonElement;
+const mcpLogEl = document.getElementById("mcp-log") as HTMLElement;
 
 let accounts: Account[] = [];
 /**
@@ -4136,6 +4155,234 @@ function terminalTheme(): { background: string; foreground: string } {
   };
 }
 
+// ── settings: the app's own MCP servers (#172) ──────────────────────────────
+//
+// What src-tauri/src/app_mcp.rs hands the panel. The file is read on that side
+// and so is the text of the three fields: this screen draws what it is given
+// and hands back what was typed, so the reading of `NAME=value` has one
+// implementation, and it is the tested one (`crates/mcp-servers`).
+
+/** Where one run of a server is. `null` when this app run has not started it. */
+type McpRunState =
+  | { state: "starting" }
+  | { state: "running" }
+  | { state: "ended"; detail: string }
+  | { state: "failed"; detail: string }
+  | { state: "stopped" };
+
+interface McpLogLine {
+  /** Milliseconds since the epoch, drawn in local time. */
+  at_ms: number;
+  text: string;
+}
+
+interface McpServerView {
+  name: string;
+  /** False for a server still running under a name the file no longer lists. */
+  listed: boolean;
+  command: string;
+  /** One argument per line. */
+  args: string;
+  /** One `NAME=value` per line. */
+  env: string;
+  state: McpRunState | null;
+  /** The file holds something other than what the running server was started
+   *  from. */
+  stale: boolean;
+  log: McpLogLine[];
+}
+
+interface McpPanelView {
+  file: string;
+  error: string | null;
+  servers: McpServerView[];
+}
+
+/** The server the panel has open, by name. */
+let mcpSelected: string | null = null;
+/** The fields as last drawn from the file, to tell an edit from what is saved.
+ *  A refresh redraws state and log under an edit, never the edit itself. */
+let mcpDrawn: { name: string; command: string; args: string; env: string } | null = null;
+
+function mcpStateText(state: McpRunState | null): string {
+  if (!state) return "未起動";
+  switch (state.state) {
+    case "starting":
+      return "起動中";
+    case "running":
+      return "実行中";
+    case "ended":
+      return `終了（${state.detail}）`;
+    case "failed":
+      return `失敗（${state.detail}）`;
+    case "stopped":
+      return "停止";
+  }
+}
+
+/** `ok` for running, `error` for a run that ended or never started, and nothing
+ *  for the states on the way — the same two colours the socket row uses. */
+function mcpStateKind(state: McpRunState | null): string {
+  if (state?.state === "running") return "ok";
+  if (state?.state === "ended" || state?.state === "failed") return "error";
+  return "";
+}
+
+function mcpFieldsEdited(): boolean {
+  if (!mcpDrawn || mcpDrawn.name !== mcpSelected) return false;
+  return (
+    mcpCommandEl.value !== mcpDrawn.command ||
+    mcpArgsEl.value !== mcpDrawn.args ||
+    mcpEnvEl.value !== mcpDrawn.env
+  );
+}
+
+function mcpLogText(lines: McpLogLine[]): string {
+  return lines
+    .map((line) => {
+      const time = new Date(line.at_ms).toLocaleTimeString("ja-JP", { hour12: false });
+      return `${time}  ${line.text}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Read the panel again and draw it.
+ *
+ * Called on opening, after each act, and on every `mcp-servers-changed` while
+ * the dialog is open. The fields are redrawn only when they hold what was last
+ * drawn into them: a log line arriving while someone types is not a reason to
+ * take what they typed away.
+ */
+async function refreshMcpPanel(): Promise<void> {
+  let view: McpPanelView;
+  try {
+    view = await invoke<McpPanelView>("mcp_servers");
+  } catch (err) {
+    mcpFileErrorEl.textContent = String(err);
+    return;
+  }
+  mcpFileEl.textContent = view.file;
+  mcpFileErrorEl.textContent = view.error ?? "";
+
+  if (!view.servers.some((server) => server.name === mcpSelected)) {
+    mcpSelected = view.servers[0]?.name ?? null;
+  }
+
+  mcpListEl.replaceChildren(
+    ...view.servers.map((server) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mcp-row";
+      if (server.name === mcpSelected) button.setAttribute("aria-current", "true");
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = server.name;
+      const state = document.createElement("span");
+      state.className = "state";
+      state.textContent = mcpStateText(server.state);
+      state.dataset.kind = mcpStateKind(server.state);
+      button.append(name, state);
+      button.addEventListener("click", () => {
+        if (server.name === mcpSelected) return;
+        mcpSelected = server.name;
+        mcpDrawn = null;
+        mcpErrorEl.textContent = "";
+        void refreshMcpPanel();
+      });
+      item.append(button);
+      return item;
+    }),
+  );
+
+  const server = view.servers.find((each) => each.name === mcpSelected);
+  mcpDetailEl.hidden = !server;
+  if (!server) return;
+
+  mcpNameEl.textContent = server.name;
+  mcpStateEl.textContent = mcpStateText(server.state);
+  mcpStateEl.dataset.kind = mcpStateKind(server.state);
+  // One button, named for what it will do: start what has not run, start again
+  // what has, and stop what the file no longer lists.
+  mcpRestartEl.textContent = !server.listed ? "停止" : server.state ? "再起動" : "起動";
+  mcpStaleEl.textContent = !server.listed
+    ? "設定ファイルにこのサーバはありません。停止しても、一覧から消えるのはアプリを起動し直したときです。"
+    : server.stale
+      ? "保存した設定は、再起動するまで反映されません。"
+      : "";
+
+  mcpFieldsEl.hidden = !server.listed;
+  if (!mcpFieldsEdited()) {
+    mcpCommandEl.value = server.command;
+    mcpArgsEl.value = server.args;
+    mcpEnvEl.value = server.env;
+    mcpDrawn = { name: server.name, command: server.command, args: server.args, env: server.env };
+  }
+
+  // Follow the tail while it is being followed: a log scrolled back up to read
+  // is left where it was put.
+  const following = mcpLogEl.scrollTop + mcpLogEl.clientHeight >= mcpLogEl.scrollHeight - 4;
+  mcpLogEl.textContent = server.log.length ? mcpLogText(server.log) : "（まだ何も出ていません）";
+  if (following) mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
+}
+
+async function openSettings(): Promise<void> {
+  mcpDrawn = null;
+  mcpErrorEl.textContent = "";
+  if (!settingsDialogEl.open) settingsDialogEl.showModal();
+  await refreshMcpPanel();
+  mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
+}
+
+/** Write the open server's fields into the file. The running server is left as
+ *  it is; the panel then says the two differ until 再起動. */
+async function saveMcpServer(): Promise<void> {
+  if (!mcpSelected) return;
+  mcpErrorEl.textContent = "";
+  try {
+    await invoke("save_mcp_server", {
+      name: mcpSelected,
+      command: mcpCommandEl.value,
+      args: mcpArgsEl.value,
+      env: mcpEnvEl.value,
+    });
+  } catch (err) {
+    mcpErrorEl.textContent = String(err);
+    return;
+  }
+  // Drawn again from the file, so what the fields hold is what was stored —
+  // blank lines dropped, quotes taken off — rather than what was typed.
+  mcpDrawn = null;
+  await refreshMcpPanel();
+}
+
+/** Start the open server again from what the file holds. A field typed into
+ *  and not saved is not what starts, so an unsaved edit is said instead. */
+async function restartMcpServer(): Promise<void> {
+  if (!mcpSelected) return;
+  if (mcpFieldsEdited()) {
+    mcpErrorEl.textContent = "保存していない変更があります。先に保存してください。";
+    return;
+  }
+  mcpErrorEl.textContent = "";
+  try {
+    await invoke("restart_mcp_server", { name: mcpSelected });
+  } catch (err) {
+    mcpErrorEl.textContent = String(err);
+    return;
+  }
+  await refreshMcpPanel();
+}
+
+async function openMcpServersFile(): Promise<void> {
+  try {
+    await invoke("open_mcp_servers_file");
+  } catch (err) {
+    mcpFileErrorEl.textContent = String(err);
+  }
+}
+
 async function main(): Promise<void> {
   // The pane is one container holding every session's terminal, so the observer
   // is on the container and the fit lands on whichever one is showing.
@@ -4284,6 +4531,19 @@ async function main(): Promise<void> {
   // The socket binds after the frontend loads, so the event is the authority
   // and the poll below is only for a listener that attached too late.
   await listen<number>("room-ready", (event) => renderSocket(event.payload));
+
+  // ── settings (#172) ─────────────────────────────────────────────────────────
+  //
+  // The panel is read again whenever a server moves — a state, a log line —
+  // and only while it is open: a closed panel is read afresh when it opens.
+  openSettingsEl.addEventListener("click", () => void openSettings());
+  settingsCloseEl.addEventListener("click", () => settingsDialogEl.close());
+  mcpOpenFileEl.addEventListener("click", () => void openMcpServersFile());
+  mcpSaveEl.addEventListener("click", () => void saveMcpServer());
+  mcpRestartEl.addEventListener("click", () => void restartMcpServer());
+  await listen<string>("mcp-servers-changed", () => {
+    if (settingsDialogEl.open) void refreshMcpPanel();
+  });
 
   // The one thing that draws a topic boundary, and the head of the list it
   // appears in (#125, 決定1). `renderTopics` is what draws it as picked; this is
