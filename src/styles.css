@@ -294,6 +294,25 @@ body {
   margin-top: 0.15rem;
 }
 
+/* The screen person's own lines stand at the right edge, the way a chat app
+   draws them, so whose line it is reads from where it is (#185). Everyone
+   else — sessions, and the webhook fold — stays at the left. The line moves as
+   a whole: the colour bar goes to the side it now faces the room from, and the
+   name and time head it from the right. The words keep their own left-to-right
+   flow; only the block is placed. Which lines are mine is decided in
+   src/main.ts (`isMine`). */
+.message.mine {
+  align-self: flex-end;
+  border-left: none;
+  border-right: 3px solid var(--speaker, var(--line));
+  padding-left: 0;
+  padding-right: 0.7rem;
+}
+
+.message.mine .meta {
+  justify-content: flex-end;
+}
+
 /* Webhook notices, folded (#169). A run of them is one fold, drawn as a single
    quiet line in the notices' colour until it is opened; opened, the notices are
    ordinary lines, spaced as the room spaces lines. What makes the fold a fold
