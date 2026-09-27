@@ -3,10 +3,12 @@
 //! The app is the bridge's MCP client, on its stdio, in the place a CLI session
 //! usually is. The bridge does not ask who connected: it declares
 //! `claude/channel` and pushes `notifications/claude/channel` to whoever did.
-//! So what the app needs is small, and it is all here — the three lines it
-//! writes (`initialize`, `notifications/initialized`, `mark_processed`), the
-//! reading of each line it gets back, and the rule for which rooms a notice
-//! goes into.
+//! So what the app needs is small, and it is all here — the two lines it
+//! writes (`initialize`, `notifications/initialized`), the reading of each line
+//! it gets back, and the rule for which rooms a notice goes into.
+//!
+//! It calls no tool. Marking an event processed is for the session that
+//! handled it, not for the app that showed it (#180).
 //!
 //! The wire is MCP's stdio transport: one JSON-RPC message per line.
 
@@ -30,8 +32,8 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// The `initialize` request, as one line.
 ///
-/// No capabilities: the app calls one tool and reads one notification, and
-/// neither needs the client to declare anything.
+/// No capabilities: the app reads one notification, and that needs the client
+/// to declare nothing.
 pub fn initialize_request() -> String {
     json!({
         "jsonrpc": "2.0",
@@ -51,28 +53,11 @@ pub fn initialized_notification() -> String {
     json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string()
 }
 
-/// A `tools/call` of `mark_processed` for one event, as one line.
-///
-/// Sent only for an event that went into at least one room. One left unmarked
-/// stays pending on the worker (#169, premise), where a session's own channel or
-/// a later look at the backlog still finds it.
-pub fn mark_processed_request(id: u64, event_id: &str) -> String {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "tools/call",
-        "params": {
-            "name": "mark_processed",
-            "arguments": { "event_id": event_id },
-        },
-    })
-    .to_string()
-}
-
 /// One webhook event, as the bridge pushed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
-    /// The worker's id for the event: what `mark_processed` takes.
+    /// The worker's id for the event: what names it in the app's log, and what
+    /// a session hands to `mark_processed` once it has handled it.
     pub event_id: String,
     /// The bridge's own summary of it, posted as it came.
     pub content: String,
@@ -97,8 +82,8 @@ pub enum Line {
 /// **The event id is read off `meta.message_id`.** The published bridge puts it
 /// there and nowhere else; the repository's `local-mcp` twin also carries
 /// `meta.event_id`, which is read when `message_id` is absent. A push that
-/// carries neither, or no content, is not an event this app can post and then
-/// mark, and is `Other`.
+/// carries neither, or no content, is not an event this app posts, and is
+/// `Other`.
 pub fn read_line(line: &str) -> Line {
     let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
         return Line::Other;
@@ -177,11 +162,7 @@ mod tests {
 
     #[test]
     fn every_line_the_app_writes_is_one_line() {
-        for line in [
-            initialize_request(),
-            initialized_notification(),
-            mark_processed_request(7, "delivery-1"),
-        ] {
+        for line in [initialize_request(), initialized_notification()] {
             assert!(!line.contains('\n'), "{line}");
         }
     }
@@ -192,15 +173,6 @@ mod tests {
         assert_eq!(request["method"], "initialize");
         assert_eq!(request["id"], INITIALIZE_ID);
         assert_eq!(request["params"]["clientInfo"]["name"], "pullcept");
-    }
-
-    #[test]
-    fn mark_processed_names_the_event_it_was_given() {
-        let request = parsed(&mark_processed_request(7, "delivery-1"));
-        assert_eq!(request["id"], 7);
-        assert_eq!(request["method"], "tools/call");
-        assert_eq!(request["params"]["name"], "mark_processed");
-        assert_eq!(request["params"]["arguments"]["event_id"], "delivery-1");
     }
 
     /// The published bridge's push, as `sidecar/test/webhook-bridge.test.mjs`
@@ -226,9 +198,9 @@ mod tests {
     }
 
     #[test]
-    fn a_push_this_app_could_not_mark_or_post_is_not_an_event() {
-        // No id: it could be posted and never marked. The app posts an event
-        // and marks it as one act, so one it cannot mark it does not post.
+    fn a_push_without_an_id_or_content_is_not_an_event() {
+        // No id: nothing would name it, in the app's log or to the session
+        // that would mark it, so the app does not post it.
         let no_id = r#"{"jsonrpc":"2.0","method":"notifications/claude/channel","params":{"content":"x","meta":{}}}"#;
         let no_content = r#"{"jsonrpc":"2.0","method":"notifications/claude/channel","params":{"content":"  ","meta":{"message_id":"d"}}}"#;
         assert_eq!(read_line(no_id), Line::Other);

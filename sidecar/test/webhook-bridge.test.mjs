@@ -7,7 +7,7 @@
 //     whole reception is that declaration being made to whoever connects.
 //   - an event reaching its WebSocket comes out on stdout as
 //     `notifications/claude/channel`, with the event id in `meta.message_id`.
-//     That id is what the app hands back to `mark_processed`.
+//     The app reads that id to name the event; it calls no tool with it (#180).
 //   - it ends when its stdin does, with its WebSocket open. The bridge alone
 //     does not; the wrapper is what adds it, and a receiver that outlived the
 //     app would keep taking events nobody shows.
