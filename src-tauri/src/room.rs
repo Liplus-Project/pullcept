@@ -114,6 +114,17 @@
 //! seated in, through the same `deliver` as everything else — so it is logged
 //! and fanned out like any post. It takes no seat and is spoken from an origin
 //! no connection holds, so nobody is skipped and nobody can address it.
+//!
+//! **A post from the screen reaches a session through its terminal (#183).**
+//! It goes through `deliver` like every post — the same floor, the same log,
+//! the same `room-message` — and only the last step differs: each session in
+//! the room that this app launched has the post typed into its terminal, with
+//! the post's `message_id` on the first line, and its connection is left out
+//! of the frame's fan-out so the channel does not bring it a second time. The
+//! person at the screen is a user of those sessions, and a user's words go in
+//! at the terminal. Posts from sessions and webhook notices are unchanged. A
+//! connection with no terminal this app can type into still gets the frame.
+//! The room writes to a terminal here; it still reads nothing from one.
 
 use crate::pty::PtyState;
 use crate::room_log::{self, TopicRef};
@@ -124,7 +135,7 @@ use room_floor::{Admission, Floor, Missed, Post};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -250,6 +261,11 @@ struct Fanout {
     /// room answering the participant who posted, not something the room says.
     /// `None` is the fan-out proper: everyone but `origin`.
     target: Option<String>,
+    /// Connections this post was typed into instead, through their session's
+    /// terminal (#183). They are skipped like `origin`: the post is already in
+    /// front of the session, and the frame would reach it a second time
+    /// through the channel.
+    typed: Vec<String>,
     frame: String,
 }
 
@@ -786,7 +802,7 @@ fn deliver(
 
     // One acquisition, both halves. Concurrent speakers serialise here, so the
     // loser's check runs against a floor the winner has already changed.
-    let (admission, hue, logged, topic) = {
+    let (admission, hue, logged, topic, seats) = {
         let mut guard = room.inner.lock();
         let Some(inner) = guard.rooms.get_mut(room_id) else {
             return Err(format!(
@@ -832,7 +848,21 @@ fn deliver(
             Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post),
             Admission::Unseen(_) => Ok(false),
         };
-        (admission, hue, logged, topic)
+        // Who is in the room as this post is admitted, with the account each
+        // declared — read only for a post from the screen, the one kind that
+        // is typed into terminals rather than pushed (#183). Taken under this
+        // acquisition so the seats reached are the ones the floor judged
+        // against; the typing itself waits until the lock is dropped.
+        let seats: Vec<(String, Option<String>)> = if origin == room.local_origin {
+            inner
+                .participants
+                .iter()
+                .map(|(id, seat)| (id.clone(), seat.account.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (admission, hue, logged, topic, seats)
     };
 
     if let Admission::Unseen(missed) = admission {
@@ -869,12 +899,17 @@ fn deliver(
         frame["to"] = serde_json::Value::String(name.clone());
     }
 
+    // Before the fan-out, so the connections reached this way are known when
+    // the frame goes out and are left out of it.
+    let typed = type_into_sessions(app, room, room_id, &seats, &post);
+
     // No subscribers means no session has joined yet. That is not an error —
     // the room accepts what is said in it; a later joiner simply missed it.
     let _ = room.to_participants.send(Fanout {
         origin: origin.to_string(),
         room: room_id.to_string(),
         target: None,
+        typed,
         frame: frame.to_string(),
     });
 
@@ -901,6 +936,61 @@ fn deliver(
         message_id: Some(message_id),
         missed: Vec::new(),
     })
+}
+
+/// Type a post from the screen into the terminal of each session in its room,
+/// and answer the connections that reached (#183).
+///
+/// `seats` is empty for any other speaker, and then nothing is typed: a post
+/// from a session or a webhook notice reaches a session through the channel as
+/// before. The screen's person is a user of these sessions, and a user's words
+/// go in at the terminal.
+///
+/// Which terminal belongs to a seat is read off the launcher's ledger by the
+/// room and the account the seat declared (`session::RoomSeats`). A seat that
+/// maps to no running terminal is not answered here, so the fan-out still
+/// sends it the frame: a post is never dropped for having no terminal to go
+/// into (`terminal_input::targets`).
+fn type_into_sessions(
+    app: &AppHandle,
+    room: &RoomState,
+    room_id: &str,
+    seats: &[(String, Option<String>)],
+    post: &Post,
+) -> Vec<String> {
+    if seats.is_empty() {
+        return Vec::new();
+    }
+    let ptys = app.state::<PtyState>();
+    let running = app.state::<RoomSeats>().seated(&ptys);
+    let pty_of = |account: &str| {
+        running
+            .iter()
+            .find(|seat| seat.topic_id == room_id && seat.account_id == account)
+            .and_then(|seat| seat.session.as_ref())
+            .map(|session| session.pty_id.clone())
+    };
+    let targets = terminal_input::targets(
+        seats
+            .iter()
+            .map(|(origin, account)| (origin.as_str(), account.as_deref())),
+        &room.local_origin,
+        pty_of,
+    );
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let text = terminal_input::compose(
+        &post.message_id,
+        &post.speaker,
+        post.to.as_deref(),
+        &post.content,
+    );
+    targets
+        .into_iter()
+        .filter(|target| ptys.type_in(&target.pty_id, text.clone()))
+        .flat_map(|target| target.origins)
+        .collect()
 }
 
 /// Put one webhook notice into every room an AI session is seated in, and
@@ -1334,6 +1424,9 @@ async fn serve_participant(
                 // share a name, a name test drops the other one's posts too
                 // (#40).
                 None if fanout.origin == own_origin => continue,
+                // Typed into this connection's session already (#183). One
+                // post, one arrival: the channel does not carry it too.
+                None if fanout.typed.contains(&own_origin) => continue,
                 // Said in another room, or before this connection is in one.
                 // A topic's posts are that topic's conversation, and a session
                 // started into one topic hearing another's is the leak #141
@@ -1484,6 +1577,7 @@ async fn serve_participant(
                     origin: origin.clone(),
                     room: String::new(),
                     target: Some(origin.clone()),
+                    typed: Vec::new(),
                     frame: receipt.to_string(),
                 });
             }
@@ -1536,6 +1630,7 @@ async fn serve_participant(
                     origin: origin.clone(),
                     room: String::new(),
                     target: Some(origin.clone()),
+                    typed: Vec::new(),
                     frame: answer.to_string(),
                 });
             }
@@ -1732,9 +1827,11 @@ pub fn room_join(
 
 /// Post this screen's person's utterance into one room.
 ///
-/// Goes through `deliver` like every other post: same frame, same fan-out,
-/// same event, same floor check. The screen does not append locally on send,
-/// so the room keeps one ordering authority rather than two.
+/// Goes through `deliver` like every other post: same event, same floor check,
+/// same log. The screen does not append locally on send, so the room keeps one
+/// ordering authority rather than two. What differs is how it reaches the
+/// sessions: typed into their terminals where the app launched them, as the
+/// frame where it did not (#183, `type_into_sessions`).
 ///
 /// `last_seen` is the newest post the screen has drawn. The person at the
 /// keyboard is a participant like any other and is refused on the same terms;

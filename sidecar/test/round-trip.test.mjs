@@ -17,6 +17,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENTRY = join(HERE, "..", "src", "index.ts");
@@ -79,11 +80,41 @@ const SEATED_LATE = [
   "  呼ばないでください。",
 ].join("\n");
 
+// How a post arrives, both ways. The screen's person is typed into the
+// session's terminal and everyone else is pushed through the channel (#183), so
+// the manners have to name both, say where `message_id` / `user` / `to` sit in
+// each, and keep a reply to a typed post on `say_to_room` — a post that came in
+// as user input otherwise invites a reply written to the terminal, which the
+// room never reads.
+//
+// `[pullcept]` is the app's label, written by `crates/terminal-input`. The test
+// below reads that crate's constant and holds this literal to it, so the two
+// copies cannot drift apart with CI green.
+const ARRIVAL = [
+  "部屋の発言は二つの形で届きます。届き方が違うだけで、どちらも部屋の発言です。",
+  "- 画面の前の人の発言は、あなたの入力欄へ直接入力されて届きます。",
+  '  一行目は部屋の札で、[pullcept] {"message_id":"…","user":"…","to":"…"} の形です。',
+  "  二行目からが発言の本文です。to は宛先があるときだけ付きます。",
+  '- それ以外の参加者の発言は <channel source="pullcept" ...> として届きます。',
+  "  message_id・user・to は meta に入っています。",
+  "",
+  "発言するときは say_to_room ツールを呼んでください。入力欄に届いた発言に",
+  "答えるときも同じです。ターミナルへの出力は部屋には届きません。",
+].join("\n");
+
+/** The tag the app's label line opens with, read off the Rust crate that writes it. */
+function appHeaderTag() {
+  const source = readFileSync(join(REPO, "crates", "terminal-input", "src", "lib.rs"), "utf8");
+  const found = source.match(/pub const HEADER_TAG: &str = "([^"]*)";/);
+  assert.ok(found, "crates/terminal-input must declare HEADER_TAG as a string literal");
+  return found[1];
+}
+
 const SEE_THE_FLOOR = [
   "床を見てから送る:",
   "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
-  "  いちばん新しい発言の meta.message_id です。まだ何も見ていないときだけ",
-  "  省いてください。",
+  "  いちばん新しい発言の message_id です。どちらの形で届いた発言でも",
+  "  同じです。まだ何も見ていないときだけ省いてください。",
   "- 組み立てている間に届いた発言があると、部屋はあなたの発言を配りません。",
   "  代わりに、あなたが見ていなかった発言を返します。あなたの発言は部屋に",
   "  載っていません。",
@@ -360,8 +391,20 @@ test("a room post reaches the channel, and say_to_room reaches the room", async 
   // judgment the agent has nothing to make.
   assert.match(
     instructions,
-    /meta\.to/,
+    /to が「test-agent」なら、あなた宛です/,
     "instructions must name the addressee as judgment material",
+  );
+  // Both arrivals, in full, and the label on the typed one in the form the
+  // app actually writes it (#183).
+  assertContains(
+    instructions,
+    ARRIVAL,
+    "instructions must say how a post arrives, both ways, tail included",
+  );
+  assertContains(
+    instructions,
+    `${appHeaderTag()} {"message_id"`,
+    "the label the manners name must be the one crates/terminal-input writes",
   );
   assert.match(
     instructions,

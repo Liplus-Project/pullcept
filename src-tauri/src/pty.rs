@@ -2,7 +2,7 @@ use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
@@ -18,13 +18,44 @@ type ProcessMap = Arc<Mutex<HashMap<String, PtyInstance>>>;
 #[derive(Clone)]
 pub struct PtyState {
     procs: ProcessMap,
+    /// Text the room types into a session, waiting its turn (#183).
+    ///
+    /// One queue and one thread for every session, so posts are typed in the
+    /// order they were handed over. Two posts typed by two threads could each
+    /// put its text in before the other's submit key, and the session would
+    /// get both as one input.
+    typing: mpsc::Sender<(String, String)>,
 }
 
 impl PtyState {
     pub fn new() -> Self {
-        PtyState {
-            procs: Arc::new(Mutex::new(HashMap::new())),
+        let procs: ProcessMap = Arc::new(Mutex::new(HashMap::new()));
+        let (typing, queue) = mpsc::channel::<(String, String)>();
+        let typist = Arc::clone(&procs);
+        std::thread::spawn(move || {
+            // Ends when every sender has gone, which is the app going.
+            for (id, text) in queue {
+                type_one(&typist, &id, &text);
+            }
+        });
+        PtyState { procs, typing }
+    }
+
+    /// Type `text` into the session on `id`, then submit it (#183).
+    ///
+    /// Answers whether it was queued, which is whether the session is running
+    /// now. The typing itself happens on the queue's thread and is not waited
+    /// for: it holds a pause (`terminal_input::SUBMIT_PAUSE`), and the caller
+    /// is the room delivering a post, which nothing should hold up.
+    ///
+    /// A write that fails once queued is logged and not reported back. A PTY
+    /// that refuses a write is a session that has ended between the check and
+    /// the write, and there is nobody left to hand the post to.
+    pub fn type_in(&self, id: &str, text: String) -> bool {
+        if !self.is_running(id) {
+            return false;
         }
+        self.typing.send((id.to_string(), text)).is_ok()
     }
 
     /// Whether the session on `id` is still running.
@@ -90,6 +121,34 @@ impl PtyState {
                 let _ = pty.child.kill();
             }
         }
+    }
+}
+
+/// Write `data` to the session on `id`, under the map's lock for this write
+/// only.
+fn write_to(procs: &ProcessMap, id: &str, data: &[u8]) -> Result<(), String> {
+    let mut map = procs.lock();
+    let proc = map
+        .get_mut(id)
+        .ok_or_else(|| format!("Process '{id}' not found"))?;
+    proc.writer
+        .write_all(data)
+        .map_err(|e| format!("Write failed: {e}"))
+}
+
+/// Type one post into one session: the text, a pause, then the submit key.
+///
+/// Two writes, the way the terminal pane's own paste and Enter reach the PTY
+/// (`terminal_input`). The lock is not held across the pause: other sessions'
+/// keystrokes would wait on it for nothing.
+fn type_one(procs: &ProcessMap, id: &str, text: &str) {
+    if let Err(err) = write_to(procs, id, text.as_bytes()) {
+        eprintln!("[pty] a room post could not be typed into {id}: {err}");
+        return;
+    }
+    std::thread::sleep(terminal_input::SUBMIT_PAUSE);
+    if let Err(err) = write_to(procs, id, terminal_input::SUBMIT.as_bytes()) {
+        eprintln!("[pty] a room post typed into {id} could not be submitted: {err}");
     }
 }
 
@@ -239,13 +298,7 @@ pub fn spawn_pty_with_env(
 
 #[tauri::command]
 pub fn write_pty(state: tauri::State<PtyState>, id: String, data: String) -> Result<(), String> {
-    let mut map = state.procs.lock();
-    let proc = map
-        .get_mut(&id)
-        .ok_or_else(|| format!("Process '{id}' not found"))?;
-    proc.writer
-        .write_all(data.as_bytes())
-        .map_err(|e| format!("Write failed: {e}"))
+    write_to(&state.procs, &id, data.as_bytes())
 }
 
 #[tauri::command]

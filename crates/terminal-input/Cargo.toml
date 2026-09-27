@@ -1,0 +1,16 @@
+[package]
+name = "terminal-input"
+version = "0.1.0"
+description = "What the Pullcept room types into a session's terminal, and which terminals it types into"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Free of tauri for the reason docs/0-requirements.md gives: a test binary that
+# links the tauri dependency tree does not load on the GNU target. What a post
+# from the screen reads as once it is typed, that nothing in it can press the
+# submit key, and which seats are reached through their terminal rather than
+# through the channel are the parts of #183 a reader cannot settle by reading.
+
+[dependencies]
+serde_json = "1"
