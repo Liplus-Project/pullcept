@@ -306,13 +306,15 @@ body {
    background, not a fixed alpha over it: the result is a solid colour close to
    `--bg` in either theme, so `--fg` text keeps its contrast in light and dark
    alike. The hue comes from the same `--speaker` the bar uses, so a live line
-   and a read-back line cannot disagree. */
+   and a read-back line cannot disagree. All four corners are rounded (#187
+   follow-up); the bar follows the right-hand curve, so it reads as the
+   bubble's own edge rather than a separate stripe. */
 .message.mine {
   align-self: flex-end;
   border-left: none;
   border-right: 3px solid var(--speaker, var(--line));
   padding: 0.4rem 0.7rem;
-  border-radius: 6px 0 0 6px;
+  border-radius: 12px;
   background: color-mix(in oklch, var(--speaker, var(--line)) 14%, var(--bg));
 }
 
