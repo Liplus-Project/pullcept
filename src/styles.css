@@ -300,13 +300,20 @@ body {
    a whole: the colour bar goes to the side it now faces the room from, and the
    name and time head it from the right. The words keep their own left-to-right
    flow; only the block is placed. Which lines are mine is decided in
-   src/main.ts (`isMine`). */
+   src/main.ts (`isMine`).
+   The block is also tinted with the speaker's own colour, so it reads as a
+   bubble (#187). The tint is the speaker colour thinned into the page
+   background, not a fixed alpha over it: the result is a solid colour close to
+   `--bg` in either theme, so `--fg` text keeps its contrast in light and dark
+   alike. The hue comes from the same `--speaker` the bar uses, so a live line
+   and a read-back line cannot disagree. */
 .message.mine {
   align-self: flex-end;
   border-left: none;
   border-right: 3px solid var(--speaker, var(--line));
-  padding-left: 0;
-  padding-right: 0.7rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px 0 0 6px;
+  background: color-mix(in oklch, var(--speaker, var(--line)) 14%, var(--bg));
 }
 
 .message.mine .meta {
