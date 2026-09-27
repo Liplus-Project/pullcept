@@ -1346,9 +1346,13 @@ function roomLine(line: {
   stamp: string;
   content: string;
   past: boolean;
+  /** Drawn at the right edge, as the screen person's own words (#185). */
+  mine: boolean;
 }): HTMLElement {
   const article = document.createElement("article");
-  article.className = line.past ? "message past" : "message";
+  article.className = "message";
+  if (line.past) article.classList.add("past");
+  if (line.mine) article.classList.add("mine");
   article.style.setProperty("--speaker", line.colour);
 
   const head = document.createElement("div");
@@ -1385,6 +1389,23 @@ function roomLine(line: {
  * `webhook_bridge::SPEAKER` on the Rust side.
  */
 const WEBHOOK_SPEAKER = "webhook";
+
+/**
+ * Whether a line is drawn at the right edge, as the screen person's (#185).
+ *
+ * Decided by the name, for the reason the webhook fold is: a line read back from
+ * the log carries nothing else (see `LoggedPost`), and a live line and a read-back
+ * one must land on the same side. `own` would answer the live half better — the
+ * room decides it on the connection — but it has no read-back half, and a rule
+ * that switched between the two would move a line from one side to the other
+ * when its topic is picked again. So this is where a line sits, not who said it:
+ * someone joining under this screen's name is drawn on this side too, and after
+ * a rename the lines said under the old name return to the left once redrawn.
+ * Colour keeps its own ladder (`speakerColor`); only the side is decided here.
+ */
+function isMine(speaker: string): boolean {
+  return speaker !== WEBHOOK_SPEAKER && speaker === localName();
+}
 
 /**
  * Put one line in the room, folding webhook notices away (#169).
@@ -1435,6 +1456,7 @@ function appendMessage(message: RoomMessage): void {
       stamp: shortTime(message.ts),
       content: message.content,
       past: false,
+      mine: isMine(message.speaker),
     }),
     message.speaker,
   );
@@ -1488,6 +1510,7 @@ function drawTopic(posts: LoggedPost[]): void {
         stamp: shortDateTime(post.ts),
         content: post.content,
         past: true,
+        mine: isMine(post.speaker),
       }),
       post.speaker,
     );
