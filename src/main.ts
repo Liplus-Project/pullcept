@@ -1353,7 +1353,10 @@ function roomLine(line: {
   article.className = "message";
   if (line.past) article.classList.add("past");
   if (line.mine) article.classList.add("mine");
-  article.style.setProperty("--speaker", line.colour);
+  // The screen person's lines take their colour from the room, not from the
+  // moment they were drawn, so a colour chosen in the account reaches every one
+  // of them at once — the live and the read-back alike (#189, `paintMine`).
+  article.style.setProperty("--speaker", line.mine ? MINE_SPEAKER : line.colour);
 
   const head = document.createElement("div");
   head.className = "meta";
@@ -1405,6 +1408,31 @@ const WEBHOOK_SPEAKER = "webhook";
  */
 function isMine(speaker: string): boolean {
   return speaker !== WEBHOOK_SPEAKER && speaker === localName();
+}
+
+/**
+ * The colour of the screen person's lines, as one value on the room (#189).
+ *
+ * A line's colour was fixed when it was drawn, so a colour chosen in the
+ * account reached only what was said after it, and a read-back line never
+ * reached it at all: the log carries no hue, and the name-derived one is not
+ * the one chosen. The screen person's lines are the one set whose colour this
+ * screen knows without the room telling it — it is the account's — so they
+ * point at this value instead, and setting it repaints all of them.
+ *
+ * The same ladder as every other line (`speakerColor`), read as oneself: the
+ * account's hue if one is chosen, else the accent. Which lines are the screen
+ * person's is `isMine`'s answer, by name, so this colour goes where the right
+ * edge does — a line said under this screen's name by someone else included,
+ * the same cost the side already carries.
+ */
+const MINE_SPEAKER = "var(--mine-speaker, var(--accent))";
+
+function paintMine(): void {
+  roomEl.style.setProperty(
+    "--mine-speaker",
+    speakerColor(localName(), localAccount()?.hue ?? null, true),
+  );
 }
 
 /**
@@ -1490,8 +1518,9 @@ function appendMessage(message: RoomMessage): void {
  * the whole retained floor must not draw a line twice (#108).
  *
  * The colour is derived from the name and `own` is false for every line. The
- * log carries neither declaration (see `LoggedPost`), so nothing read back is
- * in this screen's accent — this screen's own past words included.
+ * log carries neither declaration (see `LoggedPost`). The screen person's own
+ * lines are the exception: they take this screen's colour from `paintMine`,
+ * which is the account's and needs nothing from the log (#189).
  */
 function drawTopic(posts: LoggedPost[]): void {
   roomEl.replaceChildren();
@@ -2744,6 +2773,9 @@ function localName(): string {
  */
 async function join(): Promise<void> {
   const account = localAccount();
+  // On the glass first: the lines already drawn are this screen's to repaint,
+  // and they do not wait on the room answering (#189).
+  paintMine();
   try {
     await invoke("room_join", {
       name: localName(),
@@ -2804,6 +2836,8 @@ function resolveLocalAccount(): void {
 
   localAccountId = account.id;
   localStorage.setItem(LOCAL_KEY, account.id);
+  // Before a topic is read back, which at startup is ahead of `join` (#189).
+  paintMine();
 }
 
 /**
