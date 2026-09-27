@@ -2348,10 +2348,16 @@ function memberRow(row: Member): HTMLLIElement {
     button.className = "pick";
     button.setAttribute("aria-pressed", String(view.accountId === shownAccount));
     button.title = `${name} の端末を見る`;
+    // Picking is selection, and the pane's fold is not part of it. A folded
+    // pane stays folded: the pick moves which terminal is chosen, the row's
+    // highlight and the session facts below the panel, and the terminal takes
+    // no focus, since nothing it would type into is on screen. 端末 later opens
+    // the pane on the terminal that was picked. An open pane switches the
+    // terminal it shows, as it always did (#175).
     button.addEventListener("click", () => {
-      revealDiagnostics();
+      const folded = diagnosticsEl.hidden;
       showView(view.accountId);
-      view.term.focus();
+      if (!folded) view.term.focus();
     });
     if (view.accountId === shownAccount) entry.classList.add("shown");
     pick = button;
