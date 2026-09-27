@@ -4,14 +4,21 @@
 //! bridge's stdio, where a CLI session usually sits. The bridge pushes each
 //! event as `notifications/claude/channel` to whoever connected, and the app
 //! posts it into every room an AI session is seated in, under the name
-//! `webhook` (`room::post_notice`), then marks it processed. An event that finds
-//! no such room is neither posted nor marked, and stays pending on the worker.
+//! `webhook` (`room::post_notice`). An event that finds no such room is not
+//! posted.
+//!
+//! **The app never marks an event processed** (#180). The worker's pending set
+//! is one for every reader, so an event the app marked would drop out of the
+//! backlog a polling session reads. Posting is showing it; whether it has been
+//! handled is for the session that handled it. Leaving it pending posts nothing
+//! twice: the worker broadcasts an event once, when it takes it in, and a
+//! WebSocket that connects is sent no backlog (#180 premise).
 //!
 //! **The bridge opens its WebSocket only when a token file is already there**
 //! (`~/.github-webhook-mcp/oauth-tokens.json`, #169 premise). The app calls no
-//! tool until an event has been posted, so on a machine where the bridge has
-//! never been authorised nothing arrives and nothing is asked: no browser opens
-//! at startup. Authorising stays where it is, with a session's own bridge.
+//! tool at all, so on a machine where the bridge has never been authorised
+//! nothing arrives and nothing is asked: no browser opens at startup.
+//! Authorising stays where it is, with a session's own bridge.
 //!
 //! **What sessions already receive is unchanged.** A session that loads its own
 //! `github-webhook-mcp` channel keeps it; this is a second path beside it, not a
@@ -31,8 +38,7 @@ use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use webhook_bridge::{
-    initialize_request, initialized_notification, mark_processed_request, read_line, Line,
-    INITIALIZE_ID,
+    initialize_request, initialized_notification, read_line, Line, INITIALIZE_ID,
 };
 
 /// Run one server and read it until it ends. `Ok` says how it ended, `Err` why
@@ -67,7 +73,6 @@ pub async fn receive(
     send(&mut stdin, &initialize_request()).await?;
 
     let mut lines = BufReader::new(stdout).lines();
-    let mut next_id = INITIALIZE_ID + 1;
     while let Some(line) = lines
         .next_line()
         .await
@@ -81,18 +86,6 @@ pub async fn receive(
                 send(&mut stdin, &initialized_notification()).await?;
                 report.running();
             }
-            Line::Answer {
-                id,
-                failure: Some(failure),
-            } => {
-                // A `mark_processed` that did not go through. The event is
-                // already in the room and stays pending on the worker; saying
-                // so is all there is to do, since posting it again would put
-                // it in the room twice.
-                report.log(&format!(
-                    "[pullcept] mark_processed (request {id}) failed: {failure}"
-                ));
-            }
             Line::Answer { .. } | Line::Other => {}
             Line::Event(event) => {
                 let rooms = room::post_notice(app, room, &event.content);
@@ -101,14 +94,7 @@ pub async fn receive(
                         "[pullcept] event {} left pending: no AI session is seated in any room",
                         event.event_id
                     ));
-                    continue;
                 }
-                send(
-                    &mut stdin,
-                    &mark_processed_request(next_id, &event.event_id),
-                )
-                .await?;
-                next_id += 1;
             }
         }
     }
