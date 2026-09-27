@@ -16,8 +16,18 @@
  *
  * Direction of travel:
  *   someone posts -> WebSocket frame -> channel notification -> agent reacts
+ *   the screen's person posts -> the app types it into this session's terminal
  *   this agent posts -> `say_to_room` tool -> WebSocket frame -> the room
  *   this agent looks back -> `read_room_history` tool -> WebSocket frame -> the room
+ *
+ * The second one does not pass through this process (#183). The person at the
+ * screen is a user of the session, so what they say goes in where a user's
+ * words go in, and the room does not send this connection the frame as well.
+ * Nothing here tells the two apart: a post the room typed in simply never
+ * arrives on the socket. What this file owns about it is the instructions,
+ * which have to say that such a post arrives and what its first line is. A
+ * connection whose session has no terminal the app can type into — one the
+ * app did not launch — still gets those posts on the channel.
  *
  * The third one is a pull and only a pull. The room pushes nothing it did not
  * fan out live, so a session that joined a topic late is still handed nothing
@@ -106,6 +116,18 @@ const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
 const UNSEEN_HISTORY = process.env.PULLCEPT_UNSEEN_HISTORY === "1";
 
 const PROTOCOL_VERSION = 7;
+
+/**
+ * What the first line of a post typed into this session's terminal opens with
+ * (#183).
+ *
+ * The app writes that line (`crates/terminal-input`, `HEADER_TAG`); this file
+ * only names it to the agent, so the agent can read the line as the room's
+ * label on the post and take the `message_id` off it for `last_seen`. Two
+ * copies in two languages: `sidecar/test/round-trip.test.mjs` reads the Rust
+ * constant and holds the manners to it.
+ */
+const TERMINAL_HEADER_TAG = "[pullcept]";
 
 /**
  * How long a post waits for the room to answer it.
@@ -274,18 +296,24 @@ const INSTRUCTIONS = [
   "違いは名前だけです。発言もひとつの行為で、誰が出しても同じ形で届きます。",
   "相手が人間か別のセッションかを気にする必要はありません。",
   "",
-  '部屋の発言は <channel source="pullcept" ...> として届きます。',
-  "発言するときは say_to_room ツールを呼んでください。ターミナルへの出力は",
-  "部屋には届きません。",
+  "部屋の発言は二つの形で届きます。届き方が違うだけで、どちらも部屋の発言です。",
+  "- 画面の前の人の発言は、あなたの入力欄へ直接入力されて届きます。",
+  `  一行目は部屋の札で、${TERMINAL_HEADER_TAG} {"message_id":"…","user":"…","to":"…"} の形です。`,
+  "  二行目からが発言の本文です。to は宛先があるときだけ付きます。",
+  '- それ以外の参加者の発言は <channel source="pullcept" ...> として届きます。',
+  "  message_id・user・to は meta に入っています。",
+  "",
+  "発言するときは say_to_room ツールを呼んでください。入力欄に届いた発言に",
+  "答えるときも同じです。ターミナルへの出力は部屋には届きません。",
   "",
   ...LOOKING_BACK,
   "",
   "宛先:",
-  "- 発言には宛先が付くことがあります。宛先は meta.to に入っています。",
-  `- meta.to が「${AGENT_NAME}」なら、あなた宛です。答えてください。`,
-  "- meta.to が他の参加者の名前なら、あなた宛ではありません。黙ってください。",
+  "- 発言には宛先（to）が付くことがあります。",
+  `- to が「${AGENT_NAME}」なら、あなた宛です。答えてください。`,
+  "- to が他の参加者の名前なら、あなた宛ではありません。黙ってください。",
   "  補足したくなっても割り込まないでください。",
-  "- meta.to が無い発言は部屋全体宛です。自分が答えるべきときだけ答えてください。",
+  "- to が無い発言は部屋全体宛です。自分が答えるべきときだけ答えてください。",
   "- say_to_room の to 引数で、こちらからも宛先を指定できます。宛先には",
   "  人間の参加者も指定できます。指定の仕方は相手によって変わりません。",
   "",
@@ -303,8 +331,8 @@ const INSTRUCTIONS = [
   "",
   "床を見てから送る:",
   "- say_to_room には last_seen を付けてください。値は、あなたが実際に見た",
-  "  いちばん新しい発言の meta.message_id です。まだ何も見ていないときだけ",
-  "  省いてください。",
+  "  いちばん新しい発言の message_id です。どちらの形で届いた発言でも",
+  "  同じです。まだ何も見ていないときだけ省いてください。",
   "- 組み立てている間に届いた発言があると、部屋はあなたの発言を配りません。",
   "  代わりに、あなたが見ていなかった発言を返します。あなたの発言は部屋に",
   "  載っていません。",

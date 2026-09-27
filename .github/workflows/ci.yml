@@ -34,6 +34,7 @@ jobs:
             crates/account-env/target
             crates/webhook-bridge/target
             crates/mcp-servers/target
+            crates/terminal-input/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -89,6 +90,12 @@ jobs:
       # settings panel edits them through (#172).
       - name: Test the mcp-servers crate
         working-directory: crates/mcp-servers
+        run: cargo test
+
+      # What a post from the screen reads as once it is typed into a session's
+      # terminal, and which terminals it goes into (#183).
+      - name: Test the terminal-input crate
+        working-directory: crates/terminal-input
         run: cargo test
 
   # Gate job: single Required status check for branch protection.
