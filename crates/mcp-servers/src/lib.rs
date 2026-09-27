@@ -45,19 +45,35 @@ pub struct Server {
     pub env: BTreeMap<String, String>,
 }
 
+/// The environment the bundled bridge is listed with when the file is first
+/// written: the worker it reaches, and channel push on (#177).
+///
+/// These are the values `github-webhook-mcp` falls back to when they are not
+/// set, written out anyway. The app does not assume that bridge is the one
+/// anyone runs, so where it connects is not left to a default hidden in the
+/// package: it is in the file, and the panel shows it.
+pub const BRIDGE_ENV: [(&str, &str); 2] = [
+    ("WEBHOOK_WORKER_URL", "https://github-webhook.smgjp.com"),
+    ("WEBHOOK_CHANNEL", "1"),
+];
+
 /// The file as it is written when there is none: the bundled bridge, run the
 /// way the app ran it before there was a file (`node <webhook-bridge.mjs>`),
-/// with nothing added to its environment.
+/// with its environment written out (`BRIDGE_ENV`).
 ///
-/// Nothing added means the bridge's own defaults stand — the worker it reaches
-/// included — so an app that writes this file behaves as the one before it did.
+/// Only a file that is not there is written this way. A file already written
+/// is the person's, and is read as it stands.
 pub fn default_file(bridge_script: &str) -> Value {
+    let env: Map<String, Value> = BRIDGE_ENV
+        .iter()
+        .map(|(name, value)| (name.to_string(), json!(value)))
+        .collect();
     json!({
         SERVERS_KEY: {
             BRIDGE_SERVER: {
                 "command": "node",
                 "args": [bridge_script],
-                "env": {},
+                "env": env,
             }
         }
     })
@@ -247,15 +263,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_file_is_the_bridge_run_as_before() {
+    fn the_default_file_is_the_bridge_with_its_environment_written_out() {
         let root = default_file("C:/pullcept/sidecar/src/webhook-bridge.mjs");
         let servers = servers(&root).unwrap();
         assert_eq!(servers.len(), 1);
         let bridge = &servers[BRIDGE_SERVER];
         assert_eq!(bridge.command, "node");
         assert_eq!(bridge.args, ["C:/pullcept/sidecar/src/webhook-bridge.mjs"]);
-        // Nothing added: the bridge's own defaults stand, the worker included.
-        assert!(bridge.env.is_empty());
+        // The worker and channel push are written out, not left to the
+        // package's own defaults (#177).
+        assert_eq!(
+            bridge.env,
+            BTreeMap::from([
+                (
+                    "WEBHOOK_WORKER_URL".to_string(),
+                    "https://github-webhook.smgjp.com".to_string()
+                ),
+                ("WEBHOOK_CHANNEL".to_string(), "1".to_string()),
+            ])
+        );
+        // And the panel draws them.
+        assert_eq!(
+            env_text(&bridge.env),
+            "WEBHOOK_CHANNEL=1
+WEBHOOK_WORKER_URL=https://github-webhook.smgjp.com"
+        );
     }
 
     #[test]
