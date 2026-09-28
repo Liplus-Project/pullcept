@@ -7,18 +7,24 @@
 //! Frames on the wire are the room protocol:
 //!
 //!   sidecar -> room : { type: "hello", protocol, name, room, hue?, account_id? }
-//!   both ways       : { type: "post", message_id, speaker, content, to?, ts,
-//!                       last_seen? }
+//!   sidecar -> room : { type: "post", message_id, content, to?, ts, last_seen? }
 //!   room -> sidecar : { type: "post_result", message_id, delivered, missed }
 //!
-//! One frame kind carries speech, whoever produced it. A person and a session
-//! are both participants; what separates them is a name, not a frame. The
-//! earlier protocol had `say` for a person and `reply` for a session, and only
-//! `say` was ever fanned out — the asymmetry was not a missing line but the
-//! shape of the words, so the words went (#39).
+//! One frame kind carries speech into the room, whoever produced it. A person
+//! and a session are both participants; what separates them is a name, not a
+//! frame. The earlier protocol had `say` for a person and `reply` for a
+//! session, and only `say` was ever fanned out — the asymmetry was not a
+//! missing line but the shape of the words, so the words went (#39).
+//!
+//! **Nothing said in the room goes back out on the socket (#195).** Every post
+//! reaches a session by being typed into its terminal, with the room's label
+//! on its first line — the person's, another session's and a notice alike. The
+//! socket carries a session's own speech in and the room's answers to that one
+//! connection back; it used to carry every post out as well, for the sidecar
+//! to push onto the channel, and that path is gone with the channel.
 //!
 //! `to` is optional and carries the display name of the participant addressed.
-//! The room still fans every post out to every participant — narrowing
+//! The room still delivers every post to every participant — narrowing
 //! delivery here would make the room hold who heard what, and answering is the
 //! participant's judgment, not the room's.
 //!
@@ -97,7 +103,7 @@
 //!
 //! One socket serves them all. The address is the app's and shared by every
 //! room of the run, so `hello` names the room the connection is for, and the
-//! connection stays in that room for as long as it lives. Fan-out, the floor,
+//! connection stays in that room for as long as it lives. Delivery, the floor,
 //! the log and the pull are all that room's own; nothing crosses from one room
 //! to another. A `hello` naming no room, or a room this app is not holding, is
 //! not seated anywhere — there is no room it could be put in, and choosing one
@@ -112,21 +118,23 @@
 //! **One post comes from no connection: a notice from a local MCP server
 //! (#169).** The app receives it itself (`webhook`) and puts it into every room
 //! an AI session is seated in, through the same `deliver` as everything else —
-//! so it is logged and fanned out like any post. It is said as the server's
-//! `mcp` account (#193): the account's name, its colour and its id are on the
-//! post. It takes no seat and is spoken from an origin no connection holds, so
+//! so it is logged and typed into the sessions like any post. It is said as
+//! the server's `mcp` account (#193): the account's name, its colour and its
+//! id are on the post. It takes no seat and is spoken from an origin no connection holds, so
 //! nobody is skipped and nobody can address it.
 //!
-//! **A post from the screen reaches a session through its terminal (#183).**
-//! It goes through `deliver` like every post — the same floor, the same log,
-//! the same `room-message` — and only the last step differs: each session in
-//! the room that this app launched has the post typed into its terminal, with
-//! the post's `message_id` on the first line, and its connection is left out
-//! of the frame's fan-out so the channel does not bring it a second time. The
-//! person at the screen is a user of those sessions, and a user's words go in
-//! at the terminal. Posts from sessions and webhook notices are unchanged. A
-//! connection with no terminal this app can type into still gets the frame.
-//! The room writes to a terminal here; it still reads nothing from one.
+//! **Every post reaches a session through its terminal (#183, #195).** It
+//! goes through `deliver` — the same floor, the same log, the same
+//! `room-message` — and then each session in the room that this app launched,
+//! the speaker's own aside, has the post typed into its terminal. The first
+//! line is the room's label, carrying the post's `message_id` and the `role`
+//! the app gives it: `admin` for the person at the screen, and for nothing
+//! else — the socket never makes one, whatever account it names
+//! (`terminal_input::role`). That is what lets a session tell its user's words
+//! from a post that only informs it, on one path and in one order. A
+//! connection with no terminal this app can type into is handed nothing live;
+//! it reads the topic through the pull. The room writes to a terminal here; it
+//! still reads nothing from one.
 
 use crate::pty::PtyState;
 use crate::room_log::{self, TopicRef};
@@ -159,7 +167,10 @@ use uuid::Uuid;
 ///    nothing it did not fan out live (#115, decision 4C).
 /// 7: `hello` names the `room` the connection is for. Rooms are plural and
 ///    share one socket, so without it a connection has nowhere to be (#141).
-pub const PROTOCOL_VERSION: u32 = 7;
+/// 8: the room sends no `post` frames. Every post reaches a session through
+///    its terminal, and the channel the sidecar pushed them onto is gone
+///    (#195).
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -251,28 +262,18 @@ pub struct PostOutcome {
     pub missed: Vec<Missed>,
 }
 
-/// A frame on its way out, tagged with the connection that produced it.
+/// A frame on its way out to one connection: the room answering a participant
+/// who posted or pulled.
 ///
-/// The tag rides beside the frame, never inside it: it is never serialised, so
-/// no sender can supply one and no sender can forge one. Suppression is a
-/// property of the connection, which is the one identity a name collision
-/// cannot blur (#40).
+/// The target rides beside the frame, never inside it: it is never serialised,
+/// so no sender can supply one and no sender can forge one. It is the
+/// connection, which is the one identity a name collision cannot blur (#40).
+///
+/// Only answers go out. What was said in the room reaches a session through
+/// its terminal, not through here (#195).
 #[derive(Clone)]
 struct Fanout {
-    origin: String,
-    /// The room the frame is said in. A fan-out reaches the connections in that
-    /// room and no other: two topics open at once are two conversations, and a
-    /// session hearing the other one's posts is the defect #141 removes.
-    room: String,
-    /// Set when this frame is for one connection only — a `post_result` is the
-    /// room answering the participant who posted, not something the room says.
-    /// `None` is the fan-out proper: everyone but `origin`.
-    target: Option<String>,
-    /// Connections this post was typed into instead, through their session's
-    /// terminal (#183). They are skipped like `origin`: the post is already in
-    /// front of the session, and the frame would reach it a second time
-    /// through the channel.
-    typed: Vec<String>,
+    target: String,
     frame: String,
 }
 
@@ -388,7 +389,7 @@ struct RoomsInner {
 /// there yet.
 ///
 /// Takes the seat table rather than a `RoomState`, and the delivery pump in
-/// `serve_participant` is the whole reason: `RoomState` carries the fan-out
+/// `serve_participant` is the whole reason: `RoomState` carries its
 /// `Sender` beside the `Arc`, not inside it, so holding one to read a name
 /// would hold a sender too. Read for logging only. Nothing branches on it, and
 /// nothing may: a name is not the identity here (#40), so this is the readable
@@ -406,7 +407,7 @@ fn name_on(seats: &Mutex<RoomsInner>, origin: &str) -> Option<String> {
 #[derive(Clone)]
 pub struct RoomState {
     inner: Arc<Mutex<RoomsInner>>,
-    /// Posts fanned out to every connected participant but their author.
+    /// The room's answers, each to the one connection it is for.
     to_participants: broadcast::Sender<Fanout>,
     /// Bearer token the sidecar must present. Generated per app run, handed to
     /// the sidecar through `.mcp.json` env, never written anywhere else.
@@ -421,12 +422,13 @@ pub struct RoomState {
     /// The origin a notice from a local MCP server is posted from (#169).
     ///
     /// Minted here like the screen's, and belonging to no connection, so the
-    /// fan-out skips nobody: every session in the room hears the notice, and so
-    /// does the screen. It takes no seat. The server has an account and the
-    /// notice is said as it (#193), but the server does not sit in the room: it
-    /// is on no roster and no one can address it — it has nothing to answer
-    /// with. One origin for every server, because nothing on this axis tells
-    /// one from another: the account on the post does.
+    /// typing skips nobody: every session in the room has the notice typed in
+    /// under the role `mcp`, and the screen draws it. It takes no seat. The
+    /// server has an account and the notice is said as it (#193), but the
+    /// server does not sit in the room: it is on no roster and no one can
+    /// address it — it has nothing to answer with. One origin for every
+    /// server, because nothing on this axis tells one from another: the
+    /// account on the post does.
     notice_origin: String,
 }
 
@@ -782,10 +784,11 @@ pub fn now_iso() -> String {
 /// Put one post into the room, if the speaker has seen the floor.
 ///
 /// The single path every utterance takes, whoever spoke. `origin` is the
-/// connection it arrived on: the fan-out skips that connection, and the screen
-/// reads it to know whether the line is its own. Two callers reach here — the
-/// socket loop and the screen's own command — and neither has a path of its
-/// own past this point. The gate is here for that reason, and applies to both:
+/// connection it arrived on: the typing skips that connection's terminal, the
+/// label's `role` is read off it, and the screen reads it to know whether the
+/// line is its own. Two callers reach here — the socket loop and the screen's
+/// own command — and neither has a path of its own past this point. The gate
+/// is here for that reason, and applies to both:
 /// a participant is a participant, and a post from the screen is not a
 /// different act (#39).
 ///
@@ -796,8 +799,8 @@ pub fn now_iso() -> String {
 /// worth anything (#47).
 ///
 /// `room_id` is the room it is said in. The floor that judges it, the log that
-/// records it and the connections it is fanned out to are all that room's, and
-/// none of another's (#141). A room this run does not hold refuses nothing and
+/// records it and the sessions it is typed into are all that room's, and none
+/// of another's (#141). A room this run does not hold refuses nothing and
 /// admits nothing — it answers with an error, because there is no floor there to
 /// have seen or not seen.
 fn deliver(
@@ -865,19 +868,15 @@ fn deliver(
             Admission::Unseen(_) => Ok(false),
         };
         // Who is in the room as this post is admitted, with the account each
-        // declared — read only for a post from the screen, the one kind that
-        // is typed into terminals rather than pushed (#183). Taken under this
-        // acquisition so the seats reached are the ones the floor judged
-        // against; the typing itself waits until the lock is dropped.
-        let seats: Vec<(String, Option<String>)> = if origin == room.local_origin {
-            inner
-                .participants
-                .iter()
-                .map(|(id, seat)| (id.clone(), seat.account.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // declared: every post is typed into the terminals of the sessions in
+        // it (#183, #195). Taken under this acquisition so the seats reached
+        // are the ones the floor judged against; the typing itself waits until
+        // the lock is dropped.
+        let seats: Vec<(String, Option<String>)> = inner
+            .participants
+            .iter()
+            .map(|(id, seat)| (id.clone(), seat.account.clone()))
+            .collect();
         (admission, hue, logged, topic, seats)
     };
 
@@ -903,31 +902,10 @@ fn deliver(
         Ok(false) => {}
     }
 
-    let mut frame = serde_json::json!({
-        "type": "post",
-        "message_id": post.message_id,
-        "speaker": post.speaker,
-        "content": post.content,
-        "ts": post.ts,
-    });
-    // Omitted rather than null when absent.
-    if let Some(name) = &post.to {
-        frame["to"] = serde_json::Value::String(name.clone());
-    }
-
-    // Before the fan-out, so the connections reached this way are known when
-    // the frame goes out and are left out of it.
-    let typed = type_into_sessions(app, room, room_id, &seats, &post);
-
-    // No subscribers means no session has joined yet. That is not an error —
-    // the room accepts what is said in it; a later joiner simply missed it.
-    let _ = room.to_participants.send(Fanout {
-        origin: origin.to_string(),
-        room: room_id.to_string(),
-        target: None,
-        typed,
-        frame: frame.to_string(),
-    });
+    // No session in the room is not an error — the room accepts what is said
+    // in it; a later joiner simply missed it, and can pull it.
+    let role = role_of(app, room, origin, post.account.as_deref());
+    type_into_sessions(app, room_id, &seats, origin, &role, &post);
 
     let _ = app.emit(
         "room-message",
@@ -955,29 +933,47 @@ fn deliver(
     })
 }
 
-/// Type a post from the screen into the terminal of each session in its room,
-/// and answer the connections that reached (#183).
+/// The role a post is labelled with, from where it came into the room (#195).
 ///
-/// `seats` is empty for any other speaker, and then nothing is typed: a post
-/// from a session or a webhook notice reaches a session through the channel as
-/// before. The screen's person is a user of these sessions, and a user's words
-/// go in at the terminal.
+/// The screen's own command and the app's notices are told apart by their
+/// origin, which no connection holds. Everything else came in on the socket,
+/// and carries the kind of the account its seat declared — read off the
+/// config, since the room holds only the id. `terminal_input::role` is where
+/// the rule is: the socket never makes `admin`, whatever it names.
+fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str>) -> String {
+    let kind;
+    let source = if origin == room.local_origin {
+        terminal_input::Source::Screen
+    } else if origin == room.notice_origin {
+        terminal_input::Source::Notice
+    } else {
+        kind = account.and_then(|id| crate::config::account_kind_name(app, id));
+        terminal_input::Source::Socket(kind.as_deref())
+    };
+    terminal_input::role(source).to_string()
+}
+
+/// Type a post into the terminal of each session in its room but the
+/// speaker's own (#183, #195).
+///
+/// Every post, whoever said it: the person at the screen, a session, a notice.
+/// The label on its first line carries the `role` (`role_of`), which is how a
+/// session tells its user's words from everything else it is handed on this
+/// one path.
 ///
 /// Which terminal belongs to a seat is read off the launcher's ledger by the
 /// room and the account the seat declared (`session::RoomSeats`). A seat that
-/// maps to no running terminal is not answered here, so the fan-out still
-/// sends it the frame: a post is never dropped for having no terminal to go
-/// into (`terminal_input::targets`).
+/// maps to no running terminal is not typed into; there is no other way left
+/// to push to it, and it reads the topic through the pull
+/// (`terminal_input::targets`).
 fn type_into_sessions(
     app: &AppHandle,
-    room: &RoomState,
     room_id: &str,
     seats: &[(String, Option<String>)],
+    speaker: &str,
+    role: &str,
     post: &Post,
-) -> Vec<String> {
-    if seats.is_empty() {
-        return Vec::new();
-    }
+) {
     let ptys = app.state::<PtyState>();
     let running = app.state::<RoomSeats>().seated(&ptys);
     let pty_of = |account: &str| {
@@ -991,31 +987,31 @@ fn type_into_sessions(
         seats
             .iter()
             .map(|(origin, account)| (origin.as_str(), account.as_deref())),
-        &room.local_origin,
+        speaker,
         pty_of,
     );
     if targets.is_empty() {
-        return Vec::new();
+        return;
     }
     let text = terminal_input::compose(
         &post.message_id,
         &post.speaker,
+        role,
         post.to.as_deref(),
         &post.content,
     );
-    targets
-        .into_iter()
-        .filter(|target| ptys.type_in(&target.pty_id, text.clone()))
-        .flat_map(|target| target.origins)
-        .collect()
+    for target in targets {
+        ptys.type_in(&target.pty_id, text.clone());
+    }
 }
 
 /// Put one notice from a local MCP server into every room an AI session is
 /// seated in, and answer how many it went into (#169).
 ///
-/// One post per room, each through `deliver` like any other: the same frame,
-/// the same fan-out, the same log, the same `room-message`. Nothing about who
-/// the event concerns is read — a notice is handed round, not sorted (#32).
+/// One post per room, each through `deliver` like any other: the same floor,
+/// the same log, the same `room-message`, and typed into each session's
+/// terminal like any other, labelled `mcp` (#195). Nothing about who the event
+/// concerns is read — a notice is handed round, not sorted (#32).
 /// Each room gets its own `message_id`, because each is a post of its own room.
 ///
 /// Said as the server's account (#193): its name is the speaker, and its colour
@@ -1377,13 +1373,11 @@ async fn serve_participant(
     // The room this connection is in, once its `hello` has named one. Set once
     // and never moved: a connection is started into one topic, and a second
     // `hello` naming another would be a session changing conversations under a
-    // registration that says otherwise (#141). Shared with the pump, which
-    // reads it on every frame to leave the other rooms' posts alone.
+    // registration that says otherwise (#141).
     let joined_room: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
 
     let mut from_room = room.to_participants.subscribe();
     let own_origin = origin.clone();
-    let pump_room = Arc::clone(&joined_room);
     // The seat table alone, for one purpose: naming this connection in the lag
     // log below.
     //
@@ -1404,11 +1398,12 @@ async fn serve_participant(
                 // No sender left: the room itself is gone, so nothing further
                 // will ever arrive. Leaving is all there is to do.
                 Err(broadcast::error::RecvError::Closed) => break,
-                // This connection read more slowly than the room spoke, and the
-                // channel overwrote posts it had not taken yet. The receiver is
-                // still live — tokio advances its cursor to the oldest post the
-                // channel still holds and the next `recv` returns that one — so
-                // a lag is a gap, not an ending, and the pump stays.
+                // This connection read more slowly than the room answered, and
+                // the channel overwrote frames it had not taken yet. The
+                // receiver is still live — tokio advances its cursor to the
+                // oldest frame the channel still holds and the next `recv`
+                // returns that one — so a lag is a gap, not an ending, and the
+                // pump stays.
                 //
                 // Leaving here is what made a momentary gap permanent: the
                 // socket stayed open and the participant stayed on the roster,
@@ -1417,13 +1412,10 @@ async fn serve_participant(
                 // the roster could show the difference, which is why this arm
                 // continues and why it logs (#42).
                 //
-                // The dropped posts are not resent. The room keeps no history
-                // to resend from, and giving it one here would put the room in
-                // possession of who heard what — the property the fan-out is
-                // built to avoid holding. A participant who missed posts still
-                // learns of them on their own next post: the floor refuses a
-                // post whose `last_seen` is behind and hands the missed ones
-                // back (#47). That path is the speaker's, not the room's.
+                // The dropped frames are not resent. Every frame here is an
+                // answer to another connection or to this one, and one of this
+                // connection's own that went missing is a tool call the sidecar
+                // reports as unconfirmed when its wait runs out.
                 Err(broadcast::error::RecvError::Lagged(dropped)) => {
                     // Named by both halves on purpose. The name is what a
                     // reader recognises and what every other line in this file
@@ -1435,30 +1427,15 @@ async fn serve_participant(
                     let seated = name_on(&seats, &own_origin);
                     let who = seated.as_deref().unwrap_or("(not yet seated)");
                     eprintln!(
-                        "[room] \"{who}\" ({own_origin}) fell behind: {dropped} post(s) dropped, delivery continues"
+                        "[room] \"{who}\" ({own_origin}) fell behind: {dropped} frame(s) dropped, delivery continues"
                     );
                     continue;
                 }
             };
-            match &fanout.target {
-                // Addressed to one connection: the room answering whoever
-                // posted. Everyone else's socket is not part of that exchange.
-                Some(target) if *target != own_origin => continue,
-                Some(_) => {}
-                // A participant does not receive their own post. Decided on
-                // the connection, never on the name: while two participants
-                // share a name, a name test drops the other one's posts too
-                // (#40).
-                None if fanout.origin == own_origin => continue,
-                // Typed into this connection's session already (#183). One
-                // post, one arrival: the channel does not carry it too.
-                None if fanout.typed.contains(&own_origin) => continue,
-                // Said in another room, or before this connection is in one.
-                // A topic's posts are that topic's conversation, and a session
-                // started into one topic hearing another's is the leak #141
-                // closes.
-                None if pump_room.get() != Some(&fanout.room) => continue,
-                None => {}
+            // Addressed to one connection: the room answering whoever posted
+            // or pulled. Everyone else's socket is not part of that exchange.
+            if fanout.target != own_origin {
+                continue;
             }
             if sink.send(Message::Text(fanout.frame.into())).await.is_err() {
                 break;
@@ -1602,10 +1579,7 @@ async fn serve_participant(
                     }),
                 };
                 let _ = room.to_participants.send(Fanout {
-                    origin: origin.clone(),
-                    room: String::new(),
-                    target: Some(origin.clone()),
-                    typed: Vec::new(),
+                    target: origin.clone(),
                     frame: receipt.to_string(),
                 });
             }
@@ -1655,10 +1629,7 @@ async fn serve_participant(
                     }
                 };
                 let _ = room.to_participants.send(Fanout {
-                    origin: origin.clone(),
-                    room: String::new(),
-                    target: Some(origin.clone()),
-                    typed: Vec::new(),
+                    target: origin.clone(),
                     frame: answer.to_string(),
                 });
             }
@@ -1857,9 +1828,10 @@ pub fn room_join(
 ///
 /// Goes through `deliver` like every other post: same event, same floor check,
 /// same log. The screen does not append locally on send, so the room keeps one
-/// ordering authority rather than two. What differs is how it reaches the
-/// sessions: typed into their terminals where the app launched them, as the
-/// frame where it did not (#183, `type_into_sessions`).
+/// ordering authority rather than two. It reaches the sessions typed into
+/// their terminals, like every post, and this is the one path whose label says
+/// `admin`: the webview is the only caller, and no session can reach it
+/// (#183, #195, `type_into_sessions`).
 ///
 /// `last_seen` is the newest post the screen has drawn. The person at the
 /// keyboard is a participant like any other and is refused on the same terms;

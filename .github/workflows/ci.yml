@@ -92,8 +92,9 @@ jobs:
         working-directory: crates/mcp-servers
         run: cargo test
 
-      # What a post from the screen reads as once it is typed into a session's
-      # terminal, and which terminals it goes into (#183).
+      # What a post reads as once it is typed into a session's terminal, the
+      # role on its label, which terminals it goes into, and when it waits for
+      # the person's own input (#183, #195).
       - name: Test the terminal-input crate
         working-directory: crates/terminal-input
         run: cargo test

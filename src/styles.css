@@ -1451,14 +1451,14 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* What will actually run, including the channel entry the app merges in. It
-   sits beside the field it explains rather than out on the launcher row, where
-   the field it explains no longer is.
+/* What will actually run, including what the app adds for the room. It sits
+   beside the field it explains rather than out on the launcher row, where the
+   field it explains no longer is.
 
    It wraps here, where the one-line row it came from had to clip it. The tail
-   is the channel entry the app merged in, which is the half the person did not
-   write and the reason this line is shown at all — an ellipsis would hide
-   exactly that. The dialog has the vertical room the row did not. */
+   is the settings the app added, which is the half the person did not write
+   and the reason this line is shown at all — an ellipsis would hide exactly
+   that. The dialog has the vertical room the row did not. */
 #account-dialog .preview {
   color: var(--muted);
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;

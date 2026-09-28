@@ -1,9 +1,10 @@
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
 use tauri::{AppHandle, Emitter};
+use terminal_input::Unsent;
 use uuid::Uuid;
 
 
@@ -15,6 +16,26 @@ struct PtyInstance {
 
 type ProcessMap = Arc<Mutex<HashMap<String, PtyInstance>>>;
 
+/// One session's input box, as the room reads it before typing into it (#195).
+#[derive(Default)]
+struct InputBox {
+    /// What the person has typed there and not sent (`terminal_input::Unsent`).
+    unsent: Unsent,
+    /// Posts held back while `unsent` was not empty, oldest first.
+    held: VecDeque<String>,
+}
+
+type InputMap = Arc<Mutex<HashMap<String, InputBox>>>;
+
+/// What the typist is handed, in the order it is handed.
+enum Typing {
+    /// Type this post into the session on this id, or hold it.
+    Post(String, String),
+    /// The session on this id may have an empty input box again: type what
+    /// was held for it.
+    Release(String),
+}
+
 #[derive(Clone)]
 pub struct PtyState {
     procs: ProcessMap,
@@ -24,21 +45,48 @@ pub struct PtyState {
     /// order they were handed over. Two posts typed by two threads could each
     /// put its text in before the other's submit key, and the session would
     /// get both as one input.
-    typing: mpsc::Sender<(String, String)>,
+    ///
+    /// A release goes through the same queue rather than typing from the
+    /// thread that noticed the box empty, for the same reason: a post handed
+    /// over just before the release would otherwise be typed ahead of the
+    /// ones held before it (#195).
+    typing: mpsc::Sender<Typing>,
+    /// Each session's input box, as far as the keys the terminal pane sent
+    /// say (#195). An entry exists once the pane has written to a session, and
+    /// goes with the session.
+    input: InputMap,
 }
 
 impl PtyState {
     pub fn new() -> Self {
         let procs: ProcessMap = Arc::new(Mutex::new(HashMap::new()));
-        let (typing, queue) = mpsc::channel::<(String, String)>();
+        let input: InputMap = Arc::new(Mutex::new(HashMap::new()));
+        let (typing, queue) = mpsc::channel::<Typing>();
         let typist = Arc::clone(&procs);
+        let boxes = Arc::clone(&input);
         std::thread::spawn(move || {
             // Ends when every sender has gone, which is the app going.
-            for (id, text) in queue {
-                type_one(&typist, &id, &text);
+            for next in queue {
+                match next {
+                    Typing::Post(id, text) => {
+                        if hold(&boxes, &id, text.clone()) {
+                            continue;
+                        }
+                        type_one(&typist, &boxes, &id, &text);
+                    }
+                    Typing::Release(id) => {
+                        while let Some(text) = next_held(&boxes, &id) {
+                            type_one(&typist, &boxes, &id, &text);
+                        }
+                    }
+                }
             }
         });
-        PtyState { procs, typing }
+        PtyState {
+            procs,
+            typing,
+            input,
+        }
     }
 
     /// Type `text` into the session on `id`, then submit it (#183).
@@ -48,6 +96,14 @@ impl PtyState {
     /// for: it holds a pause (`terminal_input::SUBMIT_PAUSE`), and the caller
     /// is the room delivering a post, which nothing should hold up.
     ///
+    /// **Held while the person has something unsent in that session's input
+    /// box** (#195, Master 判断 2026-09-28). A post typed then is joined onto
+    /// what they wrote. It waits, with any others that arrive behind it, until
+    /// they send or erase it, and then all of them are typed in the order they
+    /// arrived. Whether to hold is decided on the queue's thread at the moment
+    /// of typing, not here: the person may start writing while a post waits
+    /// its turn.
+    ///
     /// A write that fails once queued is logged and not reported back. A PTY
     /// that refuses a write is a session that has ended between the check and
     /// the write, and there is nobody left to hand the post to.
@@ -55,7 +111,18 @@ impl PtyState {
         if !self.is_running(id) {
             return false;
         }
-        self.typing.send((id.to_string(), text)).is_ok()
+        self.typing.send(Typing::Post(id.to_string(), text)).is_ok()
+    }
+
+    /// Read one write the terminal pane made to the session on `id`, and
+    /// release the posts held for it when that left its input box empty.
+    fn note_input(&self, id: &str, data: &str) {
+        let mut boxes = self.input.lock();
+        let input = boxes.entry(id.to_string()).or_default();
+        input.unsent.feed(data);
+        if input.unsent.is_empty() && !input.held.is_empty() {
+            let _ = self.typing.send(Typing::Release(id.to_string()));
+        }
     }
 
     /// Whether the session on `id` is still running.
@@ -136,12 +203,45 @@ fn write_to(procs: &ProcessMap, id: &str, data: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("Write failed: {e}"))
 }
 
+/// Hold `text` for the session on `id` when it cannot be typed now, and answer
+/// whether it was held (#195).
+///
+/// Held when the person has something unsent in that input box, and when
+/// posts are already held for it: a post arriving behind held ones goes behind
+/// them, so they are typed in the order they arrived. A session the pane has
+/// never written to has an empty box and nothing held.
+fn hold(boxes: &InputMap, id: &str, text: String) -> bool {
+    let mut boxes = boxes.lock();
+    match boxes.get_mut(id) {
+        Some(input) if !input.unsent.is_empty() || !input.held.is_empty() => {
+            input.held.push_back(text);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The oldest post held for the session on `id`, when its input box is empty
+/// now. Read again before each one: the person may start writing between two
+/// held posts, and the rest then wait again.
+fn next_held(boxes: &InputMap, id: &str) -> Option<String> {
+    let mut boxes = boxes.lock();
+    let input = boxes.get_mut(id)?;
+    if !input.unsent.is_empty() {
+        return None;
+    }
+    input.held.pop_front()
+}
+
 /// Type one post into one session: the text, a pause, then the submit key.
 ///
 /// Two writes, the way the terminal pane's own paste and Enter reach the PTY
 /// (`terminal_input`). The lock is not held across the pause: other sessions'
 /// keystrokes would wait on it for nothing.
-fn type_one(procs: &ProcessMap, id: &str, text: &str) {
+///
+/// Once the key has gone, the box is read as sent. Anything the person typed
+/// during the pause went in with the post, and the box it was in is empty.
+fn type_one(procs: &ProcessMap, boxes: &InputMap, id: &str, text: &str) {
     if let Err(err) = write_to(procs, id, text.as_bytes()) {
         eprintln!("[pty] a room post could not be typed into {id}: {err}");
         return;
@@ -149,6 +249,10 @@ fn type_one(procs: &ProcessMap, id: &str, text: &str) {
     std::thread::sleep(terminal_input::SUBMIT_PAUSE);
     if let Err(err) = write_to(procs, id, terminal_input::SUBMIT.as_bytes()) {
         eprintln!("[pty] a room post typed into {id} could not be submitted: {err}");
+        return;
+    }
+    if let Some(input) = boxes.lock().get_mut(id) {
+        input.unsent.sent();
     }
 }
 
@@ -247,6 +351,7 @@ pub fn spawn_pty_with_env(
 
     // Spawn background thread to read PTY output and emit events
     let ptys_clone = Arc::clone(&state.procs);
+    let input_clone = Arc::clone(&state.input);
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -273,6 +378,9 @@ pub fn spawn_pty_with_env(
         // Bound before the match: a guard held in the scrutinee lives as long
         // as the match does, which would put the wait back inside the lock.
         let ended = ptys_clone.lock().remove(&id_clone);
+        // Its input box goes with it, and so do the posts held for it: there
+        // is no session left to type them into (#195).
+        input_clone.lock().remove(&id_clone);
         let exit_code: Option<u32> = match ended {
             Some(mut pty) => pty.child.wait().ok().map(|status| status.exit_code()),
             // Already removed: a kill took it — `kill_pty`, `kill_each`, or the
@@ -296,9 +404,18 @@ pub fn spawn_pty_with_env(
     Ok(id)
 }
 
+/// Write what the terminal pane sent — a keystroke, or a paste — to the
+/// session on `id`.
+///
+/// Every write is also read for what it leaves in the session's input box
+/// (`PtyState::note_input`), which is how the room knows to hold its posts
+/// while the person is writing (#195). Only a write that reached the session
+/// is read: one that did not changed nothing there.
 #[tauri::command]
 pub fn write_pty(state: tauri::State<PtyState>, id: String, data: String) -> Result<(), String> {
-    write_to(&state.procs, &id, data.as_bytes())
+    write_to(&state.procs, &id, data.as_bytes())?;
+    state.note_input(&id, &data);
+    Ok(())
 }
 
 #[tauri::command]

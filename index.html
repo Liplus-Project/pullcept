@@ -142,7 +142,7 @@
           <!-- Diagnostics, not the conversation surface. The room shows what
                was said; this shows the CLI that was launched, as it actually
                renders. Nothing here is read as a message: the room's lines come
-               from the channel and from say_to_room, never from this output.
+               from the room itself and from say_to_room, never from this output.
 
                Only the terminal is left here. The values that are read rather
                than watched — the socket, the session, how it was launched —
@@ -436,10 +436,10 @@
                 placeholder="例: claude --resume {session_id}"
               />
             </label>
-            <!-- What will actually run. The app merges its own channel entry
-                 into whatever is typed above, so the line written here is not
+            <!-- What will actually run. The app adds the room's own settings
+                 to whatever is typed above, so the line written here is not
                  the line that launches; showing the result is cheaper than
-                 explaining the merge. It sits beside the field it explains. -->
+                 explaining the addition. It sits beside the field it explains. -->
             <span id="dialog-preview" class="preview"></span>
             <!-- 上の欄に、Windows の起動の行へ載せられない文字が入ったときに
                  出る（#154、決定4）。保存は止めない——欄を直すかどうかはその

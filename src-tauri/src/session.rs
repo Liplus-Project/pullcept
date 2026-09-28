@@ -429,13 +429,14 @@ pub fn launch_field_report(
 
 /// The arguments a launch would actually use, for display.
 ///
-/// The app merges its own channel entry into what the person wrote and selects
-/// the account's character on top of it, so the line they typed is not the line
-/// that runs. This returns the line that runs, through the same function the
-/// launch itself goes through (`launch_args`).
+/// The app adds what the room needs to what the person wrote — the approval of
+/// its own server, the status line — and selects the account's character on
+/// top of it, so the line they typed is not the line that runs. This returns
+/// the line that runs, through the same function the launch itself goes
+/// through (`launch_args`).
 ///
-/// The entry names this account's own server in the topic the launch would go
-/// into, which is a function of the account id and the topic id, so the preview
+/// The approval names this account's own server in the topic the launch would
+/// go into, which is a function of the account id and the topic id, so the preview
 /// changes when a different account is selected and holds still while that
 /// account's name is edited. Holding still is the point: the identity being
 /// launched is the account, and renaming it does not make it something else
@@ -896,8 +897,8 @@ pub fn start_session(
 
     if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
-            "Account \"{name}\" passes {flag}, which stops channel pushes from arriving. \
-             Remove it from the launch options."
+            "Account \"{name}\" passes {flag}, which stops the session reading what is typed into its terminal, \
+             and every room post reaches a session typed there. Remove it from the launch options."
         ));
     }
 
