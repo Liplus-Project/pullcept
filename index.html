@@ -556,20 +556,45 @@
            dialog is: a step inside the app, not a window to find behind it.
 
            A list of sections on the left, as Claude Desktop's settings have.
-           None is here for now. The one it held — the MCP servers the app runs
-           itself — is in the window of each server's `mcp` account since #193,
-           and the display settings that are to fill this are #194. -->
+           One is here: the display (#194), the three size axes of the screen.
+           The one it held before — the MCP servers the app runs itself — is in
+           the window of each server's `mcp` account since #193.
+
+           Each picker takes effect as it is changed, like the pickers on the
+           title bar and the terminal's header, so there is nothing to commit
+           and the dialog only closes. The conversation's and the terminal's
+           pickers here hold the same value as those two; they are one setting
+           reachable from two places, not two settings. -->
       <dialog id="settings-dialog" aria-labelledby="settings-title">
         <div class="settings">
           <nav class="settings-nav" aria-label="設定の項目">
             <h2 id="settings-title">設定</h2>
+            <span class="settings-item" aria-current="true">表示</span>
           </nav>
 
-          <section class="settings-body">
-            <p class="hint">
-              設定の項目はまだありません。ローカル MCP サーバの設定は、アカウントの一覧の
-              MCP にある各サーバの ⚙️ から開きます。
-            </p>
+          <section class="settings-body" aria-labelledby="settings-display-title">
+            <h3 id="settings-display-title">表示</h3>
+            <div class="settings-row">
+              <label for="settings-room-font-size">会話の文字サイズ</label>
+              <select id="settings-room-font-size"></select>
+              <p class="hint">
+                部屋の発言と入力欄の本文。Ctrl + = / - / 0 とタイトルバーの選択でも変えられます。
+              </p>
+            </div>
+            <div class="settings-row">
+              <label for="settings-terminal-font-size">端末の文字サイズ</label>
+              <select id="settings-terminal-font-size"></select>
+              <p class="hint">
+                端末の桁数と行数はこの大きさで決まり、表示中のセッションへ伝わります。
+              </p>
+            </div>
+            <div class="settings-row">
+              <label for="settings-ui-scale">UI の大きさ</label>
+              <select id="settings-ui-scale"></select>
+              <p class="hint">
+                会話と端末を除いた画面全体（タイトルバー、パネル、窓）。会話と端末の大きさは変わりません。
+              </p>
+            </div>
           </section>
         </div>
         <menu class="settings-actions">

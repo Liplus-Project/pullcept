@@ -584,6 +584,16 @@ const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HT
 const openSettingsEl = document.getElementById("open-settings") as HTMLButtonElement;
 const settingsDialogEl = document.getElementById("settings-dialog") as HTMLDialogElement;
 const settingsCloseEl = document.getElementById("settings-close") as HTMLButtonElement;
+// The display section's three pickers (#194). The first two hold the same value
+// as the pickers on the title bar and the terminal's header, and are kept in
+// step with them by the `apply…` functions that set both.
+const settingsRoomFontSizeEl = document.getElementById(
+  "settings-room-font-size",
+) as HTMLSelectElement;
+const settingsTerminalFontSizeEl = document.getElementById(
+  "settings-terminal-font-size",
+) as HTMLSelectElement;
+const settingsUiScaleEl = document.getElementById("settings-ui-scale") as HTMLSelectElement;
 const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
 const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
 const mcpFileErrorEl = document.getElementById("mcp-file-error") as HTMLElement;
@@ -733,6 +743,41 @@ const TERMINAL_FONT_SIZES = [9, 10, 11, 12, 13, 14, 16, 18, 20, 24];
  * nobody.
  */
 const DEFAULT_TERMINAL_FONT_SIZE = 13;
+
+/**
+ * How large everything but the conversation and the terminal is drawn, as a
+ * multiple of what it has always been (#66, #194).
+ *
+ * The third of the three size axes. It is carried as the root's `font-size`,
+ * because the UI around the two other surfaces is written in `rem` — the title
+ * bar, the panels, the windows — so one value on `:root` moves all of it without
+ * naming any of it. The two other axes are kept out by construction rather than
+ * by exception: the conversation's size divides this one back out
+ * (`--room-font-size` in src/styles.css), and the terminal is sized in `px`,
+ * which a root size does not reach. Not the webview's own zoom: that takes the
+ * whole screen, the two excluded surfaces with it, and those are what this may
+ * not move.
+ *
+ * `localStorage`, for #60's reason: a property of the screen being read from.
+ */
+const UI_SCALE_KEY = "pullcept.ui-scale";
+
+/**
+ * The multiples the UI can be set to.
+ *
+ * A ladder with its ends as the bounds, the shape #60 settled. More rungs above
+ * the default than below: what #66 asks for is a screen that reads from further
+ * away, so the direction that gets used is upward.
+ *
+ * The top is `1.5` because the panels grow with it. They are written in `rem`,
+ * and the conversation between them takes what is left: at `1.5` two open panels
+ * already leave almost nothing of a 900px window. Past that the ladder would
+ * mostly offer ways to lose the room.
+ */
+const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
+
+/** `1`, which is what every screen has been drawn at. It moves nobody. */
+const DEFAULT_UI_SCALE = 1;
 
 /**
  * The emulator options every session's terminal is opened with.
@@ -1139,12 +1184,12 @@ function saveConfig(): void {
  * choice being made is "larger or smaller than what I have", and the unit the
  * size happens to be held in answers a question nobody is asking.
  */
-function fillRoomFontSizes(): void {
+function fillRoomFontSizes(select: HTMLSelectElement): void {
   for (const size of ROOM_FONT_SIZES) {
     const option = document.createElement("option");
     option.value = String(size);
     option.textContent = `${Math.round((size / DEFAULT_ROOM_FONT_SIZE) * 100)}%`;
-    fontSizeEl.appendChild(option);
+    select.appendChild(option);
   }
 }
 
@@ -1184,9 +1229,15 @@ function storedRoomFontSize(): number {
  */
 function applyRoomFontSize(size: number, save: boolean): void {
   roomFontSize = size;
-  roomEl.style.setProperty("--room-font-size", `${size}rem`);
-  inputEl.style.setProperty("--room-font-size", `${size}rem`);
+  // Divided by the UI's multiple, so the size is this axis's alone: the root a
+  // `rem` is counted from is what the UI scale moves (#194), and dividing it back
+  // out is what keeps the two axes from riding on each other.
+  const value = `calc(${size}rem / var(--ui-scale))`;
+  roomEl.style.setProperty("--room-font-size", value);
+  inputEl.style.setProperty("--room-font-size", value);
+  // The title bar's picker and the settings menu's hold the one value.
   fontSizeEl.value = String(size);
+  settingsRoomFontSizeEl.value = String(size);
   if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
 }
 
@@ -1206,13 +1257,13 @@ function stepRoomFontSize(step: number): void {
   applyRoomFontSize(ROOM_FONT_SIZES[next], true);
 }
 
-/** Fill the terminal's size picker. Labelled in `px`; see the ladder above. */
-function fillTerminalFontSizes(): void {
+/** Fill a terminal size picker. Labelled in `px`; see the ladder above. */
+function fillTerminalFontSizes(select: HTMLSelectElement): void {
   for (const size of TERMINAL_FONT_SIZES) {
     const option = document.createElement("option");
     option.value = String(size);
     option.textContent = `${size}px`;
-    terminalFontSizeEl.appendChild(option);
+    select.appendChild(option);
   }
 }
 
@@ -1247,9 +1298,47 @@ function storedTerminalFontSize(): number {
 function applyTerminalFontSize(size: number, save: boolean): void {
   terminalFontSize = size;
   for (const view of views.values()) view.term.options.fontSize = size;
+  // The terminal header's picker and the settings menu's hold the one value.
   terminalFontSizeEl.value = String(size);
+  settingsTerminalFontSizeEl.value = String(size);
   if (save) localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(size));
   fitShown();
+}
+
+/** Fill the UI scale picker. Labelled as a percentage, as #60's is. */
+function fillUiScales(): void {
+  for (const scale of UI_SCALES) {
+    const option = document.createElement("option");
+    option.value = String(scale);
+    option.textContent = `${Math.round((scale / DEFAULT_UI_SCALE) * 100)}%`;
+    settingsUiScaleEl.appendChild(option);
+  }
+}
+
+/**
+ * The stored UI scale, or the default. Only a rung on the ladder is honoured,
+ * for the reason `storedRoomFontSize` gives.
+ */
+function storedUiScale(): number {
+  const stored = Number(localStorage.getItem(UI_SCALE_KEY));
+  return UI_SCALES.includes(stored) ? stored : DEFAULT_UI_SCALE;
+}
+
+/**
+ * Draw the UI at `scale`, and remember it if it was chosen.
+ *
+ * One property on `:root`, which src/styles.css turns into the root's
+ * `font-size`. The conversation divides it back out and the terminal is in `px`,
+ * so neither moves (see `UI_SCALE_KEY`). The terminal's pane does change size
+ * when the chrome around it grows, and the `ResizeObserver` on it re-fits and
+ * tells the session, as it does for any other change to the pane's size.
+ *
+ * `save` is false for the restore at startup, as for the two other axes.
+ */
+function applyUiScale(scale: number, save: boolean): void {
+  document.documentElement.style.setProperty("--ui-scale", String(scale));
+  settingsUiScaleEl.value = String(scale);
+  if (save) localStorage.setItem(UI_SCALE_KEY, String(scale));
 }
 
 /**
@@ -4684,10 +4773,21 @@ async function main(): Promise<void> {
 
   // Restored before anything is drawn, so the first line to arrive is already
   // at the size this screen reads at rather than jumping once it lands.
-  fillRoomFontSizes();
+  //
+  // The UI's multiple goes first: the conversation's size is written against it.
+  fillUiScales();
+  applyUiScale(storedUiScale(), false);
+  settingsUiScaleEl.addEventListener("change", () => {
+    applyUiScale(Number(settingsUiScaleEl.value), true);
+  });
+  fillRoomFontSizes(fontSizeEl);
+  fillRoomFontSizes(settingsRoomFontSizeEl);
   applyRoomFontSize(storedRoomFontSize(), false);
   fontSizeEl.addEventListener("change", () => {
     applyRoomFontSize(Number(fontSizeEl.value), true);
+  });
+  settingsRoomFontSizeEl.addEventListener("change", () => {
+    applyRoomFontSize(Number(settingsRoomFontSizeEl.value), true);
   });
   // On the window rather than on the room: the keys are meant to work while
   // something is being typed, and the room is not what holds focus then.
@@ -4706,10 +4806,14 @@ async function main(): Promise<void> {
 
   // Restored before any terminal is opened, so the first session is laid out at
   // the size this screen reads at rather than being re-fitted once it lands.
-  fillTerminalFontSizes();
+  fillTerminalFontSizes(terminalFontSizeEl);
+  fillTerminalFontSizes(settingsTerminalFontSizeEl);
   applyTerminalFontSize(storedTerminalFontSize(), false);
   terminalFontSizeEl.addEventListener("change", () => {
     applyTerminalFontSize(Number(terminalFontSizeEl.value), true);
+  });
+  settingsTerminalFontSizeEl.addEventListener("change", () => {
+    applyTerminalFontSize(Number(settingsTerminalFontSizeEl.value), true);
   });
 
   // The two ends of one act. 端末 is reachable while the pane is folded and ✕
@@ -4805,8 +4909,9 @@ async function main(): Promise<void> {
 
   // ── settings (#172) ─────────────────────────────────────────────────────────
   //
-  // Empty for now: its one section moved into the window of each server's
-  // account (#193), and #194 is what fills it again.
+  // The display settings (#194). Its pickers are wired with the two size axes
+  // and the UI scale above; each takes effect as it is changed, so the dialog
+  // has nothing to commit and only closes.
   openSettingsEl.addEventListener("click", () => {
     if (!settingsDialogEl.open) settingsDialogEl.showModal();
   });
