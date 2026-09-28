@@ -1359,6 +1359,7 @@ body {
 
 #account-dialog .mcp-server[hidden],
 #account-dialog .mcp-fields[hidden],
+#account-dialog .mcp-head[hidden],
 #account-dialog .mcp-server button[hidden] {
   display: none;
 }

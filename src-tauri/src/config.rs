@@ -60,10 +60,12 @@ pub enum AccountKind {
     /// A local MCP server the app runs as its own client (#193). One account
     /// answers to one entry of `mcp-servers.json`, named by `Account::server`.
     ///
-    /// Never declared on the form: an account of this kind is given to an entry
-    /// as the config is read (`mcp_servers::migrate_accounts`), and no other
-    /// kind turns into it or out of it. Not launched — `start_session` refuses
-    /// it, as it refuses a person.
+    /// Arrived at two ways: declared on the form when an account is made, which
+    /// writes the entry it answers to (#200, `app_mcp::create_mcp_server`), or
+    /// given to an entry that has none as the config is read
+    /// (`mcp_servers::migrate_accounts`). Either way it is fixed from then on:
+    /// no other kind turns into it or out of it. Not launched — `start_session`
+    /// refuses it, as it refuses a person.
     Mcp,
 }
 
@@ -349,7 +351,7 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
 /// from the entry's name (`mcp_servers::account_id`), so the same account comes
 /// back on every read until a save writes it down, and a post said as it
 /// before then is said as the account the screen later lists.
-fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
+pub(crate) fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
     let path = config_path(app)?;
     let mut root = if path.exists() {
         read_saved(&path)?
