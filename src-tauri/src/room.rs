@@ -25,7 +25,8 @@
 //!
 //! `to` is optional and carries the display names of the participants
 //! addressed, as a list — one name or several (#204). An `@名前` in `content`
-//! that names someone in the room is moved into it, out of the text (#206). The
+//! that names someone in the room is moved into it, out of the text (#206) —
+//! for a participant's post; a notice is passed through as it arrived. The
 //! room still delivers every post to every participant — narrowing delivery
 //! here would make the room hold who heard what, and answering is the
 //! participant's judgment, not the room's.
@@ -847,17 +848,19 @@ fn deliver(
         // The `@名前` that name someone in this room address them, and leave
         // the text (#206). Read here because this is the one path: the screen's
         // post and a session's `say_to_room` get the same reading, against the
-        // names seated under this same acquisition. A `to` the sender gave
-        // stays first, and a name it already holds is not added twice.
-        let (content, named) = room_floor::take_mentions(
-            &post.content,
+        // names seated under this same acquisition. A notice is external
+        // content and passes through as it arrived (`room_floor::Sender`).
+        let sender = if origin == room.notice_origin {
+            room_floor::Sender::Notice
+        } else {
+            room_floor::Sender::Participant
+        };
+        room_floor::address(
+            &mut post,
+            sender,
             inner.participants.values().map(|seat| seat.name.as_str()),
-        );
-        if !named.is_empty() && content.trim().is_empty() {
-            return Err("宛先の @名前 のほかに本文がありません。".to_string());
-        }
-        post.content = content;
-        post.to = room_floor::addressees(std::mem::take(&mut post.to).into_iter().chain(named));
+        )
+        .map_err(str::to_string)?;
         // Stamped before the floor takes its copy, so the retained post and the
         // live line carry one declaration rather than two readings of it. A
         // refusal hands that copy back, and the screen draws it (#108).

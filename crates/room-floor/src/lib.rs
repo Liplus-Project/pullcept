@@ -95,6 +95,50 @@ pub fn addressees(names: impl IntoIterator<Item = String>) -> Vec<String> {
     kept
 }
 
+/// Who put a post into the room, as far as its text is read for addressees
+/// (#206).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sender {
+    /// Someone in the room: the person at the screen, or a session. Their
+    /// `@名前` address.
+    Participant,
+    /// A local MCP server's notice (#169). Its text is external content — a
+    /// GitHub comment, say — and passes through as it arrived: the app does not
+    /// rewrite it, and an outside author cannot address anyone in the room by
+    /// writing their name.
+    Notice,
+}
+
+/// Why a post whose text was nothing but mentions was not taken.
+pub const MENTIONS_ONLY: &str = "宛先の @名前 のほかに本文がありません。";
+
+/// Read a post's `@名前` into its addressees, the way the room does as it takes
+/// the post (#206).
+///
+/// From a participant, each `@名前` naming someone in `names` moves out of the
+/// text and onto `to` ([`take_mentions`]). A `to` the sender already gave stays
+/// first, and a name on it is not added twice. A post that was nothing but
+/// mentions is not taken: [`MENTIONS_ONLY`] comes back and the post is left as
+/// it was.
+///
+/// A notice is left as it arrived, text and `to` alike.
+pub fn address<'a>(
+    post: &mut Post,
+    sender: Sender,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), &'static str> {
+    if sender == Sender::Notice {
+        return Ok(());
+    }
+    let (content, named) = take_mentions(&post.content, names);
+    if !named.is_empty() && content.trim().is_empty() {
+        return Err(MENTIONS_ONLY);
+    }
+    post.content = content;
+    post.to = addressees(std::mem::take(&mut post.to).into_iter().chain(named));
+    Ok(())
+}
+
 /// Take the `@名前` that name someone in the room out of what was said, and
 /// hand back the names they named (#206).
 ///
@@ -658,6 +702,36 @@ mod tests {
         // Nothing but mentions leaves nothing.
         reads("@Master @Claude Lin", "", &["Master", "Claude Lin"]);
         reads(" @Master ", "", &["Master"]);
+    }
+
+    #[test]
+    fn a_participants_post_is_addressed_by_its_mentions_after_the_to_it_gave() {
+        let mut said = post("m-1", "Claude Lin", "@Master @Claude Lay 見て");
+        said.to = vec!["Claude Lay".to_string()];
+        assert_eq!(address(&mut said, Sender::Participant, ROOM), Ok(()));
+        assert_eq!(said.content, "見て");
+        assert_eq!(said.to, ["Claude Lay", "Master"]);
+    }
+
+    #[test]
+    fn a_post_of_nothing_but_mentions_is_not_taken_and_is_left_as_it_was() {
+        let mut said = post("m-1", "Master", "@Claude Lay");
+        assert_eq!(address(&mut said, Sender::Participant, ROOM), Err(MENTIONS_ONLY));
+        assert_eq!(said.content, "@Claude Lay");
+        assert!(said.to.is_empty());
+    }
+
+    #[test]
+    fn a_notice_passes_through_with_its_text_as_it_arrived_and_no_addressee() {
+        // External content naming someone in the room: not rewritten, and the
+        // outside author addresses no one by it — not even when the name is
+        // all it says.
+        for text in ["@Master このPRを見て", "@Claude Lay"] {
+            let mut notice = post("m-1", "webhook", text);
+            assert_eq!(address(&mut notice, Sender::Notice, ROOM), Ok(()));
+            assert_eq!(notice.content, text);
+            assert!(notice.to.is_empty(), "{:?}", notice.to);
+        }
     }
 
     #[test]
