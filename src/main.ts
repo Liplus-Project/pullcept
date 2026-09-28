@@ -4086,9 +4086,10 @@ async function startSession(account: Account): Promise<void> {
       );
     }
     status(`${name} を起動できませんでした: ${err}`, "error");
-    // A failed launch still opens the pane, as it did while every ▶ opened it
-    // before the attempt. Only ▶ succeeding leaves the pane as it was (#215).
-    revealDiagnostics();
+    // The pane is left as it was here too. Nothing was spawned, so there is no
+    // output in it to read about why; the reason is the status line above and
+    // the row's 起動失敗. What opens the pane is a CLI that did start and then
+    // ended on its own, since what it printed is the account (#121, #215).
     // A launch that failed after the app claimed the seat releases it there;
     // this keeps the panel in step with that.
     await refreshSeats();
