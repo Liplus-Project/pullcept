@@ -1,7 +1,7 @@
 [package]
 name = "mcp-servers"
 version = "0.1.0"
-description = "The MCP servers Pullcept runs itself: the file that lists them, and the text the settings panel edits them through"
+description = "The MCP servers Pullcept runs itself: the file that lists them, and the text the window of each server's account edits them through"
 authors = ["Liplus Project Contributors"]
 license = "Apache-2.0"
 edition = "2021"

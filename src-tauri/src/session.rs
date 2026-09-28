@@ -803,6 +803,15 @@ pub fn start_session(
              person joins by being at the screen."
         ));
     }
+    // Nor is a local MCP server (#193). It is started with the app from its
+    // entry in `mcp-servers.json`, and started again from its own window; there
+    // is no CLI under it.
+    if account.kind == AccountKind::Mcp {
+        return Err(format!(
+            "Account \"{name}\" is a local MCP server the app runs itself, not a session. \
+             It is started with the app, and restarted from its own window."
+        ));
+    }
 
     // Which topic this seat is being started into: the one the screen pressed
     // ▶ in, named by it. Not the topic the app has open by the time this runs

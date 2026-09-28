@@ -109,11 +109,13 @@
 //! the room before the disk is touched, and a failure there costs the record,
 //! not the utterance (#48).
 //!
-//! **One post comes from no connection: a webhook notice (#169).** The app
-//! receives it itself (`webhook`) and puts it into every room an AI session is
-//! seated in, through the same `deliver` as everything else — so it is logged
-//! and fanned out like any post. It takes no seat and is spoken from an origin
-//! no connection holds, so nobody is skipped and nobody can address it.
+//! **One post comes from no connection: a notice from a local MCP server
+//! (#169).** The app receives it itself (`webhook`) and puts it into every room
+//! an AI session is seated in, through the same `deliver` as everything else —
+//! so it is logged and fanned out like any post. It is said as the server's
+//! `mcp` account (#193): the account's name, its colour and its id are on the
+//! post. It takes no seat and is spoken from an origin no connection holds, so
+//! nobody is skipped and nobody can address it.
 //!
 //! **A post from the screen reaches a session through its terminal (#183).**
 //! It goes through `deliver` like every post — the same floor, the same log,
@@ -181,6 +183,11 @@ pub struct RoomMessage {
     /// the screen: a name is not an identity here, so a lookup by name is the
     /// wrong participant as soon as two answer to one name.
     pub hue: Option<f64>,
+    /// The account the speaker declared, or `None` when they declared none.
+    /// Stamped from the seat the way `hue` is; for a notice, the account of the
+    /// server that pushed it (#193). The screen folds a line said as an `mcp`
+    /// account, and reads the kind off the account this names.
+    pub account: Option<String>,
     pub content: String,
     pub to: Option<String>,
     pub ts: String,
@@ -411,13 +418,15 @@ pub struct RoomState {
     /// room the screen has opened, and each of those seats is in its own
     /// room's roster.
     local_origin: String,
-    /// The origin a webhook notice is posted from (#169).
+    /// The origin a notice from a local MCP server is posted from (#169).
     ///
     /// Minted here like the screen's, and belonging to no connection, so the
     /// fan-out skips nobody: every session in the room hears the notice, and so
-    /// does the screen. It takes no seat. A notice is something from outside
-    /// put on the wall, not a participant — it is on no roster and no one can
-    /// address it.
+    /// does the screen. It takes no seat. The server has an account and the
+    /// notice is said as it (#193), but the server does not sit in the room: it
+    /// is on no roster and no one can address it — it has nothing to answer
+    /// with. One origin for every server, because nothing on this axis tells
+    /// one from another: the account on the post does.
     notice_origin: String,
 }
 
@@ -445,8 +454,9 @@ impl RoomState {
         }
     }
 
-    /// The rooms a webhook notice goes into now: every room an AI session is
-    /// seated in (`webhook_bridge::holds_session`).
+    /// The rooms a notice goes into now: every room an AI session is seated in
+    /// (`webhook_bridge::holds_session`). A server's account takes no seat, so
+    /// it is never what makes a room hold one.
     fn rooms_in_session(&self) -> Vec<String> {
         self.inner
             .lock()
@@ -809,22 +819,28 @@ fn deliver(
                 "トピック {room_id} はこのアプリで開かれていません。削除されたトピックかもしれません。"
             ));
         };
-        let (since, hue) = match inner.participants.get(origin) {
-            Some(seat) => (seat.since, seat.hue),
-            // A webhook notice (#169). It was not composed against anything
-            // said here, so there is nothing it could have missed: it stands
-            // where a participant taking a seat this instant would stand, and
-            // the floor holds nothing against it.
-            None if origin == room.notice_origin => (inner.floor.seq(), None),
+        let (since, hue, account) = match inner.participants.get(origin) {
+            Some(seat) => (seat.since, seat.hue, seat.account.clone()),
+            // A notice (#169). It was not composed against anything said here,
+            // so there is nothing it could have missed: it stands where a
+            // participant taking a seat this instant would stand, and the floor
+            // holds nothing against it. It has no seat to be stamped from, so
+            // the colour and the account are the ones `post_notice` read off
+            // the server's account (#193) — the app is the one saying it, and
+            // it is not a sender that could name itself.
+            None if origin == room.notice_origin => {
+                (inner.floor.seq(), post.hue, post.account.clone())
+            }
             // Unseated: nothing was ever delivered here, so nothing is
             // presumed read. Speaking seats a participant, and the screen's
             // command does that before it reaches this point.
-            None => (0, None),
+            None => (0, None, None),
         };
         // Stamped before the floor takes its copy, so the retained post and the
         // live line carry one declaration rather than two readings of it. A
         // refusal hands that copy back, and the screen draws it (#108).
         post.hue = hue;
+        post.account = account;
         let admission = inner.floor.admit(origin, since, last_seen, post.clone());
         // Written here, inside the acquisition the floor was judged under, so
         // the file's order is the floor's order. Appending after the lock is
@@ -924,6 +940,7 @@ fn deliver(
             // Read inside the critical section above, with the same lock the
             // floor was judged under.
             hue,
+            account: post.account,
             content: post.content,
             to: post.to,
             ts: post.ts,
@@ -993,20 +1010,28 @@ fn type_into_sessions(
         .collect()
 }
 
-/// Put one webhook notice into every room an AI session is seated in, and
-/// answer how many it went into (#169).
+/// Put one notice from a local MCP server into every room an AI session is
+/// seated in, and answer how many it went into (#169).
 ///
 /// One post per room, each through `deliver` like any other: the same frame,
 /// the same fan-out, the same log, the same `room-message`. Nothing about who
 /// the event concerns is read — a notice is handed round, not sorted (#32).
 /// Each room gets its own `message_id`, because each is a post of its own room.
 ///
+/// Said as the server's account (#193): its name is the speaker, and its colour
+/// and id ride on the post the way a seat's do.
+///
 /// **No room, no post (Master 判断, 2026-09-27).** A room with only the screen
 /// in it is not written to, and the caller leaves the event unmarked, so it
 /// stays pending on the worker. A session that sits down afterwards is not
 /// handed it: the room does not push its past to a participant, and a notice
 /// is no exception.
-pub fn post_notice(app: &AppHandle, room: &RoomState, content: &str) -> usize {
+pub fn post_notice(
+    app: &AppHandle,
+    room: &RoomState,
+    speaker: &crate::config::McpSpeaker,
+    content: &str,
+) -> usize {
     let mut delivered = 0;
     for room_id in room.rooms_in_session() {
         let outcome = deliver(
@@ -1016,8 +1041,9 @@ pub fn post_notice(app: &AppHandle, room: &RoomState, content: &str) -> usize {
             &room.notice_origin,
             Post {
                 message_id: Uuid::new_v4().to_string(),
-                speaker: webhook_bridge::SPEAKER.to_string(),
-                hue: None,
+                speaker: speaker.name.clone(),
+                hue: speaker.hue,
+                account: Some(speaker.account_id.clone()),
                 content: content.to_string(),
                 to: None,
                 ts: now_iso(),
@@ -1540,6 +1566,8 @@ async fn serve_participant(
                             // A sender may name an addressee; it may not name its
                             // own colour any more than its own name.
                             hue: None,
+                            // Stamped by `deliver` too, for the same reason.
+                            account: None,
                             content: frame.content.unwrap_or_default(),
                             to: normalize_to(frame.to),
                             ts: frame.ts.unwrap_or_else(now_iso),
@@ -1886,6 +1914,7 @@ pub fn room_post(
             // it stood. Filling it here would be a second reading of the same
             // declaration.
             hue: None,
+            account: None,
             content,
             to: normalize_to(to),
             ts: now_iso(),

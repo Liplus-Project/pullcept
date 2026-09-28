@@ -29,6 +29,10 @@ interface RoomMessage {
    *  the room from the connection the post arrived on, so it is that speaker's
    *  and not whoever else currently answers to the same name. */
   hue: number | null;
+  /** The account the speaker declared, or null when they declared none. For a
+   *  notice, the account of the local MCP server that pushed it (#193): what
+   *  the fold is decided on (`foldOf`). */
+  account: string | null;
   content: string;
   to: string | null;
   ts: string;
@@ -65,6 +69,8 @@ interface MissedPost {
   /** The hue it was said in, or null when the speaker declared none. Carried
    *  so the drawn line is the line it would have been. */
   hue: number | null;
+  /** The account it was said as, for the same reason (#193). */
+  account: string | null;
   content: string;
   to: string | null;
   ts: string;
@@ -73,7 +79,7 @@ interface MissedPost {
 /**
  * One post as the room's log kept it (src-tauri/src/room_log.rs).
  *
- * Five fields, and the two a live post also carries are absent by decision
+ * Six fields, and the two a live post also carries are absent by decision
  * rather than by loss. `own` is a property of whoever is looking, so a file
  * could only have recorded one viewer's position as if it were part of the
  * utterance. `hue` was a declaration made at a seat that no longer exists by
@@ -86,6 +92,10 @@ interface MissedPost {
 interface LoggedPost {
   message_id: string;
   speaker: string;
+  /** The account it was said as. Absent when the speaker declared none, and on
+   *  every line written before the log carried it (#193). What lets a line read
+   *  back fold the way it did live (`foldOf`). */
+  account?: string;
   content: string;
   /** Absent, not null, when it was said to the room: the field's presence is
    *  what carries the two states, in the file and on the way here alike. */
@@ -209,18 +219,24 @@ interface SessionStats {
  * account the app knows nothing of the sort about: it launches, and the line is
  * the person's own. A second CLI is a third value here, not a second reading of
  * somebody's launch options.
+ *
+ * `mcp` is a local MCP server the app runs itself (#193). It speaks — what the
+ * server pushes is posted as its account — and nothing is launched under it. It
+ * is not declared on the form: the app gives one to each entry of
+ * `mcp-servers.json`, and no other kind turns into it.
  */
-type AccountKind = "admin" | "claude_code" | "cli";
+type AccountKind = "admin" | "claude_code" | "cli" | "mcp";
 
 /**
  * Whether this account launches a session.
  *
- * Every kind but `admin`: what the two launched kinds differ in is what the app
- * puts on their line, which is not this question. A person has no command under
- * them to spawn at all (#59).
+ * The two CLI kinds: what they differ in is what the app puts on their line,
+ * which is not this question. A person has no command under them to spawn at
+ * all (#59), and a local MCP server is started with the app from its entry in
+ * the file, not from a row (#193).
  */
 function launches(account: Account): boolean {
-  return account.kind !== "admin";
+  return account.kind === "claude_code" || account.kind === "cli";
 }
 
 /**
@@ -268,6 +284,10 @@ interface Account {
    *  was typed back to be sealed (`seal_account_env`). Opened only at launch,
    *  and never onto the launch line. */
   env: EnvVar[];
+  /** The entry of `mcp-servers.json` an `mcp` account answers to, by its name;
+   *  null for every other kind (#193). The account holds who speaks, the entry
+   *  what is run. */
+  server: string | null;
 }
 
 /** One stored environment variable. `sealed` is opaque here — ciphertext this
@@ -567,9 +587,8 @@ const settingsCloseEl = document.getElementById("settings-close") as HTMLButtonE
 const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
 const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
 const mcpFileErrorEl = document.getElementById("mcp-file-error") as HTMLElement;
-const mcpListEl = document.getElementById("mcp-list") as HTMLElement;
-const mcpDetailEl = document.getElementById("mcp-detail") as HTMLElement;
-const mcpNameEl = document.getElementById("mcp-name") as HTMLElement;
+const dialogMcpEl = document.getElementById("dialog-mcp") as HTMLElement;
+const dialogKindMcpEl = dialogKindEl.querySelector('option[value="mcp"]') as HTMLOptionElement;
 const mcpStateEl = document.getElementById("mcp-state") as HTMLElement;
 const mcpRestartEl = document.getElementById("mcp-restart") as HTMLButtonElement;
 const mcpStaleEl = document.getElementById("mcp-stale") as HTMLElement;
@@ -1388,26 +1407,68 @@ function roomLine(line: {
 }
 
 /**
- * The name a webhook notice is posted under (#169). The same literal as
- * `webhook_bridge::SPEAKER` on the Rust side.
+ * The name notices were posted under before they were said as an account
+ * (#169 → #193). Read, never written: a line in an older topic's log carries this
+ * name and no account, and it is folded as it was when it was said.
  */
-const WEBHOOK_SPEAKER = "webhook";
+const LEGACY_NOTICE_SPEAKER = "webhook";
+
+/**
+ * The fold a line goes into, or null for a line drawn as it stands (#169 / #193).
+ *
+ * A line said as an `mcp` account is folded: what a local MCP server says is a
+ * notice, and a run of notices is not read line by line. Decided on the account
+ * the line carries, which a live line and one read back from the log both have
+ * (`LoggedPost`) — so the two fold alike, and a rename or a second account on the
+ * same name moves nothing. The kind is this screen's list's: an account deleted
+ * since is no longer one, and its lines are drawn as they stand.
+ *
+ * Folds are one account's: a run under one server is one fold, and another
+ * server speaking starts a fold of its own. The fold is drawn in the account's
+ * colour and headed with its name as it is now, the live and the read-back alike
+ * — the account is this screen's to read, as the screen person's own is (#189).
+ */
+interface Fold {
+  key: string;
+  label: string;
+  colour: string;
+}
+
+function foldOf(speaker: string, account: string | null | undefined): Fold | null {
+  if (account) {
+    const owner = accounts.find((one) => one.id === account);
+    if (owner?.kind !== "mcp") return null;
+    return {
+      key: owner.id,
+      label: owner.name,
+      colour: speakerColor(owner.name, owner.hue, false),
+    };
+  }
+  if (speaker === LEGACY_NOTICE_SPEAKER) {
+    return {
+      key: `legacy:${speaker}`,
+      label: speaker,
+      colour: speakerColor(speaker, null, false),
+    };
+  }
+  return null;
+}
 
 /**
  * Whether a line is drawn at the right edge, as the screen person's (#185).
  *
- * Decided by the name, for the reason the webhook fold is: a line read back from
- * the log carries nothing else (see `LoggedPost`), and a live line and a read-back
- * one must land on the same side. `own` would answer the live half better — the
- * room decides it on the connection — but it has no read-back half, and a rule
- * that switched between the two would move a line from one side to the other
- * when its topic is picked again. So this is where a line sits, not who said it:
- * someone joining under this screen's name is drawn on this side too, and after
- * a rename the lines said under the old name return to the left once redrawn.
- * Colour keeps its own ladder (`speakerColor`); only the side is decided here.
+ * Decided by the name: a line read back from the log carries no `own`, and a
+ * live line and a read-back one must land on the same side. `own` would answer
+ * the live half better — the room decides it on the connection — but it has no
+ * read-back half, and a rule that switched between the two would move a line
+ * from one side to the other when its topic is picked again. So this is where a
+ * line sits, not who said it: someone joining under this screen's name is drawn
+ * on this side too, and after a rename the lines said under the old name return
+ * to the left once redrawn. Colour keeps its own ladder (`speakerColor`); only
+ * the side is decided here. A folded line is never on this side (#185).
  */
-function isMine(speaker: string): boolean {
-  return speaker !== WEBHOOK_SPEAKER && speaker === localName();
+function isMine(speaker: string, fold: Fold | null): boolean {
+  return fold === null && speaker === localName();
 }
 
 /**
@@ -1436,36 +1497,37 @@ function paintMine(): void {
 }
 
 /**
- * Put one line in the room, folding webhook notices away (#169).
+ * Put one line in the room, folding notices away (#169 / #193).
  *
- * A notice is drawn folded, and a run of them — everything under `webhook` until
- * someone else speaks — is one fold, headed with how many it holds and opened
- * by a click. The fold is the screen's alone: each notice is still its own post
- * in the room, in the log and on every session's channel, and nothing but this
- * drawing groups them.
- *
- * Decided by the name, which is all a line read back from the log carries. The
- * room seats no one under `webhook` — a notice takes no seat — so on the glass
- * the name is the notice's, unless someone joins under it by hand.
+ * A notice is drawn folded, and a run of them — everything one server says until
+ * someone else speaks — is one fold, headed with how many it holds and opened by
+ * a click. The fold is the screen's alone: each notice is still its own post in
+ * the room, in the log and on every session's channel, and nothing but this
+ * drawing groups them. Which lines fold is `foldOf`'s answer.
  */
-function placeLine(line: HTMLElement, speaker: string): void {
-  if (speaker !== WEBHOOK_SPEAKER) {
+function placeLine(line: HTMLElement, fold: Fold | null): void {
+  if (!fold) {
     roomEl.appendChild(line);
     return;
   }
   const last = roomEl.lastElementChild;
-  let fold =
-    last instanceof HTMLDetailsElement && last.classList.contains("notice-fold") ? last : null;
-  if (!fold) {
-    fold = document.createElement("details");
-    fold.className = "notice-fold";
-    fold.style.setProperty("--speaker", speakerColor(WEBHOOK_SPEAKER, null, false));
-    fold.appendChild(document.createElement("summary"));
-    roomEl.appendChild(fold);
+  let box =
+    last instanceof HTMLDetailsElement &&
+    last.classList.contains("notice-fold") &&
+    last.dataset.fold === fold.key
+      ? last
+      : null;
+  if (!box) {
+    box = document.createElement("details");
+    box.className = "notice-fold";
+    box.dataset.fold = fold.key;
+    box.style.setProperty("--speaker", fold.colour);
+    box.appendChild(document.createElement("summary"));
+    roomEl.appendChild(box);
   }
-  fold.appendChild(line);
-  const count = fold.querySelectorAll(":scope > .message").length;
-  fold.querySelector("summary")!.textContent = `${WEBHOOK_SPEAKER} ${count} 件`;
+  box.appendChild(line);
+  const count = box.querySelectorAll(":scope > .message").length;
+  box.querySelector("summary")!.textContent = `${fold.label} ${count} 件`;
 }
 
 function appendMessage(message: RoomMessage): void {
@@ -1473,20 +1535,22 @@ function appendMessage(message: RoomMessage): void {
   // back through the log is not yanked away by an arriving message.
   const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
 
+  const fold = foldOf(message.speaker, message.account);
   placeLine(
     roomLine({
       speaker: message.speaker,
       // `own` rather than a name test: the room decides self on the connection
-      // a post arrived on, which a rename cannot blur (#40).
-      colour: speakerColor(message.speaker, message.hue, message.own),
+      // a post arrived on, which a rename cannot blur (#40). A folded line takes
+      // its account's colour, so it is the colour it has when read back (#193).
+      colour: fold?.colour ?? speakerColor(message.speaker, message.hue, message.own),
       to: message.to,
       ts: message.ts,
       stamp: shortTime(message.ts),
       content: message.content,
       past: false,
-      mine: isMine(message.speaker),
+      mine: isMine(message.speaker, fold),
     }),
-    message.speaker,
+    fold,
   );
   // On the glass, so it is what this screen can declare having seen. Own posts
   // included: the room does not hold a speaker's own posts against them, and
@@ -1528,10 +1592,11 @@ function drawTopic(posts: LoggedPost[]): void {
   drawnIds.clear();
 
   for (const post of posts) {
+    const fold = foldOf(post.speaker, post.account);
     placeLine(
       roomLine({
         speaker: post.speaker,
-        colour: speakerColor(post.speaker, null, false),
+        colour: fold?.colour ?? speakerColor(post.speaker, null, false),
         to: post.to ?? null,
         ts: post.ts,
         // The day as well as the clock. A topic spans days, and a bare 14:32
@@ -1539,9 +1604,9 @@ function drawTopic(posts: LoggedPost[]): void {
         stamp: shortDateTime(post.ts),
         content: post.content,
         past: true,
-        mine: isMine(post.speaker),
+        mine: isMine(post.speaker, fold),
       }),
-      post.speaker,
+      fold,
     );
     drawnIds.add(post.message_id);
   }
@@ -2025,6 +2090,7 @@ function drawMissed(missed: MissedPost[]): number {
       message_id: one.message_id,
       speaker: one.speaker,
       hue: one.hue,
+      account: one.account,
       content: one.content,
       to: one.to,
       ts: one.ts,
@@ -2064,6 +2130,9 @@ const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
   // the split — the second heading appears when a second kind does.
   { kind: "claude_code", label: "Claude Code" },
   { kind: "cli", label: "CLI" },
+  // Under the AI accounts, as a heading of its own (#193, Master 判断
+  // 2026-09-28). A server speaks and launches nothing, so it is not one of them.
+  { kind: "mcp", label: "MCP" },
   // Not a kind: the absence of one. A connection carrying no account has
   // declared nothing, and inferring a kind from how it arrived is the mistake
   // the declaration exists to avoid (#59).
@@ -2318,11 +2387,16 @@ function memberRow(row: Member): HTMLLIElement {
   // This topic's terminal for the account. The same account may be running in
   // another topic too, and that session is that topic's row (#141).
   const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
+  // The server an `mcp` account is. It takes no seat, so what says it is here
+  // is the server running, not the roster (#193).
+  const server = row.account?.kind === "mcp" ? mcpServerOf(row.account) : null;
 
   const entry = document.createElement("li");
   entry.className = "member";
   entry.style.setProperty("--speaker", speakerColor(name, hue, own));
-  if (!row.participant) entry.classList.add("offline");
+  if (!row.participant && server?.view?.state?.state !== "running") {
+    entry.classList.add("offline");
+  }
 
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -2351,8 +2425,13 @@ function memberRow(row: Member): HTMLLIElement {
   // measured are untouched.
   let noteText = "";
   let noteKind = "";
+  let noteTitle = failure ?? "";
   if (own) noteText = "（あなた）";
-  else if (launching) noteText = "起動中";
+  else if (server) {
+    // A server says where its run is, on the note the sessions' words are on.
+    // Running says nothing, the way a session in the room says nothing (#82).
+    ({ text: noteText, kind: noteKind, title: noteTitle } = mcpNote(server.view));
+  } else if (launching) noteText = "起動中";
   else if (row.participant) {
     noteText = activityNote(name, view);
     // 待機 and 制限中 both stand where an utterance has ended, so both stay the
@@ -2424,8 +2503,9 @@ function memberRow(row: Member): HTMLLIElement {
     note.textContent = noteText;
     if (noteKind) note.dataset.kind = noteKind;
     // The app's own reason, on the row carrying the word. The status line has
-    // it in full; this is so a row saying 起動失敗 is not a dead end.
-    if (failure) note.title = failure;
+    // it in full; this is so a row saying 起動失敗 is not a dead end. A server's
+    // is the detail its run ended on; the whole log is in its window.
+    if (noteTitle) note.title = noteTitle;
     pick.appendChild(note);
   }
   entry.appendChild(pick);
@@ -2829,6 +2909,7 @@ function resolveLocalAccount(): void {
       resume_command: null,
       // Nothing is launched under a person, so nothing has an environment.
       env: [],
+      server: null,
     };
     accounts.push(account);
     saveConfig();
@@ -3790,9 +3871,17 @@ function disarmDelete(): void {
  */
 function showDialogKind(): void {
   const kind = dialogKindEl.value as AccountKind;
-  dialogLaunchEl.hidden = kind === "admin";
+  // A server launches nothing either; what it is started with is its entry in
+  // the file, and that is the section below rather than these fields (#193).
+  dialogLaunchEl.hidden = !launchesKind(kind);
+  dialogMcpEl.hidden = kind !== "mcp";
   dialogResumeFieldEl.hidden = kind !== "cli";
-  if (kind !== "admin") refreshDialogLine();
+  if (launchesKind(kind)) refreshDialogLine();
+}
+
+/** `launches`, for a kind the form holds rather than an account. */
+function launchesKind(kind: AccountKind): boolean {
+  return kind === "claude_code" || kind === "cli";
 }
 
 /**
@@ -3866,7 +3955,7 @@ const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
  */
 async function refreshDialogNotice(): Promise<void> {
   const kind = dialogKindEl.value as AccountKind;
-  if (!draft || kind === "admin") {
+  if (!draft || !launchesKind(kind)) {
     dialogNoticeEl.textContent = "";
     return;
   }
@@ -3964,11 +4053,22 @@ function openAccountDialog(account: Account | null): void {
         resume_command: null,
         // Nothing added to the environment until someone writes a line (#163).
         env: [],
+        // Not a server: `mcp` is not a kind this form makes (#193).
+        server: null,
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
   dialogNameEl.value = draft.name;
+  // `mcp` is shown on its own account's form and offered on no other, and the
+  // form it is shown on cannot change it (#193): the account answers to an entry
+  // in the file, and the kinds either side of it launch.
+  const server = draft.kind === "mcp";
+  dialogKindMcpEl.hidden = !server;
+  dialogKindMcpEl.disabled = !server;
+  dialogKindEl.disabled = server;
   dialogKindEl.value = draft.kind;
+  mcpDrawn = null;
+  mcpErrorEl.textContent = "";
   dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
@@ -3985,6 +4085,13 @@ function openAccountDialog(account: Account | null): void {
   dialogEl.showModal();
   dialogNameEl.focus();
   dialogNameEl.select();
+  if (server) {
+    // What was last read, at once, and then read again: the log may have moved
+    // while the form was closed. The tail is where a log is read from.
+    drawDialogMcp();
+    mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
+    void refreshMcpServers();
+  }
 }
 
 /**
@@ -4038,6 +4145,29 @@ async function commitAccountDialog(): Promise<boolean> {
   }
 
   const kind = dialogKindEl.value as AccountKind;
+  // A server's account is a name and a colour over an entry in the file, and the
+  // entry is the section below the form's fields (#193). Nothing else here
+  // applies to it, and no other kind becomes it or stops being it.
+  if (kind === "mcp" || target?.kind === "mcp") {
+    if (!target || target.kind !== "mcp" || kind !== "mcp") {
+      dialogError("MCP サーバのアカウントの種別は変えられません。");
+      return false;
+    }
+    // An edit to the server not yet saved is saved with the rest, rather than
+    // lost to the form closing over it. A field that will not save keeps the
+    // form open on its reason.
+    if (mcpFieldsEdited() && !(await saveMcpServer())) {
+      dialogError("サーバの設定を保存できませんでした。");
+      return false;
+    }
+    const settled: Account = { ...settling, name, hue: declaredHue(dialogHueEl) };
+    const at = accounts.findIndex((one) => one.id === target.id);
+    if (at >= 0) accounts[at] = settled;
+    saveConfig();
+    renderPanel();
+    status(`アカウント「${settled.name}」を保存しました。`);
+    return true;
+  }
   // A running account cannot change kind. Its session is in the room under this
   // account, and turning it into a person would drop the working directory and
   // options that session was launched from while it is still running.
@@ -4163,6 +4293,25 @@ function deleteFromDialog(): void {
     disarmDelete();
     return;
   }
+  // A server's account goes with its entry, not before it (#193). While the file
+  // lists the server the account is what the server speaks as, and the next read
+  // of the config would only give the entry an account again; while the server
+  // is running, it is still speaking as this one.
+  if (account.kind === "mcp") {
+    const view = mcpServerOf(account).view;
+    if (view?.listed) {
+      dialogError(
+        `このアカウントは設定ファイルのサーバ「${account.server}」です。削除するには、先に設定ファイルからそのサーバを消してください。`,
+      );
+      disarmDelete();
+      return;
+    }
+    if (view?.state?.state === "starting" || view?.state?.state === "running") {
+      dialogError("サーバが動いています。先に停止してください。");
+      disarmDelete();
+      return;
+    }
+  }
   if (!deleteArmed) {
     deleteArmed = true;
     dialogDeleteEl.textContent = "本当に削除";
@@ -4218,12 +4367,18 @@ function terminalTheme(): { background: string; foreground: string } {
   };
 }
 
-// ── settings: the app's own MCP servers (#172) ──────────────────────────────
+// ── the local MCP servers, as accounts (#172 / #193) ───────────────────────
 //
-// What src-tauri/src/app_mcp.rs hands the panel. The file is read on that side
+// What src-tauri/src/app_mcp.rs hands the screen. The file is read on that side
 // and so is the text of the three fields: this screen draws what it is given
 // and hands back what was typed, so the reading of `NAME=value` has one
 // implementation, and it is the tested one (`crates/mcp-servers`).
+//
+// Each server is an account of kind `mcp` (#193). Its row in the participant
+// list says where its run is, and its window — the account form — holds what
+// the settings menu held until then: the server's state, what it is started
+// with, its log and the file. The view below is read for both, and read again
+// whenever a server moves.
 
 /** Where one run of a server is. `null` when this app run has not started it. */
 type McpRunState =
@@ -4261,11 +4416,52 @@ interface McpPanelView {
   servers: McpServerView[];
 }
 
-/** The server the panel has open, by name. */
-let mcpSelected: string | null = null;
+/** The servers as last read, or null before the first read answered. */
+let mcpPanel: McpPanelView | null = null;
+/** A read is on its way, and another was asked for while it was. */
+let mcpReading = false;
+let mcpReadAgain = false;
 /** The fields as last drawn from the file, to tell an edit from what is saved.
  *  A refresh redraws state and log under an edit, never the edit itself. */
 let mcpDrawn: { name: string; command: string; args: string; env: string } | null = null;
+
+/**
+ * The server an `mcp` account answers to, as last read.
+ *
+ * `view` is undefined when the file lists no entry of that name and this run
+ * has not run one under it: the account outlived its entry, and says so.
+ */
+function mcpServerOf(account: Account): { name: string; view: McpServerView | undefined } {
+  const name = account.server ?? "";
+  return { name, view: mcpPanel?.servers.find((server) => server.name === name) };
+}
+
+/**
+ * What an `mcp` account's row says about its server (#193).
+ *
+ * The words the session rows use where they mean the same thing — 起動中,
+ * 終了, 起動失敗, 未起動 — so one list does not say one state two ways. Running
+ * says nothing, as a session in the room says nothing (#82). 停止 is a run
+ * ended by hand, and 未登録 an account whose entry is gone from the file. Each
+ * fits the width 起動失敗 already takes (#71).
+ */
+function mcpNote(view: McpServerView | undefined): { text: string; kind: string; title: string } {
+  if (!view) return { text: "未登録", kind: "", title: "設定ファイルにこのサーバはありません。" };
+  const state = view.state;
+  if (!state) return { text: view.listed ? "未起動" : "未登録", kind: "", title: "" };
+  switch (state.state) {
+    case "starting":
+      return { text: "起動中", kind: "", title: "" };
+    case "running":
+      return { text: "", kind: "", title: "" };
+    case "ended":
+      return { text: "終了", kind: "", title: state.detail };
+    case "failed":
+      return { text: "起動失敗", kind: "error", title: state.detail };
+    case "stopped":
+      return { text: "停止", kind: "", title: "" };
+  }
+}
 
 function mcpStateText(state: McpRunState | null): string {
   if (!state) return "未起動";
@@ -4291,8 +4487,15 @@ function mcpStateKind(state: McpRunState | null): string {
   return "";
 }
 
+/** The server the account form is open on, or null when it is on no `mcp`
+ *  account. */
+function dialogServer(): string | null {
+  return draft?.kind === "mcp" ? draft.server : null;
+}
+
 function mcpFieldsEdited(): boolean {
-  if (!mcpDrawn || mcpDrawn.name !== mcpSelected) return false;
+  const name = dialogServer();
+  if (!mcpDrawn || name === null || mcpDrawn.name !== name) return false;
   return (
     mcpCommandEl.value !== mcpDrawn.command ||
     mcpArgsEl.value !== mcpDrawn.args ||
@@ -4310,73 +4513,83 @@ function mcpLogText(lines: McpLogLine[]): string {
 }
 
 /**
- * Read the panel again and draw it.
- *
- * Called on opening, after each act, and on every `mcp-servers-changed` while
- * the dialog is open. The fields are redrawn only when they hold what was last
- * drawn into them: a log line arriving while someone types is not a reason to
- * take what they typed away.
+ * What the rows read off the servers: the note each would draw. Compared before
+ * and after a read, so a log line — which moves no row — does not redraw the
+ * participant list under the person using it.
  */
-async function refreshMcpPanel(): Promise<void> {
-  let view: McpPanelView;
-  try {
-    view = await invoke<McpPanelView>("mcp_servers");
-  } catch (err) {
-    mcpFileErrorEl.textContent = String(err);
+function mcpRowSignature(): string {
+  return accounts
+    .filter((account) => account.kind === "mcp")
+    .map((account) => `${account.id}:${mcpNote(mcpServerOf(account).view).text}`)
+    .join("\n");
+}
+
+/**
+ * Read the servers again: the rows, and the account form when it is open on
+ * one of them.
+ *
+ * Called once at startup, after each act, and on every `mcp-servers-changed`.
+ * A read asked for while one is on its way is folded into one more after it, so
+ * a burst of log lines is not a burst of reads.
+ */
+async function refreshMcpServers(): Promise<void> {
+  if (mcpReading) {
+    mcpReadAgain = true;
     return;
   }
-  mcpFileEl.textContent = view.file;
-  mcpFileErrorEl.textContent = view.error ?? "";
-
-  if (!view.servers.some((server) => server.name === mcpSelected)) {
-    mcpSelected = view.servers[0]?.name ?? null;
+  mcpReading = true;
+  try {
+    do {
+      mcpReadAgain = false;
+      const before = mcpRowSignature();
+      try {
+        mcpPanel = await invoke<McpPanelView>("mcp_servers");
+      } catch (err) {
+        mcpFileErrorEl.textContent = String(err);
+        continue;
+      }
+      if (mcpRowSignature() !== before) renderPanel();
+      drawDialogMcp();
+    } while (mcpReadAgain);
+  } finally {
+    mcpReading = false;
   }
+}
 
-  mcpListEl.replaceChildren(
-    ...view.servers.map((server) => {
-      const item = document.createElement("li");
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "mcp-row";
-      if (server.name === mcpSelected) button.setAttribute("aria-current", "true");
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = server.name;
-      const state = document.createElement("span");
-      state.className = "state";
-      state.textContent = mcpStateText(server.state);
-      state.dataset.kind = mcpStateKind(server.state);
-      button.append(name, state);
-      button.addEventListener("click", () => {
-        if (server.name === mcpSelected) return;
-        mcpSelected = server.name;
-        mcpDrawn = null;
-        mcpErrorEl.textContent = "";
-        void refreshMcpPanel();
-      });
-      item.append(button);
-      return item;
-    }),
-  );
+/**
+ * Draw the account form's server section from the last read (#193).
+ *
+ * The fields are redrawn only when they hold what was last drawn into them: a
+ * log line arriving while someone types is not a reason to take what they typed
+ * away.
+ */
+function drawDialogMcp(): void {
+  const name = dialogServer();
+  if (name === null || !dialogEl.open) return;
+  const panel = mcpPanel;
+  mcpFileEl.textContent = panel?.file ?? "";
+  mcpFileErrorEl.textContent = panel?.error ?? "";
+  const server = panel?.servers.find((each) => each.name === name);
 
-  const server = view.servers.find((each) => each.name === mcpSelected);
-  mcpDetailEl.hidden = !server;
-  if (!server) return;
-
-  mcpNameEl.textContent = server.name;
-  mcpStateEl.textContent = mcpStateText(server.state);
-  mcpStateEl.dataset.kind = mcpStateKind(server.state);
+  mcpStateEl.textContent = server ? mcpStateText(server.state) : "未登録";
+  mcpStateEl.dataset.kind = server ? mcpStateKind(server.state) : "";
   // One button, named for what it will do: start what has not run, start again
-  // what has, and stop what the file no longer lists.
-  mcpRestartEl.textContent = !server.listed ? "停止" : server.state ? "再起動" : "起動";
-  mcpStaleEl.textContent = !server.listed
-    ? "設定ファイルにこのサーバはありません。停止しても、一覧から消えるのはアプリを起動し直したときです。"
-    : server.stale
-      ? "保存した設定は、再起動するまで反映されません。"
-      : "";
+  // what has, and stop what the file no longer lists. Nothing to do for an entry
+  // that is neither listed nor running.
+  mcpRestartEl.hidden = !server;
+  if (server) {
+    mcpRestartEl.textContent = !server.listed ? "停止" : server.state ? "再起動" : "起動";
+  }
+  mcpStaleEl.textContent = !server
+    ? `設定ファイルにサーバ「${name}」はありません。このアカウントは、そのサーバが部屋で言ったことの話し手として残っています。`
+    : !server.listed
+      ? "設定ファイルにこのサーバはありません。停止しても、一覧から消えるのはアプリを起動し直したときです。"
+      : server.stale
+        ? "保存した設定は、再起動するまで反映されません。"
+        : "";
 
-  mcpFieldsEl.hidden = !server.listed;
-  if (!mcpFieldsEdited()) {
+  mcpFieldsEl.hidden = !server?.listed;
+  if (server?.listed && !mcpFieldsEdited()) {
     mcpCommandEl.value = server.command;
     mcpArgsEl.value = server.args;
     mcpEnvEl.value = server.env;
@@ -4386,56 +4599,51 @@ async function refreshMcpPanel(): Promise<void> {
   // Follow the tail while it is being followed: a log scrolled back up to read
   // is left where it was put.
   const following = mcpLogEl.scrollTop + mcpLogEl.clientHeight >= mcpLogEl.scrollHeight - 4;
-  mcpLogEl.textContent = server.log.length ? mcpLogText(server.log) : "（まだ何も出ていません）";
+  mcpLogEl.textContent = server?.log.length ? mcpLogText(server.log) : "（まだ何も出ていません）";
   if (following) mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
 }
 
-async function openSettings(): Promise<void> {
-  mcpDrawn = null;
-  mcpErrorEl.textContent = "";
-  if (!settingsDialogEl.open) settingsDialogEl.showModal();
-  await refreshMcpPanel();
-  mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
-}
-
 /** Write the open server's fields into the file. The running server is left as
- *  it is; the panel then says the two differ until 再起動. */
-async function saveMcpServer(): Promise<void> {
-  if (!mcpSelected) return;
+ *  it is; the section then says the two differ until 再起動. */
+async function saveMcpServer(): Promise<boolean> {
+  const name = dialogServer();
+  if (name === null) return false;
   mcpErrorEl.textContent = "";
   try {
     await invoke("save_mcp_server", {
-      name: mcpSelected,
+      name,
       command: mcpCommandEl.value,
       args: mcpArgsEl.value,
       env: mcpEnvEl.value,
     });
   } catch (err) {
     mcpErrorEl.textContent = String(err);
-    return;
+    return false;
   }
   // Drawn again from the file, so what the fields hold is what was stored —
   // blank lines dropped, quotes taken off — rather than what was typed.
   mcpDrawn = null;
-  await refreshMcpPanel();
+  await refreshMcpServers();
+  return true;
 }
 
 /** Start the open server again from what the file holds. A field typed into
  *  and not saved is not what starts, so an unsaved edit is said instead. */
 async function restartMcpServer(): Promise<void> {
-  if (!mcpSelected) return;
+  const name = dialogServer();
+  if (name === null) return;
   if (mcpFieldsEdited()) {
     mcpErrorEl.textContent = "保存していない変更があります。先に保存してください。";
     return;
   }
   mcpErrorEl.textContent = "";
   try {
-    await invoke("restart_mcp_server", { name: mcpSelected });
+    await invoke("restart_mcp_server", { name });
   } catch (err) {
     mcpErrorEl.textContent = String(err);
     return;
   }
-  await refreshMcpPanel();
+  await refreshMcpServers();
 }
 
 async function openMcpServersFile(): Promise<void> {
@@ -4597,16 +4805,21 @@ async function main(): Promise<void> {
 
   // ── settings (#172) ─────────────────────────────────────────────────────────
   //
-  // The panel is read again whenever a server moves — a state, a log line —
-  // and only while it is open: a closed panel is read afresh when it opens.
-  openSettingsEl.addEventListener("click", () => void openSettings());
+  // Empty for now: its one section moved into the window of each server's
+  // account (#193), and #194 is what fills it again.
+  openSettingsEl.addEventListener("click", () => {
+    if (!settingsDialogEl.open) settingsDialogEl.showModal();
+  });
   settingsCloseEl.addEventListener("click", () => settingsDialogEl.close());
+
+  // ── the local MCP servers (#172 / #193) ─────────────────────────────────────
+  //
+  // Read again whenever a server moves — a state, a log line — whether or not a
+  // window is open: each server's row says where its run is.
   mcpOpenFileEl.addEventListener("click", () => void openMcpServersFile());
   mcpSaveEl.addEventListener("click", () => void saveMcpServer());
   mcpRestartEl.addEventListener("click", () => void restartMcpServer());
-  await listen<string>("mcp-servers-changed", () => {
-    if (settingsDialogEl.open) void refreshMcpPanel();
-  });
+  await listen<string>("mcp-servers-changed", () => void refreshMcpServers());
 
   // The one thing that draws a topic boundary, and the head of the list it
   // appears in (#125, 決定1). `renderTopics` is what draws it as picked; this is
@@ -4667,6 +4880,7 @@ async function main(): Promise<void> {
   dialogEl.addEventListener("close", () => {
     editing = null;
     draft = null;
+    mcpDrawn = null;
     disarmDelete();
   });
   dialogFormEl.addEventListener("submit", (event) => {
@@ -4715,6 +4929,10 @@ async function main(): Promise<void> {
   } catch (err) {
     status(`設定を読み込めませんでした: ${err}`, "error");
   }
+  // Where each server's run is, for its row (#193). After the accounts, which
+  // are what the rows are; the rows are drawn before this answers and say 未起動
+  // until it does.
+  void refreshMcpServers();
 
   // The topics, read once. Outside the room's try below and independent of it:
   // the index is a file this app wrote, so a room that never answers is no

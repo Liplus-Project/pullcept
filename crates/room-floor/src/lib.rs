@@ -57,6 +57,14 @@ pub struct Post {
     /// then. It is what lets a refusal hand a missed post back in the colour it
     /// was said in (#108).
     pub hue: Option<f64>,
+    /// The account the speaker declared, or `None` when they declared none.
+    ///
+    /// Stamped by the caller the way `hue` is, and for the same reason: who
+    /// said it is attribution, which a sender never supplies about itself. It
+    /// is carried and never judged on — the floor keys on the connection, and
+    /// an account id is not an identity here (#59). What reads it is the
+    /// screen, which draws a post from an `mcp` account folded (#193).
+    pub account: Option<String>,
     pub content: String,
     pub to: Option<String>,
     pub ts: String,
@@ -75,6 +83,9 @@ pub struct Missed {
     /// screen draw this post as the line it would have been, rather than as a
     /// line in some other colour (#108).
     pub hue: Option<f64>,
+    /// The account it was said as, carried straight from the post, so a line
+    /// drawn from a refusal is drawn as the line it would have been (#193).
+    pub account: Option<String>,
     pub content: String,
     pub to: Option<String>,
     pub ts: String,
@@ -181,6 +192,7 @@ impl Floor {
                 message_id: entry.post.message_id.clone(),
                 speaker: entry.post.speaker.clone(),
                 hue: entry.post.hue,
+                account: entry.post.account.clone(),
                 content: entry.post.content.clone(),
                 to: entry.post.to.clone(),
                 ts: entry.post.ts.clone(),
@@ -228,6 +240,7 @@ mod tests {
             message_id: message_id.to_string(),
             speaker: speaker.to_string(),
             hue: None,
+            account: None,
             content: content.to_string(),
             to: None,
             ts: "2026-08-23T00:00:00.000Z".to_string(),
@@ -378,6 +391,21 @@ mod tests {
         let missed = refusal(&admission);
         assert_eq!(missed.len(), 1);
         assert_eq!(missed[0].hue, Some(275.0));
+    }
+
+    #[test]
+    fn the_refusal_hands_a_post_back_with_the_account_it_was_said_as() {
+        let mut floor = Floor::new();
+        let mut notice = post("m-1", "github-webhook-mcp", "[issues] opened");
+        notice.account = Some("mcp-github-webhook-mcp".to_string());
+        floor.admit("notice", 0, None, notice);
+
+        // The screen folds a line by the kind of the account it was said as,
+        // and a line drawn from a refusal has to fold the way the live one
+        // would have (#193).
+        let admission = floor.admit("lin", 0, None, post("m-2", "Claude Lin", "答えます"));
+        let missed = refusal(&admission);
+        assert_eq!(missed[0].account.as_deref(), Some("mcp-github-webhook-mcp"));
     }
 
     #[test]

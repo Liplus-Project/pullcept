@@ -50,8 +50,16 @@
 //! one topic the first time the index is built. It is moved, not copied and not
 //! dropped (#115, decision 8), and the scan above is what gives it its entry.
 //!
-//! One line is one post, and it carries the five fields a post is:
-//! `message_id` / `speaker` / `content` / `to` / `ts`.
+//! One line is one post, and it carries the six fields a post is:
+//! `message_id` / `speaker` / `account` / `content` / `to` / `ts`. `account` is
+//! written only when the speaker declared one, as `to` is only when there is an
+//! addressee, and a line from before it existed reads as declaring none.
+//!
+//! `account` is among them because it is who spoke, the way `speaker` is (#193).
+//! What the screen folds is a line said as an `mcp` account, and a line read back
+//! has to fold the way it did live; the name cannot carry that, because a name is
+//! edited and may collide. It is not an identity here any more than it is on the
+//! seat (#59): nothing reading the log decides who is who by it.
 //!
 //! `hue` is not among them. It is a declaration the speaker made at the moment
 //! of joining, and the seat that held it is gone by the time this file is read
@@ -116,7 +124,7 @@ const TOPICS_EVENT: &str = "room-topics";
 /// failed to resume.
 static INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// The five fields of a post, taken off the post itself.
+/// The six fields of a post, taken off the post itself.
 ///
 /// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as well,
 /// and a derive would put it in the file. What is dropped here is dropped on
@@ -128,6 +136,7 @@ fn logged(post: &Post) -> LoggedPost {
     LoggedPost {
         message_id: post.message_id.clone(),
         speaker: post.speaker.clone(),
+        account: post.account.clone(),
         content: post.content.clone(),
         to: post.to.clone(),
         ts: post.ts.clone(),

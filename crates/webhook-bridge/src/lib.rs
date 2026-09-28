@@ -14,13 +14,6 @@
 
 use serde_json::{json, Value};
 
-/// The name a webhook notice is posted under.
-///
-/// A name, like every speaker in the room, and not a participant class. The
-/// screen folds the lines under it (#169), and it does so by this name; nothing
-/// in the room branches on it.
-pub const SPEAKER: &str = "webhook";
-
 /// The id of the `initialize` request. The one request the app sends before
 /// anything else, so its answer is the one that opens the session.
 pub const INITIALIZE_ID: u64 = 1;

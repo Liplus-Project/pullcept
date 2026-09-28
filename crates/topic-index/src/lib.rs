@@ -46,13 +46,18 @@ const TITLE_CHARS: usize = 40;
 
 /// One post, as the log holds it.
 ///
-/// The same five fields going in and coming out. `hue` and `own` are not among
-/// them, and why each is absent is written down where the mapping from a post
-/// is made (`src-tauri/src/room_log.rs`).
+/// The same six fields going in and coming out. `hue` and `own` are not among
+/// them, and why each is absent — and why `account` is not — is written down
+/// where the mapping from a post is made (`src-tauri/src/room_log.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggedPost {
     pub message_id: String,
     pub speaker: String,
+    /// The account the speaker declared, or absent when they declared none.
+    /// Omitted rather than written as null, as `to` is; a line written before
+    /// this field existed reads as declaring none (#193).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub content: String,
     /// The participant this was addressed to, or absent when it was said to the
     /// room. Omitted rather than written as null, so the two states are the
@@ -405,6 +410,7 @@ mod tests {
         let post = LoggedPost {
             message_id: Uuid::new_v4().to_string(),
             speaker: "Lin".to_string(),
+            account: None,
             content: content.to_string(),
             to: None,
             ts: ts.to_string(),
@@ -627,5 +633,27 @@ mod tests {
         let (posts, skipped) = read_posts(&path);
         assert_eq!(posts.len(), 1);
         assert_eq!(skipped, 1);
+    }
+
+    /// A line written before `account` existed carries none, and reads as
+    /// declaring none; a line carrying one hands it back. A line with none is
+    /// written without the key, the way `to` is (#193).
+    #[test]
+    fn the_account_is_read_back_when_written_and_absent_when_not() {
+        let scratch = Scratch::new();
+        let path = scratch.path().join("t.jsonl");
+        let before = r#"{"message_id":"a","speaker":"webhook","content":"x","ts":"2026-09-27T00:00:00Z"}"#;
+        let after = r#"{"message_id":"b","speaker":"github-webhook-mcp","account":"mcp-github-webhook-mcp","content":"y","ts":"2026-09-28T00:00:00Z"}"#;
+        std::fs::write(&path, format!("{before}
+{after}
+")).expect("write");
+
+        let (posts, skipped) = read_posts(&path);
+        assert_eq!(skipped, 0);
+        assert_eq!(posts[0].account, None);
+        assert_eq!(posts[1].account.as_deref(), Some("mcp-github-webhook-mcp"));
+
+        let line = serde_json::to_string(&posts[0]).expect("serialize");
+        assert!(!line.contains("account"), "{line}");
     }
 }
