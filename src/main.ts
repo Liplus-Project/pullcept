@@ -3036,33 +3036,13 @@ function resolveLocalAccount(): void {
   paintMine();
 }
 
-/**
- * One addressee picked in the composer with `@` (#204).
- *
- * Bound when it is picked, to the participant it was picked as, and never read
- * back out of the text at send. A name can hold a space (`Claude Lay`), and a
- * participant can be renamed between the pick and the send: reading `@…` off
- * the text would have to guess where a name ends, and after a rename it would
- * address a name nobody answers to any more.
- *
- * The text is looked at for one thing only — whether the `@名前` the pick put
- * there is still there. A pick the person has deleted from what they are
- * sending is not an addressee of it.
+/*
+ * The list `@` opens in the composer (#204) is an aid to typing and nothing
+ * more. What addresses a post is the `@名前` in its text: the room reads those
+ * against the names it holds, moves each one that names someone into `to`, and
+ * takes it out of the text (#206). A name typed out by hand addresses as a
+ * picked one does.
  */
-interface Mention {
-  /** What the pick put into the text: `@` and the name as it was then. */
-  token: string;
-  /** The participant it was picked as. The account when they joined with one —
-   *  a session that reconnects is a new connection under the same account — and
-   *  the connection otherwise. */
-  account: string | null;
-  id: string;
-  /** The name when picked, for a participant no longer in the room at send. */
-  name: string;
-}
-
-/** The addressees picked into what is in the composer now. */
-let mentions: Mention[] = [];
 
 /** Who the open list offers, and which of them the keys are on. */
 let mentionCandidates: Participant[] = [];
@@ -3175,7 +3155,7 @@ function renderMentions(): void {
 }
 
 /**
- * Put a candidate into the text as `@名前`, and bind it.
+ * Put a candidate into the text as `@名前`.
  *
  * What was typed after the `@` is replaced by the whole name and a space, so the
  * next word does not run into it.
@@ -3183,10 +3163,8 @@ function renderMentions(): void {
 function pickMention(at: number): void {
   const one = mentionCandidates[at];
   if (!one || mentionAt < 0) return;
-  const token = `@${one.name}`;
   const caret = inputEl.selectionStart;
-  inputEl.setRangeText(`${token} `, mentionAt, caret, "end");
-  mentions.push({ token, account: one.account, id: one.id, name: one.name });
+  inputEl.setRangeText(`@${one.name} `, mentionAt, caret, "end");
   closeMentions();
 }
 
@@ -3225,36 +3203,6 @@ function mentionKey(event: KeyboardEvent): boolean {
   return true;
 }
 
-/** Drop the picks whose `@名前` is no longer in the text: they were deleted. */
-function pruneMentions(): void {
-  const text = inputEl.value;
-  mentions = mentions.filter((one) => text.includes(one.token));
-}
-
-/**
- * The names `content` is addressed to: each pick still in it, under the name its
- * participant answers to now, each once, in the order they were picked. Empty
- * is the room as a whole.
- *
- * A participant renamed since the pick is addressed under the new name — the
- * name the room will match them by. One who has left the room keeps the name
- * they were picked under, the way a post to them would have read when it was
- * written.
- */
-function pickedAddressees(content: string): string[] {
-  const roster = shownRoster().filter((one) => !one.own);
-  const names: string[] = [];
-  for (const one of mentions) {
-    if (!content.includes(one.token)) continue;
-    const now = roster.find((seat) =>
-      one.account !== null ? seat.account === one.account : seat.id === one.id,
-    );
-    const name = now?.name ?? one.name;
-    if (!names.includes(name)) names.push(name);
-  }
-  return names;
-}
-
 async function send(): Promise<void> {
   const content = inputEl.value.trim();
   if (!content) return;
@@ -3264,24 +3212,20 @@ async function send(): Promise<void> {
   // watermark below belongs to. Read now, not after the round trip: the post is
   // said where it was written (#141).
   const topicId = shownTopicId();
-  // Empty means the room as a whole. The app still delivers to everyone; the
+  // No addressee is sent beside the text: the `@名前` in it are the addressees,
+  // and the room reads them out (#206). The app still delivers to everyone;
   // addressees are judgment material for the participants, not a delivery
-  // filter. The picks go with the text: a refused or failed post gives both
-  // back together.
-  const picked = mentions;
-  const to = pickedAddressees(content);
+  // filter.
   // Read before the await: what the screen had drawn when this was sent is the
   // watermark, and an arrival during the round trip must not be folded into it.
   const lastSeen = lastSeenId;
   inputEl.value = "";
-  mentions = [];
   closeMentions();
   try {
     const outcome = await invoke<PostOutcome>("room_post", {
       topicId,
       speaker,
       content,
-      to,
       lastSeen,
     });
     if (!outcome.delivered) {
@@ -3290,7 +3234,6 @@ async function send(): Promise<void> {
       // unchanged, except that what it says to read is now there to read. The
       // reading is left where it belongs; only the means of doing it is added.
       inputEl.value = content;
-      mentions = picked;
       // Drawn only into the conversation they belong to. A topic opened during
       // the round trip is another conversation, and it has drawn its own log.
       const drew = topicId === shownTopicId() ? drawMissed(outcome.missed) : 0;
@@ -3311,7 +3254,6 @@ async function send(): Promise<void> {
   } catch (err) {
     // Put the text back rather than losing what was typed.
     inputEl.value = content;
-    mentions = picked;
     status(`発言を送れませんでした: ${err}`, "error");
   }
 }
@@ -5247,10 +5189,7 @@ async function main(): Promise<void> {
   });
   // `@` opens the list of who can be addressed (#204). It follows the caret,
   // so a click or an arrow key that moves it off the `@` shuts it.
-  inputEl.addEventListener("input", () => {
-    pruneMentions();
-    refreshMentions();
-  });
+  inputEl.addEventListener("input", () => refreshMentions());
   inputEl.addEventListener("click", () => refreshMentions());
   inputEl.addEventListener("keyup", (event) => {
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {

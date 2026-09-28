@@ -116,9 +116,11 @@ const ROLE = [
 
 // Who a post is for. `to` is a list since #204 — one name or several — so the
 // manners have to say that a post is this session's when its name is among
-// them, not when it is the one name there; and the `@名前` a composer leaves in
-// the body is text, since the label is the only thing that addresses. Asserted
-// whole: the clause that says "not yours, stay quiet" is the tail.
+// them, not when it is the one name there; that an `@…` left in a body it
+// receives is text, since the label is the only thing that addresses; and that
+// an `@名前` of a participant in a body it sends addresses them and leaves the
+// body, since the room moves it into `to` (#206). Asserted whole: the clause
+// that says "not yours, stay quiet" is the tail.
 const ADDRESSING = [
   "宛先:",
   "- 発言には宛先（to）が付くことがあります。to は名前の並びで、一人のことも",
@@ -130,8 +132,9 @@ const ADDRESSING = [
   "- 宛先を決めるのは札の to だけです。本文に @名前 が書かれていても、それは",
   "  本文です。",
   "- say_to_room の to 引数で、こちらからも宛先を指定できます。名前一つでも、",
-  "  名前の並びでも渡せます。宛先には人間の参加者も指定できます。指定の仕方は",
-  "  相手によって変わりません。",
+  "  名前の並びでも渡せます。本文に部屋の参加者の @名前 を書いても宛先になり、",
+  "  その @名前 は本文から除かれます。宛先には人間の参加者も指定できます。",
+  "  指定の仕方は相手によって変わりません。",
 ].join("\n");
 
 const REPLY = [

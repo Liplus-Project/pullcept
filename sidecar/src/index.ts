@@ -327,8 +327,9 @@ const INSTRUCTIONS = [
   "- 宛先を決めるのは札の to だけです。本文に @名前 が書かれていても、それは",
   "  本文です。",
   "- say_to_room の to 引数で、こちらからも宛先を指定できます。名前一つでも、",
-  "  名前の並びでも渡せます。宛先には人間の参加者も指定できます。指定の仕方は",
-  "  相手によって変わりません。",
+  "  名前の並びでも渡せます。本文に部屋の参加者の @名前 を書いても宛先になり、",
+  "  その @名前 は本文から除かれます。宛先には人間の参加者も指定できます。",
+  "  指定の仕方は相手によって変わりません。",
   "",
   "部屋の作法:",
   "- 自分の発言は返ってきません。届いた発言はすべて他の参加者のものです。",
@@ -387,7 +388,9 @@ const TOOLS = [
           ],
           description:
             "Optional. The participant this message is addressed to, by name, " +
-            "or a list of names to address several. Omit to address the room.",
+            "or a list of names to address several. Omit to address the room. " +
+            "An @name in content that names a participant addresses them too, " +
+            "and is taken out of the text.",
         },
         last_seen: {
           type: "string",

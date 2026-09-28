@@ -95,6 +95,125 @@ pub fn addressees(names: impl IntoIterator<Item = String>) -> Vec<String> {
     kept
 }
 
+/// Take the `@名前` that name someone in the room out of what was said, and
+/// hand back the names they named (#206).
+///
+/// `names` is who is in the room. An `@` — or the full-width `＠` an IME in
+/// kana mode types for the same key — followed by one of those names, case
+/// aside, and then by whitespace, punctuation or the end of the text is a
+/// mention. Where several names match at one `@`, the longest is taken, so
+/// `@Claude Lay` is not read as `Claude` followed by ` Lay`. The name handed
+/// back is the one the room holds, not the spelling that was typed.
+///
+/// An `@…` naming no one in the room is left in the text as it was written,
+/// and addresses no one. The room reads the text by the names it holds, so a
+/// name typed out by hand addresses as a name picked from a list does: the two
+/// are the same characters.
+///
+/// Returns the text with each mention gone and the space it leaves behind
+/// closed up, and the names in the order they were first written, each once.
+/// Text holding no mention comes back as it was.
+pub fn take_mentions<'a>(
+    content: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> (String, Vec<String>) {
+    let mut names: Vec<&str> = names
+        .into_iter()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    // Longest first, so the first match at an `@` is the longest one.
+    names.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+
+    let mut text = String::with_capacity(content.len());
+    let mut named: Vec<String> = Vec::new();
+    let mut rest = content;
+    while let Some(c) = rest.chars().next() {
+        let after = &rest[c.len_utf8()..];
+        let hit = if c == '@' || c == '＠' {
+            names
+                .iter()
+                .find_map(|name| mention_len(after, name).map(|len| (*name, len)))
+        } else {
+            None
+        };
+        match hit {
+            Some((name, len)) => {
+                if !named.iter().any(|held| held == name) {
+                    named.push(name.to_string());
+                }
+                rest = &after[len..];
+                close_up(&mut text, &mut rest);
+            }
+            None => {
+                text.push(c);
+                rest = after;
+            }
+        }
+    }
+    (text, named)
+}
+
+/// How many bytes of `text` the name takes when `text` opens with it, case
+/// aside, and the name ends there; `None` otherwise.
+fn mention_len(text: &str, name: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    for want in name.chars() {
+        let (_, got) = chars.next()?;
+        if !got.to_lowercase().eq(want.to_lowercase()) {
+            return None;
+        }
+    }
+    let len = chars.next().map_or(text.len(), |(at, _)| at);
+    match text[len..].chars().next() {
+        None => Some(len),
+        Some(next) if ends_name(next) => Some(len),
+        Some(_) => None,
+    }
+}
+
+/// Whether a name may end before `c`: whitespace or punctuation. ASCII
+/// punctuation, general punctuation (`…` `“` `—`), the CJK punctuation block
+/// (`、` `。` `「`) and the full-width forms of the ASCII punctuation
+/// (`！` `？` `，`).
+fn ends_name(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_ascii_punctuation()
+        || matches!(
+            c,
+            '\u{2000}'..='\u{206F}'
+                | '\u{3000}'..='\u{303F}'
+                | '\u{FF01}'..='\u{FF0F}'
+                | '\u{FF1A}'..='\u{FF20}'
+                | '\u{FF3B}'..='\u{FF40}'
+                | '\u{FF5B}'..='\u{FF65}'
+        )
+}
+
+/// Spaces within a line: whitespace other than a line break.
+fn is_space(c: char) -> bool {
+    c.is_whitespace() && c != '\n' && c != '\r'
+}
+
+/// Close up what a mention taken out of the text leaves behind.
+///
+/// `text` is what is kept so far and `rest` what follows the mention. The
+/// spaces after a mention were what ended the name, and they go with it: what
+/// stood before it keeps its own space, if it had one. Where the mention ended
+/// a line, the spaces before it would be left trailing, and they go; a line
+/// that held nothing else goes with its break. Punctuation after it stays: it
+/// belongs to the sentence.
+fn close_up(text: &mut String, rest: &mut &str) {
+    *rest = rest.trim_start_matches(is_space);
+    if rest.is_empty() || rest.starts_with('\n') {
+        let kept = text.trim_end_matches(is_space).len();
+        text.truncate(kept);
+        if (text.is_empty() || text.ends_with('\n')) && rest.starts_with('\n') {
+            *rest = &rest[1..];
+        }
+    }
+}
+
 /// A post the speaker had not seen, handed back in place of their own.
 ///
 /// Carries what a participant needs in order to decide again: who said it,
@@ -462,6 +581,83 @@ mod tests {
         // Nothing left is the room as a whole.
         assert!(names(&["", " "]).is_empty());
         assert!(names(&[]).is_empty());
+    }
+
+    const ROOM: [&str; 4] = ["Claude", "Claude Lay", "Claude Lin", "Master"];
+
+    /// `content` said in a room holding [`ROOM`] reads as `text`, addressed to
+    /// `names`.
+    #[track_caller]
+    fn reads(content: &str, text: &str, names: &[&str]) {
+        let (kept, named) = take_mentions(content, ROOM);
+        assert_eq!(kept, text, "text of {content:?}");
+        assert_eq!(named, names, "addressees of {content:?}");
+    }
+
+    #[test]
+    fn a_mention_of_someone_in_the_room_moves_from_the_text_to_the_addressees() {
+        reads("@Claude Lay これ見て", "これ見て", &["Claude Lay"]);
+        reads("これ見て @Master", "これ見て", &["Master"]);
+        reads("これ @Master 見て", "これ 見て", &["Master"]);
+        // No space before the `@` is needed: Japanese runs on without one. The
+        // space after the name only ended it, and goes with it.
+        reads("これ@Master 見て", "これ見て", &["Master"]);
+    }
+
+    #[test]
+    fn the_longest_name_that_ends_at_a_boundary_is_taken() {
+        // `Claude Lay`, not `Claude` followed by ` Lay`.
+        reads("@Claude Lay 頼む", "頼む", &["Claude Lay"]);
+        // A longer name that runs on into a word is not a match there, and the
+        // shorter one that ends at the space is.
+        reads("@Claude Layさん", "Layさん", &["Claude"]);
+    }
+
+    #[test]
+    fn a_name_ends_at_whitespace_punctuation_or_the_end() {
+        reads("@Master、どう？", "、どう？", &["Master"]);
+        reads("@Master!", "!", &["Master"]);
+        reads("聞いて @Master。", "聞いて 。", &["Master"]);
+        reads("見て @Master", "見て", &["Master"]);
+        // Running on into a word is not a name ending.
+        reads("@Masters 見て", "@Masters 見て", &[]);
+    }
+
+    #[test]
+    fn the_match_ignores_case_and_hands_back_the_name_the_room_holds() {
+        reads("@claude lay 頼む", "頼む", &["Claude Lay"]);
+        // The full-width `＠` an IME in kana mode types.
+        reads("＠Master 見て", "見て", &["Master"]);
+    }
+
+    #[test]
+    fn an_at_naming_no_one_in_the_room_stays_as_written() {
+        reads("@Nobody 見て", "@Nobody 見て", &[]);
+        reads("mail@example.com", "mail@example.com", &[]);
+        reads("見て", "見て", &[]);
+        // Nobody in the room: nothing is a mention.
+        let (kept, named) = take_mentions("@Master 見て", []);
+        assert_eq!((kept.as_str(), named.len()), ("@Master 見て", 0));
+    }
+
+    #[test]
+    fn several_mentions_are_kept_in_order_each_once() {
+        reads(
+            "@Claude Lin @Claude Lay 二人とも、@claude lin もね",
+            "二人とも、もね",
+            &["Claude Lin", "Claude Lay"],
+        );
+    }
+
+    #[test]
+    fn the_space_a_mention_leaves_is_closed_up() {
+        reads("一行目\n@Master\n二行目", "一行目\n二行目", &["Master"]);
+        reads("@Master\n本文", "本文", &["Master"]);
+        reads("一行目 @Master\n二行目", "一行目\n二行目", &["Master"]);
+        reads("@Master  @Claude Lin  本文", "本文", &["Master", "Claude Lin"]);
+        // Nothing but mentions leaves nothing.
+        reads("@Master @Claude Lin", "", &["Master", "Claude Lin"]);
+        reads(" @Master ", "", &["Master"]);
     }
 
     #[test]
