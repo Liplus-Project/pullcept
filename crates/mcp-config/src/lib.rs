@@ -456,7 +456,7 @@ fn migrated_cli(command: &str, resume: Option<&str>) -> Option<Cli> {
 /// **Here rather than beside the file it rewrites.** What this has to know is
 /// what this crate knows — which CLI a command names, and what that CLI's
 /// conventions carry now — and this crate is the one that can be tested (see
-/// the テストの配置 in `docs/0-requirements.md`). A step that rewrites a
+/// the テストの配置 in `docs/5-development.md`). A step that rewrites a
 /// person's saved accounts is the kind of thing that has to be.
 ///
 /// What it does not know is what the app calls a kind. `legacy_kind` is the

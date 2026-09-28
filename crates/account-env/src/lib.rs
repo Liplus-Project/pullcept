@@ -18,7 +18,7 @@
 //! refuses to open. A fallback that stored plaintext would be the one path on
 //! which the promise in the first paragraph quietly stops holding.
 //!
-//! This crate holds no tauri, for the reason `docs/0-requirements.md` gives
+//! This crate holds no tauri, for the reason `docs/5-development.md` gives
 //! under テストの配置.
 
 use serde::{Deserialize, Serialize};

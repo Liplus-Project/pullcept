@@ -222,7 +222,7 @@ pub struct RunningSession {
     ///
     /// A seat still being claimed (`Seat::Starting`) has no entry here at all,
     /// which is the one session a delete cannot see; see the accepted tradeoff
-    /// in docs/0-requirements.md.
+    /// in docs/6-tradeoffs.md.
     pub topic_id: String,
     /// The session id this launch went back into, or `None` when it started
     /// fresh.
@@ -316,7 +316,7 @@ impl RoomSeats {
     ///
     /// A seat still starting is not here and cannot be: it holds no PTY yet, so
     /// there is nothing to end. That is the window the delete cannot close, and
-    /// it is written down rather than papered over (docs/0-requirements.md,
+    /// it is written down rather than papered over (docs/6-tradeoffs.md,
     /// 受容したトレードオフ).
     pub fn running_in_topic(&self, topic_id: &str, ptys: &PtyState) -> Vec<String> {
         let mut seats = self.seats.lock();

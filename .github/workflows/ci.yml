@@ -61,7 +61,7 @@ jobs:
       # Not in src-tauri: a test binary that links the tauri dependency tree
       # does not load on the GNU target (STATUS_ENTRYPOINT_NOT_FOUND). The
       # logic that most needs covering lives in a tauri-free crate for that
-      # reason. See docs/0-requirements.md.
+      # reason. See docs/5-development.md.
       - name: Test the mcp-config crate
         working-directory: crates/mcp-config
         run: cargo test

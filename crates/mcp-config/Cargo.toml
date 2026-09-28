@@ -9,7 +9,7 @@ edition = "2021"
 # Deliberately free of tauri. This crate writes into the user's own project
 # directory, which is the part of Pullcept that most needs test coverage,
 # and a test binary that links the tauri dependency tree does not load on the
-# GNU target (see the CI note in docs/0-requirements.md).
+# GNU target (see the CI note in docs/5-development.md).
 
 [dependencies]
 serde_json = "1"

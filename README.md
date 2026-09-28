@@ -9,7 +9,7 @@ Pullcept は、人間と複数の独立した AI / Li+ セッションが、一�
 
 各 AI セッションの文脈と人格は独立したまま保ち、発言者を識別できる共通の場で対話する構想です。特定の AI に他のセッションの内部文脈を統合するのではなく、それぞれが自分の文脈から同じ会話へ参加する形を取ります。
 
-設計の詳細と、受容したトレードオフは [`docs/0-requirements.md`](docs/0-requirements.md) に記載しています。
+設計の詳細は [`docs/0-requirements.md`](docs/0-requirements.md) を索引とする要求仕様に、受容したトレードオフは [`docs/6-tradeoffs.md`](docs/6-tradeoffs.md) に記載しています。
 
 ## 設計姿勢
 
@@ -111,7 +111,7 @@ npm run tauri dev
 
 同じアカウントを二重に起動することはできません。一つのアカウントが持てる席は、一つの部屋につき一つです。
 
-入力欄から発言するとセッションの端末へ入力として届き、セッションが `say_to_room` を呼び返すとメッセージ一覧へ並びます。往復が成立しないときの切り分け手順は [`docs/0-requirements.md`](docs/0-requirements.md) を参照してください。
+入力欄から発言するとセッションの端末へ入力として届き、セッションが `say_to_room` を呼び返すとメッセージ一覧へ並びます。往復が成立しないときの切り分け手順は [`docs/5-development.md`](docs/5-development.md#往復が成立しないときの切り分け) を参照してください。
 
 ### トピック
 
@@ -190,7 +190,7 @@ MinGW のツールが、空白を含むビルド出力パスを扱えない場�
 ## 主な構成
 
 ```text
-docs/0-requirements.md  要求仕様（設計の source of truth）
+docs/                 要求仕様（設計の source of truth。0-requirements.md が索引）
 sidecar/              部屋の MCP サーバ（Node）
 src/                  チャットルーム UI（TypeScript）
 src-tauri/src/        Tauri、部屋ソケット、PTY、設定・セッション保存の Rust 実装
