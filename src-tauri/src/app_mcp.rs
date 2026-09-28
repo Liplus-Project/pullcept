@@ -1,4 +1,5 @@
-//! The MCP servers the app runs itself, and the settings panel over them (#172).
+//! The MCP servers the app runs itself, and the window each one is edited in
+//! (#172; the window of the server's `mcp` account since #193).
 //!
 //! The servers are listed in `mcp-servers.json` in the app's data directory
 //! (`mcp_servers::FILE_NAME`), in Claude Desktop's `mcpServers` shape. When
@@ -8,19 +9,28 @@
 //!
 //! Each listed server is started when the app starts and run by the receiver in
 //! `webhook.rs`, which is the one client the app has: it reads a server's
-//! channel pushes into the rooms and marks them processed. This file holds what
-//! is around that — which run is current, what state it is in, and its log —
-//! and the commands the panel reaches it through.
+//! channel pushes into the rooms, as posts of the server's account (#193). It
+//! marks nothing processed (#180). This file holds what is around that — which
+//! run is current, what state it is in, and its log — and the commands the
+//! account window, and the participant list's row for the account, reach it
+//! through.
+//!
+//! **Each server is an account of kind `mcp`** (#193). The account is in
+//! `config.json` and names its entry here as `server`; the entry stays in this
+//! file, which is still where the server is described. An entry with no
+//! account is given one as the config is read (`mcp_servers::migrate_accounts`,
+//! from `config::load_config`), which is the migration from before there were
+//! such accounts, and a server added to the file by hand later on.
 //!
 //! **An edit takes effect when that server is restarted, not when it is
-//! saved** (#172, AI 判断). The panel puts 再起動 beside 保存 and says when the
+//! saved** (#172, AI 判断). The window puts 再起動 beside 保存 and says when the
 //! running server was started from something other than what the file now
 //! holds. Nothing restarts a server on its own: a server that ended stays ended
 //! until someone presses the button or starts the app again, for the reason
 //! `webhook.rs` gives for not restarting the bridge.
 //!
-//! What the file holds and how the panel's text is read are in the
-//! `mcp-servers` crate, where they are tested.
+//! What the file holds, how the window's text is read, and which accounts the
+//! entries are given are in the `mcp-servers` crate, where they are tested.
 
 use crate::room::RoomState;
 use mcp_servers::{Log, LogLine, Server, FILE_NAME};
@@ -36,7 +46,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 /// Emitted with the server's name whenever its state or its log changes. The
-/// panel reads the whole view again on it; nothing else listens.
+/// screen reads the whole view again on it: the account's row says the state,
+/// and an open window draws the log.
 const CHANGED_EVENT: &str = "mcp-servers-changed";
 
 /// Where one run of a server is.
@@ -61,7 +72,7 @@ struct Run {
     /// that was replaced still has a pipe draining — carries an older number and
     /// is dropped.
     generation: u64,
-    /// What the current run was started from, to tell the panel when the file
+    /// What the current run was started from, to tell the window when the file
     /// has moved on from it.
     started_with: Option<Server>,
     state: Option<RunState>,
@@ -94,6 +105,12 @@ pub struct Reporter {
 }
 
 impl Reporter {
+    /// The name of the entry this run was started from — what the server's
+    /// account names as its `server` (#193).
+    pub fn server(&self) -> &str {
+        &self.name
+    }
+
     /// Add a line to this server's log. Also said on the app's own stderr, which
     /// is where these lines went before there was a panel.
     pub fn log(&self, text: &str) {
@@ -233,7 +250,7 @@ impl Run {
 /// Start every server the file lists. Called once, as the app starts.
 ///
 /// A file that cannot be read or written starts nothing and says why on
-/// stderr; the panel says it again when it is opened. The room runs either
+/// stderr; the account window says it again when it is opened. The room runs either
 /// way: servers are an addition to it.
 pub fn start_all(app: &AppHandle) {
     let listed = match read_file(app).and_then(|root| mcp_servers::servers(&root)) {
@@ -247,6 +264,13 @@ pub fn start_all(app: &AppHandle) {
     for (name, server) in listed {
         servers.start(app, &name, server);
     }
+}
+
+/// The names of the servers the file lists, for the accounts that answer to
+/// them (#193). Written first when there is no file, as `start_all` has it.
+pub fn listed_names(app: &AppHandle) -> Result<Vec<String>, String> {
+    let root = read_file(app)?;
+    Ok(mcp_servers::servers(&root)?.into_keys().collect())
 }
 
 fn now_ms() -> u64 {
@@ -303,7 +327,8 @@ fn write_file(path: &PathBuf, root: &Value) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("{FILE_NAME} に書き込めませんでした: {e}"))
 }
 
-/// One server as the panel draws it.
+/// One server as its account's window draws it, and as the participant list
+/// reads its state for the account's row (#193).
 #[derive(Serialize)]
 pub struct ServerView {
     name: String,
@@ -318,7 +343,7 @@ pub struct ServerView {
     /// `None` when this app run has not started it.
     state: Option<RunState>,
     /// The file holds something other than what the current run was started
-    /// from, so what the panel shows is not what is running until 再起動.
+    /// from, so what the window shows is not what is running until 再起動.
     stale: bool,
     log: Vec<LogLine>,
 }
@@ -389,7 +414,7 @@ pub fn save_mcp_server(
 
 /// End a server's run and start it again from what the file holds now.
 ///
-/// Read from the file, not from the panel: what is started is what is saved,
+/// Read from the file, not from the window: what is started is what is saved,
 /// and a field typed into and not saved is not either. A name the file no
 /// longer lists is stopped and not started again.
 #[tauri::command]

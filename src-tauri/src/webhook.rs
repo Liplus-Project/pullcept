@@ -3,9 +3,9 @@
 //! The app runs the `github-webhook-mcp` bridge as its own MCP client, on the
 //! bridge's stdio, where a CLI session usually sits. The bridge pushes each
 //! event as `notifications/claude/channel` to whoever connected, and the app
-//! posts it into every room an AI session is seated in, under the name
-//! `webhook` (`room::post_notice`). An event that finds no such room is not
-//! posted.
+//! posts it into every room an AI session is seated in, said as the server's
+//! `mcp` account (`room::post_notice`, #193). An event that finds no such room
+//! is not posted.
 //!
 //! **The app never marks an event processed** (#180). The worker's pending set
 //! is one for every reader, so an event the app marked would drop out of the
@@ -88,7 +88,10 @@ pub async fn receive(
             }
             Line::Answer { .. } | Line::Other => {}
             Line::Event(event) => {
-                let rooms = room::post_notice(app, room, &event.content);
+                // Read now rather than when the server was started: the
+                // account's name and colour may have been edited since (#193).
+                let speaker = crate::config::mcp_speaker(app, report.server());
+                let rooms = room::post_notice(app, room, &speaker, &event.content);
                 if rooms == 0 {
                     report.log(&format!(
                         "[pullcept] event {} left pending: no AI session is seated in any room",

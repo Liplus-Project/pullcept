@@ -3,13 +3,22 @@
 //! They are listed in one file, `mcp-servers.json` in the app's data
 //! directory, in the shape Claude Desktop's `claude_desktop_config.json` gives
 //! its `mcpServers`: a name, and under it `command`, `args` and `env`. The
-//! settings panel reads the file and writes one entry back; the file itself is
-//! also the person's to edit, which is why a write here touches the three
-//! fields it was handed and nothing else in the file.
+//! window of the server's account reads the file and writes one entry back
+//! (#193; the settings panel did until then, #172); the file itself is also the
+//! person's to edit, which is why a write here touches the three fields it was
+//! handed and nothing else in the file.
 //!
-//! What the panel edits is text — one argument per line, one `NAME=value` per
+//! What the window edits is text — one argument per line, one `NAME=value` per
 //! line — and the reading of that text is here rather than in the screen, so
 //! there is one reading of it and it is tested.
+//!
+//! **Each server is an account of kind `mcp`** (#193). The file stays where the
+//! server is described — what is run, with what, in what environment — and
+//! `config.json` holds the account: its id, its name and its colour, with the
+//! entry's name as `server`. One account answers to one entry, and an entry
+//! with no account is given one as the config is read (`migrate_accounts`),
+//! so a server added to the file by hand is an account the next time the app
+//! reads its accounts, the same as the one written by default.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -18,7 +27,7 @@ use std::collections::{BTreeMap, VecDeque};
 /// The file the servers are listed in, in the app's data directory.
 ///
 /// Its own file rather than a key in `config.json`: this one is opened and
-/// edited by hand from the panel's link, and `config.json` is rewritten whole
+/// edited by hand from the window's link, and `config.json` is rewritten whole
 /// every time an account is saved.
 pub const FILE_NAME: &str = "mcp-servers.json";
 
@@ -88,7 +97,7 @@ pub fn servers(root: &Value) -> Result<BTreeMap<String, Server>, String> {
 ///
 /// Only those three. Any other field of the entry, any other entry, and any
 /// other key of the file stay as they were: the file is also edited by hand,
-/// and a save from the panel is not a reason to lose what was written there.
+/// and a save from the window is not a reason to lose what was written there.
 pub fn set_server(root: &mut Value, name: &str, server: &Server) -> Result<(), String> {
     if !root.is_object() {
         return Err("the file is not a JSON object".to_string());
@@ -113,7 +122,7 @@ pub fn set_server(root: &mut Value, name: &str, server: &Server) -> Result<(), S
     Ok(())
 }
 
-/// Build a server from what the panel's three fields hold.
+/// Build a server from what the window's three fields hold.
 ///
 /// The command is required; it is the one field a server cannot run without.
 pub fn server_from_fields(command: &str, args: &str, env: &str) -> Result<Server, String> {
@@ -200,6 +209,82 @@ fn unquote(value: &str) -> &str {
         }
     }
     value
+}
+
+/// The key on an account that names the entry it answers to.
+pub const ACCOUNT_SERVER_KEY: &str = "server";
+
+/// The id an account made for a listed server is given (#193).
+///
+/// Taken from the entry's name rather than minted at random, so the account a
+/// post is said as is the same one whether or not the config holding it has
+/// been written yet: the app posts from a server before the screen has read,
+/// let alone saved, the accounts (`src-tauri/src/config.rs`). Minted once all
+/// the same — an account keeps the id it was given, and an entry renamed in the
+/// file by hand is another server, and so another account.
+pub fn account_id(server: &str) -> String {
+    format!("mcp-{server}")
+}
+
+/// Give every listed server that has no account one (#193).
+///
+/// `root` is `config.json` as JSON, before it is typed; `kind` is the value the
+/// `mcp` kind is stored as, handed in by the caller so the kind has one
+/// spelling, and it is the enum's (`src-tauri/src/config.rs`). An account
+/// answers to an entry when it is of that kind and names the entry as
+/// `server`.
+///
+/// What is added is an account and nothing else: an id, the entry's name as
+/// its name, and no colour — chosen and derived are different states, and none
+/// was chosen. What is there already stays as it is, the name and colour the
+/// person gave it included, and so does an account whose entry has gone from
+/// the file: it is who said what that server said, and the room's log still
+/// names it.
+///
+/// Read under either name the account list has had (`tabs` is the older one),
+/// and made when there is neither. An id already in use is not given a second
+/// time: two accounts on one id would be one identity with two entries, which
+/// is what an id exists to rule out.
+pub fn migrate_accounts(root: &mut Value, servers: &[String], kind: &Value) {
+    let Some(object) = root.as_object_mut() else {
+        return;
+    };
+    let key = if object.contains_key("accounts") || !object.contains_key("tabs") {
+        "accounts"
+    } else {
+        "tabs"
+    };
+    let accounts = object
+        .entry(key)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(accounts) = accounts.as_array_mut() else {
+        return;
+    };
+    for server in servers {
+        let answered = accounts.iter().any(|account| {
+            account.get("kind") == Some(kind)
+                && account.get(ACCOUNT_SERVER_KEY).and_then(Value::as_str) == Some(server)
+        });
+        let id = account_id(server);
+        let taken = accounts
+            .iter()
+            .any(|account| account.get("id").and_then(Value::as_str) == Some(id.as_str()));
+        if answered || taken {
+            continue;
+        }
+        accounts.push(json!({
+            "id": id,
+            "name": server,
+            // An account has one shape. Nothing is launched from these: the
+            // server is started from its entry in the file.
+            "command": "",
+            "args": [],
+            "cwd": null,
+            "hue": null,
+            "kind": kind,
+            ACCOUNT_SERVER_KEY: server,
+        }));
+    }
 }
 
 /// One line of a server's log.
@@ -375,6 +460,83 @@ mod tests {
         assert_eq!(server.env["A"], "1");
         // A bad environment line is not dropped to let the rest through.
         assert!(server_from_fields("node", "", "oops").is_err());
+    }
+
+    const MCP: &str = "mcp";
+
+    fn names(servers: &[&str]) -> Vec<String> {
+        servers.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn a_listed_server_with_no_account_is_given_one() {
+        let mut root =
+            json!({ "accounts": [{ "id": "account-1", "name": "Claude Code", "kind": "claude_code" }] });
+        migrate_accounts(&mut root, &names(&[BRIDGE_SERVER]), &json!(MCP));
+
+        let accounts = root["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 2);
+        let made = &accounts[1];
+        assert_eq!(made["id"], json!(account_id(BRIDGE_SERVER)));
+        assert_eq!(made["name"], json!(BRIDGE_SERVER));
+        assert_eq!(made["kind"], json!(MCP));
+        assert_eq!(made[ACCOUNT_SERVER_KEY], json!(BRIDGE_SERVER));
+        // No colour was chosen, and none is written as though it had been.
+        assert_eq!(made["hue"], Value::Null);
+        // The account that was there is left as it was.
+        assert_eq!(accounts[0]["name"], json!("Claude Code"));
+    }
+
+    #[test]
+    fn a_server_that_has_its_account_is_not_given_a_second() {
+        let mut root = json!({ "accounts": [{
+            "id": account_id(BRIDGE_SERVER), "name": "通知", "hue": 30.0,
+            "kind": MCP, "server": BRIDGE_SERVER
+        }] });
+        let before = root.clone();
+        migrate_accounts(&mut root, &names(&[BRIDGE_SERVER]), &json!(MCP));
+        // The name and colour the person gave it stand.
+        assert_eq!(root, before);
+    }
+
+    #[test]
+    fn an_account_whose_entry_has_gone_stays() {
+        let mut root = json!({ "accounts": [{
+            "id": "mcp-old", "name": "old", "kind": MCP, "server": "old"
+        }] });
+        migrate_accounts(&mut root, &names(&["new"]), &json!(MCP));
+        let accounts = root["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0]["id"], json!("mcp-old"));
+        assert_eq!(accounts[1]["server"], json!("new"));
+    }
+
+    #[test]
+    fn an_id_already_in_use_is_not_given_twice() {
+        // Improbable, and not to be answered with a second account on one id.
+        let mut root =
+            json!({ "accounts": [{ "id": account_id("x"), "name": "someone", "kind": "cli" }] });
+        migrate_accounts(&mut root, &names(&["x"]), &json!(MCP));
+        assert_eq!(root["accounts"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_older_name_of_the_list_is_read_and_a_missing_list_is_made() {
+        let mut tabs = json!({ "tabs": [] });
+        migrate_accounts(&mut tabs, &names(&["a"]), &json!(MCP));
+        assert_eq!(tabs["tabs"][0]["server"], json!("a"));
+        assert!(tabs.get("accounts").is_none());
+
+        let mut none = json!({});
+        migrate_accounts(&mut none, &names(&["a"]), &json!(MCP));
+        assert_eq!(none["accounts"][0]["server"], json!("a"));
+    }
+
+    #[test]
+    fn a_config_that_is_not_an_object_is_left_alone() {
+        let mut root = json!([]);
+        migrate_accounts(&mut root, &names(&["a"]), &json!(MCP));
+        assert_eq!(root, json!([]));
     }
 
     #[test]

@@ -24,6 +24,11 @@ use tauri::Manager;
 /// A second CLI is a second variant here and a second arm over there, not a
 /// second reading of somebody's launch options.
 ///
+/// **The fourth is not launched at all: a local MCP server the app runs itself**
+/// (#193). It speaks in the room — what the server pushes is posted as the
+/// account's — and no CLI is started under it; the server is started from its
+/// entry in `mcp-servers.json`, which the account names as `server`.
+///
 /// What it decides: which group the participant list draws the row under, and
 /// which conventions a launch carries. Nothing in the room reads it; the room
 /// still has one kind of participant.
@@ -48,6 +53,14 @@ pub enum AccountKind {
     /// launches is the person's own.
     #[default]
     Cli,
+    /// A local MCP server the app runs as its own client (#193). One account
+    /// answers to one entry of `mcp-servers.json`, named by `Account::server`.
+    ///
+    /// Never declared on the form: an account of this kind is given to an entry
+    /// as the config is read (`mcp_servers::migrate_accounts`), and no other
+    /// kind turns into it or out of it. Not launched — `start_session` refuses
+    /// it, as it refuses a person.
+    Mcp,
 }
 
 impl AccountKind {
@@ -56,7 +69,7 @@ impl AccountKind {
     /// about.
     pub fn cli(self) -> Option<mcp_config::Cli> {
         match self {
-            AccountKind::Admin | AccountKind::Cli => None,
+            AccountKind::Admin | AccountKind::Cli | AccountKind::Mcp => None,
             AccountKind::ClaudeCode => Some(mcp_config::Cli::ClaudeCode),
         }
     }
@@ -181,6 +194,14 @@ pub struct Account {
     /// every launch then had: nothing added to the environment.
     #[serde(default)]
     pub env: Vec<account_env::EnvVar>,
+    /// The entry of `mcp-servers.json` this account answers to, for an account
+    /// of kind `mcp`; `None` for every other kind (#193).
+    ///
+    /// The entry's name, which is what the file is keyed on. The account holds
+    /// who speaks — its name and colour — and the entry holds what is run, so
+    /// neither file carries a second copy of the other's half.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 /// Which of the two panels flanking the room are open.
@@ -283,6 +304,7 @@ impl Default for AppConfig {
                 // and the person writes theirs (#156, 決定6).
                 resume_command: None,
                 env: Vec::new(),
+                server: None,
             }],
             panels: PanelState::default(),
         }
@@ -311,12 +333,41 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
-    let path = config_path(&app)?;
-    if !path.exists() {
-        return Ok(AppConfig::default());
+    read_config(&app)
+}
+
+/// The config as it is read: the file, migrated, with an account for each
+/// server the app runs (#193) — or the default with the same accounts added,
+/// when there is no file.
+///
+/// The accounts made for the servers are not written here. Their ids are taken
+/// from the entry's name (`mcp_servers::account_id`), so the same account comes
+/// back on every read until a save writes it down, and a post said as it
+/// before then is said as the account the screen later lists.
+fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
+    let path = config_path(app)?;
+    let mut root = if path.exists() {
+        read_saved(&path)?
+    } else {
+        serde_json::to_value(AppConfig::default())
+            .map_err(|e| format!("Failed to build config: {e}"))?
+    };
+    // A file that cannot be read gives no server an account, and costs nothing
+    // else: the accounts that are saved are still read, and the server a missing
+    // account belongs to is not running either (`app_mcp::start_all`).
+    match crate::app_mcp::listed_names(app) {
+        Ok(servers) => {
+            mcp_servers::migrate_accounts(&mut root, &servers, &kind_value(AccountKind::Mcp))
+        }
+        Err(err) => eprintln!("[mcp] no server was given an account: {err}"),
     }
+    serde_json::from_value::<AppConfig>(root).map_err(|e| format!("Failed to parse config: {e}"))
+}
+
+/// `config.json` as JSON, with the kinds migrated (#156).
+fn read_saved(path: &PathBuf) -> Result<Value, String> {
     let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read config: {e}"))?;
 
     // A config written before accounts existed parses here as it stands: the
     // `tabs` alias on `AppConfig` reads the old key, and `cli_kind` is an
@@ -354,7 +405,48 @@ pub fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     let mut root: Value =
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
     mcp_config::migrate_account_kinds(&mut root, LEGACY_LAUNCHED_KIND, kind_of_cli);
-    serde_json::from_value::<AppConfig>(root).map_err(|e| format!("Failed to parse config: {e}"))
+    Ok(root)
+}
+
+/// Who a server's posts are said as (#193).
+pub struct McpSpeaker {
+    pub account_id: String,
+    pub name: String,
+    pub hue: Option<f64>,
+}
+
+/// The account a server answers to, read when the server has something to say.
+///
+/// Read then rather than held from when the server was started: the account's
+/// name and colour are edited in its window while the server keeps running, and
+/// a post said after that edit is said under what the account is now — the way
+/// a person's rename reaches their next post (#40).
+///
+/// The account the config would be given when it holds none — the entry's name,
+/// no colour, the id taken from the name — which is the account the screen
+/// lists, whether or not it has been saved yet. The same when the config cannot
+/// be read: a server that has something to say is not silenced for it.
+pub fn mcp_speaker(app: &AppHandle, server: &str) -> McpSpeaker {
+    let found = read_config(app).ok().and_then(|config| {
+        config
+            .accounts
+            .into_iter()
+            .find(|account| {
+                account.kind == AccountKind::Mcp && account.server.as_deref() == Some(server)
+            })
+    });
+    match found {
+        Some(account) => McpSpeaker {
+            account_id: account.id,
+            name: account.name,
+            hue: account.hue,
+        },
+        None => McpSpeaker {
+            account_id: mcp_servers::account_id(server),
+            name: server.to_string(),
+            hue: None,
+        },
+    }
 }
 
 /// The kind every launched account carried while there was one of them (#156).

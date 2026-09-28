@@ -346,13 +346,19 @@
                セッション id の渡し方、再開の仕方、`--settings` に載せる hook
                とステータスライン——を種別が持つため、下の欄に書くのは、その
                人が足したいものだけになる。どれにも当てはまらない起動は
-               `CLI（汎用）` であり、アプリは何も足さない。 -->
+               `CLI（汎用）` であり、アプリは何も足さない。
+
+               `mcp` はここで選ぶ種別ではない（#193）。アプリ本体が起動する
+               ローカル MCP サーバのアカウントであり、`mcp-servers.json` の
+               エントリごとにアプリが作る。その窓では種別は変えられず、他の
+               種別からもこれにはならない。 -->
           <label class="field">
             種別
             <select id="dialog-kind">
               <option value="admin">admin（人間）</option>
               <option value="claude_code">Claude Code</option>
               <option value="cli">CLI（汎用）</option>
+              <option value="mcp" hidden disabled>MCP サーバ</option>
             </select>
           </label>
 
@@ -466,6 +472,70 @@
             </label>
           </div>
 
+          <!-- The local MCP server an `mcp` account is (#193). What the settings
+               menu held as its one section until then (#172), moved into the
+               window of the account the server speaks as, and scoped to that
+               one server: whether it is running, what it is started with, its
+               log, and the file it is listed in.
+
+               保存 and 再起動 act at once, on the file and on the server, the
+               way they did in the settings menu: an edit is saved while the
+               server keeps running, and it is started when the person says so.
+               決定 saves the fields as well when they were edited and not
+               saved, so an edit is not lost to the window closing over it; 取消
+               leaves the file as the last 保存 left it. -->
+          <div id="dialog-mcp" class="mcp-server" hidden>
+            <div class="mcp-head">
+              <span class="label">サーバ</span>
+              <span id="mcp-state" class="state"></span>
+              <span class="spacer"></span>
+              <button id="mcp-restart" type="button">再起動</button>
+            </div>
+            <!-- The file no longer holds what the running server was started
+                 from, or holds no entry for this account at all. Empty, and
+                 gone, when neither. -->
+            <p id="mcp-stale" class="notice" role="status"></p>
+
+            <div id="mcp-fields" class="mcp-fields">
+              <label class="field">
+                コマンド
+                <input id="mcp-command" type="text" spellcheck="false" />
+              </label>
+              <!-- One argument per line. Nothing splits a line, so a path with
+                   spaces in it is one line as it is. -->
+              <label class="field env">
+                引数
+                <textarea id="mcp-args" rows="2" spellcheck="false"></textarea>
+              </label>
+              <!-- One NAME=value per line, added to the app's own environment.
+                   Stored in the file as written, the way Claude Desktop stores
+                   its own. -->
+              <label class="field env">
+                環境変数
+                <textarea
+                  id="mcp-env"
+                  rows="2"
+                  spellcheck="false"
+                  placeholder="例: WEBHOOK_WORKER_URL=https://github-webhook.example.com"
+                ></textarea>
+              </label>
+              <menu class="mcp-actions">
+                <span class="spacer"></span>
+                <button id="mcp-save" type="button">保存</button>
+              </menu>
+            </div>
+            <p id="mcp-error" class="mcp-error" role="alert"></p>
+
+            <div class="mcp-head">
+              <span class="label">ログ</span>
+              <span class="spacer"></span>
+              <button id="mcp-open-file" type="button">設定ファイルを開く</button>
+            </div>
+            <pre id="mcp-log" class="log" tabindex="0" aria-label="サーバのログ"></pre>
+            <p id="mcp-file" class="path"></p>
+            <p id="mcp-file-error" class="mcp-error" role="alert"></p>
+          </div>
+
           <p id="dialog-error" class="error" role="alert"></p>
 
           <menu class="actions">
@@ -485,83 +555,21 @@
       <!-- The app's settings (#172). In this webview, for the reason the account
            dialog is: a step inside the app, not a window to find behind it.
 
-           A list of sections on the left, as Claude Desktop's settings have,
-           holding one section for now: the MCP servers the app runs itself.
-           The section is Desktop's ローカル MCP サーバー screen in shape — the
-           servers, whether each is running, what each is started with, its
-           log, and the file they are listed in.
-
-           Nothing here takes effect as it is typed. 保存 writes the file;
-           再起動 starts the server again from what the file holds. They are
-           two buttons because they are two acts: an edit is saved while the
-           server keeps running, and it is started when the person says so. -->
+           A list of sections on the left, as Claude Desktop's settings have.
+           None is here for now. The one it held — the MCP servers the app runs
+           itself — is in the window of each server's `mcp` account since #193,
+           and the display settings that are to fill this are #194. -->
       <dialog id="settings-dialog" aria-labelledby="settings-title">
         <div class="settings">
           <nav class="settings-nav" aria-label="設定の項目">
             <h2 id="settings-title">設定</h2>
-            <button type="button" class="section" aria-current="page">MCP サーバ</button>
           </nav>
 
-          <section class="settings-body" aria-labelledby="mcp-title">
-            <div class="settings-head">
-              <h3 id="mcp-title">ローカル MCP サーバ</h3>
-              <button id="mcp-open-file" type="button">設定ファイルを開く</button>
-            </div>
+          <section class="settings-body">
             <p class="hint">
-              アプリ本体が自分のクライアントとして起動する MCP サーバです。セッションが読み込む
-              MCP サーバはここには出ません。
+              設定の項目はまだありません。ローカル MCP サーバの設定は、アカウントの一覧の
+              MCP にある各サーバの ⚙️ から開きます。
             </p>
-            <p id="mcp-file" class="path"></p>
-            <p id="mcp-file-error" class="error" role="alert"></p>
-
-            <div class="mcp">
-              <ul id="mcp-list" class="mcp-list" aria-label="サーバ"></ul>
-
-              <div id="mcp-detail" class="mcp-detail" hidden>
-                <div class="mcp-detail-head">
-                  <h4 id="mcp-name"></h4>
-                  <span id="mcp-state" class="state"></span>
-                  <span class="spacer"></span>
-                  <button id="mcp-restart" type="button">再起動</button>
-                </div>
-                <!-- The file no longer holds what the running server was
-                     started from. Empty, and gone, when it does. -->
-                <p id="mcp-stale" class="notice" role="status"></p>
-
-                <div id="mcp-fields" class="mcp-fields">
-                  <label class="field">
-                    コマンド
-                    <input id="mcp-command" type="text" spellcheck="false" />
-                  </label>
-                  <!-- One argument per line. Nothing splits a line, so a path
-                       with spaces in it is one line as it is. -->
-                  <label class="field multi">
-                    引数
-                    <textarea id="mcp-args" rows="3" spellcheck="false"></textarea>
-                  </label>
-                  <!-- One NAME=value per line, added to the app's own
-                       environment. Stored in the file as written, the way
-                       Claude Desktop stores its own. -->
-                  <label class="field multi">
-                    環境変数
-                    <textarea
-                      id="mcp-env"
-                      rows="3"
-                      spellcheck="false"
-                      placeholder="例: WEBHOOK_WORKER_URL=https://github-webhook.example.com"
-                    ></textarea>
-                  </label>
-                  <p id="mcp-error" class="error" role="alert"></p>
-                  <menu class="actions">
-                    <span class="spacer"></span>
-                    <button id="mcp-save" type="button">保存</button>
-                  </menu>
-                </div>
-
-                <h5>ログ</h5>
-                <pre id="mcp-log" class="log" tabindex="0" aria-label="サーバのログ"></pre>
-              </div>
-            </div>
           </section>
         </div>
         <menu class="settings-actions">
