@@ -11,7 +11,7 @@
 // speech. The app types every post into the sessions' terminals (#195), and
 // the keys this pane sends are read for one thing only — whether the person
 // has left something unsent there, which is when those posts wait. The rejected design is the one where the app parses CLI output to
-// find messages (docs/0-requirements.md); showing the CLI is not that.
+// find messages (docs/1-room.md); showing the CLI is not that.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";

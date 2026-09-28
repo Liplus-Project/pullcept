@@ -1,6 +1,6 @@
 # design
 
-UI 設計キャンバスの元ファイル。公開先は `docs/0-requirements.md` の「UI の方向」節にリンクがある。
+UI 設計キャンバスの元ファイル。公開先は `docs/2-screen.md` の「UI の方向」節にリンクがある。
 
 - `Main.dc.html` — 次の一手（実装可能な範囲）
 - `Vision.dc.html` — 全体像（到達点）

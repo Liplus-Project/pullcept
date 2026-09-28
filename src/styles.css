@@ -681,7 +681,7 @@ body {
    `.topics` insets its rows by 0.3rem and sets them 0.15rem apart, and this sits
    in that column at that distance from the first of them.
 
-   It is a control drawn without a border, which 二つの地色 (docs/0-requirements.md)
+   It is a control drawn without a border, which 二つの地色 (docs/2-screen.md)
    would otherwise put on the window's ground. The rows of this list already are
    that: `.pick` is a button too, and a list whose rows each carried a border
    would read as a stack of buttons rather than as a list. The border arrives

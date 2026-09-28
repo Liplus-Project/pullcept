@@ -26,7 +26,7 @@
 //! where the lock over read-modify-write of the index lives, and where the
 //! screen is told the list has changed. What is here is the part that had to be
 //! reachable by `cargo test`: `src-tauri` is compiled but not tested, for the
-//! reason docs/0-requirements.md gives under テストの配置.
+//! reason docs/5-development.md gives under テストの配置.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

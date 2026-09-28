@@ -41,7 +41,7 @@
 //! here, and the screen is told from here that the list changed. What is not
 //! here is everything that only ever needed the directory: the shapes, the
 //! reconciliation, the title, the parse, and the delete. That split is the one
-//! docs/0-requirements.md named under テストの配置 before it existed, and #119
+//! docs/5-development.md named under テストの配置 before it existed, and #119
 //! is what made it load-bearing rather than tidy — deleting a topic has to take
 //! the file, because an index with the entry taken out and the file left is a
 //! topic the very next read adopts back.

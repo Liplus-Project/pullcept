@@ -6,7 +6,7 @@ authors = ["Liplus Project Contributors"]
 license = "Apache-2.0"
 edition = "2021"
 
-# Deliberately free of tauri, for the reason docs/0-requirements.md gives under
+# Deliberately free of tauri, for the reason docs/5-development.md gives under
 # テストの配置: a test binary that links the tauri dependency tree does not load
 # on the GNU target, so pure logic left in `src-tauri/src/` is unverifiable the
 # moment it is written. The reconciliation between the directory and the index

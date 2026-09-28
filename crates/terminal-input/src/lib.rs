@@ -265,7 +265,7 @@ pub fn targets<'a>(
 /// that answers a prompt on the screen reads here as text entered. The first
 /// is a post joined onto the recalled line; the second is posts held until
 /// the next Enter or erase. Both are written down as accepted
-/// (docs/0-requirements.md, 受容したトレードオフ).
+/// (docs/6-tradeoffs.md, 受容したトレードオフ).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Unsent {
     text: String,

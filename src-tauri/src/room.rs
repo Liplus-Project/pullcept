@@ -2,7 +2,7 @@
 //!
 //! The app hosts; the sidecars connect. That direction is forced: the CLI
 //! spawns its MCP servers itself, so the app never learns the launch moment or
-//! a port chosen on that side. See `docs/0-requirements.md`.
+//! a port chosen on that side. See `docs/1-room.md`.
 //!
 //! Frames on the wire are the room protocol:
 //!
