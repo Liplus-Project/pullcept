@@ -20,7 +20,10 @@
 //! file, which is still where the server is described. An entry with no
 //! account is given one as the config is read (`mcp_servers::migrate_accounts`,
 //! from `config::load_config`), which is the migration from before there were
-//! such accounts, and a server added to the file by hand later on.
+//! such accounts, and a server added to the file by hand later on. The account
+//! form makes one too (#200): `create_mcp_server` writes the entry the new
+//! account answers to, and `delete_mcp_server` takes it out again and ends the
+//! run when that account is deleted.
 //!
 //! **An edit takes effect when that server is restarted, not when it is
 //! saved** (#172, AI 判断). The window puts 再起動 beside 保存 and says when the
@@ -239,6 +242,31 @@ impl McpServers {
             let _ = app.emit(CHANGED_EVENT, name);
         }
     }
+
+    /// End a server's current run and drop everything held under its name, the
+    /// log included (#200).
+    ///
+    /// For a server whose account is deleted: nothing names it any more, and a
+    /// server made later under the same name is another server, which does not
+    /// begin with this one's log. A report from the run ended here finds no run
+    /// under the name, or one with a newer generation, and is dropped.
+    fn forget(&self, app: &AppHandle, name: &str) {
+        let forgotten = {
+            let mut inner = self.inner.lock();
+            match inner.runs.remove(name) {
+                Some(mut run) => {
+                    if let Some(task) = run.task.take() {
+                        task.abort();
+                    }
+                    true
+                }
+                None => false,
+            }
+        };
+        if forgotten {
+            let _ = app.emit(CHANGED_EVENT, name);
+        }
+    }
 }
 
 impl Run {
@@ -410,6 +438,77 @@ pub fn save_mcp_server(
     mcp_servers::set_server(&mut root, &name, &server)
         .map_err(|e| format!("{FILE_NAME} に書き込めませんでした: {e}"))?;
     write_file(&file_path(&app)?, &root)
+}
+
+/// The server an account made on the form was listed under (#200), and the id
+/// that account is given.
+#[derive(Serialize)]
+pub struct CreatedServer {
+    server: String,
+    account_id: String,
+}
+
+/// Write a new server into the file for an account being made on the form
+/// (#200). Not started here: the screen saves the account first and then starts
+/// it (`restart_mcp_server`), so the server's first post is said as the account
+/// the screen has just listed, under the name and colour it was given.
+///
+/// The entry is named after the account (`mcp_servers::new_entry_name`), past
+/// every name in use — the entries in the file, and the servers and ids of the
+/// accounts in `config.json`. The account's id is taken from the entry's name,
+/// as it is for an account the config gives an entry (`mcp_servers::account_id`),
+/// so the two ways of arriving at an `mcp` account arrive at one shape.
+#[tauri::command]
+pub fn create_mcp_server(
+    app: AppHandle,
+    name: String,
+    command: String,
+    args: String,
+    env: String,
+) -> Result<CreatedServer, String> {
+    let server = mcp_servers::server_from_fields(&command, &args, &env)?;
+    let mut root = read_file(&app)?;
+    let listed = mcp_servers::servers(&root)?;
+    let config = crate::config::read_config(&app)?;
+    let mut names: Vec<String> = listed.into_keys().collect();
+    names.extend(config.accounts.iter().filter_map(|account| account.server.clone()));
+    let ids: Vec<String> = config.accounts.iter().map(|account| account.id.clone()).collect();
+    let entry = mcp_servers::new_entry_name(&name, &names, &ids);
+    mcp_servers::set_server(&mut root, &entry, &server)
+        .map_err(|e| format!("{FILE_NAME} に書き込めませんでした: {e}"))?;
+    write_file(&file_path(&app)?, &root)?;
+    Ok(CreatedServer {
+        account_id: mcp_servers::account_id(&entry),
+        server: entry,
+    })
+}
+
+/// Take a server out of the file and end its run, for its account being
+/// deleted (#200).
+///
+/// The file first: an entry left listed would be given an account again on the
+/// next read of the config (`mcp_servers::migrate_accounts`), and the screen
+/// removes the account only once this has answered. A file that does not exist
+/// holds no entry, and is not written here only to be emptied. The run is
+/// ended whether or not the file still listed it: a server already taken out
+/// by hand may still be running under the account being deleted.
+#[tauri::command]
+pub fn delete_mcp_server(
+    app: AppHandle,
+    servers: State<McpServers>,
+    name: String,
+) -> Result<(), String> {
+    let path = file_path(&app)?;
+    if path.exists() {
+        let mut root = read_file(&app)?;
+        if mcp_servers::remove_server(&mut root, &name)
+            .map_err(|e| format!("{FILE_NAME} に書き込めませんでした: {e}"))?
+        {
+            write_file(&path, &root)?;
+        }
+    }
+    servers.forget(&app, &name);
+    Ok(())
 }
 
 /// End a server's run and start it again from what the file holds now.

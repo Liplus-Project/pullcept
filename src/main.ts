@@ -223,9 +223,10 @@ interface SessionStats {
  * somebody's launch options.
  *
  * `mcp` is a local MCP server the app runs itself (#193). It speaks — what the
- * server pushes is posted as its account — and nothing is launched under it. It
- * is not declared on the form: the app gives one to each entry of
- * `mcp-servers.json`, and no other kind turns into it.
+ * server pushes is posted as its account — and nothing is launched under it.
+ * Declared on the form when an account is made, which writes its entry in
+ * `mcp-servers.json` (#200), or given by the app to an entry the file holds
+ * with no account; either way no other kind turns into it or out of it.
  */
 type AccountKind = "admin" | "claude_code" | "cli" | "mcp";
 
@@ -611,6 +612,7 @@ const mcpEnvEl = document.getElementById("mcp-env") as HTMLTextAreaElement;
 const mcpErrorEl = document.getElementById("mcp-error") as HTMLElement;
 const mcpSaveEl = document.getElementById("mcp-save") as HTMLButtonElement;
 const mcpLogEl = document.getElementById("mcp-log") as HTMLElement;
+const mcpLogHeadEl = document.getElementById("mcp-log-head") as HTMLElement;
 
 let accounts: Account[] = [];
 /**
@@ -1173,10 +1175,19 @@ function localAccount(): Account | null {
  * the other shape: folding one is the whole act, so it saves as it happens
  * (#118, decision 1).
  */
-function saveConfig(): void {
-  void invoke("save_config", { config: { accounts, panels } }).catch(() => {
-    status("設定を保存できませんでした。", "error");
-  });
+/**
+ * Write the accounts and panels to `config.json`. Resolves false when that
+ * failed, which is said on the status line either way; most callers do not wait
+ * for it, and the one that starts a server under a new account does (#200).
+ */
+function saveConfig(): Promise<boolean> {
+  return invoke("save_config", { config: { accounts, panels } }).then(
+    () => true,
+    () => {
+      status("設定を保存できませんでした。", "error");
+      return false;
+    },
+  );
 }
 
 /**
@@ -3970,6 +3981,9 @@ function showDialogKind(): void {
   dialogMcpEl.hidden = kind !== "mcp";
   dialogResumeFieldEl.hidden = kind !== "cli";
   if (launchesKind(kind)) refreshDialogLine();
+  // Chosen on a form making an account: the server is written and started at
+  // 決定, so what there is to fill in now is what it is started with (#200).
+  if (kind === "mcp" && editing === null) drawNewMcp();
 }
 
 /** `launches`, for a kind the form holds rather than an account. */
@@ -4146,22 +4160,31 @@ function openAccountDialog(account: Account | null): void {
         resume_command: null,
         // Nothing added to the environment until someone writes a line (#163).
         env: [],
-        // Not a server: `mcp` is not a kind this form makes (#193).
+        // No server until one is written: choosing `mcp` below makes one at
+        // 決定, and the entry's name comes back from the app then (#200).
         server: null,
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
   dialogNameEl.value = draft.name;
-  // `mcp` is shown on its own account's form and offered on no other, and the
-  // form it is shown on cannot change it (#193): the account answers to an entry
-  // in the file, and the kinds either side of it launch.
+  // `mcp` is offered where an account is being made (#200) and on an `mcp`
+  // account's own form, and on no other: an account that exists as another kind
+  // does not become a server, and the form of one that is a server cannot
+  // change it (#193) — the account answers to an entry in the file, and the
+  // kinds either side of it launch.
   const server = draft.kind === "mcp";
-  dialogKindMcpEl.hidden = !server;
-  dialogKindMcpEl.disabled = !server;
+  const offered = account === null || server;
+  dialogKindMcpEl.hidden = !offered;
+  dialogKindMcpEl.disabled = !offered;
   dialogKindEl.disabled = server;
   dialogKindEl.value = draft.kind;
   mcpDrawn = null;
   mcpErrorEl.textContent = "";
+  // Emptied for every form, so a new server starts from nothing rather than
+  // from the fields of the last account the form was open on.
+  mcpCommandEl.value = "";
+  mcpArgsEl.value = "";
+  mcpEnvEl.value = "";
   dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
@@ -4238,6 +4261,10 @@ async function commitAccountDialog(): Promise<boolean> {
   }
 
   const kind = dialogKindEl.value as AccountKind;
+  // Made here, from nothing: the entry is written and the account with it
+  // (#200). Only a form making an account reaches this — an existing account
+  // is not offered the kind.
+  if (kind === "mcp" && !target) return await createMcpAccount(settling, name);
   // A server's account is a name and a colour over an entry in the file, and the
   // entry is the section below the form's fields (#193). Nothing else here
   // applies to it, and no other kind becomes it or stops being it.
@@ -4359,6 +4386,72 @@ async function commitAccountDialog(): Promise<boolean> {
 }
 
 /**
+ * Make an account of kind `mcp` from the form, and the server it is (#200).
+ *
+ * The entry first, because it is what the account answers to: the app writes it
+ * under a name taken from the account's and hands back that name and the id the
+ * account is given. Then the account, saved before the server is started, so
+ * the server's first post is said under the name and colour chosen here rather
+ * than the entry's name the app would fall back to. Then the start, from the
+ * file, the way 再起動 starts one.
+ *
+ * A field the app refuses keeps the form open on its reason, with nothing
+ * written. A server that will not start is still made: its account is there,
+ * and its window says what happened and holds 起動.
+ */
+async function createMcpAccount(settling: Account, name: string): Promise<boolean> {
+  mcpErrorEl.textContent = "";
+  let created: { server: string; account_id: string };
+  try {
+    created = await invoke<{ server: string; account_id: string }>("create_mcp_server", {
+      name,
+      command: mcpCommandEl.value,
+      args: mcpArgsEl.value,
+      env: mcpEnvEl.value,
+    });
+  } catch (err) {
+    mcpErrorEl.textContent = String(err);
+    dialogError("サーバを設定ファイルに書けませんでした。");
+    return false;
+  }
+  const settled: Account = {
+    ...settling,
+    id: created.account_id,
+    name,
+    kind: "mcp",
+    hue: declaredHue(dialogHueEl),
+    // An account has one shape, and nothing is launched from these: the server
+    // is started from its entry in the file (`mcp_servers::migrate_accounts`).
+    command: "",
+    args: [],
+    cwd: null,
+    character: null,
+    resume_command: null,
+    env: [],
+    server: created.server,
+  };
+  accounts.push(settled);
+  await saveConfig();
+  let started = true;
+  try {
+    await invoke("restart_mcp_server", { name: created.server });
+  } catch {
+    started = false;
+  }
+  renderPanel();
+  await refreshMcpServers();
+  if (started) {
+    status(`アカウント「${settled.name}」を追加し、サーバ「${created.server}」を起動しました。`);
+  } else {
+    status(
+      `アカウント「${settled.name}」を追加しましたが、サーバ「${created.server}」を起動できませんでした。`,
+      "error",
+    );
+  }
+  return true;
+}
+
+/**
  * Delete the account the form is open on, on the second click.
  *
  * Two clicks rather than `window.confirm`, for the reason 終了 does not use one
@@ -4371,8 +4464,13 @@ async function commitAccountDialog(): Promise<boolean> {
  * that nothing on this screen can name or account for. Refused for the person
  * at this screen too — they are in the room by being here, and there would be
  * nothing left to be here as.
+ *
+ * A server's account takes its server with it (#200): the entry comes out of
+ * the file and the run is ended, before the account goes. In that order,
+ * because an entry still listed would be given an account again on the next
+ * read of the config — so a file that cannot be written keeps the account.
  */
-function deleteFromDialog(): void {
+async function deleteFromDialog(): Promise<void> {
   const account = editing;
   if (!account) return;
 
@@ -4386,31 +4484,27 @@ function deleteFromDialog(): void {
     disarmDelete();
     return;
   }
-  // A server's account goes with its entry, not before it (#193). While the file
-  // lists the server the account is what the server speaks as, and the next read
-  // of the config would only give the entry an account again; while the server
-  // is running, it is still speaking as this one.
-  if (account.kind === "mcp") {
-    const view = mcpServerOf(account).view;
-    if (view?.listed) {
-      dialogError(
-        `このアカウントは設定ファイルのサーバ「${account.server}」です。削除するには、先に設定ファイルからそのサーバを消してください。`,
-      );
-      disarmDelete();
-      return;
-    }
-    if (view?.state?.state === "starting" || view?.state?.state === "running") {
-      dialogError("サーバが動いています。先に停止してください。");
-      disarmDelete();
-      return;
-    }
-  }
+  const server = account.kind === "mcp" ? account.server : null;
   if (!deleteArmed) {
     deleteArmed = true;
     dialogDeleteEl.textContent = "本当に削除";
     dialogDeleteEl.classList.add("armed");
-    dialogError("もう一度押すと削除します。");
+    dialogError(
+      server
+        ? `もう一度押すと削除します。設定ファイルからサーバ「${server}」を外し、動いていれば止めます。`
+        : "もう一度押すと削除します。",
+    );
     return;
+  }
+
+  if (server) {
+    try {
+      await invoke("delete_mcp_server", { name: server });
+    } catch (err) {
+      dialogError(`サーバを設定ファイルから外せませんでした: ${err}`);
+      disarmDelete();
+      return;
+    }
   }
 
   accounts = accounts.filter((candidate) => candidate.id !== account.id);
@@ -4424,6 +4518,7 @@ function deleteFromDialog(): void {
   renderPanel();
   renderSessionFacts();
   status(`アカウント「${account.name}」を削除しました。`);
+  if (server) void refreshMcpServers();
 }
 
 /** Drop the draft and close. Nothing it held reached the account list. */
@@ -4659,6 +4754,10 @@ async function refreshMcpServers(): Promise<void> {
 function drawDialogMcp(): void {
   const name = dialogServer();
   if (name === null || !dialogEl.open) return;
+  // Put back what a form making a server took away (`drawNewMcp`).
+  mcpSaveEl.hidden = false;
+  mcpLogHeadEl.hidden = false;
+  mcpLogEl.hidden = false;
   const panel = mcpPanel;
   mcpFileEl.textContent = panel?.file ?? "";
   mcpFileErrorEl.textContent = panel?.error ?? "";
@@ -4694,6 +4793,27 @@ function drawDialogMcp(): void {
   const following = mcpLogEl.scrollTop + mcpLogEl.clientHeight >= mcpLogEl.scrollHeight - 4;
   mcpLogEl.textContent = server?.log.length ? mcpLogText(server.log) : "（まだ何も出ていません）";
   if (following) mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
+}
+
+/**
+ * Draw the server section for a form making an account of kind `mcp` (#200).
+ *
+ * The three fields, empty, and nothing that answers for a server: there is none
+ * yet to have a state, a log, a 保存 or a 再起動 of its own. 決定 writes it and
+ * starts it (`createMcpAccount`). The file it will be written to is named, as
+ * the section of an existing server names it.
+ */
+function drawNewMcp(): void {
+  mcpStateEl.textContent = "決定で設定ファイルに書き、起動します";
+  mcpStateEl.dataset.kind = "";
+  mcpRestartEl.hidden = true;
+  mcpStaleEl.textContent = "";
+  mcpFieldsEl.hidden = false;
+  mcpSaveEl.hidden = true;
+  mcpLogHeadEl.hidden = true;
+  mcpLogEl.hidden = true;
+  mcpFileEl.textContent = mcpPanel?.file ?? "";
+  mcpFileErrorEl.textContent = mcpPanel?.error ?? "";
 }
 
 /** Write the open server's fields into the file. The running server is left as
@@ -4981,7 +5101,7 @@ async function main(): Promise<void> {
   ]) {
     field.addEventListener("input", () => disarmDelete());
   }
-  dialogDeleteEl.addEventListener("click", () => deleteFromDialog());
+  dialogDeleteEl.addEventListener("click", () => void deleteFromDialog());
   dialogCancelEl.addEventListener("click", () => closeAccountDialog());
   // Escape closes the dialog itself, and it means 取消: the draft is dropped by
   // the close handler below, so there is no path out of this form that leaves

@@ -74,6 +74,8 @@ pub fn run() {
             session::start_session,
             app_mcp::mcp_servers,
             app_mcp::save_mcp_server,
+            app_mcp::create_mcp_server,
+            app_mcp::delete_mcp_server,
             app_mcp::restart_mcp_server,
             app_mcp::open_mcp_servers_file,
         ])

@@ -348,17 +348,20 @@
                人が足したいものだけになる。どれにも当てはまらない起動は
                `CLI（汎用）` であり、アプリは何も足さない。
 
-               `mcp` はここで選ぶ種別ではない（#193）。アプリ本体が起動する
-               ローカル MCP サーバのアカウントであり、`mcp-servers.json` の
-               エントリごとにアプリが作る。その窓では種別は変えられず、他の
-               種別からもこれにはならない。 -->
+               `MCP サーバ` はアプリ本体が起動するローカル MCP サーバのアカ
+               ウントである（#193）。作るときにだけ選べ（#200）、選べば下に
+               サーバの欄が出て、決定で `mcp-servers.json` にエントリを書き、
+               アカウントを作り、そのサーバを起動する。ファイルへ手で足した
+               エントリにはアプリがアカウントを作る。どちらの道で来ても種別
+               は後から変えられず、他の種別からもこれにはならない——既に在る
+               アカウントの窓では、この選択肢は `mcp` のアカウントにだけ出る。 -->
           <label class="field">
             種別
             <select id="dialog-kind">
               <option value="admin">admin（人間）</option>
               <option value="claude_code">Claude Code</option>
               <option value="cli">CLI（汎用）</option>
-              <option value="mcp" hidden disabled>MCP サーバ</option>
+              <option value="mcp">MCP サーバ</option>
             </select>
           </label>
 
@@ -483,7 +486,12 @@
                server keeps running, and it is started when the person says so.
                決定 saves the fields as well when they were edited and not
                saved, so an edit is not lost to the window closing over it; 取消
-               leaves the file as the last 保存 left it. -->
+               leaves the file as the last 保存 left it.
+
+               On a form making an account of this kind (#200) the section is
+               the three fields alone: there is no server yet to have a state,
+               a log or a 保存 of its own, and 決定 is what writes the entry and
+               starts it. -->
           <div id="dialog-mcp" class="mcp-server" hidden>
             <div class="mcp-head">
               <span class="label">サーバ</span>
@@ -526,7 +534,7 @@
             </div>
             <p id="mcp-error" class="mcp-error" role="alert"></p>
 
-            <div class="mcp-head">
+            <div id="mcp-log-head" class="mcp-head">
               <span class="label">ログ</span>
               <span class="spacer"></span>
               <button id="mcp-open-file" type="button">設定ファイルを開く</button>

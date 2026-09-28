@@ -19,6 +19,11 @@
 //! with no account is given one as the config is read (`migrate_accounts`),
 //! so a server added to the file by hand is an account the next time the app
 //! reads its accounts, the same as the one written by default.
+//!
+//! The account form makes one as well (#200): it writes a new entry under a
+//! name taken from the account's (`new_entry_name`) and the account with it,
+//! and deleting that account takes the entry out again (`remove_server`). The
+//! file stays the person's to edit by hand either way.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -120,6 +125,58 @@ pub fn set_server(root: &mut Value, name: &str, server: &Server) -> Result<(), S
     entry.insert("args".to_string(), json!(server.args));
     entry.insert("env".to_string(), json!(server.env));
     Ok(())
+}
+
+/// Take one server's entry out of the file's contents (#200).
+///
+/// That entry and nothing else: any other entry and any other key of the file
+/// stay as they were, for the reason `set_server` gives. Returns whether there
+/// was an entry to take — a server already gone from the file is not an error,
+/// since what was asked for is already the case.
+pub fn remove_server(root: &mut Value, name: &str) -> Result<bool, String> {
+    let Some(object) = root.as_object_mut() else {
+        return Err("the file is not a JSON object".to_string());
+    };
+    let Some(listed) = object.get_mut(SERVERS_KEY) else {
+        return Ok(false);
+    };
+    let listed = listed
+        .as_object_mut()
+        .ok_or_else(|| format!("{SERVERS_KEY} is not an object"))?;
+    Ok(listed.remove(name).is_some())
+}
+
+/// The name a server made on the account form is listed under (#200).
+///
+/// Taken from the name of the account being made, so the file read by hand
+/// says which account each entry is. The space in a name becomes `-`: the key
+/// is what names the server in the log and in the account's id, and a key with
+/// a gap in it reads as two words there. A name that leaves nothing is
+/// `mcp-server`.
+///
+/// Not a name already in use, counted up past it (`-2`, `-3`, ...). In use is
+/// three things: an entry in the file (`names`), a server an account still
+/// answers to after its entry has gone (`names` again — a new entry under that
+/// name would speak as that old account), and the id the new account would be
+/// given (`account_id`) standing on an account already (`ids`).
+pub fn new_entry_name(account_name: &str, names: &[String], ids: &[String]) -> String {
+    let words: Vec<&str> = account_name.split_whitespace().collect();
+    let base = if words.is_empty() {
+        "mcp-server".to_string()
+    } else {
+        words.join("-")
+    };
+    let free = |candidate: &str| {
+        !names.iter().any(|name| name == candidate)
+            && !ids.iter().any(|id| *id == account_id(candidate))
+    };
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|candidate| free(candidate))
+        .expect("the counter runs past every name in use")
 }
 
 /// Build a server from what the window's three fields hold.
@@ -408,6 +465,56 @@ mod tests {
         let mut root = json!({});
         set_server(&mut root, "a", &server).unwrap();
         assert_eq!(servers(&root).unwrap()["a"], server);
+    }
+
+    #[test]
+    fn a_removal_takes_that_entry_and_nothing_else() {
+        let mut root: Value = serde_json::from_str(
+            r#"{
+                "note": "written by hand",
+                "mcpServers": {
+                    "gone": {"command":"node"},
+                    "other": {"command":"uvx","args":["tool"],"disabled":true}
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(remove_server(&mut root, "gone").unwrap());
+        assert_eq!(
+            root,
+            json!({
+                "note": "written by hand",
+                "mcpServers": { "other": {"command":"uvx","args":["tool"],"disabled":true} }
+            })
+        );
+        // Already gone is what was asked for, not a failure.
+        assert!(!remove_server(&mut root, "gone").unwrap());
+        assert!(!remove_server(&mut json!({}), "a").unwrap());
+    }
+
+    #[test]
+    fn a_removal_from_a_file_that_cannot_hold_it_is_refused() {
+        assert!(remove_server(&mut json!([]), "a").is_err());
+        assert!(remove_server(&mut json!({"mcpServers": 1}), "a").is_err());
+    }
+
+    #[test]
+    fn a_new_entry_is_named_after_its_account() {
+        assert_eq!(new_entry_name("通知", &[], &[]), "通知");
+        assert_eq!(new_entry_name("  my  server ", &[], &[]), "my-server");
+        assert_eq!(new_entry_name("   ", &[], &[]), "mcp-server");
+    }
+
+    #[test]
+    fn a_new_entry_does_not_take_a_name_in_use() {
+        // An entry in the file.
+        let listed = names(&["x", "x-2"]);
+        assert_eq!(new_entry_name("x", &listed, &[]), "x-3");
+        // The id the account would be given, already standing on another.
+        assert_eq!(new_entry_name("y", &[], &[account_id("y")]), "y-2");
+        // The same for a server an account still answers to, which `names`
+        // carries beside the entries: the caller puts both in.
+        assert_eq!(new_entry_name("old", &names(&["old"]), &[]), "old-2");
     }
 
     #[test]
