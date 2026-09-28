@@ -1,17 +1,24 @@
 //! Registering the room sidecar in a project's `.mcp.json`, and the flag
-//! guard that keeps a launched session able to receive channel pushes.
+//! guard that keeps a launched session reading its terminal as its input.
 //!
-//! Both are conditions the round trip does not survive without (see the
-//! 成立条件 in `docs/0-requirements.md`):
+//! Both are conditions the round trip does not survive without (see
+//! `docs/0-requirements.md`):
 //!
-//!   - The sidecar must be registered **by name**. A config handed over with
-//!     `--mcp-config` does not resolve on the channel side.
-//!   - The launch must carry `--dangerously-load-development-channels
-//!     server:<name>` and nothing else on that axis. Adding `--channels`
-//!     registers the same server twice and takes the whole room down.
+//!   - The sidecar must be registered **by name**, and approved by that name
+//!     on the line (`settings_launch_args`), or the session has no
+//!     `say_to_room` to answer through.
+//!   - The launch must stay interactive. Every post reaches a session typed
+//!     into its terminal (#195), so a flag that stops the CLI reading its
+//!     terminal as the input box leaves the session deaf to the room.
 //!   - The launch must name the room registrations it is **not**, in
 //!     `--settings`. The CLI starts every enabled server in the file, and a
 //!     shared working directory holds one per account (#103).
+//!
+//! No channel flag is put on the line. The room stopped pushing posts through
+//! `notifications/claude/channel` (#195), so the sidecar declares no channel
+//! and `--dangerously-load-development-channels` has nothing of the room's to
+//! load. A person's own line may still name one for a server of theirs; it is
+//! theirs and is left as they wrote it.
 //!
 //! What the app knows about the CLI itself is here too, and it is one type:
 //! `Cli`, which answers how a session id is handed over, how a session is
@@ -112,9 +119,12 @@ fn fnv1a(text: &str) -> u32 {
     hash
 }
 
-/// Flags that silently stop channel pushes from arriving.
-pub const INCOMPATIBLE_FLAGS: &[&str] =
-    &["--channels", "--print", "--input-format", "--output-format"];
+/// Flags that stop the CLI reading its terminal as the input box.
+///
+/// Each one turns the session headless: it reads a prompt from its arguments
+/// or a stream rather than from what is typed, and every post the room has
+/// for it is typed (#195).
+pub const INCOMPATIBLE_FLAGS: &[&str] = &["--print", "--input-format", "--output-format"];
 
 /// What a session launch needs to know about the room it is joining.
 #[derive(Debug, Clone)]
@@ -184,39 +194,6 @@ pub fn reject_incompatible_flags(args: &[String]) -> Result<(), &'static str> {
         }
     }
     Ok(())
-}
-
-/// The flag that loads channel servers into a session.
-pub const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
-
-/// The launch arguments for a channel-enabled session, given the account's own.
-///
-/// The room's entry is merged into whatever the person wrote rather than added
-/// as a second flag: `--channels` alongside this one registers a server twice
-/// and takes the whole room down, and two copies of this flag is the same
-/// shape. Merging also means the room's input path cannot be dropped by
-/// configuring a different server — losing it is losing the room.
-///
-/// `server_name` is this account's own (`server_name_for`), so the flag and the
-/// `.mcp.json` key stay one fact even though that fact differs per account.
-pub fn channel_launch_args(base: &[String], server_name: &str) -> Vec<String> {
-    let room = format!("server:{server_name}");
-    let mut args = base.to_vec();
-
-    if args.iter().any(|arg| *arg == room) {
-        return args;
-    }
-
-    match args.iter().position(|arg| arg == CHANNEL_FLAG) {
-        // Right after the flag: the values are positional, and keeping them
-        // contiguous means a later argument cannot be captured as one.
-        Some(index) => args.insert(index + 1, room),
-        None => {
-            args.push(CHANNEL_FLAG.to_string());
-            args.push(room);
-        }
-    }
-    args
 }
 
 /// The flag that hands a launch its settings, as a path or as JSON.
@@ -406,8 +383,11 @@ impl Cli {
     /// answers a post and stops never learns the room has a tool at all, and
     /// writes its answer to the terminal where nobody reads it (#147, measured
     /// across three sessions, 2026-09-17). The sidecar's text says the same
-    /// thing and says it too late; this says it on the launch line, where it is
-    /// there before the first turn.
+    /// thing and said it too late then; this says it on the launch line, where
+    /// it is there before the first turn. On Claude Code 2.1.283 the
+    /// `instructions` were measured arriving before the first post, with no
+    /// tool called yet (#195, 2026-09-28), so the rule for reading a post's
+    /// label is left to them and is not repeated here.
     ///
     /// **Path-independent, and short.** What it states is that the room is
     /// spoken to through this tool and that terminal output does not reach it —
@@ -644,7 +624,7 @@ const APPEND_SYSTEM_PROMPT_FILE_FLAG: &str = "--append-system-prompt-file";
 /// The launch arguments carrying what this CLI's conventions tell a session
 /// about the room it is joining, given the account's own (#147).
 ///
-/// The room's own entry and the approval ride on every launched line whatever
+/// The approval of the room's own entry rides on every launched line whatever
 /// its kind, because they are what a seat in the room needs. This does not: the
 /// flag is the CLI's spelling, and a kind this app has established nothing
 /// about is a kind whose launch an unknown flag ends (#156, 決定5). Same line
@@ -1061,10 +1041,9 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// sitting there, and the shared directory gains no per-account file. Gaining
 /// one would be the opposite of what sharing the directory is for.
 ///
-/// Selected rather than merged, unlike the channel entry above: `--settings`
-/// on the command line wins over the `settings.json` in the directory, so the
-/// directory's own default stays as it is and is simply not what this launch
-/// reads.
+/// Selected rather than merged: `--settings` on the command line wins over
+/// the `settings.json` in the directory, so the directory's own default stays
+/// as it is and is simply not what this launch reads.
 ///
 /// `own_server` is named in `enabledMcpjsonServers`, which is the approval key
 /// (#143). The registration key is per room (`server_name_for`), so every topic
@@ -1137,8 +1116,8 @@ pub fn settings_launch_args(
 }
 
 /// The whole line one launch runs: the account's options, what the CLI's own
-/// conventions put on every line of its kind, the room's channel entry, and the
-/// settings this session declares about itself.
+/// conventions put on every line of its kind, and the settings this session
+/// declares about itself.
 ///
 /// One function rather than two calls at each site, because the line shown on
 /// screen and the line spawned have to be the same line. They are produced in
@@ -1150,14 +1129,14 @@ pub fn settings_launch_args(
 /// What the kind's conventions put onto the line itself is two things by now:
 /// where the session id goes, and what the session is told about the room
 /// before its first turn (#147). Both sit between the person's own options and
-/// the room's entry. The kind's third contribution here is a gate rather than
+/// the settings. The kind's third contribution here is a gate rather than
 /// an argument — whether the status line rides in the settings at all
 /// (`reports_through_settings`).
 ///
 /// `cli` is the CLI this account's kind names, or `None` when its kind names
 /// none. A kind naming none is left with the line it would have had before the
-/// kinds were split: the room's own entry and the settings the room needs, and
-/// nothing this app knows about a CLI. The status line is the visible half of
+/// kinds were split: the settings the room needs, and nothing this app knows
+/// about a CLI. The status line is the visible half of
 /// that — it is Claude Code's spelling, and a kind this app has established
 /// nothing about does not get it written onto its line on the chance that it
 /// fits (#156, 決定5).
@@ -1178,10 +1157,7 @@ pub fn launch_args(
     let reports = cli.is_some_and(Cli::reports_through_settings);
     let base = carried_launch_options(base);
     settings_launch_args(
-        &channel_launch_args(
-            &system_prompt_launch_args(&session_id_launch_args(base, cli), cli, server_name),
-            server_name,
-        ),
+        &system_prompt_launch_args(&session_id_launch_args(base, cli), cli, server_name),
         character,
         server_name,
         disabled,
@@ -1789,8 +1765,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_flags_that_stop_channel_pushes() {
-        for arg in ["--channels", "--print", "--input-format", "--output-format"] {
+    fn rejects_flags_that_stop_the_terminal_being_read() {
+        for arg in ["--print", "--input-format", "--output-format"] {
             let args = vec!["--verbose".to_string(), arg.to_string()];
             assert_eq!(reject_incompatible_flags(&args), Err(arg));
         }
@@ -1809,42 +1785,33 @@ mod tests {
     }
 
     #[test]
-    fn merges_the_room_into_a_channel_flag_the_person_already_wrote() {
-        // Master's own launch line, which names a different channel server.
-        // A second copy of the flag is the `--channels` failure in another
-        // shape, and dropping the room entry loses the room's input path.
-        let base: Vec<String> = [
+    fn a_channel_flag_is_the_persons_own_and_is_neither_refused_nor_added() {
+        // The room loads no channel of its own any more (#195). A line naming
+        // one for another server — Master's own does — runs as it was written,
+        // and a line naming none gets none.
+        let theirs: Vec<String> = [
             "--dangerously-skip-permissions",
-            CHANNEL_FLAG,
+            "--dangerously-load-development-channels",
             "server:github-webhook-mcp",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
-
-        let room = server_name_for(LIN, ROOM);
-        let merged = channel_launch_args(&base, &room);
+        assert_eq!(reject_incompatible_flags(&theirs), Ok(()));
+        assert_eq!(reject_incompatible_flags(&["--channels".to_string()]), Ok(()));
+        let line = launch_args(&theirs, None, &server_name_for(LIN, ROOM), None, &[], None);
+        assert_eq!(&line[..3], theirs.as_slice());
         assert_eq!(
-            merged,
-            vec![
-                "--dangerously-skip-permissions".to_string(),
-                CHANNEL_FLAG.to_string(),
-                format!("server:{room}"),
-                "server:github-webhook-mcp".to_string(),
-            ]
+            line.iter()
+                .filter(|arg| *arg == "--dangerously-load-development-channels")
+                .count(),
+            1
         );
-        assert_eq!(
-            merged.iter().filter(|arg| *arg == CHANNEL_FLAG).count(),
-            1,
-            "the flag must not appear twice"
+        let bare = launch_args(&[], None, &server_name_for(LIN, ROOM), None, &[], None);
+        assert!(
+            !bare.iter().any(|arg| arg.starts_with("server:") || arg.contains("channels")),
+            "{bare:?}"
         );
-    }
-
-    #[test]
-    fn does_not_add_the_room_twice() {
-        let room = server_name_for(LIN, ROOM);
-        let base = vec![CHANNEL_FLAG.to_string(), format!("server:{room}")];
-        assert_eq!(channel_launch_args(&base, &room), base);
     }
 
     /// This launch's own registration, as the settings tests name it.
@@ -2075,38 +2042,36 @@ mod tests {
             None,
         );
         // The person's own options, then what the kind's conventions carry
-        // (#156 / #147), then the room's two halves.
+        // (#156 / #147), then the room's settings.
         let told = Cli::ClaudeCode.room_system_prompt(&room).expect("a safe text");
         assert_eq!(
-            line[..8],
+            line[..6],
             [
                 "--verbose".to_string(),
                 "--session-id".to_string(),
                 SESSION_ID_PLACEHOLDER.to_string(),
                 APPEND_SYSTEM_PROMPT_FLAG.to_string(),
                 told,
-                CHANNEL_FLAG.to_string(),
-                format!("server:{room}"),
                 SETTINGS_FLAG.to_string(),
             ]
         );
-        assert_eq!(line.len(), 9);
-        let settled: Value = serde_json::from_str(&line[8]).expect("valid JSON");
+        assert_eq!(line.len(), 7);
+        let settled: Value = serde_json::from_str(&line[6]).expect("valid JSON");
         assert_eq!(settled["outputStyle"], json!("character_Lin"));
-        // The approval rides with it, naming the server the channel flag names
-        // (#143): one fact in the `.mcp.json` key, the tag and the approval.
+        // The approval rides with it, naming this account's own server (#143):
+        // one fact in the `.mcp.json` key and the approval.
         assert_eq!(settled["enabledMcpjsonServers"], json!([room]));
     }
 
     #[test]
     fn one_line_starts_this_account_and_stops_the_others() {
-        // The room entry names this session's own server and the settings name
-        // the ones it must leave alone: the same file, read twice, must not
-        // disagree about which entry is whose (#103).
+        // The settings approve this session's own server and name the ones it
+        // must leave alone: the same file, read twice, must not disagree about
+        // which entry is whose (#103).
         let room = server_name_for(LIN, ROOM);
         let lay = server_name_for(LAY, ROOM);
         // On the kind that carries no conventions of its own, so the line is
-        // the room's two halves and nothing else — which is what this reads.
+        // the room's settings and nothing else — which is what this reads.
         let line = launch_args(
             &[],
             None,
@@ -2115,16 +2080,15 @@ mod tests {
             std::slice::from_ref(&lay),
             None,
         );
-        assert_eq!(line[0], CHANNEL_FLAG);
-        assert_eq!(line[1], format!("server:{room}"));
-        assert_eq!(line[2], SETTINGS_FLAG);
-        let settled: Value = serde_json::from_str(&line[3]).expect("valid JSON");
+        assert_eq!(line.len(), 2);
+        assert_eq!(line[0], SETTINGS_FLAG);
+        let settled: Value = serde_json::from_str(&line[1]).expect("valid JSON");
         assert_eq!(settled["enabledMcpjsonServers"], json!([room]));
         assert_eq!(settled["disabledMcpjsonServers"], json!([lay]));
         assert_ne!(
             settled["disabledMcpjsonServers"][0],
             json!(room),
-            "the server the channel flag just named must not be disabled"
+            "the server this line approves must not be disabled"
         );
     }
 
@@ -2351,9 +2315,10 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_flag_names_the_server_the_config_registers() {
-        // The flag and the `.mcp.json` key are one fact in two places; a drift
-        // between them fails as a room that never receives anything.
+    fn the_launch_approves_the_server_the_config_registers() {
+        // The approval and the `.mcp.json` key are one fact in two places; a
+        // drift between them is a session held at the CLI's "New MCP server
+        // found" prompt, with no `say_to_room` to answer through.
         let scratch = Scratch::new();
         let entry = PathBuf::from(ENTRY);
         let runner = PathBuf::from(RUNNER);
@@ -2367,16 +2332,19 @@ mod tests {
             .expect("one entry")
             .clone();
 
-        let args = channel_launch_args(&["--verbose".to_string()], &server_name_for(LIN, ROOM));
-        assert_eq!(
-            args,
-            vec![
-                "--verbose".to_string(),
-                "--dangerously-load-development-channels".to_string(),
-                format!("server:{registered}"),
-            ]
+        let args = launch_args(
+            &["--verbose".to_string()],
+            None,
+            &server_name_for(LIN, ROOM),
+            None,
+            &[],
+            None,
         );
+        assert_eq!(args[..2], ["--verbose".to_string(), SETTINGS_FLAG.to_string()]);
+        let settled: Value = serde_json::from_str(&args[2]).expect("valid JSON");
+        assert_eq!(settled["enabledMcpjsonServers"], json!([registered]));
     }
+
     #[test]
     fn a_session_id_is_substituted_wherever_the_account_wrote_it() {
         let args = split_launch_options("--resume {session_id} --verbose");
@@ -2848,7 +2816,6 @@ mod tests {
         // What the room itself needs is still on it: the launch is not what is
         // lost here, and the app's own additions were never the person's to
         // break.
-        assert!(line.iter().any(|arg| arg == CHANNEL_FLAG), "{line:?}");
         assert!(line.iter().any(|arg| arg == SETTINGS_FLAG), "{line:?}");
         assert!(line.iter().any(|arg| arg == "--session-id"), "{line:?}");
 

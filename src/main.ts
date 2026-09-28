@@ -6,9 +6,11 @@
 // on send but comes back through that same event. See src-tauri/src/room.rs.
 //
 // The diagnostics pane carries a real terminal for the launched CLI. That is a
-// display, not a message source: the room's lines come from the channel and
-// from `say_to_room`, and nothing in this file reads terminal output as
-// speech. The rejected design is the one where the app parses CLI output to
+// display, not a message source: the room's lines come from the room's own
+// `room-message` event, and nothing in this file reads terminal output as
+// speech. The app types every post into the sessions' terminals (#195), and
+// the keys this pane sends are read for one thing only — whether the person
+// has left something unsent there, which is when those posts wait. The rejected design is the one where the app parses CLI output to
 // find messages (docs/0-requirements.md); showing the CLI is not that.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -1591,8 +1593,8 @@ function paintMine(): void {
  * A notice is drawn folded, and a run of them — everything one server says until
  * someone else speaks — is one fold, headed with how many it holds and opened by
  * a click. The fold is the screen's alone: each notice is still its own post in
- * the room, in the log and on every session's channel, and nothing but this
- * drawing groups them. Which lines fold is `foldOf`'s answer.
+ * the room, in the log and typed into every session's terminal, and nothing but
+ * this drawing groups them. Which lines fold is `foldOf`'s answer.
  */
 function placeLine(line: HTMLElement, fold: Fold | null): void {
   if (!fold) {
@@ -2539,9 +2541,11 @@ function memberRow(row: Member): HTMLLIElement {
     // as a CLI takes to spawn and join the room's websocket: the row fell
     // through to 未起動, the word for an account that was never started, while
     // the same row offered ❌. On the device that window lasted minutes,
-    // because the development-channels flag stops the CLI at a confirm prompt,
-    // and a running session was indistinguishable by word from an idle
-    // account — only the button said which was which (#89).
+    // because the development-channels flag the launch carried then stopped
+    // the CLI at a confirm prompt, and a running session was indistinguishable
+    // by word from an idle account — only the button said which was which
+    // (#89). The flag is off the line since #195; a CLI can still stop at a
+    // prompt of its own before it joins.
     //
     // Below `row.participant` on purpose. A row that is in the room says
     // nothing unless it has something to report, and being in the list is what
@@ -3976,7 +3980,7 @@ function launchesKind(kind: AccountKind): boolean {
 /**
  * Show the command this account's launch would actually run.
  *
- * The app merges its own channel entry into whatever is typed and selects the
+ * The app adds the room's own settings to whatever is typed and selects the
  * character named above, so the line written here is not the line that
  * launches; showing the result is cheaper than explaining either. The character
  * is why this reads the fields rather than the draft: it is the one place the

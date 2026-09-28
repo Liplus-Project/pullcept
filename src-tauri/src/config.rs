@@ -29,9 +29,13 @@ use tauri::Manager;
 /// account's — and no CLI is started under it; the server is started from its
 /// entry in `mcp-servers.json`, which the account names as `server`.
 ///
-/// What it decides: which group the participant list draws the row under, and
-/// which conventions a launch carries. Nothing in the room reads it; the room
-/// still has one kind of participant.
+/// What it decides: which group the participant list draws the row under,
+/// which conventions a launch carries, and the `role` on the label a post from
+/// a session is typed into the other sessions under (#195,
+/// `terminal_input::role`). The room still has one kind of participant: the
+/// role does not change what the floor admits or where a post is delivered,
+/// only what a session reading it is told about who said it — and `admin` is
+/// never read from here, since the screen alone is that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountKind {
@@ -276,12 +280,13 @@ pub struct TabSessions {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        // One vendor, by decision rather than by omission: the room is built
-        // on a channel capability only this CLI is known to have, and the
-        // spec drops the second vendor to keep that premise out of the
-        // design. Shipping an account that cannot join the room by default
-        // would present a session that never speaks. See
-        // docs/0-requirements.md.
+        // One vendor, by decision rather than by omission: the room was built
+        // on a channel capability only this CLI was known to have, and the
+        // spec dropped the second vendor to keep that premise out of the
+        // design. The room no longer uses the channel (#195); the default
+        // stays the CLI whose conventions this app holds. Shipping an account
+        // that cannot join the room by default would present a session that
+        // never speaks. See docs/0-requirements.md.
         //
         // One account, and its name is the CLI's. That is a starting point
         // sitting in an editable field, not the fixed label it used to be:
@@ -447,6 +452,20 @@ pub fn mcp_speaker(app: &AppHandle, server: &str) -> McpSpeaker {
             hue: None,
         },
     }
+}
+
+/// The kind of the account `account_id` names, as it is stored — `claude_code`,
+/// `cli`, ... — or `None` when the config holds no such account, or cannot be
+/// read (#195).
+///
+/// Read when a session's post is typed into the others, for its label's
+/// `role`, rather than held from the launch: the kind is what the account is
+/// now. The stored spelling rather than the enum, because the label carries
+/// the word, and `terminal_input` names the kinds it treats apart by that word.
+pub fn account_kind_name(app: &AppHandle, account_id: &str) -> Option<String> {
+    let config = read_config(app).ok()?;
+    let account = config.accounts.into_iter().find(|account| account.id == account_id)?;
+    kind_value(account.kind).as_str().map(str::to_string)
 }
 
 /// The kind every launched account carried while there was one of them (#156).
