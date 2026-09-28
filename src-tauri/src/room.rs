@@ -24,10 +24,12 @@
 //! to push onto the channel, and that path is gone with the channel.
 //!
 //! `to` is optional and carries the display names of the participants
-//! addressed, as a list — one name or several (#204). The room still delivers
-//! every post to every participant — narrowing delivery here would make the
-//! room hold who heard what, and answering is the participant's judgment, not
-//! the room's.
+//! addressed, as a list — one name or several (#204). An `@名前` in `content`
+//! that names someone in the room is moved into it, out of the text (#206) —
+//! for a participant's post; a notice is passed through as it arrived. The
+//! room still delivers every post to every participant — narrowing delivery
+//! here would make the room hold who heard what, and answering is the
+//! participant's judgment, not the room's.
 //!
 //! `speaker` is stamped by the room from the connection the frame arrived on,
 //! never read off the frame. A sender cannot claim to be someone else, and the
@@ -843,6 +845,22 @@ fn deliver(
             // command does that before it reaches this point.
             None => (0, None, None),
         };
+        // The `@名前` that name someone in this room address them, and leave
+        // the text (#206). Read here because this is the one path: the screen's
+        // post and a session's `say_to_room` get the same reading, against the
+        // names seated under this same acquisition. A notice is external
+        // content and passes through as it arrived (`room_floor::Sender`).
+        let sender = if origin == room.notice_origin {
+            room_floor::Sender::Notice
+        } else {
+            room_floor::Sender::Participant
+        };
+        room_floor::address(
+            &mut post,
+            sender,
+            inner.participants.values().map(|seat| seat.name.as_str()),
+        )
+        .map_err(str::to_string)?;
         // Stamped before the floor takes its copy, so the retained post and the
         // live line carry one declaration rather than two readings of it. A
         // refusal hands that copy back, and the screen draws it (#108).
@@ -1535,7 +1553,7 @@ async fn serve_participant(
                 // verified here. A participant who declares a false watermark
                 // spends its own round trips; nobody else's post moves.
                 let outcome = match joined_room.get() {
-                    Some(room_id) => deliver(
+                    Some(room_id) if room.holds(room_id) => deliver(
                         &app,
                         &room,
                         room_id,
@@ -1554,19 +1572,19 @@ async fn serve_participant(
                             ts: frame.ts.unwrap_or_else(now_iso),
                         },
                         frame.last_seen.as_deref(),
-                    )
-                    .map_err(|_| ()),
-                    None => Err(()),
+                    ),
+                    _ => Err(no_room(joined_room.get())),
                 };
                 // Answered on the connection that posted, always — a refusal
                 // that says nothing is indistinguishable from a delivery, and
                 // this answer is the boundary at which a reply needing no
                 // other tool finally gets to read what it missed.
                 //
-                // A post with no room to go into is answered with the reason,
-                // beside `delivered: false`. Without it the answer would read
-                // as a refusal with nothing missed, which invites the same post
-                // again.
+                // A post that did not go in is answered with the reason,
+                // beside `delivered: false`: no room to go into, or nothing
+                // left to say once its `@名前` became addressees (#206).
+                // Without it the answer would read as a refusal with nothing
+                // missed, which invites the same post again.
                 let receipt = match outcome {
                     Ok(outcome) => serde_json::json!({
                         "type": "post_result",
@@ -1574,12 +1592,12 @@ async fn serve_participant(
                         "delivered": outcome.delivered,
                         "missed": outcome.missed,
                     }),
-                    Err(_) => serde_json::json!({
+                    Err(error) => serde_json::json!({
                         "type": "post_result",
                         "message_id": message_id,
                         "delivered": false,
                         "missed": [],
-                        "error": no_room(joined_room.get()),
+                        "error": error,
                     }),
                 };
                 let _ = room.to_participants.send(Fanout {
@@ -1849,9 +1867,9 @@ pub fn room_join(
 /// glass when this was typed, and judged against another room's floor it would
 /// be a watermark from somewhere else (#141).
 ///
-/// `to` is the names the composer's `@` picks were bound to when they were
-/// picked (#204). Nothing here reads an addressee out of `content`: the
-/// `@名前` left in the text is for the reader, and the list is what addresses.
+/// There is no `to`. The screen addresses in the text, as `@名前`, and
+/// `deliver` reads those out of it against the room's names, the same way it
+/// reads a session's (#206).
 #[tauri::command]
 pub fn room_post(
     app: AppHandle,
@@ -1859,7 +1877,6 @@ pub fn room_post(
     topic_id: String,
     speaker: String,
     content: String,
-    to: Option<Vec<String>>,
     last_seen: Option<String>,
 ) -> Result<PostOutcome, String> {
     let content = content.trim().to_string();
@@ -1896,7 +1913,7 @@ pub fn room_post(
             hue: None,
             account: None,
             content,
-            to: normalize_to(to),
+            to: Vec::new(),
             ts: now_iso(),
         },
         last_seen.as_deref(),
