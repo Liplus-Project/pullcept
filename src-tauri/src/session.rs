@@ -796,8 +796,8 @@ pub fn start_session(
     // account does — a name, a colour, a row in the list whether or not they
     // are in the room — and there is no CLI under it to spawn (#59). Refused
     // here rather than only hidden from the launcher, so the screen is not the
-    // only thing standing between a `user` account and a spawned `claude`.
-    if account.kind == AccountKind::User {
+    // only thing standing between an `admin` account and a spawned `claude`.
+    if account.kind == AccountKind::Admin {
         return Err(format!(
             "Account \"{name}\" is a person, not a session. There is nothing to launch: a \
              person joins by being at the screen."

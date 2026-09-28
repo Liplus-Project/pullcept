@@ -2708,7 +2708,7 @@ mod tests {
     fn only_the_accounts_that_declared_no_kind_of_their_own_are_moved() {
         let root = migrated(
             r#"{"accounts":[
-                {"id":"person","command":"claude","args":[],"kind":"user","resume_command":null},
+                {"id":"person","command":"claude","args":[],"kind":"admin","resume_command":null},
                 {"id":"declared","command":"claude","args":[],"kind":"cli","resume_command":"mine"},
                 {"id":"absent","command":"claude","args":["--session-id={session_id}"]},
                 {"id":"unknown","command":"codex","args":["--session-id","{session_id}"],"kind":"ai"}
@@ -2716,7 +2716,7 @@ mod tests {
         );
         let accounts = root["accounts"].as_array().expect("accounts");
         // A person stays a person, and their fields are not touched either.
-        assert_eq!(accounts[0]["kind"], json!("user"));
+        assert_eq!(accounts[0]["kind"], json!("admin"));
         // A declared kind stands, resume line and all.
         assert_eq!(accounts[1]["kind"], json!("cli"));
         assert_eq!(accounts[1]["resume_command"], json!("mine"));
