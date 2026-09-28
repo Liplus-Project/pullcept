@@ -872,6 +872,15 @@ interface SessionView {
   /** How the session ended, or null while it is still running. */
   ended: string | null;
   /**
+   * True when the app ended this session itself: the row's ❌, a topic being
+   * deleted, the app closing (#121).
+   *
+   * Carried by the exit event (`PtyExit` in `pty.rs`), not worked out here. An
+   * end asked for is not reported as a failure and does not open the pane; an
+   * end nobody asked for still does both, because that one is worth checking.
+   */
+  endRequested: boolean;
+  /**
    * True while output is still arriving from this session.
    *
    * Raised by the first byte and lowered by `OUTPUT_QUIET_MS` of silence, so it
@@ -2728,7 +2737,7 @@ function terminalTab(view: SessionView): HTMLElement {
   pick.type = "button";
   pick.className = "name";
   pick.textContent = name;
-  pick.title = view.ended === null ? `${name} の端末` : `${name} の端末（${view.ended}）`;
+  pick.title = view.ended === null ? `${name} の端末` : `${name} の端末（${endedNote(view)}）`;
   pick.setAttribute("aria-pressed", String(shown));
   pick.addEventListener("click", () => {
     showView(view.accountId);
@@ -3277,8 +3286,13 @@ function renderSessionFacts(): void {
     return;
   }
   const name = viewName(view);
-  sessionStateEl.textContent = view.ended === null ? `${name} 起動中` : `${name} 終了（${view.ended}）`;
-  sessionStateEl.dataset.kind = view.ended === null ? "ok" : "error";
+  sessionStateEl.textContent =
+    view.ended === null
+      ? `${name} 起動中`
+      : view.endRequested
+        ? `${name} 終了`
+        : `${name} 終了（${view.ended}）`;
+  sessionStateEl.dataset.kind = view.ended === null ? "ok" : view.endRequested ? "info" : "error";
   transportEl.textContent = "PTY";
   commandEl.textContent = view.command;
   dirEl.textContent = view.cwd ?? "—";
@@ -3657,6 +3671,7 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // of this account has not finished dropping as this one having arrived.
     seenInRoom: false,
     ended: null,
+    endRequested: false,
     // Quiet until something arrives. A session picked up again after a reload
     // starts here too: its terminal is new even though its process is not, so
     // what this screen can say about it begins at the next byte (#86).
@@ -3765,6 +3780,23 @@ function showView(accountId: string | null): void {
  * is remembered on this side, which is why one can be followed again from the
  * id alone, and why losing the id is what made a running session unreachable.
  */
+/**
+ * What `pty-exit-{id}` carries (`PtyExit` in `pty.rs`).
+ *
+ * `requested` is the app's own account of whether it ended the session, marked
+ * where the kill happened. Nothing on this side infers it — a missing code is
+ * not the same fact, since a code can go missing on an end nobody asked for.
+ */
+interface PtyExit {
+  code: number | null;
+  requested: boolean;
+}
+
+/** How an ended session's end reads in a parenthesis: the code, or 終了 alone. */
+function endedNote(view: SessionView): string {
+  return view.endRequested ? "終了" : view.ended ?? "";
+}
+
 async function attachSession(view: SessionView, ptyId: string): Promise<void> {
   view.unlisten.push(
     await listen<string>(`pty-data-${ptyId}`, (event) => {
@@ -3778,10 +3810,11 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
   // yet reaches 待機 after one quiet window, the same as one that stopped (#148).
   if (view.ended === null && view.quiet === undefined) armQuiet(view);
   view.unlisten.push(
-    await listen<number | null>(`pty-exit-${ptyId}`, (event) => {
-      const code = event.payload;
+    await listen<PtyExit>(`pty-exit-${ptyId}`, (event) => {
+      const { code, requested } = event.payload;
       const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
       view.ended = detail;
+      view.endRequested = requested;
       // Nothing more will print, so the row must not spend the quiet window
       // still saying that something is (#82).
       stopOutput(view);
@@ -3790,19 +3823,27 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
       for (const off of view.unlisten) off();
       view.unlisten = [];
       const name = viewName(view);
-      status(`${name} が終了しました（${detail}）。端末を確認してください。`, "error");
+      // An end the app asked for is one the person has just agreed to in a
+      // dialog. Calling it an unexplained exit and sending them to the terminal
+      // has them look for a problem that is not there, and a warning that is
+      // always safe to ignore is ignored on the day it is not (#121).
+      if (requested) status(`${name} を終了しました。`);
+      else status(`${name} が終了しました（${detail}）。端末を確認してください。`, "error");
       // A resume that ended on its own without the room ever having seen it
       // went back into a session that is not there. The record it went in on is
       // what every later launch into this topic will fail on the same way, so
       // it goes (#127).
-      void dropDeadResume(view, code, detail);
+      void dropDeadResume(view, event.payload, detail);
       // The seat this account held is free the moment its session ends, so the
       // panel says 未起動 again and the account can be started once more.
       void refreshSeats();
       renderPanel();
       if (view === shownView()) {
         renderSessionFacts();
-        revealDiagnostics();
+        // Only for an end nobody asked for: what it printed on the way out is
+        // the account of why. An end asked for leaves the pane as it was — not
+        // opened, and not closed either if it was already open (#121).
+        if (!requested) revealDiagnostics();
       }
     }),
   );
@@ -3824,15 +3865,15 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
  * message it prints would be a check that stops working the day the wording
  * changes, and stops silently (#127, 制約).
  *
- * The third is what an exit code being carried at all says, not what its value
- * is: a session the app killed is taken out of the map before it is reaped, and
- * the exit then arrives with no code (`pty.rs`). That is the row's ❌, the topic
- * delete, and the app closing — an end somebody asked for, and none of them says
- * the resume failed. The window it covers is real: the confirm prompt holds a
+ * The third is what the exit event says about who ended it (`PtyExit.requested`,
+ * #121), and not any value of the code: the row's ❌, the topic delete, and the
+ * app closing arrive marked as ends the app asked for, and none of them says the
+ * resume failed. The window it covers is real: the confirm prompt holds a
  * launched CLI outside the room for minutes (#89), and ending the wrong account
  * during it is an ordinary act that must not cost a resume that would have
- * worked. A code missing for any other reason falls the same way, which is the
- * safe side — the poisoned launch ends by itself and is caught on the next press.
+ * worked. An end nobody asked for that still arrives with no code falls the same
+ * way, which is the safe side — the poisoned launch ends by itself and is caught
+ * on the next press.
  *
  * It does not start anything again. The record is off, so the next press is a
  * normal launch — and whether to press is the person's. Retrying here would be
@@ -3847,11 +3888,11 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
  */
 async function dropDeadResume(
   view: SessionView,
-  code: number | null,
+  exit: PtyExit,
   detail: string,
 ): Promise<void> {
   const dead = view.resumedFrom;
-  if (dead === null || view.seenInRoom || code === null) return;
+  if (dead === null || view.seenInRoom || exit.requested || exit.code === null) return;
   const name = viewName(view);
   try {
     const dropped = await invoke<boolean>("room_forget_session", {

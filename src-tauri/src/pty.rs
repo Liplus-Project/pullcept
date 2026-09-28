@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
@@ -15,6 +16,29 @@ struct PtyInstance {
 }
 
 type ProcessMap = Arc<Mutex<HashMap<String, PtyInstance>>>;
+
+/// What `pty-exit-{id}` carries: how the session on that id ended (#121).
+///
+/// Two things, because the screen has to tell apart two ends that looked the
+/// same. An end the app asked for — the row's ❌ (`kill_pty`), a topic being
+/// deleted (`kill_each`), the app closing (`kill_all`) — is one the person has
+/// just agreed to in a dialog, and is not a thing to go and check. An end
+/// nobody asked for — the CLI finishing on its own, or falling over — is.
+#[derive(Clone, Serialize)]
+pub struct PtyExit {
+    /// The child's exit code, or null when it was not collected. Always null
+    /// on a requested end: the kill took the child away before it was reaped.
+    pub code: Option<u32>,
+    /// Whether the app ended this session itself.
+    ///
+    /// Read off the map, which is where the kill leaves its mark: every kill
+    /// path takes the session's entry out before killing it, and the only
+    /// other thing that takes an entry out is the session's own reader thread,
+    /// at its end. So an entry already gone when that thread looks for it is a
+    /// kill having come first. Nothing else is recorded — a second record of
+    /// the same fact would be one more place for the two to disagree.
+    pub requested: bool,
+}
 
 /// One session's input box, as the room reads it before typing into it (#195).
 #[derive(Default)]
@@ -349,6 +373,21 @@ pub fn spawn_pty_with_env(
     let id_clone = id.clone();
     let app_clone = app.clone();
 
+    // In the map before the reader thread exists, never after. The thread reads
+    // an entry already gone as a kill having taken it (`PtyExit::requested`),
+    // and a child that dies at once — a command that is not there — can reach
+    // the end of its output before a later insert. Its end would then be
+    // announced as one the app asked for, and the entry inserted behind it
+    // would say forever that a dead session is running (#121).
+    state.procs.lock().insert(
+        id.clone(),
+        PtyInstance {
+            writer,
+            child,
+            killer: pair.master,
+        },
+    );
+
     // Spawn background thread to read PTY output and emit events
     let ptys_clone = Arc::clone(&state.procs);
     let input_clone = Arc::clone(&state.input);
@@ -381,25 +420,22 @@ pub fn spawn_pty_with_env(
         // Its input box goes with it, and so do the posts held for it: there
         // is no session left to type them into (#195).
         input_clone.lock().remove(&id_clone);
-        let exit_code: Option<u32> = match ended {
-            Some(mut pty) => pty.child.wait().ok().map(|status| status.exit_code()),
+        let exit = match ended {
+            Some(mut pty) => PtyExit {
+                code: pty.child.wait().ok().map(|status| status.exit_code()),
+                requested: false,
+            },
             // Already removed: a kill took it — `kill_pty`, `kill_each`, or the
             // `kill_all` sweep. The exit is this thread's to announce either
-            // way; the code is not knowable from here.
-            None => None,
+            // way; the code is not knowable from here, and the end is one the
+            // app asked for (#121).
+            None => PtyExit {
+                code: None,
+                requested: true,
+            },
         };
-        // Emit exit event with exit code payload (None if killed by signal/unknown)
-        let _ = app_clone.emit(&format!("pty-exit-{}", id_clone), exit_code);
+        let _ = app_clone.emit(&format!("pty-exit-{}", id_clone), exit);
     });
-
-    state.procs.lock().insert(
-        id.clone(),
-        PtyInstance {
-            writer,
-            child,
-            killer: pair.master,
-        },
-    );
 
     Ok(id)
 }
