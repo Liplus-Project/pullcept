@@ -7,7 +7,7 @@
 //! Frames on the wire are the room protocol:
 //!
 //!   sidecar -> room : { type: "hello", protocol, name, room, hue?, account_id? }
-//!   sidecar -> room : { type: "post", message_id, content, to?, ts, last_seen? }
+//!   sidecar -> room : { type: "post", message_id, content, to?: [name], ts, last_seen? }
 //!   room -> sidecar : { type: "post_result", message_id, delivered, missed }
 //!
 //! One frame kind carries speech into the room, whoever produced it. A person
@@ -23,10 +23,11 @@
 //! connection back; it used to carry every post out as well, for the sidecar
 //! to push onto the channel, and that path is gone with the channel.
 //!
-//! `to` is optional and carries the display name of the participant addressed.
-//! The room still delivers every post to every participant — narrowing
-//! delivery here would make the room hold who heard what, and answering is the
-//! participant's judgment, not the room's.
+//! `to` is optional and carries the display names of the participants
+//! addressed, as a list — one name or several (#204). The room still delivers
+//! every post to every participant — narrowing delivery here would make the
+//! room hold who heard what, and answering is the participant's judgment, not
+//! the room's.
 //!
 //! `speaker` is stamped by the room from the connection the frame arrived on,
 //! never read off the frame. A sender cannot claim to be someone else, and the
@@ -170,7 +171,7 @@ use uuid::Uuid;
 /// 8: the room sends no `post` frames. Every post reaches a session through
 ///    its terminal, and the channel the sidecar pushed them onto is gone
 ///    (#195).
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -200,7 +201,8 @@ pub struct RoomMessage {
     /// account, and reads the kind off the account this names.
     pub account: Option<String>,
     pub content: String,
-    pub to: Option<String>,
+    /// The names it was addressed to, or empty when it was said to the room.
+    pub to: Vec<String>,
     pub ts: String,
     /// True when this screen's own participant produced it.
     pub own: bool,
@@ -286,7 +288,9 @@ struct IncomingFrame {
     hue: Option<f64>,
     account_id: Option<String>,
     content: Option<String>,
-    to: Option<String>,
+    /// A list of names, since protocol 9 (#204). The room keeps no reading of
+    /// the single name protocol 8 sent: the sidecar is the one this build ships.
+    to: Option<Vec<String>>,
     ts: Option<String>,
     last_seen: Option<String>,
     protocol: Option<u32>,
@@ -727,11 +731,11 @@ fn normalize_hue(hue: Option<f64>) -> Option<f64> {
         .map(|value| value.rem_euclid(360.0))
 }
 
-/// Absent is the key omitted, never an empty one: a participant matching `to`
-/// against their own name must not have to rule the empty string out first.
-fn normalize_to(to: Option<String>) -> Option<String> {
-    to.map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
+/// The names a post is addressed to, as the room keeps them: trimmed, none
+/// blank, none twice, and empty for the room as a whole
+/// (`room_floor::addressees`, #204).
+fn normalize_to(to: Option<Vec<String>>) -> Vec<String> {
+    room_floor::addressees(to.unwrap_or_default())
 }
 
 /// Absent is the key omitted, never an empty one, for the same reason `to` is:
@@ -997,7 +1001,7 @@ fn type_into_sessions(
         &post.message_id,
         &post.speaker,
         role,
-        post.to.as_deref(),
+        &post.to,
         &post.content,
     );
     for target in targets {
@@ -1041,7 +1045,7 @@ pub fn post_notice(
                 hue: speaker.hue,
                 account: Some(speaker.account_id.clone()),
                 content: content.to_string(),
-                to: None,
+                to: Vec::new(),
                 ts: now_iso(),
             },
             None,
@@ -1844,6 +1848,10 @@ pub fn room_join(
 /// app has open: the watermark is a post of the conversation that was on the
 /// glass when this was typed, and judged against another room's floor it would
 /// be a watermark from somewhere else (#141).
+///
+/// `to` is the names the composer's `@` picks were bound to when they were
+/// picked (#204). Nothing here reads an addressee out of `content`: the
+/// `@名前` left in the text is for the reader, and the list is what addresses.
 #[tauri::command]
 pub fn room_post(
     app: AppHandle,
@@ -1851,7 +1859,7 @@ pub fn room_post(
     topic_id: String,
     speaker: String,
     content: String,
-    to: Option<String>,
+    to: Option<Vec<String>>,
     last_seen: Option<String>,
 ) -> Result<PostOutcome, String> {
     let content = content.trim().to_string();

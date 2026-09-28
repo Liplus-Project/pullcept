@@ -59,12 +59,40 @@ pub struct LoggedPost {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
     pub content: String,
-    /// The participant this was addressed to, or absent when it was said to the
-    /// room. Omitted rather than written as null, so the two states are the
-    /// field's presence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<String>,
+    /// The names this was addressed to, or empty when it was said to the room.
+    /// Written as a list, and omitted rather than written empty or as null, so
+    /// the two states are the field's presence (#204).
+    ///
+    /// A line written while a post could have only one addressee carries it as
+    /// a bare string, and reads back as a list of that one name. The file is
+    /// not rewritten to the new shape: a log is what was written, and the read
+    /// is what widens.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "one_or_many"
+    )]
+    pub to: Vec<String>,
     pub ts: String,
+}
+
+/// `to` as a line holds it: a list, or the single name a line written before
+/// #204 carries, or null.
+fn one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<Written>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(Written::One(name)) => vec![name],
+        Some(Written::Many(names)) => names,
+    })
 }
 
 /// One topic, as the index holds it.
@@ -412,7 +440,7 @@ mod tests {
             speaker: "Lin".to_string(),
             account: None,
             content: content.to_string(),
-            to: None,
+            to: Vec::new(),
             ts: ts.to_string(),
         };
         let mut line = serde_json::to_string(&post).expect("serialize");
@@ -655,5 +683,36 @@ mod tests {
 
         let line = serde_json::to_string(&posts[0]).expect("serialize");
         assert!(!line.contains("account"), "{line}");
+    }
+
+    /// A line written while a post had one addressee carries it as a string,
+    /// and reads back as a list of that one name; nothing rewrites the file.
+    /// A line written since carries a list, and a post to the room carries no
+    /// key at all (#204).
+    #[test]
+    fn a_single_addressee_written_before_the_list_reads_as_a_list_of_one() {
+        let scratch = Scratch::new();
+        let path = scratch.path().join("t.jsonl");
+        let one = r#"{"message_id":"a","speaker":"Master","content":"x","to":"Claude Lay","ts":"2026-09-27T00:00:00Z"}"#;
+        let many = r#"{"message_id":"b","speaker":"Master","content":"y","to":["Claude Lay","Claude Lin"],"ts":"2026-09-28T00:00:00Z"}"#;
+        let room = r#"{"message_id":"c","speaker":"Master","content":"z","ts":"2026-09-28T00:00:01Z"}"#;
+        let null = r#"{"message_id":"d","speaker":"Master","content":"w","to":null,"ts":"2026-09-28T00:00:02Z"}"#;
+        std::fs::write(&path, [one, many, room, null].join("
+")).expect("write");
+
+        let (posts, skipped) = read_posts(&path);
+        assert_eq!(skipped, 0);
+        assert_eq!(posts[0].to, ["Claude Lay"]);
+        assert_eq!(posts[1].to, ["Claude Lay", "Claude Lin"]);
+        assert!(posts[2].to.is_empty());
+        assert!(posts[3].to.is_empty());
+
+        let written: Vec<String> = posts
+            .iter()
+            .map(|post| serde_json::to_string(post).expect("serialize"))
+            .collect();
+        assert!(written[0].contains(r#""to":["Claude Lay"]"#), "{}", written[0]);
+        assert!(written[1].contains(r#""to":["Claude Lay","Claude Lin"]"#), "{}", written[1]);
+        assert!(!written[2].contains("\"to\""), "{}", written[2]);
     }
 }

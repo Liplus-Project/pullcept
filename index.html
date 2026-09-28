@@ -210,21 +210,18 @@
           </aside>
 
           <footer id="composer">
-            <!-- The addressee is optional. Leaving it on 全体 is a room-wide
-                 utterance; who answers one of those is the participants'
-                 judgment, not the room's. The room delivers every utterance to
-                 everyone either way, and anyone in the roster can be named —
-                 people and sessions alike. -->
-            <label class="to">
-              宛先
-              <select id="to-select">
-                <option value="">全体</option>
-              </select>
-            </label>
+            <!-- Addressees are named in the text: `@` opens the list of who is
+                 in the room, and picking one puts `@名前` in and binds the post
+                 to that participant (#204). Several can be named; none is a
+                 room-wide utterance, and who answers one of those is the
+                 participants' judgment, not the room's. The room delivers
+                 every utterance to everyone either way, and anyone in the
+                 roster can be named — people and sessions alike. -->
+            <ul id="mention-list" role="listbox" aria-label="宛先の候補" hidden></ul>
             <textarea
               id="input"
               rows="2"
-              placeholder="部屋に発言する（Enter で送信 / Shift+Enter で改行）"
+              placeholder="部屋に発言する（@ で宛先 / Enter で送信 / Shift+Enter で改行）"
             ></textarea>
             <button id="send" type="button">送信</button>
           </footer>

@@ -14,3 +14,7 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# What a missed post reads as once serialised: the list the wire carries (#204).
+serde_json = "1"
