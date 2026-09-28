@@ -56,23 +56,6 @@
              account's do: in the dialog their row in the participant list
              opens. Two surfaces editing one pair is the split this issue is
              closing, in miniature. -->
-        <!-- The conversation's text size. The keyboard is the main way in
-             (Ctrl + = / - / 0); this is here because of what the default is.
-             The default is deliberately the size that was called too large, so
-             what an untouched screen shows is the thing being complained
-             about, and a control reachable only by keys would leave that
-             fixable only by whoever already knew the keys.
-
-             It reaches the conversation's words, wherever they are: the room,
-             and the textarea they are typed into (#81). The panel, the
-             diagnostics pane, the terminal and the composer's own controls
-             keep their own sizes — see the `#room` block in src/styles.css for
-             why the scope holds. -->
-        <select
-          id="room-font-size"
-          aria-label="会話の文字サイズ"
-          title="会話の文字サイズ（Ctrl + = / - / 0）"
-        ></select>
         <button id="toggle-diagnostics" type="button" aria-expanded="false">端末</button>
         <!-- The app's own settings (#172). A word, like 端末 beside it, and
              not ⚙️: that drawing already means 編集 on every account row. -->
@@ -191,17 +174,6 @@
                    worth more than a role whose keyboard contract this does not
                    implement. -->
               <div id="terminal-tabs" role="group" aria-label="端末のタブ"></div>
-              <!-- The terminal's own size, and only the terminal's. It is one of
-                   three independent size axes — the conversation (#60), this,
-                   and the whole UI (#66) — and none of the three is expressed
-                   relative to another. This one moves xterm's `fontSize`, which
-                   is what the CLI's columns and rows are computed from, so a
-                   change here re-fits the pane and tells the session. -->
-              <select
-                id="terminal-font-size"
-                aria-label="端末の文字サイズ"
-                title="端末の文字サイズ"
-              ></select>
               <button id="diagnostics-close" type="button" aria-label="端末を閉じる" title="端末を閉じる">
                 ✕
               </button>
@@ -566,11 +538,11 @@
            The one it held before — the MCP servers the app runs itself — is in
            the window of each server's `mcp` account since #193.
 
-           Each picker takes effect as it is changed, like the pickers on the
-           title bar and the terminal's header, so there is nothing to commit
-           and the dialog only closes. The conversation's and the terminal's
-           pickers here hold the same value as those two; they are one setting
-           reachable from two places, not two settings. -->
+           Each picker takes effect as it is changed, so there is nothing to
+           commit and the dialog only closes. These are the only on-screen
+           controls for the three sizes (#209): the title bar and the terminal's
+           header no longer carry a copy. The conversation's size keeps its keys
+           as well (Ctrl + = / - / 0), which stop the webview's own zoom. -->
       <dialog id="settings-dialog" aria-labelledby="settings-title">
         <div class="settings">
           <nav class="settings-nav" aria-label="設定の項目">
@@ -584,7 +556,7 @@
               <label for="settings-room-font-size">会話の文字サイズ</label>
               <select id="settings-room-font-size"></select>
               <p class="hint">
-                部屋の発言と入力欄の本文。Ctrl + = / - / 0 とタイトルバーの選択でも変えられます。
+                部屋の発言と入力欄の本文。Ctrl + = / - / 0 でも変えられます。
               </p>
             </div>
             <div class="settings-row">

@@ -534,7 +534,6 @@ const mentionListEl = document.getElementById("mention-list") as HTMLUListElemen
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
-const fontSizeEl = document.getElementById("room-font-size") as HTMLSelectElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
 const sessionStateEl = document.getElementById("session-state") as HTMLElement;
 const transportEl = document.getElementById("session-transport") as HTMLElement;
@@ -554,7 +553,6 @@ const sessionIdEl = document.getElementById("session-id") as HTMLElement;
 const sessionIdCopyEl = document.getElementById("session-id-copy") as HTMLButtonElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
 const tabsEl = document.getElementById("terminal-tabs") as HTMLElement;
-const terminalFontSizeEl = document.getElementById("terminal-font-size") as HTMLSelectElement;
 const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
 const dialogEl = document.getElementById("account-dialog") as HTMLDialogElement;
 const dialogFormEl = document.getElementById("account-form") as HTMLFormElement;
@@ -592,9 +590,9 @@ const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HT
 const openSettingsEl = document.getElementById("open-settings") as HTMLButtonElement;
 const settingsDialogEl = document.getElementById("settings-dialog") as HTMLDialogElement;
 const settingsCloseEl = document.getElementById("settings-close") as HTMLButtonElement;
-// The display section's three pickers (#194). The first two hold the same value
-// as the pickers on the title bar and the terminal's header, and are kept in
-// step with them by the `apply…` functions that set both.
+// The display section's three pickers (#194), the only on-screen controls for
+// the three sizes since the title bar's and the terminal header's were taken
+// out (#209).
 const settingsRoomFontSizeEl = document.getElementById(
   "settings-room-font-size",
 ) as HTMLSelectElement;
@@ -1253,8 +1251,7 @@ function applyRoomFontSize(size: number, save: boolean): void {
   const value = `calc(${size}rem / var(--ui-scale))`;
   roomEl.style.setProperty("--room-font-size", value);
   inputEl.style.setProperty("--room-font-size", value);
-  // The title bar's picker and the settings menu's hold the one value.
-  fontSizeEl.value = String(size);
+  // Kept in step with the keys, which move the size without the picker.
   settingsRoomFontSizeEl.value = String(size);
   if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
 }
@@ -1316,8 +1313,6 @@ function storedTerminalFontSize(): number {
 function applyTerminalFontSize(size: number, save: boolean): void {
   terminalFontSize = size;
   for (const view of views.values()) view.term.options.fontSize = size;
-  // The terminal header's picker and the settings menu's hold the one value.
-  terminalFontSizeEl.value = String(size);
   settingsTerminalFontSizeEl.value = String(size);
   if (save) localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(size));
   fitShown();
@@ -5027,12 +5022,8 @@ async function main(): Promise<void> {
   settingsUiScaleEl.addEventListener("change", () => {
     applyUiScale(Number(settingsUiScaleEl.value), true);
   });
-  fillRoomFontSizes(fontSizeEl);
   fillRoomFontSizes(settingsRoomFontSizeEl);
   applyRoomFontSize(storedRoomFontSize(), false);
-  fontSizeEl.addEventListener("change", () => {
-    applyRoomFontSize(Number(fontSizeEl.value), true);
-  });
   settingsRoomFontSizeEl.addEventListener("change", () => {
     applyRoomFontSize(Number(settingsRoomFontSizeEl.value), true);
   });
@@ -5053,12 +5044,8 @@ async function main(): Promise<void> {
 
   // Restored before any terminal is opened, so the first session is laid out at
   // the size this screen reads at rather than being re-fitted once it lands.
-  fillTerminalFontSizes(terminalFontSizeEl);
   fillTerminalFontSizes(settingsTerminalFontSizeEl);
   applyTerminalFontSize(storedTerminalFontSize(), false);
-  terminalFontSizeEl.addEventListener("change", () => {
-    applyTerminalFontSize(Number(terminalFontSizeEl.value), true);
-  });
   settingsTerminalFontSizeEl.addEventListener("change", () => {
     applyTerminalFontSize(Number(settingsTerminalFontSizeEl.value), true);
   });
