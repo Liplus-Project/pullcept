@@ -1152,6 +1152,31 @@ function fitShown(): void {
 }
 
 /**
+ * Lay out one terminal against the folded pane, without opening the pane.
+ *
+ * A launch has to hand its PTY a size before the CLI's first paint, and a
+ * folded pane has none to measure — the same limit `fitShown` has. So the pane
+ * is unfolded for the length of one fit and folded again in the same task: the
+ * browser paints nothing in between, and the person sees the pane stay folded
+ * (#215).
+ *
+ * The session is not told anything here. There is none yet, and the size goes
+ * out with `start_session`. When the pane is opened later `revealDiagnostics`
+ * fits again, which is what catches a window resized in the meantime.
+ */
+function fitFolded(view: SessionView): void {
+  if (!diagnosticsEl.hidden) return;
+  diagnosticsEl.hidden = false;
+  try {
+    view.fit.fit();
+  } catch {
+    // Same as `fitShown`: the default size is what the PTY starts at then.
+  } finally {
+    diagnosticsEl.hidden = true;
+  }
+}
+
+/**
  * The size the CLI is laid out for.
  *
  * A TUI that is drawing at the wrong size looks like a broken TUI, and the
@@ -3934,10 +3959,16 @@ async function followSession(view: SessionView, started: StartedSession): Promis
 
   await attachSession(view, started.pty_id);
 
-  // The first thing a session shows is a question, so the pane that carries
-  // the answer opens with it rather than waiting for a failure.
-  revealDiagnostics();
-  if (view === shownView()) view.term.focus();
+  // The pane is left as it was. It used to open here because the first thing a
+  // session showed was a question — the development-channels confirm — and the
+  // answer went in through this terminal. That flag left the launch line in
+  // #195, so nothing waits on the person at startup, and a pane that opens on
+  // every ▶ is one the person keeps folding back (#215). What still opens it is
+  // an end nobody asked for (`attachSession`, #121).
+  //
+  // Focus only into a terminal that is on screen. A folded pane has nothing to
+  // type into, the same as a row picked while it is folded (#175).
+  if (view === shownView() && !diagnosticsEl.hidden) view.term.focus();
 }
 
 /**
@@ -3994,14 +4025,9 @@ async function startSession(account: Account): Promise<void> {
     return;
   }
 
-  // Size the PTY to the terminal that will display it, so the CLI's first
-  // paint is not laid out for a window it does not have. The pane is revealed
-  // first because a hidden container has no size to measure.
-  //
   // What was on the glass is kept, so a launch that fails can put it back
   // rather than leaving a blank pane where a running session had been.
   const previous = shownAccount;
-  revealDiagnostics();
   // Cleared as the attempt starts rather than as it fails: 起動失敗 stands on
   // the row until this account is asked again, and this is that moment.
   launchFailures.delete(key);
@@ -4009,6 +4035,11 @@ async function startSession(account: Account): Promise<void> {
   // yet, which is what puts its 開始 into 起動中; `openView` redraws through
   // `showView`.
   const view = openView(account, topicId);
+  // Size the PTY to the terminal that will display it, so the CLI's first
+  // paint is not laid out for a window it does not have. An open pane was
+  // fitted by `showView` just now; a folded one is measured without being
+  // opened, because ▶ no longer opens it (#215).
+  fitFolded(view);
 
   status(`${name} を起動しています…`);
   try {
@@ -4055,6 +4086,10 @@ async function startSession(account: Account): Promise<void> {
       );
     }
     status(`${name} を起動できませんでした: ${err}`, "error");
+    // The pane is left as it was here too. Nothing was spawned, so there is no
+    // output in it to read about why; the reason is the status line above and
+    // the row's 起動失敗. What opens the pane is a CLI that did start and then
+    // ended on its own, since what it printed is the account (#121, #215).
     // A launch that failed after the app claimed the seat releases it there;
     // this keeps the panel in step with that.
     await refreshSeats();
