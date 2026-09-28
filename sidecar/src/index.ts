@@ -24,8 +24,10 @@
  * no channel. What this file owns about arrival is the instructions: they are
  * the one place that says what the label is, that only the first line is one,
  * and what its `role` means (Master 判断, 2026-09-28). A connection whose
- * session has no terminal the app can type into — one the app did not launch
- * — is handed nothing live, and reads the topic through the pull.
+ * session has no terminal the app can type into — one started with no account
+ * behind it — is handed nothing live, and reads the topic through the pull.
+ * A registration the app wrote, read by a CLI the app did not launch as that
+ * account, does not connect at all (#208, `SEAT_REFUSAL`).
  *
  * The third one is a pull and only a pull. The room pushes nothing it did not
  * fan out live, so a session that joined a topic late is still handed nothing
@@ -82,17 +84,60 @@ function readHue(raw: string | undefined): number | null {
  * The account this session was launched as, or null when it was launched
  * without one.
  *
- * Carried into `hello` and nothing else. It is not this session's identity in
- * the room — the room mints that from the connection and keeps it there (#39 /
- * #40 / #47) — and nothing in this file reads it to decide anything. It exists
- * so the screen can say which of its accounts a participant is without
- * matching on a name, which is the match #40 and #53 ruled out (#59).
+ * Carried into `hello`, and read here for one thing only: whether the CLI that
+ * started this process was launched as this account (`SEAT_REFUSAL`, #208). It
+ * is not this session's identity in the room — the room mints that from the
+ * connection and keeps it there (#39 / #40 / #47). It exists so the screen can
+ * say which of its accounts a participant is without matching on a name, which
+ * is the match #40 and #53 ruled out (#59).
  *
  * Null is a real state, not a launch that went wrong: a room does not presume
  * an account exists behind a connection, and something joining from outside
  * this app has none to declare.
  */
 const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
+
+/**
+ * The account the CLI that started this process was launched as, or null when
+ * no launch of the app started it (#208).
+ *
+ * Inherited, not registered. `PULLCEPT_ACCOUNT_ID` above comes from the entry
+ * in `.mcp.json`, which is a fact about the file and is the same whichever CLI
+ * reads it. This one the app sets on the CLI's own process
+ * (`mcp_config::LAUNCHED_AS_ENV`), and the CLI hands its environment down to
+ * the servers it starts — so it says whose CLI is reading.
+ */
+const LAUNCHED_AS = process.env.PULLCEPT_LAUNCHED_AS?.trim() || null;
+
+/**
+ * Why this process stays out of the room, or null when it takes its seat (#208).
+ *
+ * A shared working directory holds one entry per account, and each launch names
+ * the others it must not start (`disabledMcpjsonServers`, #103). That list is
+ * read from the file when the launch is composed; the CLI reads the file
+ * itself seconds later. An entry another launch adds in between is on neither
+ * side of the list, so this account's CLI starts it too — and the sidecar it
+ * starts would enter the room as the account the entry names. The list closes
+ * the gap by timing, and cannot close it when the timing moves; this closes it
+ * by who is asking.
+ *
+ * The entry's account and the launch's account must be the same, absence
+ * included. An entry the app wrote always names an account, so a CLI the app
+ * did not launch — `claude` started by hand in that directory — does not seat
+ * it: nothing launched it as that account. A sidecar started with neither is
+ * not one the app registered, and joins as a connection with no account (#59).
+ *
+ * Only when there is a room to go to. With no address the sidecar is offline
+ * either way, and says so for that reason instead.
+ */
+const SEAT_REFUSAL: string | null =
+  !ROOM_URL || LAUNCHED_AS === ACCOUNT_ID
+    ? null
+    : LAUNCHED_AS === null
+      ? `this CLI was not launched by Pullcept (PULLCEPT_LAUNCHED_AS is not set), ` +
+        `and this registration is account ${ACCOUNT_ID}'s seat`
+      : `this CLI was launched as account ${LAUNCHED_AS}, ` +
+        `and this registration is ${ACCOUNT_ID === null ? "no account's" : `account ${ACCOUNT_ID}'s`} seat`;
 
 /**
  * Whether this session was seated in a topic that already holds posts it does
@@ -358,13 +403,23 @@ const INSTRUCTIONS = [
   "  書き始めたとき、順序を付けられるのは部屋だけです。これはその順序です。",
 ].join("\n");
 
+/**
+ * A refused sidecar serves nothing (#208).
+ *
+ * No manners and no tools, rather than the room's own with a "not connected"
+ * answer behind them. The CLI that started it is some other account's, already
+ * holding its own sidecar: the manners would tell that session a second name to
+ * answer to, and a second `say_to_room` would be one it could pick by mistake.
+ * Staying up rather than exiting keeps the CLI from reporting a failed server
+ * for a registration that is working as intended.
+ */
 const mcp = new Server(
   { name: "pullcept-room", version: "0.1.0" },
   {
     capabilities: {
       tools: {},
     },
-    instructions: INSTRUCTIONS,
+    ...(SEAT_REFUSAL === null ? { instructions: INSTRUCTIONS } : {}),
   },
 );
 
@@ -448,10 +503,22 @@ const TOOLS = [
   },
 ];
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: SEAT_REFUSAL === null ? TOOLS : [],
+}));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // Nothing is listed, so nothing should arrive. Said anyway rather than run:
+  // a call that got here would otherwise go on to report a socket this process
+  // never meant to open.
+  if (SEAT_REFUSAL !== null) {
+    return {
+      content: [{ type: "text", text: `Not in the room: ${SEAT_REFUSAL}.` }],
+      isError: true,
+    };
+  }
 
   if (name === "read_room_history") return await readHistory(args);
 
@@ -884,7 +951,12 @@ function connectRoom(): void {
 await mcp.connect(new StdioServerTransport());
 log("mcp: stdio transport connected");
 
-if (ROOM_URL) {
+if (SEAT_REFUSAL !== null) {
+  // Logged, because this is the one place it can be read: the process stays
+  // up and silent, and a sidecar that is not in the room looks, from the
+  // roster, exactly like one that could not reach it.
+  log(`room socket: not joining: ${SEAT_REFUSAL}`);
+} else if (ROOM_URL) {
   connectRoom();
 } else {
   // Serving MCP without a room is a degraded but legible state: the agent can

@@ -31,6 +31,9 @@ const TIMEOUT = 20_000;
  */
 const TEST_ACCOUNT = "8f14e45f-ceea-467a-b160-6f14e45fceea";
 
+/** A second account, whose CLI a shared directory can make start this one's sidecar (#208). */
+const OTHER_ACCOUNT = "c9f0f895-fb98-4ab2-8ab1-2c9f0f895fb9";
+
 // The manners, whole.
 //
 // Asserted as complete literals rather than by a regex on the opening clause.
@@ -147,6 +150,21 @@ function appConstant(name) {
   const source = readFileSync(join(REPO, "crates", "terminal-input", "src", "lib.rs"), "utf8");
   const found = source.match(new RegExp(`pub const ${name}: &str = "([^"]*)";`));
   assert.ok(found, `crates/terminal-input must declare ${name} as a string literal`);
+  return found[1];
+}
+
+/**
+ * The name the app sets the launched-as account under, read off
+ * `crates/mcp-config`, where the launch takes it from (#208).
+ *
+ * Read rather than repeated: every test below that seats a sidecar sets its
+ * variable under this name, so a sidecar reading any other name is refused and
+ * the round trip fails, instead of the two copies drifting with CI green.
+ */
+function launchedAsEnv() {
+  const source = readFileSync(join(REPO, "crates", "mcp-config", "src", "lib.rs"), "utf8");
+  const found = source.match(/pub const LAUNCHED_AS_ENV: &str = "([^"]*)";/);
+  assert.ok(found, "crates/mcp-config must declare LAUNCHED_AS_ENV as a string literal");
   return found[1];
 }
 
@@ -343,6 +361,9 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         PULLCEPT_AGENT_NAME: "test-agent",
         PULLCEPT_AGENT_HUE: "145",
         PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
+        // Launched as the account its entry names, which is what every launch
+        // the app makes is (#208).
+        [launchedAsEnv()]: TEST_ACCOUNT,
         PULLCEPT_ROOM_ID: "test-room",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -826,6 +847,11 @@ test("a session launched without a hue or an account says so by omission", async
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "no-colour",
         PULLCEPT_AGENT_HUE: "",
+        // Neither side names an account, set empty rather than left to the
+        // environment the test runs in: a registration with no account and a
+        // launch with none agree, and this is not one the app wrote (#208).
+        PULLCEPT_ACCOUNT_ID: "",
+        [launchedAsEnv()]: "",
         PULLCEPT_ROOM_ID: "test-room",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -945,3 +971,123 @@ test("a session seated in a topic that already holds posts is told so", async (t
     "the manners must state that there is something to pull, not order the pull",
   );
 });
+
+// A registration read by a CLI that was not launched as its account (#208).
+//
+// A shared directory holds one entry per account. Each launch names the others
+// its CLI must not start, but reads the file for that list seconds before the
+// CLI does, and an entry another launch adds in between is started anyway. The
+// sidecar that starts would enter the room as the account the entry names —
+// that account then appears twice. The second case is the same shape from
+// outside the app: `claude` started by hand in that directory, whose process
+// carries no launched-as account at all.
+for (const [label, launchedAs] of [
+  ["another account's CLI", OTHER_ACCOUNT],
+  ["a CLI the app did not launch", ""],
+]) {
+  test(`a registration started by ${label} stays out of the room`, async (t) => {
+    const http = createServer();
+    const wss = new WebSocketServer({ server: http });
+    await new Promise((r) => http.listen(0, "127.0.0.1", r));
+    const port = http.address().port;
+
+    let connections = 0;
+    wss.on("connection", () => {
+      connections++;
+    });
+
+    const child = spawn(
+      process.execPath,
+      [join(REPO, "node_modules", "tsx", "dist", "cli.mjs"), ENTRY],
+      {
+        cwd: REPO,
+        env: {
+          ...process.env,
+          PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
+          PULLCEPT_AGENT_NAME: "test-agent",
+          PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
+          [launchedAsEnv()]: launchedAs,
+          PULLCEPT_ROOM_ID: "test-room",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    const refusalLogged = deferred();
+    let stderr = "";
+    child.stderr.on("data", (b) => {
+      stderr += b.toString();
+      if (stderr.includes("room socket: not joining:")) refusalLogged.resolve();
+    });
+
+    t.after(() => {
+      child.kill();
+      wss.close(() => {});
+      http.close(() => {});
+    });
+
+    const pending = new Map();
+    let buffer = "";
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString();
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        if (msg.id !== undefined && pending.has(msg.id)) {
+          pending.get(msg.id).resolve(msg);
+          pending.delete(msg.id);
+        }
+      }
+    });
+    let nextId = 1;
+    function request(method, params) {
+      const id = nextId++;
+      const d = deferred();
+      pending.set(id, d);
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return withTimeout(d.promise, `response to ${method}`);
+    }
+
+    // Up, rather than exited: an exit is a failed server in the CLI that
+    // started it, for a registration that is working as intended.
+    const init = await request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "launched-as-test", version: "0" },
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+
+    // No manners. The CLI that started this already holds its own sidecar, and
+    // a second set would hand its session a second name to answer to.
+    assert.ok(
+      !(init.result.instructions ?? "").includes("say_to_room"),
+      "a refused sidecar must not hand the room's manners to a session that is not its own",
+    );
+
+    // No tools, for the same reason: a second say_to_room is one the session
+    // could pick by mistake.
+    const listed = await request("tools/list", {});
+    assert.deepEqual(listed.result.tools, [], "a refused sidecar must list no tools");
+
+    // And a call that arrives anyway is refused by name, not run.
+    const called = await request("tools/call", {
+      name: "say_to_room",
+      arguments: { content: "hello" },
+    });
+    assert.equal(called.result.isError, true);
+    assertContains(
+      called.result.content[0].text,
+      "Not in the room:",
+      "a call to a refused sidecar must say why rather than report a socket",
+    );
+
+    // The reason is left where it can be read, and the room never sees it.
+    await withTimeout(refusalLogged.promise, "the refusal on stderr");
+    assertContains(stderr, TEST_ACCOUNT, "the refusal must name the account the entry is for");
+    await new Promise((r) => setTimeout(r, 1_000));
+    assert.equal(connections, 0, "a refused sidecar must not open the room socket");
+  });
+}

@@ -737,6 +737,27 @@ fn project_slug(cwd: &str) -> Option<String> {
 /// the environment the launch set and presents it as the POST's header (#155).
 pub const ROOM_TOKEN_ENV: &str = "PULLCEPT_ROOM_TOKEN";
 
+/// The environment variable a launched CLI carries the id of the account it
+/// was launched as in (#208).
+///
+/// **On the process, not in the registration.** The sidecar inherits it from
+/// the CLI that started it and holds it against the `PULLCEPT_ACCOUNT_ID` of
+/// its own entry: a sidecar some other account's CLI started — which a shared
+/// directory produces when that CLI read `.mcp.json` after a later launch had
+/// already added an entry its `disabledMcpjsonServers` could not name — stays
+/// out of the room instead of taking a seat under the registered account's id.
+/// The entry is a fact about the file, read by whichever CLI reads it; only
+/// the launch knows whose CLI is reading.
+pub const LAUNCHED_AS_ENV: &str = "PULLCEPT_LAUNCHED_AS";
+
+/// The variables the app sets on every launch itself.
+///
+/// An account's own environment may not name them: refused where the field
+/// is saved (`account_env::settle`), and set after the account's variables
+/// when the CLI is spawned, so the app's value holds even if that refusal
+/// were bypassed.
+pub const APP_LAUNCH_ENV: &[&str] = &[ROOM_TOKEN_ENV, LAUNCHED_AS_ENV];
+
 /// The path the app answers a session's status-line report on (#155).
 pub const STATUS_HOOK_PATH: &str = "/hooks/status";
 

@@ -533,7 +533,7 @@ pub fn seal_account_env(
     text: String,
     previous: Vec<account_env::EnvVar>,
 ) -> Result<Vec<account_env::EnvVar>, String> {
-    account_env::settle(&text, &previous, &[mcp_config::ROOM_TOKEN_ENV])
+    account_env::settle(&text, &previous, mcp_config::APP_LAUNCH_ENV)
 }
 
 // ---------------------------------------------------------------------------

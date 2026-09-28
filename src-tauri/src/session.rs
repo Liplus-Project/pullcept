@@ -17,7 +17,7 @@ use mcp_config::{
     declares_settings, launch_args, other_room_servers, register_sidecar,
     reject_incompatible_flags, resume_launch_args, server_name_for, session_id_launch_args, split_launch_options,
     status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
-    ROOM_TOKEN_ENV,
+    LAUNCHED_AS_ENV, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -1139,7 +1139,8 @@ fn launch(
     // The account's variables first and the app's own last. The app's cannot
     // be overridden by an account in any case — a name it sets is refused when
     // the field is saved (`config::seal_account_env`) — so the order is only
-    // what would hold if that refusal were ever bypassed: the room's token wins.
+    // what would hold if that refusal were ever bypassed: the app's values win
+    // (`APP_LAUNCH_ENV`).
     let mut env: Vec<(&str, String)> = account_env
         .iter()
         .map(|(key, value)| (key.as_str(), value.clone()))
@@ -1148,6 +1149,13 @@ fn launch(
     // than on the line: the line is drawn on screen, and the token is what
     // makes the room this room (#155).
     env.push((ROOM_TOKEN_ENV, room.token()));
+    // The account this CLI is launched as, on the process and not in the
+    // registration (#208). The sidecar holds it against its own entry's
+    // account and stays out of the room when they differ: a CLI that read a
+    // shared `.mcp.json` after another launch had added an entry its
+    // `disabledMcpjsonServers` could not name starts that entry's sidecar too,
+    // and without this it would take a seat under the other account's id.
+    env.push((LAUNCHED_AS_ENV, account.id.clone()));
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
