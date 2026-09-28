@@ -27,6 +27,15 @@
      this theme. */
   --speaker-l: 0.528;
   --speaker-c: 0.104;
+  /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
+     the conversation and the terminal is written in `rem`, so this one value
+     moves all of it. The conversation divides it back out (`--room-font-size`
+     below) and the terminal is sized in `px`, so the two other size axes do not
+     ride on it. `1` is `100%`, the user agent's default: the size the root has
+     always had, so a screen that has chosen nothing is unchanged.
+     src/main.ts overrides it when a scale has been stored. */
+  --ui-scale: 1;
+  font-size: calc(100% * var(--ui-scale));
 }
 
 @media (prefers-color-scheme: dark) {
@@ -217,18 +226,24 @@ body {
    (#66). The room's own `font-size` lands on `.message` rather than here, so
    only the words are carried and the padding is not.
 
-   `1rem` is what both surfaces have always rendered at. No `font-size` is
-   written on `body`, on `html` or on `:root`, so the room has been showing the
-   user agent's default while everything around it was given a size, and the
-   textarea's `font: inherit` has been resolving to that same default. That is
-   where "the text is large" came from, and keeping the default here is what
-   makes a screen that has set nothing look exactly as it did. Levelling the
-   surfaces against each other is a separate question and not this one's.
+   `1rem` is what both surfaces have always rendered at. Until #194 no
+   `font-size` was written on `body`, on `html` or on `:root`, so the room has
+   been showing the user agent's default while everything around it was given a
+   size, and the textarea's `font: inherit` has been resolving to that same
+   default. That is where "the text is large" came from, and keeping the default
+   here is what makes a screen that has set nothing look exactly as it did.
+   Levelling the surfaces against each other is a separate question and not this
+   one's.
+
+   Divided by `--ui-scale`: `:root` now carries the UI's multiple as its size
+   (#194), and a `rem` counted from it would carry this axis along with the UI.
+   Dividing it back out leaves `1rem` of the user agent's default, whatever the
+   UI is set to, so the three axes stay independent.
 
    src/main.ts overrides this on both elements when a size has been stored. */
 #room,
 #composer textarea {
-  --room-font-size: 1rem;
+  --room-font-size: calc(1rem / var(--ui-scale));
 }
 
 #room {
@@ -1628,8 +1643,9 @@ body {
 /* The account dialog's frame, wider: a list of sections on the left and the
    section on the right, the way Claude Desktop's settings are laid out. Its
    own rules rather than a third selector on the account dialog's, because the
-   body inside is a different shape. No section is in it for now: the one it
-   had is in each server's account window since #193, and #194 fills it. */
+   body inside is a different shape. Its one section is the display (#194); the
+   one it had before, the local MCP servers, is in each server's account window
+   since #193. */
 #settings-dialog {
   width: min(52rem, calc(100vw - 3rem));
   height: min(38rem, calc(100vh - 3rem));
@@ -1678,6 +1694,9 @@ body {
   flex-direction: column;
   gap: 0.5rem;
   min-height: 0;
+  /* The dialog is capped by the window's height, and at the UI's larger
+     multiples its section can outgrow that; it scrolls rather than clipping. */
+  overflow-y: auto;
   padding: 1rem 1.1rem 0.6rem;
 }
 
@@ -1708,4 +1727,47 @@ body {
   border-radius: 6px;
   padding: 0.3rem 0.8rem;
   cursor: pointer;
+}
+
+/* The section list's one entry, marked as the section on the right. A label
+   rather than a button while it is the only one: there is nothing to switch to. */
+#settings-dialog .settings-item {
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+#settings-dialog h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+/* One setting: its name and its picker on a line, what it reaches under them. */
+#settings-dialog .settings-row {
+  display: grid;
+  grid-template-columns: 11rem auto;
+  justify-content: start;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.2rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+#settings-dialog .settings-row:last-child {
+  border-bottom: none;
+}
+
+#settings-dialog .settings-row .hint {
+  grid-column: 1 / -1;
+}
+
+#settings-dialog select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.4rem;
 }
