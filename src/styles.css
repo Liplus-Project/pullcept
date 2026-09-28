@@ -101,7 +101,6 @@ body {
 }
 
 #titlebar input,
-#titlebar select,
 #titlebar button {
   font: inherit;
   color: var(--fg);
@@ -501,8 +500,8 @@ body {
 
 /* ── the terminal window's header ────────────────────────────────────────── */
 
-/* The window's name, then the tabs, then the size picker and ✕ pinned to the
-   right, so the last two are in one place whatever is open. `flex: none` is what
+/* The window's name, then the tabs, then ✕ pinned to the right, so it is in
+   one place whatever is open. `flex: none` is what
    keeps the header its own height while the terminal below takes the rest of the
    pane.
 
@@ -614,7 +613,6 @@ body {
    the same ground the header itself has, which leaves the border to say where
    the control is — and that is what a control is everywhere in this app (see
    `--bg` at the top of this file). */
-#terminal-head select,
 #terminal-head button {
   font: inherit;
   flex: none;
