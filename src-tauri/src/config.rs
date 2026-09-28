@@ -32,7 +32,12 @@ use tauri::Manager;
 pub enum AccountKind {
     /// A person. The one at this keyboard is one of these (#59, which is where
     /// #53 left this open).
-    User,
+    ///
+    /// Stored as `admin`; `user` is what it was called until #192 and is still
+    /// read as this, so a config saved before the rename keeps its people.
+    /// Written back under the new name on the next save.
+    #[serde(alias = "user")]
+    Admin,
     /// A Claude Code session this app launches, with that CLI's conventions on
     /// its line.
     ClaudeCode,
@@ -51,7 +56,7 @@ impl AccountKind {
     /// about.
     pub fn cli(self) -> Option<mcp_config::Cli> {
         match self {
-            AccountKind::User | AccountKind::Cli => None,
+            AccountKind::Admin | AccountKind::Cli => None,
             AccountKind::ClaudeCode => Some(mcp_config::Cli::ClaudeCode),
         }
     }

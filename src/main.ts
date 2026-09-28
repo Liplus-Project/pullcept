@@ -210,17 +210,17 @@ interface SessionStats {
  * the person's own. A second CLI is a third value here, not a second reading of
  * somebody's launch options.
  */
-type AccountKind = "user" | "claude_code" | "cli";
+type AccountKind = "admin" | "claude_code" | "cli";
 
 /**
  * Whether this account launches a session.
  *
- * Every kind but `user`: what the two launched kinds differ in is what the app
+ * Every kind but `admin`: what the two launched kinds differ in is what the app
  * puts on their line, which is not this question. A person has no command under
  * them to spawn at all (#59).
  */
 function launches(account: Account): boolean {
-  return account.kind !== "user";
+  return account.kind !== "admin";
 }
 
 /**
@@ -2058,7 +2058,7 @@ interface Member {
 
 /** Which group a row falls in, and the heading it is drawn under. */
 const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
-  { kind: "user", label: "user" },
+  { kind: "admin", label: "admin" },
   // One heading per launched kind (#156). A group with nobody in it is not
   // drawn, so a screen whose accounts are all one kind reads as it did before
   // the split — the second heading appears when a second kind does.
@@ -2448,7 +2448,7 @@ function memberRow(row: Member): HTMLLIElement {
     // (#57).
     lifecycle.appendChild(endButton(view, name));
   } else if (row.account && launches(row.account)) {
-    // A launched kind only. A `user` account is a person and there is no CLI
+    // A launched kind only. An `admin` account is a person and there is no CLI
     // under a person to spawn; `start_session` refuses one and that refusal is
     // the authority, but a refusal is the wrong way for the person to find out
     // (#59). Their row keeps the empty column, and their 編集 with it.
@@ -2531,7 +2531,7 @@ function terminalTab(view: SessionView): HTMLElement {
   const tab = document.createElement("div");
   tab.className = "tab";
   // Never oneself: a terminal belongs to a session, and the person at this
-  // screen is not launched (`start_session` refuses a `user` account).
+  // screen is not launched (`start_session` refuses an `admin` account).
   tab.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
   if (shown) tab.classList.add("shown");
   if (view.ended !== null) tab.classList.add("ended");
@@ -2794,7 +2794,7 @@ async function join(): Promise<void> {
  * #53 left "is a human an account" open, and the two lists in the panel were
  * one consequence: the person was a name and a colour in `localStorage`, so
  * they had no row of the kind everyone else had. They are an account now, of
- * kind `user`, and the migration is the obvious one — the name and colour they
+ * kind `admin`, and the migration is the obvious one — the name and colour they
  * had been joining under become that account's (#59).
  *
  * Resolved before the room is joined, because the id goes into the join.
@@ -2802,8 +2802,8 @@ async function join(): Promise<void> {
 function resolveLocalAccount(): void {
   const stored = localStorage.getItem(LOCAL_KEY);
   let account =
-    accounts.find((one) => one.id === stored && one.kind === "user") ??
-    accounts.find((one) => one.kind === "user") ??
+    accounts.find((one) => one.id === stored && one.kind === "admin") ??
+    accounts.find((one) => one.kind === "admin") ??
     null;
 
   if (!account) {
@@ -2812,14 +2812,14 @@ function resolveLocalAccount(): void {
       id: crypto.randomUUID(),
       name: (localStorage.getItem(NAME_KEY) ?? "").trim() || "human",
       // Carried so the shape of an account is one shape. Nothing launches a
-      // person, and `start_session` refuses a `user` account outright.
+      // person, and `start_session` refuses an `admin` account outright.
       command: "claude",
       args: [],
       cwd: null,
       hue: savedHue !== null && HUES.some(({ hue }) => String(hue) === savedHue)
         ? Number(savedHue)
         : null,
-      kind: "user",
+      kind: "admin",
       // Carried for the same reason `command` is: one shape of account. A
       // person speaks as themselves, and there is no launch to select a style
       // on.
@@ -3067,7 +3067,7 @@ function renderSessionId(): void {
  * The account the panel's values speak for while no terminal is on the glass.
  *
  * The row chosen in the list when there is one, and otherwise the first account
- * that launches, in the order the list draws them (#144, decision 1). A `user`
+ * that launches, in the order the list draws them (#144, decision 1). An `admin`
  * account has no session to have recorded, so it is never the fallback; which
  * CLI the others launch does not enter into it. Once a terminal is on the glass
  * this is not asked: the values follow the pane again (decision 2).
@@ -3790,9 +3790,9 @@ function disarmDelete(): void {
  */
 function showDialogKind(): void {
   const kind = dialogKindEl.value as AccountKind;
-  dialogLaunchEl.hidden = kind === "user";
+  dialogLaunchEl.hidden = kind === "admin";
   dialogResumeFieldEl.hidden = kind !== "cli";
-  if (kind !== "user") refreshDialogLine();
+  if (kind !== "admin") refreshDialogLine();
 }
 
 /**
@@ -3866,7 +3866,7 @@ const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
  */
 async function refreshDialogNotice(): Promise<void> {
   const kind = dialogKindEl.value as AccountKind;
-  if (!draft || kind === "user") {
+  if (!draft || kind === "admin") {
     dialogNoticeEl.textContent = "";
     return;
   }
@@ -4048,8 +4048,8 @@ async function commitAccountDialog(): Promise<boolean> {
   // The person at this screen is a person. Turning their account into one that
   // launches would list them under the wrong heading and offer to start a CLI
   // under their name, which is not a thing there is one of.
-  if (target && target.id === localAccountId && kind !== "user") {
-    dialogError("この画面の本人のアカウントは種別 user のままです。");
+  if (target && target.id === localAccountId && kind !== "admin") {
+    dialogError("この画面の本人のアカウントは種別 admin のままです。");
     return false;
   }
   const cwd = dialogCwdEl.value.trim();
@@ -4058,7 +4058,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // would be values nothing ever reads, kept alive by an edit that once set
   // them. A person is not launched, so nothing selects a style for them.
   const args =
-    kind === "user"
+    kind === "admin"
       ? []
       : await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value });
 
@@ -4079,7 +4079,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // field was drawn and then changed: a field left as drawn is the stored
   // values, and one that was never drawn says nothing about them.
   let env = settling.env;
-  if (kind === "user") {
+  if (kind === "admin") {
     env = [];
   } else if (dialogEnvDrawn !== null && dialogEnvEl.value !== dialogEnvDrawn) {
     try {
@@ -4099,10 +4099,10 @@ async function commitAccountDialog(): Promise<boolean> {
     name,
     kind,
     hue: declaredHue(dialogHueEl),
-    cwd: kind === "user" ? null : cwd || null,
+    cwd: kind === "admin" ? null : cwd || null,
     // Blank clears it, and clearing it is a state: the account goes back to
     // launching on whatever its working directory's own settings name.
-    character: kind === "user" ? null : character || null,
+    character: kind === "admin" ? null : character || null,
     // Only the kind whose form shows this field keeps it (#156, 決定6). On a
     // kind that holds its own way back, a line stored here would be one nothing
     // reads and nobody can see to correct. Blank is a state on the kind that
