@@ -66,8 +66,33 @@ pub struct Post {
     /// screen, which draws a post from an `mcp` account folded (#193).
     pub account: Option<String>,
     pub content: String,
-    pub to: Option<String>,
+    /// The names it was addressed to, in the order they were named, or empty
+    /// when it was said to the room (#204). Always passed through
+    /// [`addressees`] on the way in, so no entry is blank and none repeats.
+    pub to: Vec<String>,
     pub ts: String,
+}
+
+/// The names a post is addressed to, as the room keeps them (#204).
+///
+/// Each name trimmed; a name that is empty once trimmed dropped; a name already
+/// on the list dropped, keeping the first place it was named in. Empty is the
+/// room as a whole, never a list holding an empty name: a participant matching
+/// `to` against its own name must not have to rule the empty string out first,
+/// and naming one participant twice says nothing the first naming did not.
+///
+/// Names, not participants. `to` carries display names, so two participants
+/// answering to one name are both addressed by it, and nothing here can tell
+/// them apart.
+pub fn addressees(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if !name.is_empty() && !kept.iter().any(|held| held == name) {
+            kept.push(name.to_string());
+        }
+    }
+    kept
 }
 
 /// A post the speaker had not seen, handed back in place of their own.
@@ -87,7 +112,8 @@ pub struct Missed {
     /// drawn from a refusal is drawn as the line it would have been (#193).
     pub account: Option<String>,
     pub content: String,
-    pub to: Option<String>,
+    /// Empty when it was said to the room, as on [`Post`].
+    pub to: Vec<String>,
     pub ts: String,
 }
 
@@ -242,7 +268,7 @@ mod tests {
             hue: None,
             account: None,
             content: content.to_string(),
-            to: None,
+            to: Vec::new(),
             ts: "2026-08-23T00:00:00.000Z".to_string(),
         }
     }
@@ -413,7 +439,7 @@ mod tests {
         let mut floor = Floor::new();
         floor.admit("master", 0, None, post("m-1", "Master", "ハロー"));
         let mut addressed = post("m-2", "Master", "レイだけ答えて");
-        addressed.to = Some("Claude Lay".to_string());
+        addressed.to = vec!["Claude Lay".to_string(), "Master".to_string()];
         floor.admit("master", 0, Some("m-1"), addressed);
 
         // Addressed to someone else, and it refuses all the same: the room
@@ -421,7 +447,42 @@ mod tests {
         let admission = floor.admit("lin", 0, Some("m-1"), post("m-3", "Claude Lin", "答えます"));
         let missed = refusal(&admission);
         assert_eq!(missed.len(), 1);
-        assert_eq!(missed[0].to.as_deref(), Some("Claude Lay"));
+        assert_eq!(missed[0].to, ["Claude Lay", "Master"]);
+    }
+
+    #[test]
+    fn addressees_are_trimmed_kept_once_and_never_blank() {
+        let names = |list: &[&str]| addressees(list.iter().map(|name| name.to_string()));
+        assert_eq!(
+            names(&[" Claude Lay ", "Claude Lin", "Claude Lay", "", "  "]),
+            ["Claude Lay", "Claude Lin"]
+        );
+        // The order they were named in, not an order of the room's own.
+        assert_eq!(names(&["Master", "Claude Lin"]), ["Master", "Claude Lin"]);
+        // Nothing left is the room as a whole.
+        assert!(names(&["", " "]).is_empty());
+        assert!(names(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_missed_post_carries_its_addressees_as_a_list() {
+        // What goes out on the wire: a list, one name or several, and an empty
+        // one for the room — never a bare string, never null.
+        let mut floor = Floor::new();
+        let mut addressed = post("m-1", "Master", "二人とも");
+        addressed.to = vec!["Claude Lay".to_string(), "Claude Lin".to_string()];
+        floor.admit("master", 0, None, addressed);
+        floor.admit("master", 0, Some("m-1"), post("m-2", "Master", "全体へ"));
+        let admission = floor.admit("lin", 0, None, post("m-3", "Claude Lin", "答えます"));
+        let missed = refusal(&admission);
+        let wire: Vec<String> = missed
+            .iter()
+            .map(|one| {
+                let value = serde_json::to_value(one).expect("a missed post serialises");
+                value["to"].to_string()
+            })
+            .collect();
+        assert_eq!(wire, [r#"["Claude Lay","Claude Lin"]"#, "[]"]);
     }
 
     #[test]

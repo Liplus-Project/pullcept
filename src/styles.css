@@ -221,9 +221,9 @@ body {
    the scope the placement itself: there is no third element for the property
    to be inherited by, so nothing anywhere has to cancel it.
 
-   The textarea alone, not the whole composer. 宛先 and 送信 sit on the same
-   row but are controls, not the sentence, and they stay on the whole-UI axis
-   (#66). The room's own `font-size` lands on `.message` rather than here, so
+   The textarea alone, not the whole composer. 送信 sits on the same row, and
+   the list `@` opens sits over it (#204), but both are controls, not the
+   sentence, and they stay on the whole-UI axis (#66). The room's own `font-size` lands on `.message` rather than here, so
    only the words are carried and the padding is not.
 
    `1rem` is what both surfaces have always rendered at. Until #194 no
@@ -371,29 +371,48 @@ body {
   padding: 0.6rem 0.9rem;
 }
 
-/* The addressee sits at the left of the composer, ahead of what is typed:
-   choosing who is being addressed comes before the words, and a control placed
-   after the textarea is one that gets set after the sentence is already
-   written. */
-#composer .to {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  /* The composer aligns to flex-end so the button sits with the last line of a
-     grown textarea; the addressee follows that same baseline. */
-  align-self: flex-end;
-  color: var(--muted);
-  font-size: 0.8rem;
+/* The list of who can be addressed, opened by `@` in the textarea (#204).
+
+   Anchored to the composer and drawn above it, over the conversation's last
+   lines: below it the window ends. A control rather than the sentence, so it is
+   on the whole-UI axis (#66) — sized in `rem`, not in the conversation's own
+   size. Each name is in the colour the room draws that participant in. */
+#composer {
+  position: relative;
 }
 
-#composer select {
-  font: inherit;
-  color: var(--fg);
+#mention-list {
+  position: absolute;
+  left: 0.9rem;
+  bottom: calc(100% + 0.25rem);
+  z-index: 10;
+  min-width: 12rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 0.5rem 0.4rem;
-  max-width: 10rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  font-size: 0.85rem;
+}
+
+#mention-list[hidden] {
+  display: none;
+}
+
+#mention-list li {
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--speaker, var(--fg));
+  font-weight: 600;
+}
+
+#mention-list li[aria-selected="true"] {
+  background: var(--surface);
 }
 
 /* Written at the size it will be read at. The `font-size` follows the

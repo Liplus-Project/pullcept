@@ -36,7 +36,9 @@ interface RoomMessage {
    *  the fold is decided on (`foldOf`). */
   account: string | null;
   content: string;
-  to: string | null;
+  /** The names it was addressed to, or empty when it was said to the room
+   *  (#204). */
+  to: string[];
   ts: string;
   /** True when this screen's own participant posted it. Self/other, not
    *  human/AI: the room no longer carries that axis. */
@@ -74,7 +76,8 @@ interface MissedPost {
   /** The account it was said as, for the same reason (#193). */
   account: string | null;
   content: string;
-  to: string | null;
+  /** Empty when it was said to the room (#204). */
+  to: string[];
   ts: string;
 }
 
@@ -99,9 +102,11 @@ interface LoggedPost {
    *  back fold the way it did live (`foldOf`). */
   account?: string;
   content: string;
-  /** Absent, not null, when it was said to the room: the field's presence is
-   *  what carries the two states, in the file and on the way here alike. */
-  to?: string;
+  /** The names it was addressed to. Absent, not null or empty, when it was
+   *  said to the room: the field's presence is what carries the two states, in
+   *  the file and on the way here alike. A line written while a post had one
+   *  addressee is read back by the app as a list of that one (#204). */
+  to?: string[];
   ts: string;
 }
 
@@ -525,7 +530,7 @@ const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
-const toEl = document.getElementById("to-select") as HTMLSelectElement;
+const mentionListEl = document.getElementById("mention-list") as HTMLUListElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
@@ -1233,8 +1238,8 @@ function storedRoomFontSize(): number {
  * rows from its own size. Two `setProperty` calls make the scope the placement
  * itself, so nothing has to be cancelled anywhere.
  *
- * 宛先 and 送信 sit in the composer but do not follow. They are controls, not
- * the sentence, and they stay on the whole-UI axis (#66).
+ * 送信 and the list `@` opens sit in the composer but do not follow. They are
+ * controls, not the sentence, and they stay on the whole-UI axis (#66, #204).
  *
  * `save` is false for the restore at startup. Writing the value back there
  * would put a size in storage for a screen that never chose one, which is the
@@ -1462,7 +1467,8 @@ function shortDateTime(iso: string): string {
 function roomLine(line: {
   speaker: string;
   colour: string;
-  to: string | null;
+  /** Empty for a line said to the room. */
+  to: string[];
   ts: string;
   stamp: string;
   content: string;
@@ -1487,10 +1493,10 @@ function roomLine(line: {
   speaker.textContent = line.speaker;
   head.appendChild(speaker);
 
-  if (line.to) {
+  if (line.to.length) {
     const to = document.createElement("span");
     to.className = "to";
-    to.textContent = `→ ${line.to}`;
+    to.textContent = `→ ${line.to.join("、")}`;
     head.appendChild(to);
   }
 
@@ -1699,7 +1705,7 @@ function drawTopic(posts: LoggedPost[]): void {
       roomLine({
         speaker: post.speaker,
         colour: fold?.colour ?? speakerColor(post.speaker, null, false),
-        to: post.to ?? null,
+        to: post.to ?? [],
         ts: post.ts,
         // The day as well as the clock. A topic spans days, and a bare 14:32
         // could be any of them.
@@ -2374,11 +2380,14 @@ function trackAddress(message: RoomMessage): void {
     awaiting.set(message.topic_id, waiting);
   }
   let moved = waiting.delete(message.speaker);
-  const to = message.to;
   const present = rosters.get(message.topic_id) ?? [];
-  if (to !== null && !waiting.has(to) && present.some((one) => one.name === to && !one.own)) {
-    waiting.add(to);
-    moved = true;
+  // Each name on it, the same way: a post to several is a question to each of
+  // them, and every one that has not answered is being waited on (#204).
+  for (const to of message.to) {
+    if (!waiting.has(to) && present.some((one) => one.name === to && !one.own)) {
+      waiting.add(to);
+      moved = true;
+    }
   }
   if (moved && message.topic_id === shownTopicId()) renderPanel();
 }
@@ -2805,8 +2814,8 @@ function closeView(view: SessionView): void {
  *
  * An account that is not running is still someone, so it is listed rather than
  * left out — that is the whole point of an account existing while it is off
- * (#53). It does not become an addressee: `renderAddressees` reads the live
- * roster only, because a name that cannot be reached is not worth naming.
+ * (#53). It does not become an addressee: `addressable` reads the live roster
+ * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
   // The tabs are redrawn here rather than on their own schedule. Both surfaces
@@ -2821,7 +2830,7 @@ function renderPanel(): void {
     empty.className = "empty";
     empty.textContent = "参加者なし";
     rosterEl.appendChild(empty);
-    renderAddressees();
+    if (!mentionListEl.hidden) refreshMentions();
     return;
   }
 
@@ -2841,7 +2850,9 @@ function renderPanel(): void {
     for (const row of inGroup) rosterEl.appendChild(memberRow(row));
   }
 
-  renderAddressees();
+  // An open list follows the room: someone who left is not offered, someone who
+  // came is. A shut one stays shut — it opens on `@`, not on the roster.
+  if (!mentionListEl.hidden) refreshMentions();
 }
 
 /**
@@ -3026,59 +3037,222 @@ function resolveLocalAccount(): void {
 }
 
 /**
- * Redraw the addressee list from the roster.
+ * One addressee picked in the composer with `@` (#204).
  *
- * The names have to be the ones participants answer to, so they come from the
- * roster rather than being typed: a mistyped addressee is an utterance
- * addressed to nobody, and nothing on screen would say so. A chosen addressee
- * survives a roster change while that participant is still present, and falls
- * back to the whole room when they leave.
+ * Bound when it is picked, to the participant it was picked as, and never read
+ * back out of the text at send. A name can hold a space (`Claude Lay`), and a
+ * participant can be renamed between the pick and the send: reading `@…` off
+ * the text would have to guess where a name ends, and after a rename it would
+ * address a name nobody answers to any more.
  *
- * Everyone but oneself is addressable — sessions and people alike, since the
- * roster no longer separates them. The room's roster is the whole source, so an
- * account with no session in it is absent from here by construction: naming a
- * participant who cannot be reached is a post addressed to nobody, which is the
- * reason addressees are picked from a roster at all (#43).
+ * The text is looked at for one thing only — whether the `@名前` the pick put
+ * there is still there. A pick the person has deleted from what they are
+ * sending is not an addressee of it.
  */
-function renderAddressees(): void {
-  const chosen = toEl.value;
-  // Names, deduplicated: `to` carries a display name, so two participants
-  // answering to one name are one option — listing it twice would offer a
-  // choice between two identical things that address the same pair anyway.
-  const addressable = [
-    ...new Set(shownRoster().filter((one) => !one.own).map((one) => one.name)),
-  ];
+interface Mention {
+  /** What the pick put into the text: `@` and the name as it was then. */
+  token: string;
+  /** The participant it was picked as. The account when they joined with one —
+   *  a session that reconnects is a new connection under the same account — and
+   *  the connection otherwise. */
+  account: string | null;
+  id: string;
+  /** The name when picked, for a participant no longer in the room at send. */
+  name: string;
+}
 
-  // Left alone when the roster has not moved. The panel is now redrawn whenever
-  // a row's word changes — when a session starts printing and again when it
-  // stops (#82) — and this control is the one thing in the panel a person can be
-  // in the middle of using: rebuilding a `<select>` closes the list that is open
-  // over it. The roster is what this reads from, so the same list of names is
-  // the same options, and replacing them would be work with a cost and no
-  // effect.
-  const wanted = ["", ...addressable];
-  if (
-    toEl.options.length === wanted.length &&
-    wanted.every((name, at) => toEl.options[at].value === name)
-  ) {
+/** The addressees picked into what is in the composer now. */
+let mentions: Mention[] = [];
+
+/** Who the open list offers, and which of them the keys are on. */
+let mentionCandidates: Participant[] = [];
+let mentionActive = 0;
+/** Where the `@` the list is completing sits in the text; -1 when it is shut. */
+let mentionAt = -1;
+/** An `@` whose list was shut with Esc. Typing on after it does not open the
+ *  list again; a different `@` does. */
+let mentionDismissedAt = -1;
+
+/**
+ * Who can be addressed: everyone in the room on the glass but this screen's own
+ * person, one entry per name.
+ *
+ * Sessions and people alike — the roster does not separate them. The room's
+ * roster is the whole source, so an account with no session in it is absent by
+ * construction: naming a participant who cannot be reached is a post addressed
+ * to nobody, which is the reason addressees are picked from a roster at all
+ * (#43). Names, deduplicated: `to` carries a display name, so two participants
+ * answering to one name are one addressee, and offering both would be a choice
+ * between two things that address the same pair.
+ */
+function addressable(): Participant[] {
+  const seen = new Set<string>();
+  return shownRoster().filter((one) => {
+    if (one.own || seen.has(one.name)) return false;
+    seen.add(one.name);
+    return true;
+  });
+}
+
+/**
+ * The `@` the caret is completing, and what has been typed after it — or null
+ * when the caret is not completing one.
+ *
+ * An `@` counts at the start of the text or after whitespace, so one in the
+ * middle of a word (`a@b`) does not open the list. What follows may hold spaces,
+ * because names do, but not a line break. The full-width `＠` counts too: it is
+ * what an IME in kana mode types for the same key.
+ */
+function mentionQuery(): { at: number; query: string } | null {
+  const caret = inputEl.selectionStart;
+  if (caret !== inputEl.selectionEnd) return null;
+  const before = inputEl.value.slice(0, caret);
+  const at = Math.max(before.lastIndexOf("@"), before.lastIndexOf("＠"));
+  if (at < 0) return null;
+  if (at > 0 && !/\s/.test(before[at - 1])) return null;
+  const query = before.slice(at + 1);
+  if (query.includes("\n")) return null;
+  return { at, query };
+}
+
+/**
+ * Open, narrow or shut the list for where the caret is now.
+ *
+ * Narrowed to the names that start with what was typed after the `@`, case
+ * aside. Nothing left is the list shut: after a pick the name and its space are
+ * past the `@`, and no name starts with those, so typing on past a pick shuts it
+ * without anything having to say so.
+ */
+function refreshMentions(): void {
+  const found = mentionQuery();
+  if (!found || found.at !== mentionDismissedAt) mentionDismissedAt = -1;
+  const query = found?.query.toLowerCase() ?? "";
+  const candidates =
+    found && found.at !== mentionDismissedAt
+      ? addressable().filter((one) => one.name.toLowerCase().startsWith(query))
+      : [];
+  if (!found || !candidates.length) {
+    closeMentions();
     return;
   }
+  // The keys stay on the same participant while the list narrows around them.
+  const current = mentionCandidates[mentionActive]?.name;
+  const kept = candidates.findIndex((one) => one.name === current);
+  mentionCandidates = candidates;
+  mentionActive = kept >= 0 ? kept : 0;
+  mentionAt = found.at;
+  renderMentions();
+}
 
-  toEl.replaceChildren();
+function closeMentions(): void {
+  mentionCandidates = [];
+  mentionActive = 0;
+  mentionAt = -1;
+  mentionListEl.hidden = true;
+  mentionListEl.replaceChildren();
+}
 
-  const everyone = document.createElement("option");
-  everyone.value = "";
-  everyone.textContent = "全体";
-  toEl.appendChild(everyone);
+function renderMentions(): void {
+  mentionListEl.replaceChildren();
+  mentionCandidates.forEach((one, at) => {
+    const item = document.createElement("li");
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(at === mentionActive));
+    // In the colour the room draws them in, so the name picked is recognisably
+    // the participant on the roster.
+    item.style.setProperty("--speaker", speakerColor(one.name, one.hue, false));
+    item.textContent = one.name;
+    // mousedown rather than click: by the time a click lands the textarea has
+    // lost focus, and the caret the pick goes in at with it.
+    item.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      pickMention(at);
+    });
+    mentionListEl.appendChild(item);
+  });
+  mentionListEl.hidden = false;
+  mentionListEl.children[mentionActive]?.scrollIntoView({ block: "nearest" });
+}
 
-  for (const participant of addressable) {
-    const option = document.createElement("option");
-    option.value = participant;
-    option.textContent = participant;
-    toEl.appendChild(option);
+/**
+ * Put a candidate into the text as `@名前`, and bind it.
+ *
+ * What was typed after the `@` is replaced by the whole name and a space, so the
+ * next word does not run into it.
+ */
+function pickMention(at: number): void {
+  const one = mentionCandidates[at];
+  if (!one || mentionAt < 0) return;
+  const token = `@${one.name}`;
+  const caret = inputEl.selectionStart;
+  inputEl.setRangeText(`${token} `, mentionAt, caret, "end");
+  mentions.push({ token, account: one.account, id: one.id, name: one.name });
+  closeMentions();
+}
+
+/**
+ * The keys of an open list. Answers whether the key was the list's, in which
+ * case it must not also send, or move the caret.
+ *
+ * Enter and Tab pick, the arrows move, Esc shuts. Shift+Enter is still a line
+ * break. Nothing while an IME is composing: those keys belong to the conversion.
+ */
+function mentionKey(event: KeyboardEvent): boolean {
+  if (mentionListEl.hidden || event.isComposing) return false;
+  const count = mentionCandidates.length;
+  switch (event.key) {
+    case "ArrowDown":
+      mentionActive = (mentionActive + 1) % count;
+      renderMentions();
+      break;
+    case "ArrowUp":
+      mentionActive = (mentionActive - 1 + count) % count;
+      renderMentions();
+      break;
+    case "Enter":
+    case "Tab":
+      if (event.shiftKey) return false;
+      pickMention(mentionActive);
+      break;
+    case "Escape":
+      mentionDismissedAt = mentionAt;
+      closeMentions();
+      break;
+    default:
+      return false;
   }
+  event.preventDefault();
+  return true;
+}
 
-  toEl.value = addressable.includes(chosen) ? chosen : "";
+/** Drop the picks whose `@名前` is no longer in the text: they were deleted. */
+function pruneMentions(): void {
+  const text = inputEl.value;
+  mentions = mentions.filter((one) => text.includes(one.token));
+}
+
+/**
+ * The names `content` is addressed to: each pick still in it, under the name its
+ * participant answers to now, each once, in the order they were picked. Empty
+ * is the room as a whole.
+ *
+ * A participant renamed since the pick is addressed under the new name — the
+ * name the room will match them by. One who has left the room keeps the name
+ * they were picked under, the way a post to them would have read when it was
+ * written.
+ */
+function pickedAddressees(content: string): string[] {
+  const roster = shownRoster().filter((one) => !one.own);
+  const names: string[] = [];
+  for (const one of mentions) {
+    if (!content.includes(one.token)) continue;
+    const now = roster.find((seat) =>
+      one.account !== null ? seat.account === one.account : seat.id === one.id,
+    );
+    const name = now?.name ?? one.name;
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 async function send(): Promise<void> {
@@ -3091,12 +3265,17 @@ async function send(): Promise<void> {
   // said where it was written (#141).
   const topicId = shownTopicId();
   // Empty means the room as a whole. The app still delivers to everyone; the
-  // addressee is judgment material for the participants, not a delivery filter.
-  const to = toEl.value || null;
+  // addressees are judgment material for the participants, not a delivery
+  // filter. The picks go with the text: a refused or failed post gives both
+  // back together.
+  const picked = mentions;
+  const to = pickedAddressees(content);
   // Read before the await: what the screen had drawn when this was sent is the
   // watermark, and an arrival during the round trip must not be folded into it.
   const lastSeen = lastSeenId;
   inputEl.value = "";
+  mentions = [];
+  closeMentions();
   try {
     const outcome = await invoke<PostOutcome>("room_post", {
       topicId,
@@ -3111,6 +3290,7 @@ async function send(): Promise<void> {
       // unchanged, except that what it says to read is now there to read. The
       // reading is left where it belongs; only the means of doing it is added.
       inputEl.value = content;
+      mentions = picked;
       // Drawn only into the conversation they belong to. A topic opened during
       // the round trip is another conversation, and it has drawn its own log.
       const drew = topicId === shownTopicId() ? drawMissed(outcome.missed) : 0;
@@ -3131,6 +3311,7 @@ async function send(): Promise<void> {
   } catch (err) {
     // Put the text back rather than losing what was typed.
     inputEl.value = content;
+    mentions = picked;
     status(`発言を送れませんでした: ${err}`, "error");
   }
 }
@@ -5057,11 +5238,26 @@ async function main(): Promise<void> {
 
   sendEl.addEventListener("click", () => void send());
   inputEl.addEventListener("keydown", (event) => {
+    // The list's keys first: Enter on an open list picks, it does not send.
+    if (mentionKey(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       void send();
     }
   });
+  // `@` opens the list of who can be addressed (#204). It follows the caret,
+  // so a click or an arrow key that moves it off the `@` shuts it.
+  inputEl.addEventListener("input", () => {
+    pruneMentions();
+    refreshMentions();
+  });
+  inputEl.addEventListener("click", () => refreshMentions());
+  inputEl.addEventListener("keyup", (event) => {
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      refreshMentions();
+    }
+  });
+  inputEl.addEventListener("blur", () => closeMentions());
 
   try {
     homeDir = await invoke<string>("home_dir");
