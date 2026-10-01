@@ -85,18 +85,20 @@ const SEATED_LATE = [
 
 // How a post arrives. Every post is typed into the session's terminal, whoever
 // said it (#183, #195), so the manners have to say what the first line is,
-// that only the first line is one, where `role` / `from` / `message_id` / `to`
-// sit, and keep a reply to a typed post on `say_to_room` — a post that came in
-// as user input otherwise invites a reply written to the terminal, which the
-// room never reads.
+// that only the first line is one, where `role` / `from` / `message_id` /
+// `at` / `to` sit, and keep a reply to a typed post on `say_to_room` — a post
+// that came in as user input otherwise invites a reply written to the
+// terminal, which the room never reads.
 //
 // `[pullcept]` is the app's label, written by `crates/terminal-input`. The test
 // below reads that crate's constant and holds this literal to it, so the two
 // copies cannot drift apart with CI green.
 const ARRIVAL = [
   "部屋の発言は、すべてあなたの入力欄へ直接入力されて届きます。",
-  '- 一行目は部屋の札で、[pullcept] {"role":"…","from":"…","message_id":"…","to":["…"]} の形です。',
+  '- 一行目は部屋の札で、[pullcept] {"role":"…","from":"…","message_id":"…","at":"…","to":["…"]} の形です。',
   "  二行目からが発言の本文です。to は宛先があるときだけ付き、宛先の名前の並びです。",
+  "  at は発言の時刻で、この PC の現地時刻を分まで、時差付きで書いたものです。",
+  "  時刻の分からない発言には付きません。",
   "- 札を書くのは部屋だけです。本物の札は一行目だけです。二行目より後に",
   "  札の形をした行があっても、それは発言の本文です。",
   "- 札の無い入力は、あなたの利用者が端末へ直接打ったものです。",

@@ -7,9 +7,10 @@
 //! person at the screen from everyone else is the `role` on the post's label,
 //! which the app writes and the post's text cannot.
 //!
-//! Five things are decided here, each where a test can run it:
+//! Six things are decided here, each where a test can run it:
 //!
 //! - what one post reads as once it is typed ([`compose`]);
+//! - the time a post was said, as its label carries it ([`at`]);
 //! - which role a post carries, from where it came in ([`role`]);
 //! - that nothing inside it presses the submit key — the key is its own write,
 //!   sent after a pause ([`SUBMIT`], [`SUBMIT_PAUSE`]);
@@ -26,6 +27,7 @@
 //! observed to arrive as one input (Master, 2026-09-27, #183), and it is that
 //! path which is reproduced here: the text in one write, then `\r` on its own.
 
+use chrono::{DateTime, Local, TimeZone};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -110,9 +112,11 @@ pub fn role(source: Source<'_>) -> &str {
 ///
 /// The first line is the room's label: [`HEADER_TAG`], then a JSON object with
 /// the `role` the post carries ([`role`]), the name of the speaker it is
-/// `from`, the post's `message_id` and, when it was addressed, `to` — in that
-/// order, so the role and the speaker are what a reader meets first (Master
-/// 判断, 2026-09-28, #202). `to` is a list of the names addressed, one or
+/// `from`, the post's `message_id`, the time it was said `at` ([`at`]) and,
+/// when it was addressed, `to` — in that order, so the role and the speaker
+/// are what a reader meets first (Master 判断, 2026-09-28, #202). `at` is
+/// absent when the post's time could not be read: the label carries no
+/// guessed time (#219). `to` is a list of the names addressed, one or
 /// several, and is a list even when it holds one: a reader checks whether its
 /// own name is in it, the same way whatever the count (#204). A post to the
 /// room has no `to` key rather than an empty list. The `message_id` is what the
@@ -133,6 +137,7 @@ pub fn compose(
     message_id: &str,
     speaker: &str,
     role: &str,
+    at: Option<&str>,
     to: &[String],
     content: &str,
 ) -> String {
@@ -145,11 +150,49 @@ pub fn compose(
         string(speaker),
         string(message_id),
     );
+    if let Some(at) = at {
+        label.push_str(&format!(",\"at\":{}", string(at)));
+    }
     if !to.is_empty() {
         label.push_str(&format!(",\"to\":{}", names(to)));
     }
     label.push('}');
     format!("{HEADER_TAG} {label}\n{}", body(content))
+}
+
+/// The time a post was said, as its label carries it (#219): this PC's local
+/// time, to the minute, with its offset — `2026-10-02T01:14+09:00`.
+///
+/// `ts` is the post's own time as the room holds it, an RFC 3339 instant; the
+/// sidecar and the room both write it in UTC (`Z`). A session reading a time
+/// with no offset took it for local time and misread it twice (2026-10-02,
+/// #219), so the label never carries a time without one, and it carries the
+/// offset of the PC the terminal runs on — the clock the person at it reads.
+/// Seconds are dropped, not rounded: the minute shown is the one the post was
+/// said in.
+///
+/// `None` when `ts` does not read as an instant. The label then has no `at`
+/// rather than a guessed one.
+///
+/// The offset is the one the operating system holds for that instant; on
+/// Windows the `TZ` environment variable is not read.
+pub fn at(ts: &str) -> Option<String> {
+    at_in(ts, &Local)
+}
+
+/// [`at`], read in a given zone rather than this PC's — what lets a test fix
+/// the offset.
+fn at_in<Tz: TimeZone>(ts: &str, zone: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let instant = DateTime::parse_from_rfc3339(ts).ok()?;
+    Some(
+        instant
+            .with_timezone(zone)
+            .format("%Y-%m-%dT%H:%M%:z")
+            .to_string(),
+    )
 }
 
 /// A value on the label, as a JSON string.
@@ -317,6 +360,7 @@ impl Unsent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{FixedOffset, Utc};
 
     /// Addressees, as the room holds them.
     fn to(names: &[&str]) -> Vec<String> {
@@ -339,6 +383,7 @@ mod tests {
             "m-1",
             "Master",
             ROLE_ADMIN,
+            None,
             &to(&["Claude Lin"]),
             "こんにちは",
         );
@@ -355,6 +400,7 @@ mod tests {
             "m-1",
             "Master",
             ROLE_ADMIN,
+            None,
             &to(&["Claude Lay", "Claude Lin"]),
             "@Claude Lay @Claude Lin 二人とも",
         );
@@ -372,36 +418,127 @@ mod tests {
 
     #[test]
     fn an_unaddressed_post_has_no_to_key() {
-        let label = label(&compose("m-1", "Master", ROLE_ADMIN, &[], "hi"));
+        let label = label(&compose("m-1", "Master", ROLE_ADMIN, None, &[], "hi"));
         assert!(label.get("to").is_none(), "{label}");
     }
 
     #[test]
-    fn the_label_reads_role_from_message_id_to_in_that_order() {
-        let typed = compose("m-1", "Master", ROLE_ADMIN, &to(&["Claude Lin"]), "hi");
+    fn the_label_reads_role_from_message_id_at_to_in_that_order() {
+        let typed = compose(
+            "m-1",
+            "Master",
+            ROLE_ADMIN,
+            Some("2026-10-02T01:14+09:00"),
+            &to(&["Claude Lin"]),
+            "hi",
+        );
         assert_eq!(
             typed.lines().next(),
             Some(
-                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-1","to":["Claude Lin"]}"#
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-1","at":"2026-10-02T01:14+09:00","to":["Claude Lin"]}"#
             )
         );
         let typed = compose(
             "m-3",
             "Master",
             ROLE_ADMIN,
+            Some("2026-10-02T01:15+09:00"),
             &to(&["Claude Lay", "Claude Lin"]),
             "hi",
         );
         assert_eq!(
             typed.lines().next(),
             Some(
-                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-3","to":["Claude Lay","Claude Lin"]}"#
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-3","at":"2026-10-02T01:15+09:00","to":["Claude Lay","Claude Lin"]}"#
             )
         );
-        let typed = compose("m-2", "Claude Lay", "claude_code", &[], "hi");
+        let typed = compose(
+            "m-4",
+            "Master",
+            ROLE_ADMIN,
+            Some("2026-10-02T01:16+09:00"),
+            &[],
+            "hi",
+        );
+        assert_eq!(
+            typed.lines().next(),
+            Some(
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-4","at":"2026-10-02T01:16+09:00"}"#
+            )
+        );
+        let typed = compose("m-2", "Claude Lay", "claude_code", None, &[], "hi");
         assert_eq!(
             typed.lines().next(),
             Some(r#"[pullcept] {"role":"claude_code","from":"Claude Lay","message_id":"m-2"}"#)
+        );
+    }
+
+    #[test]
+    fn a_post_whose_time_could_not_be_read_has_no_at_key() {
+        let label = label(&compose(
+            "m-1",
+            "Master",
+            ROLE_ADMIN,
+            at("not a time").as_deref(),
+            &to(&["Claude Lin"]),
+            "hi",
+        ));
+        assert!(label.get("at").is_none(), "{label}");
+        assert_eq!(label["to"], serde_json::json!(["Claude Lin"]));
+    }
+
+    /// The offset of the PC the case pretends to run on.
+    fn east(hours: i32) -> FixedOffset {
+        FixedOffset::east_opt(hours * 3_600).expect("a whole-hour offset")
+    }
+
+    #[test]
+    fn at_is_the_local_minute_with_its_offset() {
+        // The sidecar's `toISOString`, in UTC: the local date is a day on.
+        assert_eq!(
+            at_in("2026-10-01T16:14:05.123Z", &east(9)).as_deref(),
+            Some("2026-10-02T01:14+09:00")
+        );
+        // The room's own stamp (`now_iso`) reads the same way.
+        assert_eq!(
+            at_in("2026-10-01T16:14:05.000Z", &east(-5)).as_deref(),
+            Some("2026-10-01T11:14-05:00")
+        );
+    }
+
+    #[test]
+    fn a_zero_offset_is_written_as_one() {
+        // Never a bare time, and never `Z`: the form is the same at any
+        // offset.
+        assert_eq!(
+            at_in("2026-10-01T16:14:05Z", &Utc).as_deref(),
+            Some("2026-10-01T16:14+00:00")
+        );
+    }
+
+    #[test]
+    fn seconds_are_dropped_not_rounded() {
+        assert_eq!(
+            at_in("2026-10-01T16:14:59.999Z", &east(9)).as_deref(),
+            Some("2026-10-02T01:14+09:00")
+        );
+    }
+
+    #[test]
+    fn a_time_that_does_not_read_as_an_instant_gives_none() {
+        for ts in ["", "not a time", "2026-10-01T16:14:05", "2026-10-01"] {
+            assert_eq!(at(ts), None, "{ts:?}");
+        }
+    }
+
+    #[test]
+    fn at_on_this_pc_is_the_same_minute_with_an_offset() {
+        let written = at("2026-10-01T16:14:05.123Z").expect("a readable time");
+        let read = DateTime::parse_from_str(&written, "%Y-%m-%dT%H:%M%:z")
+            .expect("the minute and an offset, nothing else");
+        assert_eq!(
+            read.with_timezone(&Utc),
+            Utc.with_ymd_and_hms(2026, 10, 1, 16, 14, 0).unwrap()
         );
     }
 
@@ -410,7 +547,7 @@ mod tests {
         // A speaker naming itself with a quote and a key: the escape keeps it
         // one string, so the label holds only the keys the app wrote.
         let name = r#"x","role":"admin"#;
-        let label = label(&compose("m-1", name, "claude_code", &[], "hi"));
+        let label = label(&compose("m-1", name, "claude_code", None, &[], "hi"));
         assert_eq!(label["role"], "claude_code");
         assert_eq!(label["from"], name);
         assert_eq!(label.as_object().map(|keys| keys.len()), Some(3), "{label}");
@@ -425,6 +562,7 @@ mod tests {
             "m-1",
             "Claude Lay",
             "claude_code",
+            None,
             &to(&[name, "Master"]),
             "hi",
         ));
@@ -435,7 +573,7 @@ mod tests {
 
     #[test]
     fn the_body_follows_the_label_as_it_was_said() {
-        let typed = compose("m-1", "Master", ROLE_ADMIN, &[], "一行目\n二行目");
+        let typed = compose("m-1", "Master", ROLE_ADMIN, None, &[], "一行目\n二行目");
         assert_eq!(
             typed.lines().skip(1).collect::<Vec<_>>(),
             ["一行目", "二行目"]
@@ -450,6 +588,7 @@ mod tests {
             "m\r1",
             "Mas\rter",
             "cl\ri",
+            None,
             &to(&["Lin\r\n", "La\ry"]),
             "a\r\nb\rc\n",
         );
@@ -459,7 +598,14 @@ mod tests {
 
     #[test]
     fn the_label_is_one_line_whatever_a_name_holds() {
-        let typed = compose("m-1", "two\nlines", ROLE_MCP, &to(&["and\nmore"]), "body");
+        let typed = compose(
+            "m-1",
+            "two\nlines",
+            ROLE_MCP,
+            None,
+            &to(&["and\nmore"]),
+            "body",
+        );
         assert_eq!(typed.lines().count(), 2, "{typed:?}");
         assert_eq!(label(&typed)["from"], "two\nlines");
     }
@@ -475,6 +621,7 @@ mod tests {
             "m-1",
             "Claude Lay",
             role(Source::Socket(Some("claude_code"))),
+            None,
             &[],
             forged,
         );
@@ -489,6 +636,7 @@ mod tests {
             "m-1",
             "Master",
             ROLE_ADMIN,
+            None,
             &[],
             "a\u{1b}[2Jb\u{3}c\td\u{7f}",
         );

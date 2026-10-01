@@ -981,7 +981,8 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// Every post, whoever said it: the person at the screen, a session, a notice.
 /// The label on its first line carries the `role` (`role_of`), which is how a
 /// session tells its user's words from everything else it is handed on this
-/// one path.
+/// one path, and the time the post was said, in this PC's local time
+/// (`terminal_input::at`, #219).
 ///
 /// Which terminal belongs to a seat is read off the launcher's ledger by the
 /// room and the account the seat declared (`session::RoomSeats`). A seat that
@@ -1015,10 +1016,12 @@ fn type_into_sessions(
     if targets.is_empty() {
         return;
     }
+    let at = terminal_input::at(&post.ts);
     let text = terminal_input::compose(
         &post.message_id,
         &post.speaker,
         role,
+        at.as_deref(),
         &post.to,
         &post.content,
     );
