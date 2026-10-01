@@ -161,7 +161,9 @@ pub fn compose(
 }
 
 /// The time a post was said, as its label carries it (#219): this PC's local
-/// time, to the minute, with its offset — `2026-10-02T01:14+09:00`.
+/// time, month and day to the minute, with its offset — `10-02T01:14+09:00`.
+/// No year and no seconds: the year is read off the date the session started
+/// on (Master 判断, 2026-10-02, #219).
 ///
 /// `ts` is the post's own time as the room holds it, an RFC 3339 instant; the
 /// sidecar and the room both write it in UTC (`Z`). A session reading a time
@@ -190,7 +192,7 @@ where
     Some(
         instant
             .with_timezone(zone)
-            .format("%Y-%m-%dT%H:%M%:z")
+            .format("%m-%dT%H:%M%:z")
             .to_string(),
     )
 }
@@ -428,42 +430,42 @@ mod tests {
             "m-1",
             "Master",
             ROLE_ADMIN,
-            Some("2026-10-02T01:14+09:00"),
+            Some("10-02T01:14+09:00"),
             &to(&["Claude Lin"]),
             "hi",
         );
         assert_eq!(
             typed.lines().next(),
             Some(
-                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-1","at":"2026-10-02T01:14+09:00","to":["Claude Lin"]}"#
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-1","at":"10-02T01:14+09:00","to":["Claude Lin"]}"#
             )
         );
         let typed = compose(
             "m-3",
             "Master",
             ROLE_ADMIN,
-            Some("2026-10-02T01:15+09:00"),
+            Some("10-02T01:15+09:00"),
             &to(&["Claude Lay", "Claude Lin"]),
             "hi",
         );
         assert_eq!(
             typed.lines().next(),
             Some(
-                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-3","at":"2026-10-02T01:15+09:00","to":["Claude Lay","Claude Lin"]}"#
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-3","at":"10-02T01:15+09:00","to":["Claude Lay","Claude Lin"]}"#
             )
         );
         let typed = compose(
             "m-4",
             "Master",
             ROLE_ADMIN,
-            Some("2026-10-02T01:16+09:00"),
+            Some("10-02T01:16+09:00"),
             &[],
             "hi",
         );
         assert_eq!(
             typed.lines().next(),
             Some(
-                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-4","at":"2026-10-02T01:16+09:00"}"#
+                r#"[pullcept] {"role":"admin","from":"Master","message_id":"m-4","at":"10-02T01:16+09:00"}"#
             )
         );
         let typed = compose("m-2", "Claude Lay", "claude_code", None, &[], "hi");
@@ -497,12 +499,12 @@ mod tests {
         // The sidecar's `toISOString`, in UTC: the local date is a day on.
         assert_eq!(
             at_in("2026-10-01T16:14:05.123Z", &east(9)).as_deref(),
-            Some("2026-10-02T01:14+09:00")
+            Some("10-02T01:14+09:00")
         );
         // The room's own stamp (`now_iso`) reads the same way.
         assert_eq!(
             at_in("2026-10-01T16:14:05.000Z", &east(-5)).as_deref(),
-            Some("2026-10-01T11:14-05:00")
+            Some("10-01T11:14-05:00")
         );
     }
 
@@ -512,7 +514,7 @@ mod tests {
         // offset.
         assert_eq!(
             at_in("2026-10-01T16:14:05Z", &Utc).as_deref(),
-            Some("2026-10-01T16:14+00:00")
+            Some("10-01T16:14+00:00")
         );
     }
 
@@ -520,7 +522,7 @@ mod tests {
     fn seconds_are_dropped_not_rounded() {
         assert_eq!(
             at_in("2026-10-01T16:14:59.999Z", &east(9)).as_deref(),
-            Some("2026-10-02T01:14+09:00")
+            Some("10-02T01:14+09:00")
         );
     }
 
@@ -534,7 +536,9 @@ mod tests {
     #[test]
     fn at_on_this_pc_is_the_same_minute_with_an_offset() {
         let written = at("2026-10-01T16:14:05.123Z").expect("a readable time");
-        let read = DateTime::parse_from_str(&written, "%Y-%m-%dT%H:%M%:z")
+        // The year is not on it; the instant is put back with the one the
+        // case was said in.
+        let read = DateTime::parse_from_str(&format!("2026-{written}"), "%Y-%m-%dT%H:%M%:z")
             .expect("the minute and an offset, nothing else");
         assert_eq!(
             read.with_timezone(&Utc),
