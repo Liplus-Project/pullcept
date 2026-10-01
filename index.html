@@ -31,7 +31,11 @@
              `aria-expanded` and a name that does not change with it, the way
              `#toggle-diagnostics` below carries the same pair. The state is
              the attribute's to say; a label that said it too would be two
-             answers to one question. -->
+             answers to one question.
+
+             Every button on this bar is a drawing with no frame, and its name
+             is the tooltip (#221). The drawings are in src/main.ts (`ICONS`),
+             which fills each `data-icon` here at start: one copy of each. -->
         <button
           id="toggle-history"
           class="panel-toggle"
@@ -40,12 +44,8 @@
           aria-controls="history"
           aria-label="トピックの開閉"
           title="トピックの開閉（Ctrl+B）"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <rect x="1.7" y="2.7" width="12.6" height="10.6" rx="2.4" />
-            <line x1="6.2" y1="2.7" x2="6.2" y2="13.3" />
-          </svg>
-        </button>
+          data-icon="panel"
+        ></button>
         <!-- The roster used to be echoed here as one line. It is the
              participant panel's list now: two renderings of one roster is one
              surface too many, and the panel is always on screen. -->
@@ -56,10 +56,24 @@
              account's do: in the dialog their row in the participant list
              opens. Two surfaces editing one pair is the split this issue is
              closing, in miniature. -->
-        <button id="toggle-diagnostics" type="button" aria-expanded="false">端末</button>
-        <!-- The app's own settings (#172). A word, like 端末 beside it, and
-             not ⚙️: that drawing already means 編集 on every account row. -->
-        <button id="open-settings" type="button" aria-haspopup="dialog">設定</button>
+        <button
+          id="toggle-diagnostics"
+          type="button"
+          aria-expanded="false"
+          aria-label="端末"
+          title="端末"
+          data-icon="terminal"
+        ></button>
+        <!-- The app's own settings (#172). Sliders, not the gear: that drawing
+             already means 編集 on every account row. -->
+        <button
+          id="open-settings"
+          type="button"
+          aria-haspopup="dialog"
+          aria-label="設定"
+          title="設定"
+          data-icon="settings"
+        ></button>
         <!-- Folding the right panel away. Last on the bar, so it sits over the
              column it reaches — the same reason its pair is first. See that
              one for the shape, the mirror and why this one has no shortcut. -->
@@ -71,12 +85,8 @@
           aria-controls="participants"
           aria-label="アカウントの開閉"
           title="アカウントの開閉"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <rect x="1.7" y="2.7" width="12.6" height="10.6" rx="2.4" />
-            <line x1="6.2" y1="2.7" x2="6.2" y2="13.3" />
-          </svg>
-        </button>
+          data-icon="panel"
+        ></button>
       </header>
 
       <div id="body">
@@ -174,9 +184,13 @@
                    worth more than a role whose keyboard contract this does not
                    implement. -->
               <div id="terminal-tabs" role="group" aria-label="端末のタブ"></div>
-              <button id="diagnostics-close" type="button" aria-label="端末を閉じる" title="端末を閉じる">
-                ✕
-              </button>
+              <button
+                id="diagnostics-close"
+                type="button"
+                aria-label="端末を閉じる"
+                title="端末を閉じる"
+                data-icon="close"
+              ></button>
             </div>
             <div id="terminal" aria-label="セッションの端末"></div>
           </aside>
@@ -196,7 +210,15 @@
               rows="2"
               placeholder="部屋に発言する（@ で宛先 / Enter で送信 / Shift+Enter で改行）"
             ></textarea>
-            <button id="send" type="button">送信</button>
+            <!-- The one filled button on the screen (#221). Its key is on the
+                 tooltip with its name. -->
+            <button
+              id="send"
+              type="button"
+              aria-label="送信"
+              title="送信（Enter）"
+              data-icon="send"
+            ></button>
           </footer>
 
           <div id="status" role="status"></div>
@@ -229,7 +251,13 @@
             <!-- Making an account belongs beside the list an account appears
                  in, not on the row that launches one. It opens an empty form
                  and creates nothing until that form is decided (#59). -->
-            <button id="account-new" type="button" title="アカウントを追加">＋</button>
+            <button
+              id="account-new"
+              type="button"
+              aria-label="アカウントを追加"
+              title="アカウントを追加"
+              data-icon="plus"
+            ></button>
           </div>
           <!-- Seeded, because the roster only arrives once the room answers:
                a blank strip there would read as "nobody" before anyone has
@@ -255,7 +283,14 @@
             <dt>セッション ID</dt>
             <dd id="session-id-row" class="session-id">
               <span id="session-id">—</span>
-              <button id="session-id-copy" type="button" title="セッション ID をコピー" hidden>コピー</button>
+              <button
+                id="session-id-copy"
+                type="button"
+                aria-label="セッション ID をコピー"
+                title="セッション ID をコピー"
+                data-icon="copy"
+                hidden
+              ></button>
             </dd>
             <dt>接続方法</dt>
             <dd id="session-transport">—</dd>

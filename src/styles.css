@@ -1,16 +1,18 @@
 :root {
   color-scheme: light dark;
-  /* Two grounds, and which one a thing carries is decided by whether it is a
-     surface or a control. `--bg` is the window's own ground, and it is also
-     what every control is drawn on: input, select, textarea, button, the
-     selected terminal tab. `--surface` is a panel's tint — the participant
-     list's ground, and the lift for something sitting on a ground that is
-     already `--bg`.
+  /* Two grounds. `--bg` is the window's own ground, and the ground of every
+     field — input, select, textarea — which keeps its `--line` border: a field
+     is where text will go, and empty it has nothing else to show where that is.
+     `--surface` is a panel's tint — the participant list's ground.
 
-     A control is told from what it sits on by its `--line` border, not by a
-     fill of its own (Master, 実機, 2026-08-24). A fill would make the same
-     button look different on each panel it appears on; a border makes it one
-     shape wherever it is. */
+     A button on the screen has no frame and no ground of its own (#221, Master,
+     2026-10-02): it is its drawing, and a light fill arrives only under the
+     pointer. That is what replaced the border every button carried since
+     2026-08-24, which was there so a button would be one shape on every panel.
+     The fills below keep that: they are a shade laid over whatever ground the
+     button stands on, not a colour of their own, so the same button lifts the
+     same way on `--bg` and on `--surface`. 送信 alone is filled, so the screen
+     has one control it puts forward. */
   --bg: #ffffff;
   --fg: #1b1b1f;
   --line: #d8d8de;
@@ -18,6 +20,11 @@
   --surface: #f4f4f7;
   --accent: #3a6ea5;
   --danger: #a52a2a;
+  /* The pointer on a button, and an item marked as the one chosen — a picked
+     row, the open tab. Chosen is the deeper of the two, so a row under the
+     pointer is not read as picked. */
+  --hover: rgb(0 0 0 / 0.06);
+  --selected: rgb(0 0 0 / 0.1);
   /* One participant is told from another by hue alone: every participant
      colour is the accent's own lightness and chroma with the hue turned. The
      pair below is #3a6ea5 measured in oklch, not a value chosen next to it, so
@@ -47,6 +54,8 @@
     --surface: #202026;
     --accent: #7aa7d8;
     --danger: #e08585;
+    --hover: rgb(255 255 255 / 0.08);
+    --selected: rgb(255 255 255 / 0.13);
     /* #7aa7d8 measured the same way. The dark accent is lighter and slightly
        less saturated, so carrying the light pair over here would leave every
        participant but oneself too dark to read against #17171a. */
@@ -69,6 +78,20 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
+}
+
+/* A button's drawing (src/main.ts, `ICONS`). Stroked in the button's own
+   colour, so muted, danger and the theme reach it the way they reach a word.
+   Each place sets the size it is drawn at. */
+button svg.icon {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 #app {
@@ -100,63 +123,49 @@ body {
   color: var(--muted);
 }
 
-#titlebar input,
-#titlebar button {
+#titlebar input {
   font: inherit;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0.2rem 0.4rem;
-}
-
-#titlebar input {
   width: 7rem;
 }
 
+/* Every button on the bar is a drawing with no frame, the way the title bar of
+   Claude Desktop carries its own (#221). Its name and its key, where it has
+   one, are the tooltip. Square, because a drawing is: padding on all four
+   sides around a drawing of one size puts every button on the bar at one
+   height and one width.
+
+   The drawing is the line the bar's words made — `1.125rem` against their
+   `0.85rem`, measured (#118) — so the bar keeps the height it had. */
 #titlebar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem;
   cursor: pointer;
+}
+
+#titlebar button svg.icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+#titlebar button:hover:not(:disabled) {
+  background: var(--hover);
 }
 
 #titlebar button:disabled {
   cursor: default;
   opacity: 0.6;
-}
-
-/* The two panel toggles. The bar's own button — the same ground, border and
-   rounding every control on it carries — squared off around a drawing rather
-   than a word (#118). The buttons beside these are wider than they are tall
-   because a word is, and that box around a square drawing reads as a button
-   with the picture pushed off centre.
-
-   The vertical padding is the one the other buttons carry, put on all four
-   sides. With the size below it comes out at their height, so a toggle and the
-   `端末` next to it are two boxes of one height rather than two that nearly
-   agree. */
-#titlebar .panel-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.2rem;
-}
-
-/* Drawn in the button's own colour, so the pair follows the theme the way the
-   words beside them do. Strokes, no fill: the shape is a panel seen edge-on,
-   and a filled rectangle at this size is a block rather than a frame.
-
-   The size is the line the bar's words make — `1.125rem` against their
-   `0.85rem`, measured — rather than a round number picked on its own. That is
-   what puts the button at the height of the buttons beside it, since the box
-   round the drawing and the box round a word are then built on the same
-   height. */
-#titlebar .panel-toggle svg {
-  display: block;
-  width: 1.125rem;
-  height: 1.125rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.3;
-  stroke-linejoin: round;
 }
 
 /* The mirror, and the whole of it. The two buttons hold the same drawing and
@@ -430,14 +439,31 @@ body {
   resize: vertical;
 }
 
+/* 送信, the one filled control on the screen (#221). Every other button waits
+   under the pointer to show itself; this is the act the screen is for, so it
+   is the one thing put forward. A drawing like the rest, its name and its key
+   on the tooltip. */
 #composer button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
+  color: var(--bg);
+  background: var(--accent);
+  border: none;
   border-radius: 6px;
-  padding: 0.5rem 1rem;
+  padding: 0.55rem;
   cursor: pointer;
+}
+
+#composer button svg.icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  stroke-width: 1.6;
+}
+
+#composer button:hover {
+  background: color-mix(in oklch, var(--accent) 85%, var(--fg));
 }
 
 #status {
@@ -554,9 +580,12 @@ body {
   font: inherit;
   color: var(--muted);
   background: none;
-  border: 1px solid transparent;
   border-radius: 4px;
   padding: 0.15rem 0.35rem;
+}
+
+#terminal-tabs .tab:hover {
+  background: var(--hover);
 }
 
 #terminal-tabs .tab .name {
@@ -567,19 +596,14 @@ body {
 }
 
 /* The mark the selected row in the panel carries, drawn the same way here
-   (`#participants .member.shown .pick`): the window's ground with a `--line`
-   border around it. The two selections are one selection, and they are now one
-   shape — the tab was tinted while the row was lifted, which is the same
-   selection drawn with opposite hands (Master, 実機, 2026-08-24).
-
-   The tab and the header under it are the same colour now, so the ground says
-   nothing about which tab is open. What says it is the border arriving where
-   an unselected tab holds `transparent`, and the name turning from `--muted`
-   to the participant's own colour. */
+   (`#participants .member.shown .pick`). The two selections are one selection
+   and one shape (Master, 実機, 2026-08-24): the chosen fill, and the name
+   turning from `--muted` to the participant's own colour. The fill is a shade
+   over the ground rather than a ground of its own (#221), so it reads the same
+   on the header's `--bg` as on the panel's `--surface`. */
 #terminal-tabs .tab.shown {
   color: var(--speaker, var(--fg));
-  background: var(--bg);
-  border-color: var(--line);
+  background: var(--selected);
 }
 
 /* A session that has ended. Dimmed rather than dropped: what it printed on its
@@ -593,32 +617,30 @@ body {
    session", which is 終了 on the row and stays there (#68). */
 #terminal-tabs .tab .close {
   flex: none;
-  font: inherit;
-  font-size: 0.9em;
-  line-height: 1;
   color: var(--muted);
-  background: none;
-  border: none;
   border-radius: 3px;
-  padding: 0 0.15rem;
-  cursor: pointer;
+  padding: 0.1rem;
+}
+
+#terminal-tabs .tab .close svg.icon {
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 #terminal-tabs .tab .close:hover {
   color: var(--fg);
-  background: var(--surface);
+  background: var(--hover);
 }
 
-/* The window's ground, the way the title bar's controls carry the page's. It is
-   the same ground the header itself has, which leaves the border to say where
-   the control is — and that is what a control is everywhere in this app (see
-   `--bg` at the top of this file). */
+/* No frame and no ground, as every button on the screen (#221). The tab's name
+   is one of these too, and the tab around it is what takes the pointer's fill,
+   so the fill on the buttons themselves is the pane's ✕ and the tab's ✕ only. */
 #terminal-head button {
   font: inherit;
   flex: none;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: none;
+  border: none;
   border-radius: 4px;
   padding: 0.1rem 0.25rem;
   cursor: pointer;
@@ -628,8 +650,16 @@ body {
    under the terminal keeps running, so this is not drawn in the danger colour
    that 終了 carries on the row. */
 #terminal-head #diagnostics-close {
-  line-height: 1;
-  padding: 0.15rem 0.4rem;
+  padding: 0.2rem;
+}
+
+#terminal-head #diagnostics-close svg.icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+#terminal-head #diagnostics-close:hover {
+  background: var(--hover);
 }
 
 /* ── topics ──────────────────────────────────────────────────────────────── */
@@ -675,17 +705,16 @@ body {
 }
 
 /* 新規, at the head of the list and drawn as one of its rows (#125, 決定1).
-   `.topic .pick` below is what it is measured against — the same padding, the
-   same radius, the same transparent border — because it stands where a row
-   stands and is picked the way a row is picked. The margin is the list's own:
-   `.topics` insets its rows by 0.3rem and sets them 0.15rem apart, and this sits
-   in that column at that distance from the first of them.
+   `.topic .pick` below is what it is measured against — the same padding and
+   the same radius — because it stands where a row stands and is picked the way
+   a row is picked. The margin is the list's own: `.topics` insets its rows by
+   0.3rem and sets them 0.15rem apart, and this sits in that column at that
+   distance from the first of them.
 
-   It is a control drawn without a border, which 二つの地色 (docs/2-screen.md)
-   would otherwise put on the window's ground. The rows of this list already are
-   that: `.pick` is a button too, and a list whose rows each carried a border
-   would read as a stack of buttons rather than as a list. The border arrives
-   when it is picked, which is what the rule below says. */
+   Like every button on the screen it has no frame and no ground until the
+   pointer is on it (#221); the rows were already drawn that way before the
+   rule reached the rest, because a list whose rows each carried a border reads
+   as a stack of buttons rather than as a list. */
 #history .new {
   display: block;
   margin: 0 0.3rem 0.15rem;
@@ -693,17 +722,20 @@ body {
   text-align: left;
   color: var(--fg);
   background: none;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 4px;
   padding: 0.3rem 0.4rem;
   cursor: pointer;
 }
 
+#history .new:hover {
+  background: var(--hover);
+}
+
 /* The room is in a topic the index does not carry (#125, AI 判断4). The same
    shape a picked row has, because it is the same thing being said. */
 #history .new.current {
-  background: var(--bg);
-  border-color: var(--line);
+  background: var(--selected);
 }
 
 #history .topics {
@@ -715,10 +747,10 @@ body {
   gap: 0.15rem;
 }
 
-/* One topic. The row is a track holding the control that opens it and the ❌
+/* One topic. The row is a track holding the control that opens it and the ✕
    that deletes it (#119, decision 5; #125, 決定2 — every row in this list is now
    a row of the index, so every one of them has something to delete). It was the
-   button itself until the ❌ arrived; what is drawn as picked is still the
+   button itself until the ✕ arrived; what is drawn as picked is still the
    button, so the panel opposite's shape is unchanged. */
 #history .topic {
   display: flex;
@@ -727,9 +759,9 @@ body {
 }
 
 /* The control that opens the topic. It takes what the row has left, so a long
-   title ellipses against the ❌ rather than pushing it out of the panel. Picked
-   is the shape a picked row has on the panel opposite — lifted out of the
-   panel's surface rather than tinted (#75). */
+   title ellipses against the ✕ rather than pushing it out of the panel. Picked
+   is the shape a picked row has on the panel opposite (#75): the chosen fill,
+   one shade deeper than the pointer's (#221). */
 #history .topic .pick {
   flex: 1;
   min-width: 0;
@@ -738,15 +770,18 @@ body {
   text-align: left;
   color: var(--fg);
   background: none;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 4px;
   padding: 0.3rem 0.4rem;
   cursor: pointer;
 }
 
+#history .topic .pick:hover {
+  background: var(--hover);
+}
+
 #history .topic.current .pick {
-  background: var(--bg);
-  border-color: var(--line);
+  background: var(--selected);
 }
 
 /* The name, and the one part of the row that can be long. It takes one line and
@@ -814,13 +849,10 @@ body {
   padding: 0.25rem 0.35rem;
 }
 
-/* Deleting the topic. The mark and the danger colour are the participant
+/* Deleting the topic. The drawing and the danger colour are the participant
    panel's 終了 (`#participants .member .end`), because this is the same kind of
    control in the same kind of list: the one thing on the row that cannot be
-   taken back, next to one that merely changes what is showing. Colour reaches
-   the outline and the mark's text fallback rather than the emoji itself, which
-   is drawn by a colour font — it is kept for the fallback, which is the case
-   that needs it.
+   taken back, next to one that merely changes what is showing.
 
    It does not shrink. A row whose title is long is the row where the button
    would otherwise be squeezed to nothing, and that is not a state this control
@@ -833,14 +865,21 @@ body {
   width: 1.5rem;
   height: 1.5rem;
   font: inherit;
-  font-size: 0.75rem;
-  line-height: 1;
   color: var(--danger);
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: none;
+  border: none;
   border-radius: 4px;
   padding: 0;
   cursor: pointer;
+}
+
+#history .topic .delete svg.icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+#history .topic .delete:hover {
+  background: var(--hover);
 }
 
 #history .empty {
@@ -894,14 +933,25 @@ body {
 }
 
 #participants .panel-head button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
-  line-height: 1;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: none;
+  border: none;
   border-radius: 4px;
-  padding: 0.15rem 0.4rem;
+  padding: 0.2rem;
   cursor: pointer;
+}
+
+#participants .panel-head button svg.icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+#participants .panel-head button:hover {
+  background: var(--hover);
 }
 
 #participants .roster {
@@ -957,7 +1007,7 @@ body {
   font: inherit;
   text-align: left;
   background: none;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 4px;
   padding: 0.3rem;
 }
@@ -966,11 +1016,15 @@ body {
   cursor: pointer;
 }
 
-/* The pane on the glass. Lifted out of the panel's surface rather than tinted,
-   so which terminal is showing reads at a glance and in either theme. */
-#participants .member.shown .pick {
-  background: var(--bg);
-  border-color: var(--line);
+#participants .member button.pick:hover {
+  background: var(--hover);
+}
+
+/* The pane on the glass: the chosen fill, a shade over the panel's surface and
+   one deeper than the pointer's (#221), so which terminal is showing reads at a
+   glance and in either theme. */
+#participants .member.shown button.pick {
+  background: var(--selected);
 }
 
 /* The same colour the participant's lines carry in the room. */
@@ -1049,17 +1103,14 @@ body {
    in one place, and which of them a row has is read off the button rather than
    off where the row's controls have slid to (#62).
 
-   Sized rather than fitted, because what is in them is a mark (#71). An emoji's
-   advance width is the font's, and the font is whichever one the host resolves
-   the mark in; a box that took its width from the glyph would be a different
-   box on a different machine. The box is fixed and the mark is centred in it,
-   so the three read as one column of the same three shapes anywhere.
+   Sized rather than fitted (#71): the box is fixed and the drawing is centred
+   in it, so the three read as one column of the same three shapes anywhere.
 
-   The ground is the window's, written out rather than left at `none`. `none`
-   let the panel's tint through, which put the only three controls in the panel
-   on a ground no other control in the app sits on (Master, 実機, 2026-08-24).
-   The panel keeps its own tint; what is aligned is the controls in it, not the
-   panel. */
+   No frame and no ground until the pointer is on one, as every button on the
+   screen (#221). The ground they carried until then was the window's, put
+   there so these three would not be the only controls in the app on the
+   panel's tint (Master, 実機, 2026-08-24); with no button carrying a ground of
+   its own, there is nothing left for them to be out of step with. */
 #participants .member .edit,
 #participants .member .start,
 #participants .member .end {
@@ -1069,13 +1120,24 @@ body {
   width: 100%;
   height: 1.6rem;
   font: inherit;
-  font-size: 0.8rem;
-  line-height: 1;
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: none;
+  border: none;
   border-radius: 4px;
   padding: 0;
   cursor: pointer;
+}
+
+#participants .member .edit svg.icon,
+#participants .member .start svg.icon,
+#participants .member .end svg.icon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+#participants .member .edit:hover,
+#participants .member .start:hover:not(:disabled),
+#participants .member .end:hover {
+  background: var(--hover);
 }
 
 /* The lifecycle column. Emitted whether or not it holds a button — an empty one
@@ -1087,11 +1149,9 @@ body {
   display: flex;
 }
 
-/* Colour on these reaches the outline and the mark's own text fallback, not the
-   mark as the host normally paints it: an emoji is drawn by a colour font,
-   which answers to no `color`. It is kept because the fallback is the case that
-   needs it — a host resolving ▶ or ❌ as plain text has only this to say which
-   of the three it is. */
+/* The drawings take the button's colour, so this is what tells the three
+   apart beyond their shapes: 編集 is quiet, 開始 is the body colour and 終了 is
+   the danger colour. */
 #participants .member .edit {
   color: var(--muted);
 }
@@ -1104,18 +1164,17 @@ body {
   color: var(--fg);
 }
 
-/* Dimmed as a whole, because the mark is not dimmed by `color`. Being unable to
-   press it is the state, and the state has to be visible on the button that is
-   in it. */
+/* Dimmed as a whole as well as muted. Being unable to press it is the state,
+   and the state has to be visible on the button that is in it. */
 #participants .member .start:disabled {
   color: var(--muted);
   opacity: 0.45;
   cursor: default;
 }
 
-/* A quiet outline in the danger colour: this is the one control here that
-   cannot be taken back, and it sits next to two that can. It has one state now
-   — the question it asks is asked in `#end-dialog`, not on the button (#71). */
+/* In the danger colour: this is the one control here that cannot be taken
+   back, and it sits next to two that can. It has one state now — the question
+   it asks is asked in `#end-dialog`, not on the button (#71). */
 #participants .member .end {
   color: var(--danger);
 }
@@ -1174,8 +1233,31 @@ body {
 
 #participants dd.session-id button {
   flex: none;
-  font-size: 0.7rem;
-  padding: 0.05rem 0.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.15rem;
+  cursor: pointer;
+}
+
+/* `display` above outranks the user agent's rule for the attribute, and the
+   button is hidden while there is no id to copy. */
+#participants dd.session-id button[hidden] {
+  display: none;
+}
+
+#participants dd.session-id button svg.icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+#participants dd.session-id button:hover {
+  color: var(--fg);
+  background: var(--hover);
 }
 
 #participants dd[data-kind="ok"] {
@@ -1748,12 +1830,12 @@ body {
 }
 
 /* The section list's one entry, marked as the section on the right. A label
-   rather than a button while it is the only one: there is nothing to switch to. */
+   rather than a button while it is the only one: there is nothing to switch to.
+   Marked the way a picked row is (#221). */
 #settings-dialog .settings-item {
   padding: 0.3rem 0.4rem;
   border-radius: 6px;
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: var(--selected);
 }
 
 #settings-dialog h3 {
