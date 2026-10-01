@@ -517,6 +517,125 @@ const ACCENT_HUE = 251.5;
 const RESERVED_ARC = 25;
 const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
+/**
+ * The drawings the screen's buttons carry (#221), one place for all of them.
+ *
+ * A button on the screen is its drawing, with no frame and no fill until the
+ * pointer is on it; its name is on `aria-label` and on `title`, which is the
+ * tooltip. Drawn rather than typed: an emoji is painted by a colour font that
+ * answers to no `color`, so it could not take the muted, the danger or the
+ * hover colour the rest of the button does, and its width is whichever font the
+ * host resolved it in (#71). A line drawing in `currentColor` takes all of them
+ * and is one width everywhere.
+ *
+ * Every drawing is on the 16-unit grid the panel toggles were drawn on (#118),
+ * stroked and unfilled, so the set reads as one hand. The buttons in
+ * index.html name theirs with `data-icon` and are filled from here at start
+ * (`fillIcons`); the buttons this file builds call `icon` directly. One copy of
+ * each drawing, so the ✕ that folds the pane and the ✕ on an ended tab cannot
+ * drift into two shapes.
+ */
+type IconName =
+  | "panel"
+  | "terminal"
+  | "settings"
+  | "plus"
+  | "copy"
+  | "close"
+  | "send"
+  | "start"
+  | "edit";
+
+type IconShape = [tag: string, attrs: Record<string, string>];
+
+const ICONS: Record<IconName, IconShape[]> = {
+  // A panel seen edge-on, the divider on the side it folds (#118). The right
+  // one is this drawing turned over in src/styles.css.
+  panel: [
+    ["rect", { x: "1.7", y: "2.7", width: "12.6", height: "10.6", rx: "2.4" }],
+    ["line", { x1: "6.2", y1: "2.7", x2: "6.2", y2: "13.3" }],
+  ],
+  // A window with a prompt in it: the pane 端末 opens.
+  terminal: [
+    ["rect", { x: "1.7", y: "2.7", width: "12.6", height: "10.6", rx: "2.4" }],
+    ["polyline", { points: "4.6 6.3 6.6 8 4.6 9.7" }],
+    ["line", { x1: "8.2", y1: "10.2", x2: "11.4", y2: "10.2" }],
+  ],
+  // Three sliders. Not the gear: that drawing is 編集 on every account row, and
+  // the app's own settings are a different window (#172).
+  settings: [
+    ["line", { x1: "2", y1: "4", x2: "8.4", y2: "4" }],
+    ["line", { x1: "11.6", y1: "4", x2: "14", y2: "4" }],
+    ["circle", { cx: "10", cy: "4", r: "1.6" }],
+    ["line", { x1: "2", y1: "8", x2: "3.4", y2: "8" }],
+    ["line", { x1: "6.6", y1: "8", x2: "14", y2: "8" }],
+    ["circle", { cx: "5", cy: "8", r: "1.6" }],
+    ["line", { x1: "2", y1: "12", x2: "9.4", y2: "12" }],
+    ["line", { x1: "12.6", y1: "12", x2: "14", y2: "12" }],
+    ["circle", { cx: "11", cy: "12", r: "1.6" }],
+  ],
+  plus: [
+    ["line", { x1: "8", y1: "3", x2: "8", y2: "13" }],
+    ["line", { x1: "3", y1: "8", x2: "13", y2: "8" }],
+  ],
+  copy: [
+    ["rect", { x: "5.5", y: "5.5", width: "8", height: "8", rx: "1.6" }],
+    ["path", { d: "M10.5 5.5V4.1A1.6 1.6 0 0 0 8.9 2.5H4.1A1.6 1.6 0 0 0 2.5 4.1v4.8a1.6 1.6 0 0 0 1.6 1.6h1.4" }],
+  ],
+  // Folding the pane, closing an ended tab, ending a session and deleting a
+  // topic. Which of those it is, is the colour and the label: the two that
+  // cannot be taken back carry `--danger`.
+  close: [
+    ["line", { x1: "4", y1: "4", x2: "12", y2: "12" }],
+    ["line", { x1: "12", y1: "4", x2: "4", y2: "12" }],
+  ],
+  send: [
+    ["line", { x1: "8", y1: "13", x2: "8", y2: "3.2" }],
+    ["polyline", { points: "3.8 7.4 8 3.2 12.2 7.4" }],
+  ],
+  start: [["path", { d: "M5 3.2v9.6L12.6 8Z" }]],
+  // A gear: 編集, the window an account's settings are made in.
+  edit: [
+    [
+      "path",
+      {
+        d:
+          "M7.08 1.46L8.92 1.46L9.17 3.14L10.61 3.74L11.97 2.73L13.27 4.03L12.26 5.39" +
+          "L12.86 6.83L14.54 7.08L14.54 8.92L12.86 9.17L12.26 10.61L13.27 11.97" +
+          "L11.97 13.27L10.61 12.26L9.17 12.86L8.92 14.54L7.08 14.54L6.83 12.86" +
+          "L5.39 12.26L4.03 13.27L2.73 11.97L3.74 10.61L3.14 9.17L1.46 8.92" +
+          "L1.46 7.08L3.14 6.83L3.74 5.39L2.73 4.03L4.03 2.73L5.39 3.74L6.83 3.14Z",
+      },
+    ],
+    ["circle", { cx: "8", cy: "8", r: "2.1" }],
+  ],
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** One drawing, ready to go into a button. Hidden from the reader: the button's label names it. */
+function icon(name: IconName): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("class", "icon");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  for (const [tag, attrs] of ICONS[name]) {
+    const shape = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) shape.setAttribute(key, value);
+    svg.appendChild(shape);
+  }
+  return svg;
+}
+
+/** Put its drawing into every button index.html names one for. */
+function fillIcons(): void {
+  for (const button of document.querySelectorAll<HTMLElement>("[data-icon]")) {
+    const name = button.dataset.icon as IconName;
+    if (name in ICONS) button.replaceChildren(icon(name));
+  }
+}
+
 const roomEl = document.getElementById("room") as HTMLElement;
 const historyEl = document.getElementById("history") as HTMLElement;
 const participantsEl = document.getElementById("participants") as HTMLElement;
@@ -872,7 +991,7 @@ interface SessionView {
   /** How the session ended, or null while it is still running. */
   ended: string | null;
   /**
-   * True when the app ended this session itself: the row's ❌, a topic being
+   * True when the app ended this session itself: the row's ✕, a topic being
    * deleted, the app closing (#121).
    *
    * Carried by the exit event (`PtyExit` in `pty.rs`), not worked out here. An
@@ -999,7 +1118,7 @@ const launchFailures = new Map<string, string>();
  * the key when the answer comes back finds a session that is still there, or
  * finds nothing and ends nothing. The topic is in the key because the same
  * account may be running in two topics, and the one asked about is the one whose
- * ❌ was pressed (#141).
+ * ✕ was pressed (#141).
  */
 let endingAccount: string | null = null;
 /**
@@ -1780,7 +1899,7 @@ function topicWhen(iso: string): string {
  * while the room is in it (#125, AI 判断4). Without that the room would be
  * somewhere no part of the list showed, which is the fault the row was avoiding.
  *
- * Every row here is therefore a row of the index, which is what lets ❌ reach
+ * Every row here is therefore a row of the index, which is what lets ✕ reach
  * the ones with no title (#125, 決定2 — see `topicRow`).
  */
 function renderTopics(): void {
@@ -1807,7 +1926,7 @@ function renderTopics(): void {
 }
 
 /**
- * One row of the list: the row opens the topic, and ❌ deletes it.
+ * One row of the list: the row opens the topic, and ✕ deletes it.
  *
  * The mark is the one the participant panel's 終了 uses, for the same reason it
  * is used there — this is the control on the row that cannot be taken back, and
@@ -1897,12 +2016,12 @@ function topicName(topic: Topic): string {
   return topic.title || "未記入";
 }
 
-/** The ❌ on one row. It asks; `#topic-delete-dialog` is where it is answered. */
+/** The ✕ on one row. It asks; `#topic-delete-dialog` is where it is answered. */
 function deleteButton(topic: Topic): HTMLButtonElement {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "delete";
-  remove.textContent = "❌";
+  remove.appendChild(icon("close"));
   remove.title = `「${topicName(topic)}」を削除する`;
   remove.setAttribute("aria-label", `トピック「${topicName(topic)}」を削除する`);
   remove.addEventListener("click", () => void openTopicDeleteDialog(topic));
@@ -2589,7 +2708,7 @@ function memberRow(row: Member): HTMLLIElement {
     // process while this row read the roster, and the two disagree for as long
     // as a CLI takes to spawn and join the room's websocket: the row fell
     // through to 未起動, the word for an account that was never started, while
-    // the same row offered ❌. On the device that window lasted minutes,
+    // the same row offered ✕. On the device that window lasted minutes,
     // because the development-channels flag the launch carried then stopped
     // the CLI at a confirm prompt, and a running session was indistinguishable
     // by word from an idle account — only the button said which was which
@@ -2705,7 +2824,7 @@ function startButton(account: Account, launching: boolean): HTMLButtonElement {
   const start = document.createElement("button");
   start.type = "button";
   start.className = "start";
-  start.textContent = "▶️";
+  start.appendChild(icon("start"));
   start.disabled = launching;
   const label = launching
     ? `${account.name} を起動しています`
@@ -2721,7 +2840,7 @@ function editButton(account: Account): HTMLButtonElement {
   const edit = document.createElement("button");
   edit.type = "button";
   edit.className = "edit";
-  edit.textContent = "⚙️";
+  edit.appendChild(icon("edit"));
   edit.title = `${account.name} の設定`;
   edit.setAttribute("aria-label", `${account.name} の設定`);
   edit.addEventListener("click", () => openAccountDialog(account));
@@ -2774,7 +2893,7 @@ function terminalTab(view: SessionView): HTMLElement {
     const close = document.createElement("button");
     close.type = "button";
     close.className = "close";
-    close.textContent = "✕";
+    close.appendChild(icon("close"));
     close.title = `${name} の端末を閉じる`;
     close.setAttribute("aria-label", `${name} の端末を閉じる`);
     close.addEventListener("click", () => closeView(view));
@@ -3462,7 +3581,7 @@ function endButton(view: SessionView, name: string): HTMLButtonElement {
   const end = document.createElement("button");
   end.type = "button";
   end.className = "end";
-  end.textContent = "❌";
+  end.appendChild(icon("close"));
   end.title = `${name} のセッションを終了する`;
   end.setAttribute("aria-label", `${name} のセッションを終了する`);
   end.addEventListener("click", () => openEndDialog(seatKey(view.topicId, view.accountId), name));
@@ -3891,7 +4010,7 @@ async function attachSession(view: SessionView, ptyId: string): Promise<void> {
  * changes, and stops silently (#127, 制約).
  *
  * The third is what the exit event says about who ended it (`PtyExit.requested`,
- * #121), and not any value of the code: the row's ❌, the topic delete, and the
+ * #121), and not any value of the code: the row's ✕, the topic delete, and the
  * app closing arrive marked as ends the app asked for, and none of them says the
  * resume failed. The window it covers is real: the confirm prompt holds a
  * launched CLI outside the room for minutes (#89), and ending the wrong account
@@ -5062,6 +5181,9 @@ async function openMcpServersFile(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Before anything else is drawn, so no button is ever on screen empty.
+  fillIcons();
+
   // The pane is one container holding every session's terminal, so the observer
   // is on the container and the fit lands on whichever one is showing.
   new ResizeObserver(() => fitShown()).observe(terminalEl);
