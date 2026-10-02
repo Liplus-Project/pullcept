@@ -1156,7 +1156,7 @@ button svg.icon {
 }
 
 /* Deleting the topic. The danger colour is that of 終了 in an account's menu
-   (`#account-menu .danger`) and on its row, because this is the same kind of
+   (`#account-menu .danger`), because this is the same kind of
    act: the one thing on the row that cannot be taken back. Here it stands on
    the row itself, next to one that merely changes what is showing.
 
@@ -1508,11 +1508,12 @@ button svg.icon {
   color: var(--fg);
 }
 
-/* 終了 on the row (#239): the one control here that cannot be taken back, in
-   the danger colour as 終了 in the menu and a topic's delete are. It only asks:
-   the click opens `#end-dialog` (#71). */
+/* 終了 on the row (#239): the one control here that cannot be taken back. It
+   only asks: the click opens `#end-dialog` (#71). Drawn in the colour of 開始,
+   whose place it takes, not in the danger colour (#241); 終了 in the menu and a
+   topic's delete keep that. */
 #participants .member .stop {
-  color: var(--danger);
+  color: var(--fg);
 }
 
 /* Dimmed as a whole as well as muted. Being unable to press it is the state,
