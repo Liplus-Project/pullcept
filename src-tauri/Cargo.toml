@@ -36,9 +36,3 @@ parking_lot = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "process"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
-
-# The window keeps its title, which the taskbar thumbnail and Alt+Tab show,
-# while the standard frame draws no caption text (#248). The same `windows`
-# version tauri itself links, so no second copy is built.
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Controls"] }

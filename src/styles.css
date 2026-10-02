@@ -71,6 +71,13 @@
      (#243) — so it reads as above them and not as one of them. Deeper in dark,
      where a shadow on a dark ground barely shows. */
   --float-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  /* 閉じる on the title bar under the pointer (#252): the window's close, which
+     the standard frame turned red, and which still does now the bar draws it.
+     The one button on the bar that is coloured, and only while the pointer is
+     on it — the rest of #221 holds. One pair for both themes, so the dark
+     block does not repeat it: red with white on it reads on either ground. */
+  --close-ground: #c42b1c;
+  --close-ink: #ffffff;
   /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
      the conversation and the terminal is written in `rem`, so this one value
      moves all of it. The conversation divides it back out (`--room-font-size`
@@ -152,6 +159,11 @@ button svg.icon {
 
 /* ── titlebar ────────────────────────────────────────────────────────────── */
 
+/* The window's top edge as well as the app's bar (#252): the standard frame
+   is gone and this is the row that stands in its place. Its height is what
+   the bar's own height was — the frame's row is what went, nothing was added
+   to this one. The ground is the side panels' (`--surface`), so the bar and
+   the two columns under it read as one frame around the room. */
 #titlebar {
   display: flex;
   align-items: center;
@@ -159,6 +171,16 @@ button svg.icon {
   border-bottom: 1px solid var(--line);
   padding: 0.5rem 0.9rem;
   font-size: 0.85rem;
+  background: var(--surface);
+}
+
+/* The app's icon, at the size of the bar's drawings, so it takes no more
+   height than a button does. */
+#app-icon {
+  display: block;
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 /* Takes the slack so the controls stay pinned to the right. */
@@ -253,6 +275,30 @@ button svg.icon {
    the pair being one shape is the decision (#118, decision 4). */
 #titlebar #toggle-participants svg {
   transform: scaleX(-1);
+}
+
+/* The window's three (#252). Drawings with no frame and no ground, as every
+   button on the bar (#221), but as tall as the bar and flush with its top and
+   right edges, as the frame's were: a pointer thrown into the window's top
+   right corner lands on 閉じる, maximized or not. The negative margins give
+   back the bar's padding on those three sides; the bar's height is still set
+   by the other buttons, so reaching to its edges adds none. Square-cornered,
+   because the fill meets the window's edge. */
+#window-controls {
+  display: flex;
+  align-self: stretch;
+  margin: -0.5rem -0.9rem -0.5rem 0;
+}
+
+#titlebar #window-controls button {
+  width: 2.75rem;
+  padding: 0;
+  border-radius: 0;
+}
+
+#titlebar #window-close:hover {
+  background: var(--close-ground);
+  color: var(--close-ink);
 }
 
 /* ── body ────────────────────────────────────────────────────────────────── */
