@@ -545,7 +545,8 @@ type IconName =
   | "send"
   | "at"
   | "start"
-  | "edit";
+  | "edit"
+  | "more";
 
 type IconShape = [tag: string, attrs: Record<string, string>];
 
@@ -562,8 +563,8 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["polyline", { points: "4.6 6.3 6.6 8 4.6 9.7" }],
     ["line", { x1: "8.2", y1: "10.2", x2: "11.4", y2: "10.2" }],
   ],
-  // Three sliders. Not the gear: that drawing is 編集 on every account row, and
-  // the app's own settings are a different window (#172).
+  // Three sliders. Not the gear: that drawing is 編集 in every account's menu,
+  // and the app's own settings are a different window (#172).
   settings: [
     ["line", { x1: "2", y1: "4", x2: "8.4", y2: "4" }],
     ["line", { x1: "11.6", y1: "4", x2: "14", y2: "4" }],
@@ -615,6 +616,14 @@ const ICONS: Record<IconName, IconShape[]> = {
     ],
     ["circle", { cx: "8", cy: "8", r: "2.1" }],
   ],
+  // Three dots: the row's menu, the way into what right-click opens (#224).
+  // Drawn as stroked rings small enough to read as dots, so it is stroked like
+  // every other drawing here and takes the button's colour the same way.
+  more: [
+    ["circle", { cx: "3.5", cy: "8", r: "0.55" }],
+    ["circle", { cx: "8", cy: "8", r: "0.55" }],
+    ["circle", { cx: "12.5", cy: "8", r: "0.55" }],
+  ],
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -653,6 +662,7 @@ const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
+const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const mentionEl = document.getElementById("mention") as HTMLButtonElement;
@@ -2783,28 +2793,45 @@ function memberRow(row: Member): HTMLLIElement {
   // the row is keyed on the account id, so these act on one account and cannot
   // be tied to the wrong one by a shared name (#53, #59).
   //
-  // Two fixed columns: the session's lifecycle, then 編集. 開始 and 終了 are the
-  // two ends of one thing and belong in one place — 開始 was on a launcher row
-  // above the conversation until #62, a screen away from the 終了 that #57 had
-  // already put here. The slot is emitted whether or not it holds a button, so
-  // a row with no lifecycle keeps the column open rather than sliding its 編集
-  // left of every other row's.
+  // Two fixed columns: 開始, then the menu. 終了 and 編集 sat in those two
+  // columns until #224 and are in the menu now, with 端末を開く and 色を変える
+  // beside them (`openAccountMenu`). 開始 stays out on the row: it is the one
+  // operation a row that is not running has, and it acts on the click. The
+  // slot is emitted whether or not it holds a button, so a row with no 開始
+  // keeps the column open rather than sliding its menu left of every other
+  // row's.
   const lifecycle = document.createElement("span");
   lifecycle.className = "lifecycle";
-  if (view && view.ended === null && view.ptyId !== "") {
-    // No 終了 before the launch has returned an id: there is no session to end
-    // yet, and a kill aimed at an empty id reports success having done nothing
-    // (#57).
-    lifecycle.appendChild(endButton(view, name));
-  } else if (row.account && launches(row.account)) {
+  // A running session has nothing here: its 終了 is in the menu. The one
+  // running state that keeps 開始 is the launch that has not come back yet,
+  // which leaves the pressed button dead on the row that was pressed (#62).
+  const running = view != null && view.ended === null;
+  if (row.account && launches(row.account) && (!running || launching)) {
     // A launched kind only. An `admin` account is a person and there is no CLI
     // under a person to spawn; `start_session` refuses one and that refusal is
     // the authority, but a refusal is the wrong way for the person to find out
-    // (#59). Their row keeps the empty column, and their 編集 with it.
+    // (#59). Their row keeps the empty column, and their menu with it.
     lifecycle.appendChild(startButton(row.account, launching));
   }
   entry.appendChild(lifecycle);
-  if (row.account) entry.appendChild(editButton(row.account));
+  if (row.account) {
+    const account = row.account;
+    entry.appendChild(moreButton(account));
+    // Right-click anywhere on the row, the name and the note included. The
+    // context-menu key and Shift+F10 arrive here too, as the same event, on the
+    // row's focused button.
+    entry.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const anchor = event.target instanceof Element ? event.target : entry;
+      // A pointer gives a point; a key gives none (both coordinates zero), and
+      // the menu then opens under the control that has the focus.
+      const at =
+        event.clientX === 0 && event.clientY === 0
+          ? cornerOf(anchor.closest("button") ?? entry)
+          : { x: event.clientX, y: event.clientY };
+      openAccountMenu(account, at);
+    });
+  }
 
   return entry;
 }
@@ -2843,16 +2870,213 @@ function startButton(account: Account, launching: boolean): HTMLButtonElement {
   return start;
 }
 
-/** The control that opens one account's form. A mark, named by its label. */
-function editButton(account: Account): HTMLButtonElement {
-  const edit = document.createElement("button");
-  edit.type = "button";
-  edit.className = "edit";
-  edit.appendChild(icon("edit"));
-  edit.title = `${account.name} の設定`;
-  edit.setAttribute("aria-label", `${account.name} の設定`);
-  edit.addEventListener("click", () => openAccountDialog(account));
-  return edit;
+/**
+ * The control that opens one account's menu: the same menu right-click opens.
+ *
+ * Kept on the row so the menu does not depend on right-click (#224). A pointer
+ * with no second button, and a keyboard on a row whose name is not a button —
+ * an account with no terminal here — would otherwise have no way to 編集 at
+ * all. One mark where 終了 and 編集 were two.
+ */
+function moreButton(account: Account): HTMLButtonElement {
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "more";
+  more.dataset.account = account.id;
+  more.appendChild(icon("more"));
+  more.title = `${account.name} の操作`;
+  more.setAttribute("aria-label", `${account.name} の操作`);
+  more.setAttribute("aria-haspopup", "menu");
+  more.setAttribute("aria-expanded", String(menuAccountId === account.id));
+  more.addEventListener("click", () => {
+    // A second press on the button whose menu is open closes it, the way a
+    // menu button does.
+    if (menuAccountId === account.id) {
+      closeAccountMenu(false);
+      return;
+    }
+    openAccountMenu(account, cornerOf(more));
+  });
+  return more;
+}
+
+/** Where a menu opened from an element, not from a pointer, stands: its lower left. */
+function cornerOf(element: Element): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left, y: rect.bottom };
+}
+
+/**
+ * The account whose menu is open, or null when none is.
+ *
+ * The id rather than the account or the row: the panel is redrawn under an open
+ * menu every time the roster or a terminal moves, and both the row and the
+ * account object it was drawn from are replaced. Each item reads the account
+ * and its terminal again when it is chosen, for the same reason
+ * `confirmEndDialog` reads the view again rather than keeping the one it was
+ * opened on.
+ */
+let menuAccountId: string | null = null;
+
+/**
+ * Open one account's menu at a point: 端末を開く, 編集, 色を変える, and 終了.
+ *
+ * An item that has nothing to act on is left out, not greyed: 端末を開く on an
+ * account with no terminal in this topic (the row has no terminal operation
+ * then either, #57), and 終了 on an account with no session to end. 終了 is
+ * also left out before the launch has returned an id — a kill aimed at an
+ * empty id reports success having done nothing (#57).
+ *
+ * 終了 is the one item that cannot be taken back, so it stands apart below a
+ * divider in the danger colour, last, where a slip down the list does not land
+ * on it. It opens the same question it always did (`#end-dialog`); the menu
+ * moves where it is asked from, not whether it is asked.
+ *
+ * 色を変える is not a colour picker of its own. The colour is a field of the
+ * account's form and nothing else writes it, so the item opens that form on
+ * that field (`openAccountDialog`).
+ */
+function openAccountMenu(account: Account, at: { x: number; y: number }): void {
+  const view = views.get(seatKey(shownTopicId(), account.id));
+  accountMenuEl.replaceChildren();
+
+  const item = (label: string, drawing: Element, act: () => void): HTMLButtonElement => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.tabIndex = -1;
+    button.append(drawing, label);
+    button.addEventListener("click", () => {
+      closeAccountMenu(false);
+      act();
+    });
+    accountMenuEl.appendChild(button);
+    return button;
+  };
+
+  if (view) {
+    item("端末を開く", icon("terminal"), () => openTerminalOf(account.id));
+  }
+  item("編集", icon("edit"), () => openAccountFrom(account.id, "name"));
+  // A swatch in the account's own colour where the others have a drawing: it
+  // says what the item changes by showing it.
+  const swatch = document.createElement("span");
+  swatch.className = "swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  item("色を変える", swatch, () => openAccountFrom(account.id, "hue"));
+  if (view && view.ended === null && view.ptyId !== "") {
+    const divider = document.createElement("div");
+    divider.setAttribute("role", "separator");
+    accountMenuEl.appendChild(divider);
+    item("終了", icon("close"), () => endFromMenu(account.id)).classList.add("danger");
+  }
+
+  // The colour the row draws the account in, so the swatch is the row's own.
+  const row = document.querySelector<HTMLElement>(
+    `#roster button.more[data-account="${CSS.escape(account.id)}"]`,
+  )?.closest<HTMLElement>(".member");
+  accountMenuEl.style.setProperty(
+    "--speaker",
+    row?.style.getPropertyValue("--speaker") || "var(--accent)",
+  );
+  accountMenuEl.setAttribute("aria-label", `${account.name} の操作`);
+
+  menuAccountId = account.id;
+  accountMenuEl.hidden = false;
+  // Placed after it is shown, because a hidden menu has no size to keep inside
+  // the window. Pulled back from the right and bottom edges rather than
+  // flipped, which keeps the menu's corner at the point wherever there is room.
+  const width = accountMenuEl.offsetWidth;
+  const height = accountMenuEl.offsetHeight;
+  const x = Math.max(0, Math.min(at.x, window.innerWidth - width - 4));
+  const y = Math.max(0, Math.min(at.y, window.innerHeight - height - 4));
+  accountMenuEl.style.left = `${x}px`;
+  accountMenuEl.style.top = `${y}px`;
+  renderPanel();
+  menuItems()[0]?.focus();
+}
+
+/** The menu's items, in the order they are drawn. */
+function menuItems(): HTMLButtonElement[] {
+  return [...accountMenuEl.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+}
+
+/**
+ * Close the menu. With `restore`, the focus goes back to the row's menu button,
+ * which is what Escape does; a click elsewhere or a chosen item leaves the focus
+ * where that put it.
+ */
+function closeAccountMenu(restore: boolean): void {
+  if (menuAccountId === null) return;
+  const id = menuAccountId;
+  menuAccountId = null;
+  accountMenuEl.hidden = true;
+  accountMenuEl.replaceChildren();
+  renderPanel();
+  if (restore) {
+    // Found again rather than held: the row was redrawn just above.
+    document
+      .querySelector<HTMLButtonElement>(`#roster button.more[data-account="${CSS.escape(id)}"]`)
+      ?.focus();
+  }
+}
+
+/**
+ * 端末を開く: pick the terminal and open the pane on it.
+ *
+ * Picking from the row leaves a folded pane folded (#175); this item is the
+ * one that says "open", so it opens the pane, and the terminal takes the focus
+ * as a terminal picked from its tab does.
+ */
+function openTerminalOf(accountId: string): void {
+  const view = views.get(seatKey(shownTopicId(), accountId));
+  if (!view) return;
+  showView(accountId);
+  revealDiagnostics();
+  view.term.focus();
+}
+
+/** 編集 and 色を変える: the account's form, on the field the item names. */
+function openAccountFrom(accountId: string, field: "name" | "hue"): void {
+  const account = accounts.find((one) => one.id === accountId);
+  if (account) openAccountDialog(account, field);
+}
+
+/** 終了: the question `#end-dialog` asks, about the session as it is now. */
+function endFromMenu(accountId: string): void {
+  const key = seatKey(shownTopicId(), accountId);
+  const view = views.get(key);
+  // The session may have ended, or the topic changed, while the menu stood.
+  if (!view || view.ended !== null || view.ptyId === "") return;
+  openEndDialog(key, viewName(view));
+}
+
+/** Arrow keys walk the items, Home and End jump, Escape and Tab leave. */
+function onAccountMenuKey(event: KeyboardEvent): void {
+  const items = menuItems();
+  const at = items.indexOf(document.activeElement as HTMLButtonElement);
+  const go = (index: number) => items[(index + items.length) % items.length]?.focus();
+  switch (event.key) {
+    case "ArrowDown":
+      go(at + 1);
+      break;
+    case "ArrowUp":
+      go(at < 0 ? -1 : at - 1);
+      break;
+    case "Home":
+      go(0);
+      break;
+    case "End":
+      go(-1);
+      break;
+    case "Escape":
+    case "Tab":
+      closeAccountMenu(true);
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
 }
 
 /**
@@ -3585,35 +3809,20 @@ async function copySessionId(): Promise<void> {
 }
 
 /**
- * The 終了 control, which asks before it acts.
+ * Ask whether one account's session is to end. Nothing ends until answered.
  *
- * Ending a session cannot be undone, and this control sits in a list whose
- * other click merely changes which pane is showing. One plain click away from a
- * harmless neighbour is how a slip ends a session that was mid-answer, so the
- * click opens the question and the dialog is where it is answered (#71).
+ * Ending a session cannot be undone, and the menu it is chosen from sits on a
+ * row whose plain click merely changes which pane is showing. One plain click
+ * away from a harmless neighbour is how a slip ends a session that was
+ * mid-answer, so choosing 終了 opens the question and the dialog is where it
+ * is answered (#71, #224).
  *
  * A dialog of this app's own, never `window.confirm`. That one answers on the
  * host's terms and the two ways it can fail here are both wrong: a host that
- * answers nothing either makes the button silently dead or — reading its own
+ * answers nothing either makes the item silently dead or — reading its own
  * default as yes — ends the session on the single click. `#end-dialog` is in
  * the webview and has neither failure (#57).
- *
- * The mark is fixed, so the button no longer changes width under the pointer.
- * That is what the two-click form had to hold a settle window for, and what
- * made the lifecycle column's width a thing the whole list paid for.
  */
-function endButton(view: SessionView, name: string): HTMLButtonElement {
-  const end = document.createElement("button");
-  end.type = "button";
-  end.className = "end";
-  end.appendChild(icon("close"));
-  end.title = `${name} のセッションを終了する`;
-  end.setAttribute("aria-label", `${name} のセッションを終了する`);
-  end.addEventListener("click", () => openEndDialog(seatKey(view.topicId, view.accountId), name));
-  return end;
-}
-
-/** Ask whether one account's session is to end. Nothing ends until answered. */
 function openEndDialog(key: string, name: string): void {
   endingAccount = key;
   endMessageEl.textContent = `${name} のセッションを終了します。よろしいですか？`;
@@ -4469,7 +4678,7 @@ function refreshDialogLine(): void {
  * a server after. That is all it is until 決定 — nothing is pushed into the
  * account list, so 取消 leaves no account behind and no id in use.
  */
-function openAccountDialog(account: Account | null): void {
+function openAccountDialog(account: Account | null, field: "name" | "hue" = "name"): void {
   editing = account;
   draft = account
     ? { ...account, args: [...account.args] }
@@ -4537,8 +4746,13 @@ function openAccountDialog(account: Account | null): void {
   dialogNoticeEl.textContent = "";
   showDialogKind();
   dialogEl.showModal();
-  dialogNameEl.focus();
-  dialogNameEl.select();
+  // On the colour when the form was opened to change it (色を変える, #224);
+  // on the name otherwise, selected so typing replaces it.
+  if (field === "hue") dialogHueEl.focus();
+  else {
+    dialogNameEl.focus();
+    dialogNameEl.select();
+  }
   if (server) {
     // What was last read, at once, and then read again: the log may have moved
     // while the form was closed. The tail is where a log is read from.
@@ -5423,6 +5637,29 @@ async function main(): Promise<void> {
   // Nothing here writes to an account. Every field edits the form's own draft,
   // and only 決定 puts that draft into the list.
   accountNewEl.addEventListener("click", () => openAccountDialog(null));
+  // An account row's menu (#224). It closes the way a menu does: on a press
+  // anywhere outside it, and when what is under it moves — a menu left
+  // standing at a point the row has scrolled away from reads as belonging to
+  // whichever row is beside it now. The press on the row's own menu button is left to
+  // that button, which closes what it opened.
+  accountMenuEl.addEventListener("keydown", onAccountMenuKey);
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (menuAccountId === null || !(event.target instanceof Node)) return;
+      if (accountMenuEl.contains(event.target)) return;
+      const opener = `button.more[data-account="${CSS.escape(menuAccountId)}"]`;
+      if (event.target instanceof Element && event.target.closest(opener)) return;
+      closeAccountMenu(false);
+    },
+    true,
+  );
+  // The panel's own scroll only. The room and the terminals scroll as text
+  // arrives, and a menu that closed on every line a session printed could not
+  // be used while one was printing.
+  participantsEl.addEventListener("scroll", () => closeAccountMenu(false), true);
+  window.addEventListener("resize", () => closeAccountMenu(false));
+  window.addEventListener("blur", () => closeAccountMenu(false));
   sessionIdCopyEl.addEventListener("click", () => void copySessionId());
   dialogKindEl.addEventListener("change", () => showDialogKind());
   dialogOptionsEl.addEventListener("input", () => refreshDialogLine());

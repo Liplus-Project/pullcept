@@ -65,7 +65,7 @@
           data-icon="terminal"
         ></button>
         <!-- The app's own settings (#172). Sliders, not the gear: that drawing
-             already means 編集 on every account row. -->
+             already means 編集 in every account's menu. -->
         <button
           id="open-settings"
           type="button"
@@ -263,11 +263,11 @@
              than left out (#53); it is still not offered as an addressee,
              because a name that cannot be reached is not one worth naming.
 
-             The row carries the session's whole lifecycle. 開始 was on a row of
-             its own above the conversation until #62, which put the two ends of
-             one thing on two surfaces; 終了 had already moved here (#57). The
-             row is two fixed columns after the name — the lifecycle, then 編集 —
-             so neither moves when a session starts or ends. -->
+             The row carries the account's operations. 開始 is out on the row,
+             in the first of two fixed columns after the name; 端末を開く, 編集,
+             色を変える and 終了 are in the row's menu, which right-click opens
+             and the mark in the second column opens too (#224). Neither column
+             moves when a session starts or ends. -->
         <aside id="participants" aria-label="アカウント">
           <div class="panel-head">
             <h2 class="panel-title">アカウント</h2>
@@ -728,6 +728,12 @@
           </menu>
         </div>
       </dialog>
+
+      <!-- An account row's menu (#224). One element for every row, filled from
+           src/main.ts (`openAccountMenu`) with the items that row has, and
+           placed at the point it was opened from. Outside the panel so the
+           panel's edge does not cut it off. -->
+      <div id="account-menu" role="menu" hidden></div>
     </div>
   </body>
 </html>
