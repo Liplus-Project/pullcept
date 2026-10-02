@@ -48,8 +48,17 @@
         ></button>
         <!-- The roster used to be echoed here as one line. It is the
              participant panel's list now: two renderings of one roster is one
-             surface too many, and the panel is always on screen. -->
-        <span class="spacer"></span>
+             surface too many, and the panel is always on screen.
+
+             What stands here now is the room's own heading (#225): the topic
+             that is open and how many are in it. A count, not the names — the
+             names are the panel's. It takes the bar's slack, so the controls
+             after it stay pinned to the right. Drawn by src/main.ts
+             (`renderRoomTitle`). -->
+        <div id="room-title" class="spacer">
+          <span id="room-title-name"></span>
+          <span id="room-title-count"></span>
+        </div>
         <!-- The person at this screen used to declare their name and colour
              here, every session, into fields that saved as they lost focus.
              They are an account now (#59), so both live where every other
@@ -108,19 +117,28 @@
         <aside id="history" aria-label="トピック">
           <div class="panel-head">
             <h2 class="panel-title">トピック</h2>
-          </div>
-          <!-- 新規, at the head of the list rather than beside the heading
-               (#125, 決定1). It is fixed: it stands outside the <ol> because the
-               list is redrawn from the index and this is not one of the index's
-               rows.
+            <!-- 新規, as ＋ beside the heading (#225), the way the account panel
+                 opposite carries its own ＋. It stood at the head of the list as
+                 a row of its own from #125 (決定1) until then. It is still
+                 outside the <ol>: the list is redrawn from the index and this
+                 is not one of the index's rows.
 
-               It is also what the top of the list used to hold. A launch opens a
-               topic the index does not carry yet (#115), and the list drew that
-               topic as a row of its own — a row naming a conversation nobody had
-               started, which is the thing 新規 says truthfully. Drawn as picked
-               while the room is in such a topic (#125, AI 判断4), so the place
-               the room is in is somewhere on this list. -->
-          <button id="topic-new" type="button" class="new" title="新しいトピックを始める">新規</button>
+                 It is also what the top of the list used to hold. A launch opens
+                 a topic the index does not carry yet (#115), and the list drew
+                 that topic as a row of its own — a row naming a conversation
+                 nobody had started, which is the thing 新規 says truthfully.
+                 Drawn as picked while the room is in such a topic (#125, AI
+                 判断4), so the place the room is in is somewhere on this panel;
+                 the title bar says its name as well (#225). -->
+            <button
+              id="topic-new"
+              type="button"
+              class="new"
+              aria-label="新しいトピックを始める"
+              title="新しいトピックを始める"
+              data-icon="plus"
+            ></button>
+          </div>
           <!-- Seeded, because the index is read after the frame is up: an empty
                list in that gap would say "there are no topics" at the one moment
                nothing has been asked yet. -->
@@ -307,57 +325,66 @@
                follow the row that is selected above, so they answer for the
                pane being looked at rather than for whichever session started
                last. 部屋ソケット is the exception and is the room's own. -->
+          <!-- What is looked at stays open: whether the session is alive, and
+               what it says it is using (#225). What is read only when something
+               is stuck — the socket, the id, how it was launched — is under
+               詳細, folded. -->
           <dl class="facts">
-            <dt>部屋ソケット</dt>
-            <dd id="socket-state">確認中</dd>
             <dt>セッション</dt>
             <dd id="session-state">未起動</dd>
-            <!-- The id the topic index holds for this account in this pane's
-                 topic, so a session closed where the app cannot see it can be
-                 resumed by hand. Read from the record rather than from the
-                 launch, so it is the same value after the app is reopened and
-                 is gone once the record is (#139). -->
-            <dt>セッション ID</dt>
-            <dd id="session-id-row" class="session-id">
-              <span id="session-id">—</span>
-              <button
-                id="session-id-copy"
-                type="button"
-                aria-label="セッション ID をコピー"
-                title="セッション ID をコピー"
-                data-icon="copy"
-                hidden
-              ></button>
-            </dd>
-            <dt>接続方法</dt>
-            <dd id="session-transport">—</dd>
-            <dt>起動コマンド</dt>
-            <dd id="session-command">—</dd>
-            <dt>作業ディレクトリ</dt>
-            <dd id="session-dir" class="path">—</dd>
-            <dt>開始時刻</dt>
-            <dd id="session-started">—</dd>
-            <dt>ウィンドウ</dt>
-            <dd id="session-window">—</dd>
             <!-- そのセッション自身がステータスラインで寄越した値である
-                 (#155)。上の欄が「何として起動したか」に答えるのに対し、
-                 この五つは「いま何を使っているか」に答えるため、並びの末尾
-                 に固めて置く。
+                 (#155)。下の折りたたみの欄が「何として起動したか」に答える
+                 のに対し、この五つは「いま何を使っているか」に答える。
 
                  動いたときにだけ届く——止まっている間は最後の値のままであ
                  り、届いていない席は「—」である。空欄にはしない。0% と、
-                 まだ知らないことは別である。 -->
+                 まだ知らないことは別である。三つの使用率は数と棒で出す
+                 (#225)。 -->
             <dt>モデル</dt>
             <dd id="session-model">—</dd>
             <dt>エフォート</dt>
             <dd id="session-effort">—</dd>
             <dt>5 時間</dt>
-            <dd id="session-five-hour">—</dd>
+            <dd id="session-five-hour" class="usage">—</dd>
             <dt>週次</dt>
-            <dd id="session-seven-day">—</dd>
+            <dd id="session-seven-day" class="usage">—</dd>
             <dt>コンテキスト</dt>
-            <dd id="session-context">—</dd>
+            <dd id="session-context" class="usage">—</dd>
           </dl>
+          <details class="facts-more">
+            <summary>詳細</summary>
+            <dl class="facts">
+              <dt>部屋ソケット</dt>
+              <dd id="socket-state">確認中</dd>
+              <!-- The id the topic index holds for this account in this pane's
+                   topic, so a session closed where the app cannot see it can be
+                   resumed by hand. Read from the record rather than from the
+                   launch, so it is the same value after the app is reopened and
+                   is gone once the record is (#139). -->
+              <dt>セッション ID</dt>
+              <dd id="session-id-row" class="session-id">
+                <span id="session-id">—</span>
+                <button
+                  id="session-id-copy"
+                  type="button"
+                  aria-label="セッション ID をコピー"
+                  title="セッション ID をコピー"
+                  data-icon="copy"
+                  hidden
+                ></button>
+              </dd>
+              <dt>接続方法</dt>
+              <dd id="session-transport">—</dd>
+              <dt>起動コマンド</dt>
+              <dd id="session-command">—</dd>
+              <dt>作業ディレクトリ</dt>
+              <dd id="session-dir" class="path">—</dd>
+              <dt>開始時刻</dt>
+              <dd id="session-started">—</dd>
+              <dt>ウィンドウ</dt>
+              <dd id="session-window">—</dd>
+            </dl>
+          </details>
         </aside>
       </div>
 
