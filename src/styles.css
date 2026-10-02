@@ -1352,12 +1352,8 @@ button svg.icon {
    from filled to outline, which is the part that says "not here" at a glance.
    It is still not an addressee: that list comes from the room's roster, so an
    offline account cannot appear in it at all. */
-/* The name alone is dimmed, and less than the whole row was (`0.55` until
-   #225): at that the names of accounts not running read too faint on the dark
-   theme's panel (Master, 2026-10-02). The badge beside it says 未起動 or 終了
-   in words, so the dimming need not carry the state by itself. */
-#participants .member.offline .who {
-  opacity: 0.8;
+#participants .member.offline .pick {
+  opacity: 0.55;
 }
 
 #participants .member.offline .dot {
