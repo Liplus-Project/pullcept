@@ -565,18 +565,26 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["polyline", { points: "4.6 6.3 6.6 8 4.6 9.7" }],
     ["line", { x1: "8.2", y1: "10.2", x2: "11.4", y2: "10.2" }],
   ],
-  // Three sliders. Not the gear: that drawing is 編集 in every account's menu,
-  // and the app's own settings are a different window (#172).
+  // A gear: the app's own settings (#234, the shape of the 2026-10-02 mockup).
+  // Tabler Icons `settings` (MIT, NOTICE.txt), redrawn from its 24-unit grid
+  // onto this one. #221 drew sliders here to keep it apart from the row's ⚙,
+  // which #224 has since moved into the row's menu.
   settings: [
-    ["line", { x1: "2", y1: "4", x2: "8.4", y2: "4" }],
-    ["line", { x1: "11.6", y1: "4", x2: "14", y2: "4" }],
-    ["circle", { cx: "10", cy: "4", r: "1.6" }],
-    ["line", { x1: "2", y1: "8", x2: "3.4", y2: "8" }],
-    ["line", { x1: "6.6", y1: "8", x2: "14", y2: "8" }],
-    ["circle", { cx: "5", cy: "8", r: "1.6" }],
-    ["line", { x1: "2", y1: "12", x2: "9.4", y2: "12" }],
-    ["line", { x1: "12.6", y1: "12", x2: "14", y2: "12" }],
-    ["circle", { cx: "11", cy: "12", r: "1.6" }],
+    [
+      "path",
+      {
+        d:
+          "M6.883 2.878c.284 -1.171 1.949 -1.171 2.233 0a1.149 1.149 0 0 0 1.715 .711" +
+          "c1.029 -.627 2.207 .551 1.58 1.58a1.149 1.149 0 0 0 .71 1.715" +
+          "c1.171 .284 1.171 1.949 0 2.233a1.149 1.149 0 0 0 -.711 1.715" +
+          "c.627 1.029 -.551 2.207 -1.58 1.58a1.149 1.149 0 0 0 -1.715 .71" +
+          "c-.284 1.171 -1.949 1.171 -2.233 0a1.149 1.149 0 0 0 -1.715 -.711" +
+          "c-1.029 .627 -2.207 -.551 -1.58 -1.58a1.149 1.149 0 0 0 -.71 -1.715" +
+          "c-1.171 -.284 -1.171 -1.949 0 -2.233a1.149 1.149 0 0 0 .711 -1.715" +
+          "c-.627 -1.029 .551 -2.207 1.58 -1.58c.667 .405 1.531 .047 1.715 -.71",
+      },
+    ],
+    ["path", { d: "M6 8a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" }],
   ],
   plus: [
     ["line", { x1: "8", y1: "3", x2: "8", y2: "13" }],
@@ -593,19 +601,29 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["line", { x1: "4", y1: "4", x2: "12", y2: "12" }],
     ["line", { x1: "12", y1: "4", x2: "4", y2: "12" }],
   ],
+  // 送信 (#234): a paper plane, Tabler Icons `send` (MIT, NOTICE.txt) on this grid.
   send: [
-    ["line", { x1: "8", y1: "13", x2: "8", y2: "3.2" }],
-    ["polyline", { points: "3.8 7.4 8 3.2 12.2 7.4" }],
+    ["path", { d: "M6.667 9.333l7.333 -7.333" }],
+    [
+      "path",
+      { d: "M14 2l-4.333 12a.367 .367 0 0 1 -.667 0l-2.333 -4.667l-4.667 -2.333a.367 .367 0 0 1 0 -.667l12 -4.333" },
+    ],
   ],
   // 宛先: the `@` the button types (#222).
   at: [
     ["circle", { cx: "8", cy: "8", r: "2.6" }],
     ["path", { d: "M10.6 5.4v3.3a2 2 0 0 0 4 0V8a6.6 6.6 0 1 0-2.6 5.25" }],
   ],
-  // 添付 (#223): a paper clip, standing.
-  attach: [["path", { d: "M10.8 5.2v5.6a2.8 2.8 0 0 1-5.6 0V4.1a1.9 1.9 0 0 1 3.8 0v6.5a1 1 0 0 1-2 0V5.4" }]],
+  // 添付 (#223): a paper clip, slanted (#234). Tabler Icons `paperclip` (MIT,
+  // NOTICE.txt) on this grid.
+  attach: [
+    [
+      "path",
+      { d: "M10 4.667l-4.333 4.333a1 1 0 0 0 2 2l4.333 -4.333a2 2 0 0 0 -4 -4l-4.333 4.333a3 3 0 0 0 6 6l4.333 -4.333" },
+    ],
+  ],
   start: [["path", { d: "M5 3.2v9.6L12.6 8Z" }]],
-  // A gear: 編集, the window an account's settings are made in.
+  // A gear: 編集 in the row's menu, the window an account's settings are made in.
   edit: [
     [
       "path",
