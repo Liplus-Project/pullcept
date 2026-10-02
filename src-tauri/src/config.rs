@@ -208,6 +208,21 @@ pub struct Account {
     /// neither file carries a second copy of the other's half.
     #[serde(default)]
     pub server: Option<String>,
+    /// Whether this account carries an image to be drawn in its circle in
+    /// place of the initial (#236).
+    ///
+    /// The flag only: the image is a file of its own, `avatars/` beside this
+    /// config, named after the id (`avatar_path`). Bytes in the config would be
+    /// read and written whole every time any account is saved, and the screen
+    /// asks for the image once rather than with every read of the list.
+    ///
+    /// `false` for an account saved before this field existed, which is what
+    /// every account then was: the initial on its colour. A flag that says
+    /// `true` over a file that is gone is not repaired here — the screen draws
+    /// the initial when the image will not load, and that is the whole of the
+    /// fallback (#236).
+    #[serde(default)]
+    pub avatar: bool,
 }
 
 /// Which of the two panels flanking the room are open.
@@ -312,6 +327,7 @@ impl Default for AppConfig {
                 resume_command: None,
                 env: Vec::new(),
                 server: None,
+                avatar: false,
             }],
             panels: PanelState::default(),
         }
@@ -534,6 +550,120 @@ pub fn seal_account_env(
     previous: Vec<account_env::EnvVar>,
 ) -> Result<Vec<account_env::EnvVar>, String> {
     account_env::settle(&text, &previous, mcp_config::APP_LAUNCH_ENV)
+}
+
+// ---------------------------------------------------------------------------
+// Account images (#236)
+// ---------------------------------------------------------------------------
+//
+// An account may carry an image, drawn in its circle in place of the initial.
+// What is stored is always one small PNG: the screen crops the picked image to
+// its centre square and scales it to 128×128 before handing it over, so there
+// is no size to bound here and no format to convert. The app keeps the file,
+// hands it back, and removes it; it is never put on the roster or the socket —
+// the image is this screen's alone.
+
+/// The folder the images are kept in, beside `config.json`.
+const AVATAR_DIR: &str = "avatars";
+
+/// The eight bytes every PNG opens with. What the screen hands over is a PNG it
+/// made itself, so anything else is refused rather than stored under a `.png`
+/// name.
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// Where `account_id`'s image is kept: `avatars/<id>.png` under the app data
+/// directory.
+///
+/// The id is the file name, with every byte that is not an ASCII letter, digit,
+/// `-` or `_` written as `%XX`. The ids the app mints (`account-1`, a UUID) come
+/// through as they are. An `mcp` account's id is `mcp-` and the name of an entry
+/// in a file the person edits by hand (`mcp_servers::account_id`), and that name
+/// may hold a path separator, which would put the file somewhere else. `%` is
+/// itself among the bytes written out, so two ids never share a file name.
+///
+/// Pure logic on the side whose tests do not run (docs/5-development.md), and
+/// left here knowingly: it is one pass over the bytes, read rather than run,
+/// and #236 keeps its change to this side.
+fn avatar_path(app: &AppHandle, account_id: &str) -> Result<PathBuf, String> {
+    if account_id.is_empty() {
+        return Err("画像の持ち主のアカウントが届きませんでした。".to_string());
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+    let mut name = String::with_capacity(account_id.len());
+    for byte in account_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(byte as char);
+        } else {
+            name.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    Ok(dir.join(AVATAR_DIR).join(format!("{name}.png")))
+}
+
+/// Store an account's image, in place of the one it had (#236).
+///
+/// The PNG is the request's raw body, the way an attachment's bytes are
+/// (`room_log::room_attach_bytes`), and the account rides in the
+/// `Pullcept-Account` header as a JSON string with everything outside ASCII
+/// escaped. Written before the account's flag is saved: the screen saves the
+/// config only once this has answered, so a flag never names a file that was
+/// not written.
+#[tauri::command]
+pub fn save_account_avatar(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let account_id: String = request
+        .headers()
+        .get("pullcept-account")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("画像の中身が届きませんでした。".to_string());
+    };
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err("画像は PNG で渡してください。".to_string());
+    }
+    let path = avatar_path(&app, &account_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("画像の置き場所を作れませんでした: {e}"))?;
+    }
+    std::fs::write(&path, bytes).map_err(|e| format!("画像を保存できませんでした: {e}"))
+}
+
+/// An account's image, as the PNG bytes, or an error when there is none or it
+/// will not read (#236).
+///
+/// Raw bytes rather than a JSON array of numbers, which would be several times
+/// the file on the way across; the screen receives an `ArrayBuffer`. A failure
+/// is not said on screen: the screen draws the initial instead, which is what
+/// an account without an image shows.
+#[tauri::command]
+pub fn account_avatar(
+    app: AppHandle,
+    account_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let path = avatar_path(&app, &account_id)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("画像を読めませんでした: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Remove an account's image (#236): 外す on its form, and the account itself
+/// being deleted. An image that is not there is already removed, and answers
+/// as such.
+#[tauri::command]
+pub fn delete_account_avatar(app: AppHandle, account_id: String) -> Result<(), String> {
+    let path = avatar_path(&app, &account_id)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("画像を消せませんでした: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
