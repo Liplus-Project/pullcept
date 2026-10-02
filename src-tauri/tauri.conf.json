@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Pullcept",
+        "title": "",
         "width": 1200,
         "height": 800
       }
