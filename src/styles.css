@@ -1425,13 +1425,16 @@ button svg.icon {
   background: var(--selected);
 }
 
-/* The same colour the participant's lines carry in the room. */
-#participants .dot {
-  width: 0.45rem;
-  height: 0.45rem;
+/* The circle the participant's lines carry in the room (#253), at the row's
+   size: the account's image, or the initial on the line's colour. In `rem`,
+   so it follows the whole UI's multiple (#66) and not the conversation's text
+   size — the panel is on the UI's axis. Small enough that the row keeps about
+   the height the dot gave it. */
+#participants .member .avatar {
   flex: none;
-  border-radius: 999px;
-  background: var(--speaker, var(--line));
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.75rem;
 }
 
 /* The name carries the participant's own colour, which is what makes this list
@@ -1497,17 +1500,12 @@ button svg.icon {
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
    is still someone, and this list is where the person reads who they have
    (#53). Dimmed rather than greyed — the colour carries the account's identity,
-   and someone merely absent must not read as someone else (#59). The dot goes
-   from filled to outline, which is the part that says "not here" at a glance.
+   and someone merely absent must not read as someone else (#59). The circle
+   dims with the name, by the same amount (#253).
    It is still not an addressee: that list comes from the room's roster, so an
    offline account cannot appear in it at all. */
 #participants .member.offline .pick {
   opacity: 0.55;
-}
-
-#participants .member.offline .dot {
-  background: none;
-  border: 1px solid var(--speaker, var(--line));
 }
 
 #participants .empty {
