@@ -1094,8 +1094,8 @@ button svg.icon {
   padding: 0.25rem 0.35rem;
 }
 
-/* Deleting the topic. The drawing and the danger colour are those of 終了 in an
-   account's menu (`#account-menu .danger`), because this is the same kind of
+/* Deleting the topic. The danger colour is that of 終了 in an account's menu
+   (`#account-menu .danger`) and on its row, because this is the same kind of
    act: the one thing on the row that cannot be taken back. Here it stands on
    the row itself, next to one that merely changes what is showing.
 
@@ -1370,10 +1370,11 @@ button svg.icon {
    the row is keyed on the account id, so these act on one account and cannot be
    tied to the wrong one by a shared name (#53, #59).
 
-   Each fills its track, so the button is the column: 開始 and the menu are one
-   width in one place, and whether a row has 開始 is read off the button rather
-   than off where the row's controls have slid to (#62). 終了 and 編集 were the
-   two marks here until #224 and are in the menu now (`#account-menu`).
+   Each fills its track, so the button is the column: 開始 or 終了, and the menu,
+   are one width in one place, and whether a row has 開始 is read off the button
+   rather than off where the row's controls have slid to (#62). 編集 is in the
+   menu (`#account-menu`) since #224; 終了 went there with it and came back to
+   the row in 開始's place (#239), and is in the menu as well.
 
    Sized rather than fitted (#71): the box is fixed and the drawing is centred
    in it, so the two read as one column of the same shapes anywhere.
@@ -1384,7 +1385,8 @@ button svg.icon {
    panel's tint (Master, 実機, 2026-08-24); with no button carrying a ground of
    its own, there is nothing left for them to be out of step with. */
 #participants .member .more,
-#participants .member .start {
+#participants .member .start,
+#participants .member .stop {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1399,13 +1401,15 @@ button svg.icon {
 }
 
 #participants .member .more svg.icon,
-#participants .member .start svg.icon {
+#participants .member .start svg.icon,
+#participants .member .stop svg.icon {
   width: 0.95rem;
   height: 0.95rem;
 }
 
 #participants .member .more:hover,
-#participants .member .start:hover:not(:disabled) {
+#participants .member .start:hover:not(:disabled),
+#participants .member .stop:hover {
   background: var(--hover);
 }
 
@@ -1414,11 +1418,11 @@ button svg.icon {
   background: var(--selected);
 }
 
-/* The 開始 column. Emitted whether or not it holds a button — an empty one is
-   what keeps the menu in place on the row of someone who is not launched. A box
-   rather than nothing, so the button inside it fills the track: left inline, a
-   button takes its own width and sits at the track's left edge, which puts 開始
-   a different distance from the menu than the track it is in. */
+/* The 開始 / 終了 column. Emitted whether or not it holds a button — an empty
+   one is what keeps the menu in place on the row of someone who is not
+   launched. A box rather than nothing, so the button inside it fills the track:
+   left inline, a button takes its own width and sits at the track's left edge,
+   which puts it a different distance from the menu than the track it is in. */
 #participants .member .lifecycle {
   display: flex;
 }
@@ -1429,12 +1433,19 @@ button svg.icon {
   color: var(--muted);
 }
 
-/* It acts on the click, unlike 終了 in the menu: a session started by mistake
-   is ended from there, and a question here would charge every deliberate start
+/* It acts on the click, unlike 終了: a session started by mistake is ended
+   from the same place, and a question here would charge every deliberate start
    an answer. Dead while the launch is out; what the row is doing meanwhile is
    the 起動中 beside the name (src/main.ts). */
 #participants .member .start {
   color: var(--fg);
+}
+
+/* 終了 on the row (#239): the one control here that cannot be taken back, in
+   the danger colour as 終了 in the menu and a topic's delete are. It only asks:
+   the click opens `#end-dialog` (#71). */
+#participants .member .stop {
+  color: var(--danger);
 }
 
 /* Dimmed as a whole as well as muted. Being unable to press it is the state,
@@ -1445,8 +1456,8 @@ button svg.icon {
   cursor: default;
 }
 
-/* An account row's menu (#224): 端末を開く, 編集, 色を変える and, below a
-   divider, 終了. Its items are the buttons of #221 laid in a column — no frame
+/* An account row's menu (#224): 開始 (#239), 端末を開く, 編集, 色を変える and,
+   below a divider, 終了. Its items are the buttons of #221 laid in a column — no frame
    and no ground of their own, a drawing and a word, and the `--hover` shade
    under the pointer or the keyboard's focus. The box they stand in is the one
    floating surface on the screen besides `#mention-list`, and is drawn the same

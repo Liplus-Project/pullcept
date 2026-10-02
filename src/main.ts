@@ -547,6 +547,7 @@ type IconName =
   | "at"
   | "attach"
   | "start"
+  | "stop"
   | "edit"
   | "more";
 
@@ -594,9 +595,9 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["rect", { x: "5.5", y: "5.5", width: "8", height: "8", rx: "1.6" }],
     ["path", { d: "M10.5 5.5V4.1A1.6 1.6 0 0 0 8.9 2.5H4.1A1.6 1.6 0 0 0 2.5 4.1v4.8a1.6 1.6 0 0 0 1.6 1.6h1.4" }],
   ],
-  // Folding the pane, closing an ended tab, ending a session and deleting a
-  // topic. Which of those it is, is the colour and the label: the two that
-  // cannot be taken back carry `--danger`.
+  // Folding the pane, closing an ended tab and deleting a topic. Which of
+  // those it is, is the colour and the label: the one that cannot be taken
+  // back carries `--danger`. Ending a session has its own drawing, `stop`.
   close: [
     ["line", { x1: "4", y1: "4", x2: "12", y2: "12" }],
     ["line", { x1: "12", y1: "4", x2: "4", y2: "12" }],
@@ -623,6 +624,19 @@ const ICONS: Record<IconName, IconShape[]> = {
     ],
   ],
   start: [["path", { d: "M5 3.2v9.6L12.6 8Z" }]],
+  // 終了 (#239): a square, the other end of the triangle above, on the row in
+  // the column 開始 stands in and in the row's menu. Tabler Icons `player-stop`
+  // (MIT, NOTICE.txt) on this grid.
+  stop: [
+    [
+      "path",
+      {
+        d:
+          "M3.333 4.667a1.333 1.333 0 0 1 1.333 -1.333h6.667a1.333 1.333 0 0 1 1.333 1.333" +
+          "v6.667a1.333 1.333 0 0 1 -1.333 1.333h-6.667a1.333 1.333 0 0 1 -1.333 -1.333Z",
+      },
+    ],
+  ],
   // A gear: 編集 in the row's menu, the window an account's settings are made in.
   edit: [
     [
@@ -2929,24 +2943,27 @@ function memberRow(row: Member): HTMLLIElement {
   // the row is keyed on the account id, so these act on one account and cannot
   // be tied to the wrong one by a shared name (#53, #59).
   //
-  // Two fixed columns: 開始, then the menu. 終了 and 編集 sat in those two
-  // columns until #224 and are in the menu now, with 端末を開く and 色を変える
-  // beside them (`openAccountMenu`). 開始 stays out on the row: it is the one
-  // operation a row that is not running has, and it acts on the click. The
-  // slot is emitted whether or not it holds a button, so a row with no 開始
-  // keeps the column open rather than sliding its menu left of every other
-  // row's.
+  // Two fixed columns: the session's lifecycle, then the menu. The first holds
+  // 開始 on a row that is not running and 終了 in the same place on one that is
+  // (#239): the two ends of one session stand where each other stood. Both are
+  // in the menu as well (`openAccountMenu`), beside 端末を開く, 編集 and
+  // 色を変える. The slot is emitted whether or not it holds a button, so a row
+  // with neither keeps the column open rather than sliding its menu left of
+  // every other row's.
   const lifecycle = document.createElement("span");
   lifecycle.className = "lifecycle";
-  // A running session has nothing here: its 終了 is in the menu. The one
-  // running state that keeps 開始 is the launch that has not come back yet,
-  // which leaves the pressed button dead on the row that was pressed (#62).
   const running = view != null && view.ended === null;
-  if (row.account && launches(row.account) && (!running || launching)) {
+  if (row.account && running && !launching) {
+    // Only once the launch has returned an id: a kill aimed at an empty id
+    // reports success having done nothing (#57).
+    lifecycle.appendChild(stopButton(row.account));
+  } else if (row.account && launches(row.account)) {
     // A launched kind only. An `admin` account is a person and there is no CLI
     // under a person to spawn; `start_session` refuses one and that refusal is
     // the authority, but a refusal is the wrong way for the person to find out
-    // (#59). Their row keeps the empty column, and their menu with it.
+    // (#59). Their row keeps the empty column, and their menu with it. The
+    // launch that has not come back yet keeps the pressed button, dead, on the
+    // row that was pressed (#62).
     lifecycle.appendChild(startButton(row.account, launching));
   }
   entry.appendChild(lifecycle);
@@ -3007,6 +3024,23 @@ function startButton(account: Account, launching: boolean): HTMLButtonElement {
 }
 
 /**
+ * 終了 on the row (#239), in the column 開始 stands in on a row that is not
+ * running. It asks, as 終了 in the menu does: the click opens `#end-dialog`
+ * and nothing ends until that is answered (#71).
+ */
+function stopButton(account: Account): HTMLButtonElement {
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "stop";
+  stop.appendChild(icon("stop"));
+  const label = `${account.name} のセッションを終了する`;
+  stop.title = label;
+  stop.setAttribute("aria-label", label);
+  stop.addEventListener("click", () => endFromMenu(account.id));
+  return stop;
+}
+
+/**
  * The control that opens one account's menu: the same menu right-click opens.
  *
  * Kept on the row so the menu does not depend on right-click (#224). A pointer
@@ -3055,13 +3089,16 @@ function cornerOf(element: Element): { x: number; y: number } {
 let menuAccountId: string | null = null;
 
 /**
- * Open one account's menu at a point: 端末を開く, 編集, 色を変える, and 終了.
+ * Open one account's menu at a point: 開始, 端末を開く, 編集, 色を変える, and 終了.
  *
  * An item that has nothing to act on is left out, not greyed: 端末を開く on an
  * account with no terminal in this topic (the row has no terminal operation
- * then either, #57), and 終了 on an account with no session to end. 終了 is
- * also left out before the launch has returned an id — a kill aimed at an
- * empty id reports success having done nothing (#57).
+ * then either, #57), 開始 on an account that is running or is not a launched
+ * kind (#59), and 終了 on an account with no session to end. So 開始 and 終了
+ * are never both drawn, and each is drawn exactly when the row's first column
+ * holds it as a live button (#239). While a launch is out neither is: 開始 has
+ * been pressed, and 終了 is left out before the launch has returned an id — a
+ * kill aimed at an empty id reports success having done nothing (#57).
  *
  * 終了 is the one item that cannot be taken back, so it stands apart below a
  * divider in the danger colour, last, where a slip down the list does not land
@@ -3090,6 +3127,9 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
     return button;
   };
 
+  if (launches(account) && (!view || view.ended !== null)) {
+    item("開始", icon("start"), () => startFromMenu(account.id));
+  }
   if (view) {
     item("端末を開く", icon("terminal"), () => openTerminalOf(account.id));
   }
@@ -3104,7 +3144,7 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
     const divider = document.createElement("div");
     divider.setAttribute("role", "separator");
     accountMenuEl.appendChild(divider);
-    item("終了", icon("close"), () => endFromMenu(account.id)).classList.add("danger");
+    item("終了", icon("stop"), () => endFromMenu(account.id)).classList.add("danger");
   }
 
   // The colour the row draws the account in, so the swatch is the row's own.
@@ -3197,7 +3237,22 @@ function openAccountFrom(accountId: string, field: "name" | "hue"): void {
   if (account) openAccountDialog(account, field);
 }
 
-/** 終了: the question `#end-dialog` asks, about the session as it is now. */
+/** 開始 from the menu: the row's ▶, for the account as it is now. */
+function startFromMenu(accountId: string): void {
+  const account = accounts.find((one) => one.id === accountId);
+  if (!account || !launches(account)) return;
+  // The session may have been started, from the row or another menu, while
+  // the menu stood. `startSession` refuses a held seat as well; this keeps the
+  // press from reaching that refusal.
+  const view = views.get(seatKey(shownTopicId(), accountId));
+  if (view && view.ended === null) return;
+  void startSession(account);
+}
+
+/**
+ * 終了 from the row or the menu: the question `#end-dialog` asks, about the
+ * session as it is now.
+ */
 function endFromMenu(accountId: string): void {
   const key = seatKey(shownTopicId(), accountId);
   const view = views.get(key);
