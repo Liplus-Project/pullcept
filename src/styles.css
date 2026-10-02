@@ -229,9 +229,9 @@ button svg.icon {
    the scope the placement itself: there is no third element for the property
    to be inherited by, so nothing anywhere has to cancel it.
 
-   The textarea alone, not the whole composer. 送信 sits on the same row, and
-   the list `@` opens sits over it (#204), but both are controls, not the
-   sentence, and they stay on the whole-UI axis (#66). The room's own `font-size` lands on `.message` rather than here, so
+   The textarea alone, not the whole composer. The row under it — 宛先, the
+   keys, 送信 (#222) — and the list `@` opens over it (#204) are controls, not
+   the sentence, and they stay on the whole-UI axis (#66). The room's own `font-size` lands on `.message` rather than here, so
    only the words are carried and the padding is not.
 
    `1rem` is what both surfaces have always rendered at. Until #194 no
@@ -372,11 +372,26 @@ button svg.icon {
 /* ── composer ────────────────────────────────────────────────────────────── */
 
 #composer {
-  display: flex;
-  gap: 0.5rem;
-  align-items: flex-end;
   border-top: 1px solid var(--line);
   padding: 0.6rem 0.9rem;
+}
+
+/* One box: the text, and the row of what acts on it underneath (#222). The box
+   is the field, so it carries the field's frame (#221: a field keeps its
+   `--line` border on `--bg`), and the text area inside it carries none. The
+   frame turns to the accent while the text has the focus, so where the keys
+   are going is still shown with the field's own edge gone from the textarea. */
+#composer-box {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.5rem 0.4rem;
+}
+
+#composer-box:focus-within {
+  border-color: var(--accent);
 }
 
 /* The list of who can be addressed, opened by `@` in the textarea (#204).
@@ -428,22 +443,84 @@ button svg.icon {
    later `font-size` in the same rule replaces it. `rows="2"` is counted in
    lines, so the field's height moves with the size without being told to. */
 #composer textarea {
-  flex: 1;
   font: inherit;
   font-size: var(--room-font-size);
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.5rem;
+  background: none;
+  border: none;
+  outline: none;
+  padding: 0 0.15rem;
   resize: vertical;
+}
+
+/* Under the text: the tools on the left, the keys after them, 送信 on the
+   right. */
+#composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+#composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+/* A drawing like every other button on the screen (#221). */
+#composer-tools button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.35rem;
+  cursor: pointer;
+}
+
+#composer-tools button svg.icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+#composer-tools button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* The keys, small and muted: read once and then known. They take the room
+   between the tools and 送信, one line high. A hint that does not fit wraps
+   onto a second line the box does not show, so a narrow window drops whole
+   hints from the end rather than cutting one in half. */
+#composer-keys {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.8rem;
+  height: 1.4em;
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.72rem;
+  line-height: 1.4em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#composer-keys kbd {
+  font: inherit;
+  font-weight: 600;
 }
 
 /* 送信, the one filled control on the screen (#221). Every other button waits
    under the pointer to show itself; this is the act the screen is for, so it
    is the one thing put forward. A drawing like the rest, its name and its key
    on the tooltip. */
-#composer button {
+#composer #send {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -456,13 +533,13 @@ button svg.icon {
   cursor: pointer;
 }
 
-#composer button svg.icon {
+#composer #send svg.icon {
   width: 1.15rem;
   height: 1.15rem;
   stroke-width: 1.6;
 }
 
-#composer button:hover {
+#composer #send:hover {
   background: color-mix(in oklch, var(--accent) 85%, var(--fg));
 }
 
