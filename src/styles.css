@@ -926,10 +926,10 @@ button svg.icon {
   padding: 0.25rem 0.35rem;
 }
 
-/* Deleting the topic. The drawing and the danger colour are the participant
-   panel's 終了 (`#participants .member .end`), because this is the same kind of
-   control in the same kind of list: the one thing on the row that cannot be
-   taken back, next to one that merely changes what is showing.
+/* Deleting the topic. The drawing and the danger colour are those of 終了 in an
+   account's menu (`#account-menu .danger`), because this is the same kind of
+   act: the one thing on the row that cannot be taken back. Here it stands on
+   the row itself, next to one that merely changes what is showing.
 
    It does not shrink. A row whose title is long is the row where the button
    would otherwise be squeezed to nothing, and that is not a state this control
@@ -1051,19 +1051,16 @@ button svg.icon {
   letter-spacing: 0.02em;
 }
 
-/* Three columns. The name takes the slack; the session's lifecycle and 編集 sit
-   in tracks after it, so 開始 and 終了 are in one place on every row and 編集 is
-   in one place on every row (#62). A track has its width whether or not
-   anything is in it, which is what keeps a row with no lifecycle — a person,
-   who is not launched — from closing the column and sliding its 編集 left of
-   everyone else's.
+/* Three columns. The name takes the slack; 開始 and the row's menu sit in
+   tracks after it, so each is in one place on every row (#62, #224). A track
+   has its width whether or not anything is in it, which is what keeps a row
+   with no 開始 — a person, who is not launched, or a session that is running —
+   from closing the column and sliding its menu left of everyone else's.
 
    Both tracks are fixed, because both hold a mark and a mark is one width
-   (#71). The lifecycle track had a floor instead while 終了 answered its own
-   question on itself and grew to say so; the question is a dialog now, so
-   nothing here changes width and the name keeps everything the two tracks do
-   not take. That matters at this size: the panel is 16.5rem, and it was a
-   measured 「マスター（あなた）」 that ruled out widening these tracks before. */
+   (#71). The name keeps everything the two tracks do not take. That matters at
+   this size: the panel is 16.5rem, and it was a measured 「マスター（あなた）」
+   that ruled out widening these tracks before. */
 #participants .member {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 2rem 2rem;
@@ -1176,21 +1173,21 @@ button svg.icon {
    the row is keyed on the account id, so these act on one account and cannot be
    tied to the wrong one by a shared name (#53, #59).
 
-   Each fills its track, so the button is the column: 開始 and 終了 are one width
-   in one place, and which of them a row has is read off the button rather than
-   off where the row's controls have slid to (#62).
+   Each fills its track, so the button is the column: 開始 and the menu are one
+   width in one place, and whether a row has 開始 is read off the button rather
+   than off where the row's controls have slid to (#62). 終了 and 編集 were the
+   two marks here until #224 and are in the menu now (`#account-menu`).
 
    Sized rather than fitted (#71): the box is fixed and the drawing is centred
-   in it, so the three read as one column of the same three shapes anywhere.
+   in it, so the two read as one column of the same shapes anywhere.
 
    No frame and no ground until the pointer is on one, as every button on the
    screen (#221). The ground they carried until then was the window's, put
-   there so these three would not be the only controls in the app on the
+   there so these would not be the only controls in the app on the
    panel's tint (Master, 実機, 2026-08-24); with no button carrying a ground of
    its own, there is nothing left for them to be out of step with. */
-#participants .member .edit,
-#participants .member .start,
-#participants .member .end {
+#participants .member .more,
+#participants .member .start {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1204,39 +1201,41 @@ button svg.icon {
   cursor: pointer;
 }
 
-#participants .member .edit svg.icon,
-#participants .member .start svg.icon,
-#participants .member .end svg.icon {
+#participants .member .more svg.icon,
+#participants .member .start svg.icon {
   width: 0.95rem;
   height: 0.95rem;
 }
 
-#participants .member .edit:hover,
-#participants .member .start:hover:not(:disabled),
-#participants .member .end:hover {
+#participants .member .more:hover,
+#participants .member .start:hover:not(:disabled) {
   background: var(--hover);
 }
 
-/* The lifecycle column. Emitted whether or not it holds a button — an empty one
-   is what keeps 編集 in place on the row of someone who is not launched. A box
+/* The menu that is open is the row's chosen control while it stands. */
+#participants .member .more[aria-expanded="true"] {
+  background: var(--selected);
+}
+
+/* The 開始 column. Emitted whether or not it holds a button — an empty one is
+   what keeps the menu in place on the row of someone who is not launched. A box
    rather than nothing, so the button inside it fills the track: left inline, a
    button takes its own width and sits at the track's left edge, which puts 開始
-   and 終了 a different distance from 編集 than the track they are in. */
+   a different distance from the menu than the track it is in. */
 #participants .member .lifecycle {
   display: flex;
 }
 
-/* The drawings take the button's colour, so this is what tells the three
-   apart beyond their shapes: 編集 is quiet, 開始 is the body colour and 終了 is
-   the danger colour. */
-#participants .member .edit {
+/* The drawings take the button's colour, so this is what tells the two apart
+   beyond their shapes: the menu is quiet and 開始 is the body colour. */
+#participants .member .more {
   color: var(--muted);
 }
 
-/* It acts on the click, unlike the 終了 that replaces it: a session started by
-   mistake is ended by that button, and a question here would charge every
-   deliberate start an answer. Dead while the launch is out; what the row is
-   doing meanwhile is the 起動中 beside the name (src/main.ts). */
+/* It acts on the click, unlike 終了 in the menu: a session started by mistake
+   is ended from there, and a question here would charge every deliberate start
+   an answer. Dead while the launch is out; what the row is doing meanwhile is
+   the 起動中 beside the name (src/main.ts). */
 #participants .member .start {
   color: var(--fg);
 }
@@ -1249,10 +1248,88 @@ button svg.icon {
   cursor: default;
 }
 
-/* In the danger colour: this is the one control here that cannot be taken
-   back, and it sits next to two that can. It has one state now — the question
-   it asks is asked in `#end-dialog`, not on the button (#71). */
-#participants .member .end {
+/* An account row's menu (#224): 端末を開く, 編集, 色を変える and, below a
+   divider, 終了. Its items are the buttons of #221 laid in a column — no frame
+   and no ground of their own, a drawing and a word, and the `--hover` shade
+   under the pointer or the keyboard's focus. The box they stand in is the one
+   floating surface on the screen besides `#mention-list`, and is drawn the same
+   way: the window's ground, a line, a shadow. */
+#account-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 10rem;
+  padding: 0.25rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  font-size: 0.85rem;
+}
+
+#account-menu[hidden] {
+  display: none;
+}
+
+#account-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+#account-menu [role="menuitem"]:hover,
+#account-menu [role="menuitem"]:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+#account-menu [role="menuitem"] svg.icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  color: var(--muted);
+}
+
+/* 色を変える shows what it changes: a dot in the account's colour, set on the
+   menu from the row it was opened on, standing where the others' drawings
+   stand. */
+#account-menu .swatch {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#account-menu .swatch::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--speaker, var(--accent));
+}
+
+#account-menu [role="separator"] {
+  height: 1px;
+  margin: 0.25rem 0.3rem;
+  background: var(--line);
+}
+
+/* 終了: the one item that cannot be taken back, apart below the divider and in
+   the danger colour, the word and the drawing both. It still only asks — the
+   question is `#end-dialog` (#71). */
+#account-menu [role="menuitem"].danger,
+#account-menu [role="menuitem"].danger svg.icon {
   color: var(--danger);
 }
 
