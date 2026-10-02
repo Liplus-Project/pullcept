@@ -3,7 +3,7 @@ Copyright 2026 Yoshiharu Uematsu
 
 This product includes icon drawings derived from Tabler Icons
 (https://tabler.io/icons): the outline icons `settings`, `paperclip`,
-`send` and `player-stop`, redrawn from their 24-unit grid onto the app's 16-unit grid in
+`send`, `player-stop` and `chevron-down`, redrawn from their 24-unit grid onto the app's 16-unit grid in
 src/main.ts. Tabler Icons is distributed under the MIT License:
 
 MIT License

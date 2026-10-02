@@ -148,7 +148,22 @@
         </aside>
 
         <div id="conversation">
-          <main id="room" aria-live="polite"></main>
+          <!-- The room and what floats over its foot (#243). A frame of its own
+               rather than #conversation, so the button sits on the room's
+               bottom edge whether the terminal pane is open under it or not. -->
+          <div id="room-frame">
+            <main id="room" aria-live="polite"></main>
+            <!-- Back to the newest line, shown only while the room is read back
+                 from its bottom (#243). Drawn by src/main.ts. -->
+            <button
+              id="scroll-latest"
+              type="button"
+              aria-label="最新の発言へ"
+              title="最新の発言へ"
+              data-icon="chevron-down"
+              hidden
+            ></button>
+          </div>
 
           <!-- Diagnostics, not the conversation surface. The room shows what
                was said; this shows the CLI that was launched, as it actually

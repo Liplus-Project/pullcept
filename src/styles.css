@@ -67,6 +67,10 @@
      this theme. */
   --speaker-l: 0.481;
   --speaker-c: 0.131;
+  /* The shadow under a control that floats over the room's lines — 最新の発言へ
+     (#243) — so it reads as above them and not as one of them. Deeper in dark,
+     where a shadow on a dark ground barely shows. */
+  --float-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
   /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
      the conversation and the terminal is written in `rem`, so this one value
      moves all of it. The conversation divides it back out (`--room-font-size`
@@ -106,6 +110,7 @@
        participant but oneself too dark to read against #17171a. */
     --speaker-l: 0.715;
     --speaker-c: 0.087;
+    --float-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
   }
 }
 
@@ -328,14 +333,72 @@ button svg.icon {
   --room-font-size: calc(1rem / var(--ui-scale));
 }
 
+/* The room and the button over its foot (#243). The frame takes the column's
+   height the room took before it, and the room fills the frame. */
+#room-frame {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
 #room {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 1rem;
   display: flex;
   flex-direction: column;
   /* Wider than the 0.75rem it was, so lines read as lines apart (#225). */
   gap: 1.15rem;
+}
+
+/* 最新の発言へ (#243): a small round button at the middle of the room's foot,
+   just above the composer, shown only while the room is read back. It floats
+   over the lines rather than taking a row, so the room and the composer keep
+   their heights whether it is shown or not.
+
+   The one button with a ground and a frame of its own beside 送信. The ghost
+   rule (#221) is for a button standing on a panel; this one stands on the
+   conversation's text, and a drawing with nothing under it would be read into
+   the line behind it. The ground is the room's own and the frame is `--line`,
+   so it is the same button in light and dark; the pointer's shade is laid over
+   that ground as on every other button. On the whole-UI axis, like every
+   control (#66). */
+#scroll-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 0.75rem;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  box-shadow: var(--float-shadow);
+  cursor: pointer;
+}
+
+/* `display: flex` above outranks the user agent's rule for the attribute. */
+#scroll-latest[hidden] {
+  display: none;
+}
+
+#scroll-latest:hover {
+  color: var(--fg);
+  background-image: linear-gradient(var(--hover), var(--hover));
+}
+
+#scroll-latest svg.icon {
+  width: 1rem;
+  height: 1rem;
 }
 
 /* Speaker attribution is the load-bearing distinction in this room, so one
