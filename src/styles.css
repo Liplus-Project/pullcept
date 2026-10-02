@@ -394,6 +394,72 @@ button svg.icon {
   border-color: var(--accent);
 }
 
+/* A file held over the composer (#223): the frame says letting go here
+   attaches, the way it says where the keys go. */
+#composer-box[data-drop="over"] {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 8%, var(--bg));
+}
+
+/* What is attached, one chip per file above the text (#223). A chip is a label
+   rather than a control, so it may be filled (#221: a state's tag is a display
+   and is not bound by the ghost rule); its ✕ is a control and is drawn like
+   every other button. On the whole-UI axis like the row under the text: the
+   names are not the sentence. */
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+}
+
+#attachments[hidden] {
+  display: none;
+}
+
+#attachments li {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  max-width: 18rem;
+  padding: 0.1rem 0.15rem 0.1rem 0.5rem;
+  background: var(--surface);
+  border-radius: 6px;
+}
+
+/* A long name gives way at its end; the ✕ stays. */
+#attachments .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#attachments button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.2rem;
+  cursor: pointer;
+}
+
+#attachments button svg.icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+#attachments button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
 /* The list of who can be addressed, opened by `@` in the textarea (#204).
 
    Anchored to the composer and drawn above it, over the conversation's last

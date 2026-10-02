@@ -5,6 +5,8 @@
 //! {dir}/index.json      one entry per topic: name, when it was made,
 //!                       and the session each account was in
 //! {dir}/{topic}.jsonl   one topic's posts, append-only
+//! {dir}/attachments/{topic}/{name}
+//!                       the files attached to its posts (#223)
 //! ```
 //!
 //! **The directory is what exists; the index annotates it.** A topic's posts
@@ -37,6 +39,29 @@ pub const INDEX_FILE: &str = "index.json";
 
 /// The extension a topic's posts are kept under.
 pub const TOPIC_EXTENSION: &str = "jsonl";
+
+/// The directory, inside the room's, that the topics' attachments are kept
+/// under: one directory per topic below it (#223).
+///
+/// Not a topic file's sibling of the same stem: the scan in [`read`] adopts
+/// what it finds next to the index, and keeping every attachment one level
+/// further down keeps that scan reading `.jsonl` files and nothing else.
+pub const ATTACHMENTS_DIR: &str = "attachments";
+
+/// How long an attachment's name may be, in characters.
+///
+/// The path the name ends is typed into a session as text and read back by a
+/// CLI that may still be bound by the 260-character path of Windows. The app
+/// data directory, `logs/main/attachments/` and a topic's UUID take about 170
+/// of those already.
+const ATTACHMENT_NAME_CHARS: usize = 80;
+
+/// The extension kept whole when a name is cut to [`ATTACHMENT_NAME_CHARS`].
+/// Longer than this and it is not an extension anyone reads a file type from.
+const ATTACHMENT_EXTENSION_CHARS: usize = 16;
+
+/// How many numbered names are tried before an attachment is refused.
+const ATTACHMENT_TRIES: u32 = 10_000;
 
 /// How long an auto-generated title is allowed to be, in characters.
 ///
@@ -225,6 +250,150 @@ fn names_one_file(topic_id: &str) -> bool {
         && topic_id != ".."
 }
 
+/// Where one topic's attachments live (#223).
+pub fn attachments_path(dir: &Path, topic_id: &str) -> PathBuf {
+    dir.join(ATTACHMENTS_DIR).join(topic_id)
+}
+
+/// The name an attachment is saved under, from the name it arrived with.
+///
+/// The name is the last part of the path the post carries, and the path is
+/// typed into a session as part of the text. So what is taken out is whatever
+/// would stop that text reaching the session as the same path:
+///
+/// - What Windows refuses in a name (`<>:"/\|?*`), and every control character
+///   — the terminal reads those as keys, and the input path drops them
+///   (`terminal_input`), which would leave the text naming another file.
+/// - `@` and `＠`. The room moves an `@名前` naming someone in it out of the
+///   text (#206), and a file called `memo @Lin.txt` would arrive as a path
+///   with a piece missing.
+/// - Trailing dots and spaces, which Windows drops when it makes the file, so
+///   the path written would not be the path that exists. And the device names
+///   (`CON`, `NUL`, `COM1` …), which are not files at all.
+///
+/// Each of the first two becomes `_` rather than going, so the name still
+/// reads as the one that was attached. Cut at [`ATTACHMENT_NAME_CHARS`],
+/// keeping the extension: the extension is what a reader takes the file's
+/// type from. A name with nothing left is `file`.
+pub fn attachment_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let replaced: String = base
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '@' | '＠')
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut name = replaced.trim().trim_end_matches(['.', ' ']).to_string();
+    if name.chars().count() > ATTACHMENT_NAME_CHARS {
+        name = cut_name(&name);
+    }
+    if name.is_empty() {
+        return "file".to_string();
+    }
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// A name over [`ATTACHMENT_NAME_CHARS`], cut to it with its extension kept.
+fn cut_name(name: &str) -> String {
+    let (stem, ext) = split_extension(name);
+    let ext_chars = ext.chars().count();
+    if ext_chars == 0 || ext_chars > ATTACHMENT_EXTENSION_CHARS {
+        return name.chars().take(ATTACHMENT_NAME_CHARS).collect();
+    }
+    let keep = ATTACHMENT_NAME_CHARS - ext_chars - 1;
+    let stem: String = stem.chars().take(keep).collect();
+    // A cut that ends on a space or a dot would end the stem the way Windows
+    // trims, and the extension after it would then sit after nothing.
+    format!("{}.{ext}", stem.trim_end_matches(['.', ' ']))
+}
+
+/// A name's stem and its extension, the extension without its dot. A name that
+/// starts with its only dot (`.env`) has no extension.
+fn split_extension(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(at) if at > 0 => (&name[..at], &name[at + 1..]),
+        _ => (name, ""),
+    }
+}
+
+/// The `n`th name tried for an attachment: the name itself first, then
+/// `stem (2).ext`, `stem (3).ext` … — what Explorer does with a second copy.
+fn numbered(name: &str, n: u32) -> String {
+    if n == 1 {
+        return name.to_string();
+    }
+    match split_extension(name) {
+        (stem, "") => format!("{stem} ({n})"),
+        (stem, ext) => format!("{stem} ({n}).{ext}"),
+    }
+}
+
+/// Save one attachment under a topic, and answer the path it was saved at.
+///
+/// Named after what it arrived as ([`attachment_name`]), so the path read in
+/// the post says what the file is. Two attachments with one name in a topic —
+/// every pasted screenshot is `image.png` — are told apart the way Explorer
+/// tells two copies apart, by a number after the stem. The file is created
+/// only when nothing has that name yet (`create_new`), so two saves at once
+/// cannot both take it and one write over the other.
+///
+/// What is saved is a copy, read out of `content`. A file dropped onto the
+/// composer is copied rather than pointed at: the path is written into the log
+/// for good, and the file it was dropped from can be moved or deleted the
+/// next minute.
+///
+/// A write that fails takes its half-written file with it. Left there, it
+/// would be a file under the name the post was about to carry, holding part
+/// of what was attached.
+pub fn save_attachment(
+    dir: &Path,
+    topic_id: &str,
+    raw_name: &str,
+    content: &mut impl std::io::Read,
+) -> Result<PathBuf, String> {
+    if !names_one_file(topic_id) {
+        return Err(format!(
+            "Refusing to attach to a topic whose id is not one file name: {topic_id}"
+        ));
+    }
+    let folder = attachments_path(dir, topic_id);
+    std::fs::create_dir_all(&folder)
+        .map_err(|e| format!("Failed to create the attachments dir: {e}"))?;
+    let name = attachment_name(raw_name);
+    for n in 1..=ATTACHMENT_TRIES {
+        let path = folder.join(numbered(&name, n));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("Failed to create the attachment: {e}")),
+        };
+        if let Err(e) = std::io::copy(content, &mut file) {
+            drop(file);
+            std::fs::remove_file(&path).ok();
+            return Err(format!("Failed to write the attachment: {e}"));
+        }
+        return Ok(path);
+    }
+    Err(format!("Too many attachments named {name} in this topic"))
+}
+
 /// A title from the opening of the first thing said in the topic.
 ///
 /// The first line, whitespace collapsed, cut at `TITLE_CHARS`. A list of
@@ -374,7 +543,8 @@ pub fn write(dir: &Path, index: &TopicIndex) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("Failed to write the topic index: {e}"))
 }
 
-/// Delete one topic: its posts, and the entry that annotated them.
+/// Delete one topic: its posts, the files attached to them, and the entry that
+/// annotated them.
 ///
 /// **Both, and the file first.** The entry is an annotation of the file, so an
 /// index with the entry taken out and the file left behind is not a deleted
@@ -390,6 +560,9 @@ pub fn write(dir: &Path, index: &TopicIndex) -> Result<(), String> {
 /// carries for a file that never existed — and taking the entry out is exactly
 /// what is wanted for it.
 ///
+/// The attachments go with the posts that carried their paths (#223). Kept,
+/// they would be files nothing names any more, in a topic that is gone.
+///
 /// The caller writes the index back. It is holding the lock over the whole
 /// read-modify-write, and this is one modify inside it.
 pub fn delete(dir: &Path, index: &mut TopicIndex, topic_id: &str) -> Result<(), String> {
@@ -402,6 +575,15 @@ pub fn delete(dir: &Path, index: &mut TopicIndex, topic_id: &str) -> Result<(), 
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Failed to delete the topic's log: {e}")),
+    }
+    // The attachments after the posts: the posts are the topic, and a failure
+    // between the two leaves the entry #117 describes with the files still
+    // under it, which the next press of delete takes. A topic nothing was ever
+    // attached to has no directory, and that is not a failure.
+    match std::fs::remove_dir_all(attachments_path(dir, topic_id)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to delete the topic's attachments: {e}")),
     }
     index.forget(topic_id);
     Ok(())
@@ -714,5 +896,122 @@ mod tests {
         assert!(written[0].contains(r#""to":["Claude Lay"]"#), "{}", written[0]);
         assert!(written[1].contains(r#""to":["Claude Lay","Claude Lin"]"#), "{}", written[1]);
         assert!(!written[2].contains("\"to\""), "{}", written[2]);
+    }
+
+    /// What reaches the session as a path is the name the file was saved under,
+    /// so a name is made into one the text carries unchanged (#223).
+    #[test]
+    fn an_attachment_name_keeps_what_reads_and_drops_what_would_break_the_path() {
+        assert_eq!(attachment_name("image.png"), "image.png");
+        assert_eq!(attachment_name("設計メモ 2026.pdf"), "設計メモ 2026.pdf");
+        // A path is cut to its last part, either separator.
+        assert_eq!(attachment_name(r"C:\Users\x\a.txt"), "a.txt");
+        assert_eq!(attachment_name("dir/b.txt"), "b.txt");
+        // What Windows refuses, control characters, and the room's `@`.
+        assert_eq!(attachment_name("a<b>c:d\"e|f?g*.txt"), "a_b_c_d_e_f_g_.txt");
+        assert_eq!(attachment_name("line\nbreak\r.txt"), "line_break_.txt");
+        assert_eq!(attachment_name("memo @Lin.txt"), "memo _Lin.txt");
+        assert_eq!(attachment_name("memo ＠Lin.txt"), "memo _Lin.txt");
+        // Trailing dots and spaces are what Windows trims; nothing is "file".
+        assert_eq!(attachment_name("note. . "), "note");
+        assert_eq!(attachment_name(""), "file");
+        assert_eq!(attachment_name(" .. "), "file");
+        // Device names, with or without an extension, and only whole ones.
+        assert_eq!(attachment_name("con"), "_con");
+        assert_eq!(attachment_name("NUL.txt"), "_NUL.txt");
+        assert_eq!(attachment_name("com1.log"), "_com1.log");
+        assert_eq!(attachment_name("console.txt"), "console.txt");
+        assert_eq!(attachment_name("com10.txt"), "com10.txt");
+    }
+
+    /// A long name is cut, and the extension survives the cut.
+    #[test]
+    fn a_long_attachment_name_is_cut_with_its_extension_kept() {
+        let long = format!("{}.png", "あ".repeat(200));
+        let cut = attachment_name(&long);
+        assert_eq!(cut.chars().count(), ATTACHMENT_NAME_CHARS);
+        assert!(cut.ends_with(".png"), "{cut}");
+
+        // No extension worth the name: the whole is cut.
+        let plain = "x".repeat(200);
+        assert_eq!(attachment_name(&plain).chars().count(), ATTACHMENT_NAME_CHARS);
+    }
+
+    /// Saved under its own name, and a second file of that name in the topic
+    /// is numbered rather than written over the first.
+    #[test]
+    fn a_second_attachment_of_one_name_is_numbered_and_the_first_is_kept() {
+        let scratch = Scratch::new();
+        let topic = Uuid::new_v4().to_string();
+
+        let first = save_attachment(scratch.path(), &topic, "image.png", &mut &b"one"[..])
+            .expect("first");
+        let second = save_attachment(scratch.path(), &topic, "image.png", &mut &b"two"[..])
+            .expect("second");
+        let bare = save_attachment(scratch.path(), &topic, "README", &mut &b"r"[..]).expect("bare");
+        let bare2 = save_attachment(scratch.path(), &topic, "README", &mut &b"r"[..]).expect("bare2");
+
+        let folder = attachments_path(scratch.path(), &topic);
+        assert_eq!(first, folder.join("image.png"));
+        assert_eq!(second, folder.join("image (2).png"));
+        assert_eq!(bare2, folder.join("README (2)"));
+        assert_eq!(bare, folder.join("README"));
+        assert_eq!(std::fs::read(&first).expect("read"), b"one");
+        assert_eq!(std::fs::read(&second).expect("read"), b"two");
+    }
+
+    /// An id that is not one file name would put the attachment outside the
+    /// topic's folder; nothing is written for it.
+    #[test]
+    fn an_attachment_to_a_topic_id_with_a_separator_is_refused() {
+        let scratch = Scratch::new();
+        let result = save_attachment(scratch.path(), "../elsewhere", "a.txt", &mut &b"x"[..]);
+        assert!(result.is_err());
+        assert!(!scratch.path().join(ATTACHMENTS_DIR).exists());
+    }
+
+    /// The attachments live one level down from the topic files, so the scan
+    /// that adopts a topic from its file adopts nothing from them.
+    #[test]
+    fn attachments_are_not_adopted_as_topics() {
+        let scratch = Scratch::new();
+        let topic = Uuid::new_v4().to_string();
+        put_topic(scratch.path(), &topic, "hello", NOW);
+        save_attachment(scratch.path(), &topic, "a.jsonl", &mut &b"{}"[..]).expect("save");
+
+        let (index, _) = read(scratch.path(), NOW).expect("read");
+        assert_eq!(index.topics.len(), 1);
+        assert_eq!(index.topics[0].topic_id, topic);
+    }
+
+    /// Deleting a topic takes its attachments, and leaves another topic's.
+    #[test]
+    fn deleting_a_topic_takes_its_attachments_and_only_its_own() {
+        let scratch = Scratch::new();
+        let gone = Uuid::new_v4().to_string();
+        let kept = Uuid::new_v4().to_string();
+        put_topic(scratch.path(), &gone, "hello", NOW);
+        put_topic(scratch.path(), &kept, "hello", NOW);
+        save_attachment(scratch.path(), &gone, "a.png", &mut &b"x"[..]).expect("save");
+        let other = save_attachment(scratch.path(), &kept, "a.png", &mut &b"y"[..]).expect("save");
+
+        let (mut index, _) = read(scratch.path(), NOW).expect("read");
+        delete(scratch.path(), &mut index, &gone).expect("delete");
+
+        assert!(!attachments_path(scratch.path(), &gone).exists());
+        assert!(other.exists());
+        assert!(index.find(&gone).is_none());
+    }
+
+    /// A topic nothing was attached to has no folder, and deleting it is not a
+    /// failure for that.
+    #[test]
+    fn deleting_a_topic_with_no_attachments_succeeds() {
+        let scratch = Scratch::new();
+        let topic = Uuid::new_v4().to_string();
+        put_topic(scratch.path(), &topic, "hello", NOW);
+        let (mut index, _) = read(scratch.path(), NOW).expect("read");
+        delete(scratch.path(), &mut index, &topic).expect("delete");
+        assert!(index.find(&topic).is_none());
     }
 }
