@@ -3089,7 +3089,7 @@ function cornerOf(element: Element): { x: number; y: number } {
 let menuAccountId: string | null = null;
 
 /**
- * Open one account's menu at a point: 開始, 端末を開く, 編集, 色を変える, and 終了.
+ * Open one account's menu at a point: 端末を開く, 編集, 色を変える, and 開始 or 終了.
  *
  * An item that has nothing to act on is left out, not greyed: 端末を開く on an
  * account with no terminal in this topic (the row has no terminal operation
@@ -3104,6 +3104,12 @@ let menuAccountId: string | null = null;
  * divider in the danger colour, last, where a slip down the list does not land
  * on it. It opens the same question it always did (`#end-dialog`); the menu
  * moves where it is asked from, not whether it is asked.
+ *
+ * 開始 takes the same place, below the same divider and last (#241): the two
+ * ends of one session stand where each other stood, as they do in the row's
+ * first column. Only the place is shared, not the danger colour — 開始 can be
+ * taken back by the 終了 that replaces it. With neither drawn, while a launch
+ * is out, the divider is left out too, having nothing below it.
  *
  * 色を変える is not a colour picker of its own. The colour is a field of the
  * account's form and nothing else writes it, so the item opens that form on
@@ -3127,9 +3133,6 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
     return button;
   };
 
-  if (launches(account) && (!view || view.ended !== null)) {
-    item("開始", icon("start"), () => startFromMenu(account.id));
-  }
   if (view) {
     item("端末を開く", icon("terminal"), () => openTerminalOf(account.id));
   }
@@ -3140,10 +3143,17 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
   swatch.className = "swatch";
   swatch.setAttribute("aria-hidden", "true");
   item("色を変える", swatch, () => openAccountFrom(account.id, "hue"));
-  if (view && view.ended === null && view.ptyId !== "") {
+  const canStart = launches(account) && (!view || view.ended !== null);
+  const canEnd = view != null && view.ended === null && view.ptyId !== "";
+  if (canStart || canEnd) {
     const divider = document.createElement("div");
     divider.setAttribute("role", "separator");
     accountMenuEl.appendChild(divider);
+  }
+  if (canStart) {
+    item("開始", icon("start"), () => startFromMenu(account.id));
+  }
+  if (canEnd) {
     item("終了", icon("stop"), () => endFromMenu(account.id)).classList.add("danger");
   }
 
