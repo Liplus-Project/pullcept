@@ -454,6 +454,29 @@
             <select id="dialog-hue"></select>
           </label>
 
+          <!-- 発言の行と畳んだ通知の丸印に、頭文字の代わりに出す画像（#236）。
+               選んだ画像は画面の側で中央を正方形に切り抜き、128×128 の PNG
+               に縮めてから、決定でアプリのデータ置き場の `avatars/` に保存す
+               る。他の欄と同じく決定までは何も書かない（#59）——選んでから取
+               消せば、ファイルは残らない。外すと頭文字に戻る。
+
+               label ではなく div：中にボタンが二つあり、label にすると「画像」
+               の文字を押しただけで、最初のボタン（選ぶ）が押されてしまう。 -->
+          <div class="field">
+            画像
+            <div class="avatar-pick">
+              <span id="dialog-avatar" class="avatar" aria-hidden="true"></span>
+              <button id="dialog-avatar-pick" type="button">選ぶ</button>
+              <button id="dialog-avatar-clear" type="button">外す</button>
+              <input
+                id="dialog-avatar-input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                hidden
+              />
+            </div>
+          </div>
+
           <!-- How to start a session. Shown for a launched kind only: a person
                is not launched, and there is no command under them to write
                options for. -->

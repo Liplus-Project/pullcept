@@ -297,6 +297,10 @@ interface Account {
    *  null for every other kind (#193). The account holds who speaks, the entry
    *  what is run. */
   server: string | null;
+  /** Whether this account carries an image, drawn in its circle in place of
+   *  the initial (#236). The flag only: the image is a file the app keeps
+   *  (`account_avatar`), read once into `avatarImages`. */
+  avatar: boolean;
 }
 
 /** One stored environment variable. `sealed` is opaque here — ciphertext this
@@ -745,6 +749,11 @@ const dialogTitleEl = document.getElementById("account-dialog-title") as HTMLEle
 const dialogNameEl = document.getElementById("dialog-name") as HTMLInputElement;
 const dialogKindEl = document.getElementById("dialog-kind") as HTMLSelectElement;
 const dialogHueEl = document.getElementById("dialog-hue") as HTMLSelectElement;
+// The image field (#236): the circle as it will be drawn, and its two buttons.
+const dialogAvatarEl = document.getElementById("dialog-avatar") as HTMLElement;
+const dialogAvatarPickEl = document.getElementById("dialog-avatar-pick") as HTMLButtonElement;
+const dialogAvatarClearEl = document.getElementById("dialog-avatar-clear") as HTMLButtonElement;
+const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HTMLInputElement;
 const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
@@ -1710,6 +1719,9 @@ function fullDateTime(iso: string): string {
  */
 function roomLine(line: {
   speaker: string;
+  /** The account it was said as, or null when none was declared — what the
+   *  circle's image is looked up by (#236). */
+  account: string | null;
   colour: string;
   /** Empty for a line said to the room. */
   to: string[];
@@ -1733,7 +1745,7 @@ function roomLine(line: {
   head.className = "meta";
 
   if (!line.mine) {
-    article.appendChild(avatar(line.speaker));
+    article.appendChild(avatar(line.speaker, line.account));
     const speaker = document.createElement("span");
     speaker.className = "speaker";
     speaker.textContent = line.speaker;
@@ -1773,13 +1785,105 @@ function roomLine(line: {
  * The circle that says who a line is from (#225): the name's first character on
  * a tint of the speaker's colour, taken from `--speaker` on the element it
  * stands in. Hidden from a screen reader, which reads the name beside it.
+ *
+ * The account's image instead of the character, when the line names an account
+ * that carries one (#236). The account rather than the name, because two
+ * accounts may share a name and an image is one account's: a speaker with no
+ * account, and an account with no image, keep the character. The circle
+ * remembers which account it is for, so an image that arrives or changes after
+ * the line was drawn reaches it (`setAvatarImage`).
  */
-function avatar(name: string): HTMLElement {
+function avatar(name: string, accountId: string | null = null): HTMLElement {
   const mark = document.createElement("span");
   mark.className = "avatar";
   mark.setAttribute("aria-hidden", "true");
-  mark.textContent = (Array.from(name.trim())[0] ?? "?").toUpperCase();
+  mark.dataset.initial = initialOf(name);
+  if (accountId) mark.dataset.account = accountId;
+  paintAvatar(mark);
   return mark;
+}
+
+/** The character a circle carries for `name`: its first, upper-cased. */
+function initialOf(name: string): string {
+  return (Array.from(name.trim())[0] ?? "?").toUpperCase();
+}
+
+/** Draw a circle from the account it names: the image if there is one. */
+function paintAvatar(mark: HTMLElement): void {
+  const account = mark.dataset.account;
+  drawAvatar(mark, account ? avatarImages.get(account) : undefined);
+}
+
+/**
+ * Put `url`'s image in a circle, or its character when there is no image.
+ *
+ * An image that will not load is dropped for the character without a word
+ * (#236): the file may have been removed or broken behind the app's back, and
+ * the character is what the circle said before there was an image at all.
+ */
+function drawAvatar(mark: HTMLElement, url: string | undefined): void {
+  const initial = () => {
+    mark.classList.remove("image");
+    mark.textContent = mark.dataset.initial ?? "?";
+  };
+  if (!url) {
+    initial();
+    return;
+  }
+  const image = document.createElement("img");
+  image.alt = "";
+  image.addEventListener("error", initial, { once: true });
+  image.src = url;
+  mark.classList.add("image");
+  mark.replaceChildren(image);
+}
+
+/**
+ * The images accounts carry, as object URLs by account id (#236).
+ *
+ * Read from the app once — when the config is read, and when an image is
+ * picked — rather than with every line drawn: a room read back is many lines
+ * from few speakers. An account is here only while its image is: one without an
+ * image, one whose file would not read, and one deleted draw the character.
+ */
+const avatarImages = new Map<string, string>();
+
+/**
+ * Set or drop one account's image, and redraw every circle on the screen that
+ * is that account's — lines drawn before the image arrived included.
+ */
+function setAvatarImage(accountId: string, image: Blob | null): void {
+  const old = avatarImages.get(accountId);
+  if (old) URL.revokeObjectURL(old);
+  if (image) avatarImages.set(accountId, URL.createObjectURL(image));
+  else avatarImages.delete(accountId);
+  for (const mark of document.querySelectorAll<HTMLElement>(".avatar[data-account]")) {
+    if (mark.dataset.account === accountId) paintAvatar(mark);
+  }
+}
+
+/**
+ * Read one account's image from the app (`account_avatar`). A file that is not
+ * there or will not read leaves the account on its character, silently
+ * (#236): the flag on the account is not corrected for it, and the next 選ぶ
+ * writes the file again.
+ */
+async function loadAvatarImage(accountId: string): Promise<void> {
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await invoke<ArrayBuffer>("account_avatar", { accountId });
+  } catch {
+    setAvatarImage(accountId, null);
+    return;
+  }
+  setAvatarImage(accountId, new Blob([bytes], { type: "image/png" }));
+}
+
+/** Read the image of every account that carries one (#236). */
+function loadAvatarImages(): void {
+  for (const account of accounts) {
+    if (account.avatar) void loadAvatarImage(account.id);
+  }
 }
 
 /**
@@ -1833,6 +1937,9 @@ const LEGACY_NOTICE_SPEAKER = "webhook";
  */
 interface Fold {
   key: string;
+  /** The account the fold is, or null for the legacy name — whose image heads
+   *  the fold when it carries one (#236). */
+  account: string | null;
   label: string;
   colour: string;
 }
@@ -1843,6 +1950,7 @@ function foldOf(speaker: string, account: string | null | undefined): Fold | nul
     if (owner?.kind !== "mcp") return null;
     return {
       key: owner.id,
+      account: owner.id,
       label: owner.name,
       colour: speakerColor(owner.name, owner.hue, false),
     };
@@ -1850,6 +1958,7 @@ function foldOf(speaker: string, account: string | null | undefined): Fold | nul
   if (speaker === LEGACY_NOTICE_SPEAKER) {
     return {
       key: `legacy:${speaker}`,
+      account: null,
       label: speaker,
       colour: speakerColor(speaker, null, false),
     };
@@ -1929,7 +2038,7 @@ function placeLine(line: HTMLElement, fold: Fold | null): void {
     const summary = document.createElement("summary");
     const label = document.createElement("span");
     label.className = "label";
-    summary.append(avatar(fold.label), label);
+    summary.append(avatar(fold.label, fold.account), label);
     box.appendChild(summary);
     roomEl.appendChild(box);
   }
@@ -1972,6 +2081,7 @@ function appendMessage(message: RoomMessage): void {
   placeLine(
     roomLine({
       speaker: message.speaker,
+      account: message.account,
       // `own` rather than a name test: the room decides self on the connection
       // a post arrived on, which a rename cannot blur (#40). A folded line takes
       // its account's colour, so it is the colour it has when read back (#193).
@@ -2032,6 +2142,7 @@ function drawTopic(posts: LoggedPost[]): void {
     placeLine(
       roomLine({
         speaker: post.speaker,
+        account: post.account ?? null,
         colour: fold?.colour ?? speakerColor(post.speaker, null, false),
         to: post.to ?? [],
         ts: post.ts,
@@ -3659,6 +3770,8 @@ function resolveLocalAccount(): void {
       // Nothing is launched under a person, so nothing has an environment.
       env: [],
       server: null,
+      // The initial, until an image is picked on the form (#236).
+      avatar: false,
     };
     accounts.push(account);
     saveConfig();
@@ -4937,6 +5050,16 @@ let deleteArmed = false;
  * person clearing them, and reading it as that would delete every variable.
  */
 let dialogEnvDrawn: string | null = null;
+/**
+ * What 決定 does to the account's image (#236): leave it as it is, store the
+ * one picked (already cropped and scaled, with an object URL for the form's
+ * circle), or remove it.
+ *
+ * Held on the form like every other field and written only at 決定 (#59): a
+ * picked image that is then cancelled leaves no file behind.
+ */
+type AvatarEdit = { kind: "keep" } | { kind: "set"; png: Blob; url: string } | { kind: "clear" };
+let dialogAvatar: AvatarEdit = { kind: "keep" };
 
 /** Say why the form cannot be decided yet, or clear that. */
 function dialogError(text: string): void {
@@ -5151,6 +5274,8 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
         // No server until one is written: choosing `mcp` below makes one at
         // 決定, and the entry's name comes back from the app then (#200).
         server: null,
+        // The initial until an image is picked (#236).
+        avatar: false,
       };
 
   dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
@@ -5174,6 +5299,8 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
   mcpArgsEl.value = "";
   mcpEnvEl.value = "";
   dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
+  resetDialogAvatar();
+  drawDialogAvatar();
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
   dialogOptionsEl.value = joinArgs(draft.args);
@@ -5232,6 +5359,147 @@ async function drawDialogEnv(forDraft: Account): Promise<void> {
   dialogEnvEl.readOnly = false;
 }
 
+/** Drop the form's image edit, and the object URL a picked image holds. */
+function resetDialogAvatar(): void {
+  if (dialogAvatar.kind === "set") URL.revokeObjectURL(dialogAvatar.url);
+  dialogAvatar = { kind: "keep" };
+  dialogAvatarInputEl.value = "";
+}
+
+/**
+ * Draw the form's circle as 決定 would leave it (#236): the picked image, the
+ * account's own while it is kept, or the initial of the name in the field on the
+ * colour chosen above it. 外す is offered only while there is an image to take
+ * off.
+ */
+function drawDialogAvatar(): void {
+  if (!draft) return;
+  const own = draft.id === localAccountId;
+  dialogAvatarEl.style.setProperty(
+    "--speaker",
+    speakerColor(dialogNameEl.value, declaredHue(dialogHueEl), own),
+  );
+  dialogAvatarEl.dataset.initial = initialOf(dialogNameEl.value);
+  const url =
+    dialogAvatar.kind === "set"
+      ? dialogAvatar.url
+      : dialogAvatar.kind === "keep" && draft.avatar
+        ? avatarImages.get(draft.id)
+        : undefined;
+  drawAvatar(dialogAvatarEl, url);
+  dialogAvatarClearEl.hidden = url === undefined;
+}
+
+/** The size, in pixels a side, every stored image is scaled to (#236). */
+const AVATAR_SIZE = 128;
+
+/**
+ * The formats an image may be picked in (#236). What the webview decodes is
+ * wider than this; these are the ones the docs name, and an animated GIF gives
+ * its first frame.
+ */
+const AVATAR_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/**
+ * Turn a picked image into what is stored (#236): its centre square, scaled to
+ * `AVATAR_SIZE` on a side, as a PNG. Made here rather than in the app because
+ * the webview already decodes every format offered; the app is handed one small
+ * PNG and only keeps it, so the original's size bounds nothing.
+ */
+async function squarePng(file: Blob): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const side = Math.min(bitmap.width, bitmap.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = AVATAR_SIZE;
+    canvas.height = AVATAR_SIZE;
+    const context = canvas.getContext("2d");
+    if (!context || side === 0) throw new Error("empty image");
+    context.imageSmoothingQuality = "high";
+    context.drawImage(
+      bitmap,
+      (bitmap.width - side) / 2,
+      (bitmap.height - side) / 2,
+      side,
+      side,
+      0,
+      0,
+      AVATAR_SIZE,
+      AVATAR_SIZE,
+    );
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (png) => (png ? resolve(png) : reject(new Error("not encoded"))),
+        "image/png",
+      ),
+    );
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
+ * Take the file picked for the image into the form (#236). Nothing is written
+ * until 決定. An image that will not decode is said on the form and leaves the
+ * field as it was.
+ */
+async function pickDialogAvatar(): Promise<void> {
+  const file = dialogAvatarInputEl.files?.[0];
+  dialogAvatarInputEl.value = "";
+  if (!file || !draft) return;
+  const forDraft = draft;
+  if (!AVATAR_TYPES.includes(file.type)) {
+    dialogError("画像は png・jpeg・webp・gif のどれかを選んでください。");
+    return;
+  }
+  let png: Blob;
+  try {
+    png = await squarePng(file);
+  } catch {
+    if (draft === forDraft) dialogError(`${file.name} を画像として読めませんでした。`);
+    return;
+  }
+  // The form may have been closed, or opened on another account, meanwhile.
+  if (draft !== forDraft) return;
+  resetDialogAvatar();
+  dialogAvatar = { kind: "set", png, url: URL.createObjectURL(png) };
+  dialogError("");
+  drawDialogAvatar();
+}
+
+/**
+ * Carry out the form's image edit for the account `accountId`, at 決定 (#236).
+ *
+ * Answers the account's flag as it should be saved — `had` when the image was
+ * left alone — or null when the file could not be written or removed, which is
+ * said on the form. Runs before the config is saved, so a flag never names an
+ * image that was not written.
+ */
+async function settleDialogAvatar(
+  edit: AvatarEdit,
+  accountId: string,
+  had: boolean,
+): Promise<boolean | null> {
+  try {
+    if (edit.kind === "set") {
+      await invoke("save_account_avatar", new Uint8Array(await edit.png.arrayBuffer()), {
+        headers: { "Pullcept-Account": asciiJson(accountId) },
+      });
+      setAvatarImage(accountId, edit.png);
+      return true;
+    }
+    if (edit.kind === "clear") {
+      await invoke("delete_account_avatar", { accountId });
+      setAvatarImage(accountId, null);
+      return false;
+    }
+  } catch (err) {
+    dialogError(String(err));
+    return null;
+  }
+  return had;
+}
+
 /**
  * Take what the form holds and put it into the account list.
  *
@@ -5245,6 +5513,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // copy of an account that was being edited.
   const target = editing;
   const settling = draft;
+  const avatarEdit = dialogAvatar;
 
   const name = dialogNameEl.value.trim();
   if (!name) {
@@ -5257,7 +5526,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // Made here, from nothing: the entry is written and the account with it
   // (#200). Only a form making an account reaches this — an existing account
   // is not offered the kind.
-  if (kind === "mcp" && !target) return await createMcpAccount(settling, name);
+  if (kind === "mcp" && !target) return await createMcpAccount(settling, name, avatarEdit);
   // A server's account is a name and a colour over an entry in the file, and the
   // entry is the section below the form's fields (#193). Nothing else here
   // applies to it, and no other kind becomes it or stops being it.
@@ -5273,7 +5542,9 @@ async function commitAccountDialog(): Promise<boolean> {
       dialogError("サーバの設定を保存できませんでした。");
       return false;
     }
-    const settled: Account = { ...settling, name, hue: declaredHue(dialogHueEl) };
+    const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
+    if (avatar === null) return false;
+    const settled: Account = { ...settling, name, hue: declaredHue(dialogHueEl), avatar };
     const at = accounts.findIndex((one) => one.id === target.id);
     if (at >= 0) accounts[at] = settled;
     saveConfig();
@@ -5337,10 +5608,17 @@ async function commitAccountDialog(): Promise<boolean> {
     }
   }
 
+  // Last, after everything that can still refuse the form: the image is a file
+  // of its own, and one written for a form that is then refused would be an
+  // image for an account that was never decided (#236).
+  const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
+  if (avatar === null) return false;
+
   const settled: Account = {
     ...settling,
     name,
     kind,
+    avatar,
     hue: declaredHue(dialogHueEl),
     cwd: kind === "admin" ? null : cwd || null,
     // Blank clears it, and clearing it is a state: the account goes back to
@@ -5392,7 +5670,11 @@ async function commitAccountDialog(): Promise<boolean> {
  * written. A server that will not start is still made: its account is there,
  * and its window says what happened and holds 起動.
  */
-async function createMcpAccount(settling: Account, name: string): Promise<boolean> {
+async function createMcpAccount(
+  settling: Account,
+  name: string,
+  avatarEdit: AvatarEdit,
+): Promise<boolean> {
   mcpErrorEl.textContent = "";
   let created: { server: string; account_id: string };
   try {
@@ -5422,7 +5704,14 @@ async function createMcpAccount(settling: Account, name: string): Promise<boolea
     resume_command: null,
     env: [],
     server: created.server,
+    avatar: false,
   };
+  // The id is the app's, so the image is written only now. A file that will not
+  // write does not hold the form open: the entry is already in the file, and a
+  // second 決定 would make a second one. The account is made without the image,
+  // and the status line says so below (#236).
+  const avatar = await settleDialogAvatar(avatarEdit, settled.id, false);
+  settled.avatar = avatar ?? false;
   accounts.push(settled);
   await saveConfig();
   let started = true;
@@ -5433,7 +5722,9 @@ async function createMcpAccount(settling: Account, name: string): Promise<boolea
   }
   renderPanel();
   await refreshMcpServers();
-  if (started) {
+  if (avatar === null) {
+    status(`アカウント「${settled.name}」を追加しましたが、画像を保存できませんでした。`, "error");
+  } else if (started) {
     status(`アカウント「${settled.name}」を追加し、サーバ「${created.server}」を起動しました。`);
   } else {
     status(
@@ -5512,6 +5803,15 @@ async function deleteFromDialog(): Promise<void> {
   renderSessionFacts();
   status(`アカウント「${account.name}」を削除しました。`);
   if (server) void refreshMcpServers();
+  // Its image goes with it (#236), whether or not the flag said there was one:
+  // a file left behind would be found by nothing, and an `mcp` account made
+  // again under the same entry name takes the same id.
+  setAvatarImage(account.id, null);
+  try {
+    await invoke("delete_account_avatar", { accountId: account.id });
+  } catch (err) {
+    status(`アカウント「${account.name}」を削除しましたが、画像を消せませんでした: ${err}`, "error");
+  }
 }
 
 /** Drop the draft and close. Nothing it held reached the account list. */
@@ -6165,6 +6465,20 @@ async function main(): Promise<void> {
   window.addEventListener("blur", () => closeAccountMenu(false));
   sessionIdCopyEl.addEventListener("click", () => void copySessionId());
   dialogKindEl.addEventListener("change", () => showDialogKind());
+  // The form's circle is drawn from the name and the colour above it (#236).
+  dialogNameEl.addEventListener("input", () => drawDialogAvatar());
+  dialogHueEl.addEventListener("change", () => drawDialogAvatar());
+  dialogAvatarPickEl.addEventListener("click", () => {
+    disarmDelete();
+    dialogAvatarInputEl.click();
+  });
+  dialogAvatarInputEl.addEventListener("change", () => void pickDialogAvatar());
+  dialogAvatarClearEl.addEventListener("click", () => {
+    disarmDelete();
+    resetDialogAvatar();
+    dialogAvatar = { kind: "clear" };
+    drawDialogAvatar();
+  });
   dialogOptionsEl.addEventListener("input", () => refreshDialogLine());
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
@@ -6199,6 +6513,7 @@ async function main(): Promise<void> {
     editing = null;
     draft = null;
     mcpDrawn = null;
+    resetDialogAvatar();
     disarmDelete();
   });
   dialogFormEl.addEventListener("submit", (event) => {
@@ -6231,6 +6546,9 @@ async function main(): Promise<void> {
   try {
     const config = await invoke<AppConfig>("load_config");
     accounts = config.accounts;
+    // Not awaited: a line drawn before its account's image has arrived is
+    // redrawn when it does (#236).
+    loadAvatarImages();
     // Before the panel is drawn below. A panel folded when the app was last
     // closed is folded again here, and the config is the only place that
     // knows it (#118, decision 1).
