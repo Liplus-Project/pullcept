@@ -72,15 +72,19 @@ npx tauri icon src-tauri/app-icon.svg -o src-tauri/icons
 
 `src-tauri/icons/` の全部（`bundle.icon` が指す `32x32.png`・`128x128.png`・`128x128@2x.png`・`icon.icns`・`icon.ico` と、Windows ストア用の `Square*` / `StoreLogo.png`、`android/`、`ios/`）が同じ名前のまま上書きされる。名前が変わらないので `tauri.conf.json` は触らない。PNG と `icon.ico` の各サイズは透明地のまま出る。`ios/` だけは白地で塗られる——`tauri icon` が iOS 用の地に `--ios-color`（既定 `#fff`）を敷くためである。吹き出しの色は SVG の根の `color` 属性の一か所にあり、塗りと縁はそれを `currentColor` で引く。色だけを変えるときはその値を書き換える。絵を変えるときは SVG を直して同じコマンドを流し直し、出た全部を一緒にコミットする。
 
-### 窓の題は空にする
+### 窓の題は残し、最上部では描かない
 
-窓の最上部（Windows の標準の枠）には題の文字を出さず、アイコンだけを出す（#246）。`src-tauri/tauri.conf.json` の `app.windows[].title` を空の文字列にしている。この値を消すのではなく空で書く——欄が無いと Tauri は既定の題 `Tauri App` を出す（`tauri-utils` の `default_title`）。
+窓の最上部（Windows の標準の枠）には題の文字を出さず、アイコンだけを出す（#246）。そのうえで、タスクバーのサムネイルと Alt+Tab には名前を出す（#248）。
 
-`index.html` の `<title>Pullcept</title>` は窓の題に届かない。Tauri 2（2.11.5）が文書の題を窓の題へ写すのは、窓を作る側が `on_document_title_changed` で受け手を置いたときだけであり、設定ファイルから作る窓にも `src-tauri/src` にもその受け手は無い。`src/main.ts` も窓の題を設定していない。そのため `<title>` は変えていない。
+Windows の標準の枠では、窓の題（`SetWindowTextW`）が最上部の文字にも、タスクバーのサムネイルと Alt+Tab の名前にもなる。#246 では題を空にして文字を消したため、サムネイルと Alt+Tab からも名前が消えた。そこで題は `Pullcept` のまま残し（`src-tauri/tauri.conf.json` の `app.windows[].title`）、最上部で文字を描かないことだけを枠に頼む。
 
-**影響。** 窓の題を名前として読む場所には何も出ない。タスクバーのボタンにかざしたときのツールチップと、Alt+Tab の一覧である。どちらもアイコンでは見分けられる。
+**仕組み。** 窓ができたとき（`src-tauri/src/lib.rs` の `setup`、窓のラベル `main`）、uxtheme の `SetWindowThemeAttribute` に `WTA_NONCLIENT` と `WTNCA_NODRAWCAPTION` を渡す。題そのものは変えないので、題を読む側（サムネイル、Alt+Tab、`GetWindowText`）には名前が残る。`WTNCA_NODRAWICON` は付けないので、アイコンは描かれたままである。呼び出しは `windows` クレート（Tauri 自身が使う版と同じ 0.61）の `Win32_UI_Controls` で行い、Windows 以外ではこの処理を組み込まない（題が最上部に出たままになる）。呼び出しが失敗したときは標準の出力に一行書くだけで、窓は文字を描いたまま動く。
 
-**独自の枠を採らなかった理由。** 標準の枠のままでも、題を空にするだけで文字だけが消える。独自の枠（`decorations: false`）にすると、最小化・最大化・閉じるのボタン、窓をつかんで動かす帯、縁での大きさ変えを画面の側で作り直すことになる。消したいのは文字だけなので、その作り直しを抱える理由が無い。
+確かめたこと（#248）。Microsoft の文書では、`WTNCA_NODRAWCAPTION` は窓の題の文字を描かせない旗であり、Windows Vista 以降のデスクトップアプリで使える。Windows 11（DWM の枠）で、アプリとは別の使い捨ての窓に同じ属性を付けると、最上部の文字だけが消えてアイコンと三つのボタンは残り、`GetWindowText` は題を返したままだった。最大化・元に戻す・最小化からの復帰、Tao がライト / ダークの切り替えで行う呼び出し（`DwmSetWindowAttribute` の暗い枠と `WM_NCACTIVATE`）、`WM_THEMECHANGED` の後も文字は消えたままだった。
+
+`index.html` の `<title>Pullcept</title>` は窓の題に届かない。Tauri 2（2.11.5）が文書の題を窓の題へ写すのは、窓を作る側が `on_document_title_changed` で受け手を置いたときだけであり、設定ファイルから作る窓にも `src-tauri/src` にもその受け手は無い。窓の題は設定ファイルの値で決まる。
+
+**独自の枠を採らなかった理由。** 消したいのは最上部の文字だけであり、標準の枠のままそれだけを消せる。独自の枠（`decorations: false`）にすると、最小化・最大化・閉じるのボタン、窓をつかんで動かす帯、縁での大きさ変え、Windows 11 のスナップを画面の側で作り直すことになる。その作り直しを抱える理由が無い。
 
 ## 開発環境とビルド手順
 
