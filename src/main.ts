@@ -2992,8 +2992,26 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
   const y = Math.max(0, Math.min(at.y, window.innerHeight - height - 4));
   accountMenuEl.style.left = `${x}px`;
   accountMenuEl.style.top = `${y}px`;
-  renderPanel();
+  markMenuButtons();
   menuItems()[0]?.focus();
+}
+
+/**
+ * Mark which row's `⋯` has its menu open, on the buttons already drawn.
+ *
+ * In place rather than by redrawing the panel (#229). Opening and closing the
+ * menu changes nothing on the row but this one attribute, and a redraw swaps
+ * the `⋯` for a new element under a pointer that has not moved. Escape is the
+ * close that leaves the pointer resting there, and on the device the press
+ * after it was lost: the menu opened only on the second. Kept the same element,
+ * the button under the pointer is the one that was there when it came to rest.
+ * A redraw for any other reason while the menu stands draws the mark from
+ * `menuAccountId` itself (`moreButton`).
+ */
+function markMenuButtons(): void {
+  for (const more of rosterEl.querySelectorAll<HTMLButtonElement>("button.more")) {
+    more.setAttribute("aria-expanded", String(more.dataset.account === menuAccountId));
+  }
 }
 
 /** The menu's items, in the order they are drawn. */
@@ -3012,9 +3030,10 @@ function closeAccountMenu(restore: boolean): void {
   menuAccountId = null;
   accountMenuEl.hidden = true;
   accountMenuEl.replaceChildren();
-  renderPanel();
+  markMenuButtons();
   if (restore) {
-    // Found again rather than held: the row was redrawn just above.
+    // Found rather than held: the panel may have been redrawn while the menu
+    // stood, which replaces the button the menu was opened from.
     document
       .querySelector<HTMLButtonElement>(`#roster button.more[data-account="${CSS.escape(id)}"]`)
       ?.focus();
