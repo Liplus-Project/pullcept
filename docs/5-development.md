@@ -59,6 +59,19 @@ CI が実行するもの:
 - **第一段階**: 開発者自身の環境で動かす。
 - **第二段階**: 一般配布。部屋の入力路が channel だった間は、plugin としてマーケットプレイス経由で channel allowlist に載せることが条件だった（`plugin:<name>@<marketplace>`、`--dangerously-load-development-channels` は起動ごとに警告バナーを出すローカル開発専用のフラグだったため）。#195 で部屋は channel を使わなくなり、この条件は外れた。
 
+## アプリのアイコン
+
+タスクバー・窓の左上・インストーラーに出るアイコンは、`src-tauri/app-icon.svg` の一枚から作る（#246）。絵は「部屋の吹き出し」である。吹き出しの枠が部屋の壁を、中に並ぶ同じ大きさの三つの点が区別なく並ぶ参加者を表す。地は透明で、青 `#185fa5` は画面の強調色と同じ値である。
+
+各サイズは Tauri CLI の `tauri icon` で SVG から直接作る（PNG を間に挟まない）。リポジトリの根で次を実行する。
+
+```
+npm ci
+npx tauri icon src-tauri/app-icon.svg -o src-tauri/icons
+```
+
+`src-tauri/icons/` の全部（`bundle.icon` が指す `32x32.png`・`128x128.png`・`128x128@2x.png`・`icon.icns`・`icon.ico` と、Windows ストア用の `Square*` / `StoreLogo.png`、`android/`、`ios/`）が同じ名前のまま上書きされる。名前が変わらないので `tauri.conf.json` は触らない。PNG と `icon.ico` の各サイズは透明地のまま出る。`ios/` だけは白地で塗られる——`tauri icon` が iOS 用の地に `--ios-color`（既定 `#fff`）を敷くためである。吹き出しの色は SVG の根の `color` 属性の一か所にあり、塗りと縁はそれを `currentColor` で引く。色だけを変えるときはその値を書き換える。絵を変えるときは SVG を直して同じコマンドを流し直し、出た全部を一緒にコミットする。
+
 ## 開発環境とビルド手順
 
 [README.md](../README.md) を参照。本仕様では再記述しない。
