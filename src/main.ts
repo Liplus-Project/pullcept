@@ -543,6 +543,7 @@ type IconName =
   | "copy"
   | "close"
   | "send"
+  | "at"
   | "start"
   | "edit";
 
@@ -592,6 +593,11 @@ const ICONS: Record<IconName, IconShape[]> = {
   send: [
     ["line", { x1: "8", y1: "13", x2: "8", y2: "3.2" }],
     ["polyline", { points: "3.8 7.4 8 3.2 12.2 7.4" }],
+  ],
+  // 宛先: the `@` the button types (#222).
+  at: [
+    ["circle", { cx: "8", cy: "8", r: "2.6" }],
+    ["path", { d: "M10.6 5.4v3.3a2 2 0 0 0 4 0V8a6.6 6.6 0 1 0-2.6 5.25" }],
   ],
   start: [["path", { d: "M5 3.2v9.6L12.6 8Z" }]],
   // A gear: 編集, the window an account's settings are made in.
@@ -649,6 +655,7 @@ const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
+const mentionEl = document.getElementById("mention") as HTMLButtonElement;
 const mentionListEl = document.getElementById("mention-list") as HTMLUListElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
@@ -1389,8 +1396,9 @@ function storedRoomFontSize(): number {
  * rows from its own size. Two `setProperty` calls make the scope the placement
  * itself, so nothing has to be cancelled anywhere.
  *
- * 送信 and the list `@` opens sit in the composer but do not follow. They are
- * controls, not the sentence, and they stay on the whole-UI axis (#66, #204).
+ * The row under the text — 宛先, the keys, 送信 (#222) — and the list `@` opens
+ * sit in the composer but do not follow. They are controls, not the sentence,
+ * and they stay on the whole-UI axis (#66, #204).
  *
  * `save` is false for the restore at startup. Writing the value back there
  * would put a size in storage for a screen that never chose one, which is the
@@ -3270,6 +3278,23 @@ function refreshMentions(): void {
   mentionActive = kept >= 0 ? kept : 0;
   mentionAt = found.at;
   renderMentions();
+}
+
+/**
+ * 宛先 on the composer's row (#222): type an `@` at the caret, as the key would.
+ *
+ * Only the typing. The list it opens, and what a name picked from it does, are
+ * the `@` key's (#204, #206), so the button cannot address a post any way the
+ * key does not. A space goes in first when the caret is against a word, because
+ * an `@` in the middle of one does not open the list.
+ */
+function typeMention(): void {
+  inputEl.focus();
+  const start = inputEl.selectionStart;
+  const before = inputEl.value.slice(0, start);
+  const at = before === "" || /\s$/.test(before) ? "@" : " @";
+  inputEl.setRangeText(at, start, inputEl.selectionEnd, "end");
+  refreshMentions();
 }
 
 function closeMentions(): void {
@@ -5364,6 +5389,10 @@ async function main(): Promise<void> {
   topicNewEl.addEventListener("click", () => void startNewTopic());
 
   sendEl.addEventListener("click", () => void send());
+  // mousedown is stopped so the textarea keeps its focus and its caret through
+  // the press; the click is what types.
+  mentionEl.addEventListener("mousedown", (event) => event.preventDefault());
+  mentionEl.addEventListener("click", () => typeMention());
   inputEl.addEventListener("keydown", (event) => {
     // The list's keys first: Enter on an open list picks, it does not send.
     if (mentionKey(event)) return;

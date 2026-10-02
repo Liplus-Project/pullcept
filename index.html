@@ -205,20 +205,43 @@
                  every utterance to everyone either way, and anyone in the
                  roster can be named — people and sessions alike. -->
             <ul id="mention-list" role="listbox" aria-label="宛先の候補" hidden></ul>
-            <textarea
-              id="input"
-              rows="2"
-              placeholder="部屋に発言する（@ で宛先 / Enter で送信 / Shift+Enter で改行）"
-            ></textarea>
-            <!-- The one filled button on the screen (#221). Its key is on the
-                 tooltip with its name. -->
-            <button
-              id="send"
-              type="button"
-              aria-label="送信"
-              title="送信（Enter）"
-              data-icon="send"
-            ></button>
+            <!-- One box: the text, and under it the row of what acts on the
+                 text (#222). The box carries the field's frame, so the text
+                 area inside has none of its own. -->
+            <div id="composer-box">
+              <textarea id="input" rows="2" placeholder="部屋に発言する"></textarea>
+              <div id="composer-actions">
+                <!-- Ghost icon buttons (#221). 添付 goes first in this group
+                     once #223 has something for it to do; until then it is
+                     not drawn. -->
+                <div id="composer-tools">
+                  <button
+                    id="mention"
+                    type="button"
+                    aria-label="宛先"
+                    title="宛先（@）"
+                    data-icon="at"
+                  ></button>
+                </div>
+                <!-- The keys, small, where the text is written. They were the
+                     placeholder until #222, and went when the first character
+                     was typed. -->
+                <p id="composer-keys">
+                  <span><kbd>@</kbd> 宛先</span>
+                  <span><kbd>Enter</kbd> 送信</span>
+                  <span><kbd>Shift+Enter</kbd> 改行</span>
+                </p>
+                <!-- The one filled button on the screen (#221). Its key is on
+                     the tooltip with its name. -->
+                <button
+                  id="send"
+                  type="button"
+                  aria-label="送信"
+                  title="送信（Enter）"
+                  data-icon="send"
+                ></button>
+              </div>
+            </div>
           </footer>
 
           <div id="status" role="status"></div>
