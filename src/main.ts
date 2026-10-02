@@ -554,7 +554,10 @@ type IconName =
   | "stop"
   | "edit"
   | "more"
-  | "chevron-down";
+  | "chevron-down"
+  | "minimize"
+  | "maximize"
+  | "restore";
 
 type IconShape = [tag: string, attrs: Record<string, string>];
 
@@ -668,6 +671,17 @@ const ICONS: Record<IconName, IconShape[]> = {
   // 最新の発言へ (#243): a chevron pointing down, to the room's foot. Tabler
   // Icons `chevron-down` (MIT, NOTICE.txt) on this grid.
   "chevron-down": [["path", { d: "M4 6l4 4l4 -4" }]],
+  // The window's own three (#252), in the shapes the standard frame drew them:
+  // a bar, a square, and two squares with the one in front at the lower left.
+  // 閉じる is `close` above, the same ✕ as every other one on the screen.
+  // `restore` is not `copy` turned over by accident: the frame puts its front
+  // square at the lower left, `copy` puts it at the lower right.
+  minimize: [["line", { x1: "3.5", y1: "8", x2: "12.5", y2: "8" }]],
+  maximize: [["rect", { x: "3.5", y: "3.5", width: "9", height: "9", rx: "1.2" }]],
+  restore: [
+    ["rect", { x: "3", y: "5.5", width: "7.5", height: "7.5", rx: "1.2" }],
+    ["path", { d: "M5.5 5.5V4.2A1.2 1.2 0 0 1 6.7 3h5.1A1.2 1.2 0 0 1 13 4.2v5.1a1.2 1.2 0 0 1 -1.2 1.2H10.5" }],
+  ],
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -4553,6 +4567,54 @@ async function onQuitRequested(event: CloseRequestedEvent): Promise<void> {
 }
 
 /**
+ * The window's three buttons on the title bar (#252), which stand where the
+ * standard frame's stood until the frame was taken off.
+ *
+ * 閉じる is `close`, not `destroy`. `close` raises the same `CloseRequested`
+ * the frame's ✕ raised (tauri-runtime-wry 2.11.4, `on_close_requested`;
+ * `@tauri-apps/api/window` says so of `close`), so it lands in
+ * `onQuitRequested` above and the question about running sessions is asked
+ * exactly as before. `destroy` would take the window without asking.
+ *
+ * 最大化 is one button with two names. Its name and drawing are read back from
+ * the window whenever the window's size changes, rather than flipped on the
+ * click: a window is also maximized by a double click on the bar, by Win+↑ and
+ * by dragging it to the top of the screen, and none of those passes through
+ * this button.
+ *
+ * A call the window refuses is said on the status line. Nothing else would show
+ * it: the click is the only witness, and it already happened.
+ */
+async function wireWindowControls(): Promise<void> {
+  const appWindow = getCurrentWindow();
+  const minimizeEl = document.getElementById("window-minimize") as HTMLButtonElement;
+  const maximizeEl = document.getElementById("window-maximize") as HTMLButtonElement;
+  const closeEl = document.getElementById("window-close") as HTMLButtonElement;
+
+  const refused = (err: unknown) => status(`窓を操作できませんでした: ${err}`, "error");
+  minimizeEl.addEventListener("click", () => void appWindow.minimize().catch(refused));
+  maximizeEl.addEventListener("click", () => void appWindow.toggleMaximize().catch(refused));
+  closeEl.addEventListener("click", () => void appWindow.close().catch(refused));
+
+  const showMaximized = async () => {
+    const maximized = await appWindow.isMaximized();
+    const label = maximized ? "元に戻す" : "最大化";
+    maximizeEl.setAttribute("aria-label", label);
+    maximizeEl.title = label;
+    maximizeEl.replaceChildren(icon(maximized ? "restore" : "maximize"));
+  };
+  // Caught here rather than left to the caller: this runs early in start-up,
+  // and a throw would stop everything after it for the sake of one tooltip.
+  // The three buttons above are already wired by now and work regardless.
+  try {
+    await appWindow.onResized(() => void showMaximized().catch(refused));
+    await showMaximized();
+  } catch (err) {
+    refused(err);
+  }
+}
+
+/**
  * Give an account its own terminal and put it on the glass.
  *
  * Made before the launch, because the CLI's first paint is laid out for the
@@ -6210,6 +6272,11 @@ async function main(): Promise<void> {
   // nothing left able to answer it.
   quitDialogEl.addEventListener("close", () => answerQuit(false));
   await getCurrentWindow().onCloseRequested(onQuitRequested);
+  // Right after the close is held, for the same reason: the window has no
+  // frame of its own (#252), so these are the pointer's only way to minimize
+  // or close it, and 閉じる needs the listener above to be the close that
+  // asks.
+  await wireWindowControls();
 
   // The account's colour is the account's, so nothing is restored into this
   // picker — the form fills it from whichever account it was opened on.

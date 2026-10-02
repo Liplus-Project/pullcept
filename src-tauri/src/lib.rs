@@ -25,10 +25,6 @@ pub fn run() {
         // The MCP servers the app runs itself, by name (#172).
         .manage(McpServers::new())
         .setup(|app| {
-            #[cfg(windows)]
-            if let Some(window) = app.get_webview_window("main") {
-                hide_caption_text(&window);
-            }
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
             let handle = app.handle().clone();
@@ -90,37 +86,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// The standard frame draws no caption text, only the icon, while the window
-/// keeps its title: the taskbar thumbnail and Alt+Tab read the title, the
-/// frame does not (#248). On failure the caption text simply stays.
-#[cfg(windows)]
-fn hide_caption_text(window: &tauri::WebviewWindow) {
-    use windows::Win32::UI::Controls::{
-        SetWindowThemeAttribute, WTA_NONCLIENT, WTA_OPTIONS, WTNCA_NODRAWCAPTION,
-    };
-
-    let hwnd = match window.hwnd() {
-        Ok(hwnd) => hwnd,
-        Err(err) => {
-            eprintln!("[window] no native handle: {err}");
-            return;
-        }
-    };
-    let options = WTA_OPTIONS {
-        dwFlags: WTNCA_NODRAWCAPTION,
-        dwMask: WTNCA_NODRAWCAPTION,
-    };
-    let result = unsafe {
-        SetWindowThemeAttribute(
-            hwnd,
-            WTA_NONCLIENT,
-            &options as *const WTA_OPTIONS as *const core::ffi::c_void,
-            std::mem::size_of::<WTA_OPTIONS>() as u32,
-        )
-    };
-    if let Err(err) = result {
-        eprintln!("[window] caption text left drawn: {err}");
-    }
 }

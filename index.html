@@ -9,7 +9,33 @@
   </head>
   <body>
     <div id="app">
-      <header id="titlebar">
+      <!-- The window's top edge (#252). The standard frame is gone
+           (`decorations: false` in src-tauri/tauri.conf.json), and this bar is
+           what stands where its top row stood: the icon at the left, the
+           window's three buttons at the right, and between them the controls
+           the bar carried as a second row under the frame. One row where there
+           were two, at the height this bar already had, so the room below gains
+           the frame's row.
+
+           Grabbing the bar moves the window and a double click maximizes it.
+           `deep` is what lets that reach through the bar's children — the
+           room's heading, the icon — while every button still answers as a
+           button: Tauri's drag script (tauri 2.11.5, `window/scripts/drag.js`)
+           stops at any clickable element that carries no attribute of its own.
+           Both calls go through the capabilities' window permissions
+           (src-tauri/capabilities/default.json). -->
+      <header id="titlebar" data-tauri-drag-region="deep">
+        <!-- The app's icon, where the standard frame drew it. The same drawing
+             every size in src-tauri/icons/ is made from (#246), not one of the
+             PNGs cut from it: one source for the picture. Decoration — the
+             window's name is the taskbar's and Alt+Tab's (#248) — so it is
+             empty to a reader, and it is part of the bar a drag grabs. -->
+        <img
+          id="app-icon"
+          src="/src-tauri/app-icon.svg"
+          alt=""
+          draggable="false"
+        />
         <!-- Folding the left panel away. Where the app's own name used to sit:
              that word said what this window is to someone already looking at
              it, and pressing it did nothing (#118). The control that reaches
@@ -96,6 +122,38 @@
           title="アカウントの開閉"
           data-icon="panel"
         ></button>
+        <!-- The window's own three, where the standard frame put them (#252).
+             Drawn as every button on the bar is (#221); 閉じる alone turns red
+             under the pointer, as the frame's did. They run the window's own
+             calls (src/main.ts, `wireWindowControls`): 閉じる asks for the same
+             close the frame's ✕ did, so the question about running sessions
+             still stands in front of it (docs/2-screen.md, アプリの終了).
+
+             最大化 says 元に戻す while the window is maximized, and the drawing
+             follows: one button whose name is what pressing it does now. -->
+        <div id="window-controls">
+          <button
+            id="window-minimize"
+            type="button"
+            aria-label="最小化"
+            title="最小化"
+            data-icon="minimize"
+          ></button>
+          <button
+            id="window-maximize"
+            type="button"
+            aria-label="最大化"
+            title="最大化"
+            data-icon="maximize"
+          ></button>
+          <button
+            id="window-close"
+            type="button"
+            aria-label="閉じる"
+            title="閉じる"
+            data-icon="close"
+          ></button>
+        </div>
       </header>
 
       <div id="body">
