@@ -443,7 +443,11 @@ button svg.icon {
    is the colour thinned into the page ground, the way the bubble below is, so
    the letter keeps its contrast in light and dark alike. In light the letter is
    the colour taken a step toward black and the tint is thinner (#235); in dark
-   both are as #225 drew them. */
+   both are as #225 drew them.
+   The circle and its letter grow together from `font-size` alone (#250, 0.85em
+   until then): the diameter is in the circle's own `em`, so the letter sits in
+   it as it did, and the column it heads widens with it. The fold's summary and
+   the account dialog set their own size and are not moved by this. */
 .avatar {
   grid-row: 1 / span 2;
   align-self: start;
@@ -453,7 +457,7 @@ button svg.icon {
   width: 2.1em;
   height: 2.1em;
   border-radius: 999px;
-  font-size: 0.85em;
+  font-size: 1.1em;
   font-weight: 600;
   line-height: 1;
   color: color-mix(
