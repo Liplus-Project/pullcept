@@ -2935,6 +2935,7 @@ dependencies = [
  "topic-index",
  "uuid",
  "webhook-bridge",
+ "windows",
 ]
 
 [[package]]
