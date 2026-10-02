@@ -15,6 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -544,6 +545,7 @@ type IconName =
   | "close"
   | "send"
   | "at"
+  | "attach"
   | "start"
   | "edit"
   | "more";
@@ -600,6 +602,8 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["circle", { cx: "8", cy: "8", r: "2.6" }],
     ["path", { d: "M10.6 5.4v3.3a2 2 0 0 0 4 0V8a6.6 6.6 0 1 0-2.6 5.25" }],
   ],
+  // 添付 (#223): a paper clip, standing.
+  attach: [["path", { d: "M10.8 5.2v5.6a2.8 2.8 0 0 1-5.6 0V4.1a1.9 1.9 0 0 1 3.8 0v6.5a1 1 0 0 1-2 0V5.4" }]],
   start: [["path", { d: "M5 3.2v9.6L12.6 8Z" }]],
   // A gear: 編集, the window an account's settings are made in.
   edit: [
@@ -666,6 +670,11 @@ const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const mentionEl = document.getElementById("mention") as HTMLButtonElement;
+const composerEl = document.getElementById("composer") as HTMLElement;
+const composerBoxEl = document.getElementById("composer-box") as HTMLElement;
+const attachEl = document.getElementById("attach") as HTMLButtonElement;
+const attachInputEl = document.getElementById("attach-input") as HTMLInputElement;
+const attachmentsEl = document.getElementById("attachments") as HTMLUListElement;
 const mentionListEl = document.getElementById("mention-list") as HTMLUListElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
@@ -3619,9 +3628,145 @@ function mentionKey(event: KeyboardEvent): boolean {
   return true;
 }
 
+/*
+ * Attachments (#223). A post reaches a session as text typed into its
+ * terminal (docs/1-room.md 発言は端末へ入る), and a file's contents cannot be
+ * typed. So an attached file is saved under the topic and the post carries its
+ * path in the text, where a CLI can open it. The tag line is untouched: the
+ * paths are text, and the text is what was said.
+ *
+ * Three ways in — the 添付 button, a drop onto the composer, Ctrl+V of an
+ * image — and one chip each above the text, by name, with a ✕ to take it off.
+ * Nothing is saved until the post is sent, so a chip taken off leaves nothing
+ * behind.
+ */
+
+/** One chip. What it was attached from, and where it was saved once it was. */
+type Attachment = {
+  name: string;
+  /** Bytes the webview holds (the button, a paste), or a path a drop named. */
+  source: { file: File } | { path: string };
+  /** Where it was saved, and for which topic. Kept so a post the floor
+   *  refused, sent again, does not save the same file a second time. */
+  saved: { topicId: string; path: string } | null;
+};
+
+let attachments: Attachment[] = [];
+
+/** The last part of a path, either separator: what a dropped file is called. */
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function attach(found: Attachment[]): void {
+  if (!found.length) return;
+  attachments = [...attachments, ...found];
+  renderAttachments();
+}
+
+function attachFiles(files: Iterable<File>): void {
+  attach(
+    [...files].map((file) => ({
+      // A pasted image arrives as `image.png`; a nameless one is still a file.
+      name: file.name || "image.png",
+      source: { file },
+      saved: null,
+    })),
+  );
+}
+
+function attachPaths(paths: string[]): void {
+  attach(paths.map((path) => ({ name: baseName(path), source: { path }, saved: null })));
+}
+
+function renderAttachments(): void {
+  attachmentsEl.replaceChildren();
+  attachments.forEach((one, at) => {
+    const chip = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = one.name;
+    name.title = one.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `${one.name} を外す`);
+    remove.title = "外す";
+    remove.appendChild(icon("close"));
+    // The textarea keeps its focus and caret through the press, as it does
+    // for 宛先.
+    remove.addEventListener("mousedown", (event) => event.preventDefault());
+    remove.addEventListener("click", () => {
+      attachments = attachments.filter((_, other) => other !== at);
+      renderAttachments();
+    });
+    chip.append(name, remove);
+    attachmentsEl.appendChild(chip);
+  });
+  attachmentsEl.hidden = attachments.length === 0;
+}
+
+/**
+ * A name as a header can carry it: a JSON string with everything outside
+ * printable ASCII escaped. The app reads it back with a JSON parse
+ * (`room_attach_bytes`).
+ */
+function asciiJson(text: string): string {
+  return JSON.stringify(text).replace(
+    /[\u007f-\uffff]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/** Save one attachment under `topicId`, or answer where it already was. */
+async function saveAttachment(one: Attachment, topicId: string): Promise<string> {
+  if (one.saved?.topicId === topicId) return one.saved.path;
+  const path =
+    "path" in one.source
+      ? await invoke<string>("room_attach_path", { topicId, path: one.source.path })
+      : await invoke<string>(
+          "room_attach_bytes",
+          new Uint8Array(await one.source.file.arrayBuffer()),
+          { headers: { "Pullcept-Topic": topicId, "Pullcept-Name": asciiJson(one.name) } },
+        );
+  one.saved = { topicId, path };
+  return path;
+}
+
+/**
+ * The text a post with attachments carries: what was written, a blank line,
+ * and the paths under `添付:`, one to a line. A post of nothing but files is
+ * the block alone.
+ */
+function withAttachments(text: string, paths: string[]): string {
+  if (!paths.length) return text;
+  const block = ["添付:", ...paths].join("\n");
+  return text ? `${text}\n\n${block}` : block;
+}
+
+/**
+ * Whether a point the drop reported is over the composer.
+ *
+ * The drop reports physical pixels from the webview's corner; the page lays
+ * out in CSS pixels, and the two differ by the device pixel ratio.
+ */
+function overComposer(position: { x: number; y: number }): boolean {
+  const scale = window.devicePixelRatio || 1;
+  const x = position.x / scale;
+  const y = position.y / scale;
+  const box = composerEl.getBoundingClientRect();
+  return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+}
+
+/** Show that letting go here attaches. */
+function markDrop(over: boolean): void {
+  if (over) composerBoxEl.dataset.drop = "over";
+  else delete composerBoxEl.dataset.drop;
+}
+
 async function send(): Promise<void> {
-  const content = inputEl.value.trim();
-  if (!content) return;
+  const text = inputEl.value.trim();
+  const pending = attachments;
+  if (!text && !pending.length) return;
 
   const speaker = localName();
   // The topic on the glass as this was typed, which is the conversation the
@@ -3637,6 +3782,28 @@ async function send(): Promise<void> {
   const lastSeen = lastSeenId;
   inputEl.value = "";
   closeMentions();
+  // Off the composer at once with the text, so a second Enter while the files
+  // are being saved does not send them twice. Put back with it below on
+  // anything but a delivery.
+  attachments = [];
+  renderAttachments();
+  const putBack = (): void => {
+    inputEl.value = text;
+    attachments = [...pending, ...attachments];
+    renderAttachments();
+  };
+  // Saved before the post, so every path in it names a file that is there by
+  // the time a session reads it. One at a time, in the order the chips stand,
+  // which is the order the paths are written in.
+  const paths: string[] = [];
+  try {
+    for (const one of pending) paths.push(await saveAttachment(one, topicId));
+  } catch (err) {
+    putBack();
+    status(`添付を保存できませんでした: ${err}`, "error");
+    return;
+  }
+  const content = withAttachments(text, paths);
   try {
     const outcome = await invoke<PostOutcome>("room_post", {
       topicId,
@@ -3649,7 +3816,9 @@ async function send(): Promise<void> {
       // go on the glass here and the person reads them and decides again — #47
       // unchanged, except that what it says to read is now there to read. The
       // reading is left where it belongs; only the means of doing it is added.
-      inputEl.value = content;
+      // The text as written and the chips as they stood: the paths are the
+      // chips, already saved, and go into the text again when it is sent.
+      putBack();
       // Drawn only into the conversation they belong to. A topic opened during
       // the round trip is another conversation, and it has drawn its own log.
       const drew = topicId === shownTopicId() ? drawMissed(outcome.missed) : 0;
@@ -3669,7 +3838,7 @@ async function send(): Promise<void> {
     status("");
   } catch (err) {
     // Put the text back rather than losing what was typed.
-    inputEl.value = content;
+    putBack();
     status(`発言を送れませんでした: ${err}`, "error");
   }
 }
@@ -5644,6 +5813,49 @@ async function main(): Promise<void> {
     }
   });
   inputEl.addEventListener("blur", () => closeMentions());
+
+  // ── attachments (#223) ──────────────────────────────────────────────────────
+  //
+  // 添付 opens the system's file dialog through the hidden picker. The picker
+  // is emptied after each choice, so picking the same file again is a change.
+  attachEl.addEventListener("mousedown", (event) => event.preventDefault());
+  attachEl.addEventListener("click", () => attachInputEl.click());
+  attachInputEl.addEventListener("change", () => {
+    if (attachInputEl.files) attachFiles(attachInputEl.files);
+    attachInputEl.value = "";
+    inputEl.focus();
+  });
+  // Ctrl+V of an image. Only when the clipboard holds no plain text: what
+  // Excel or a browser copies carries a picture of the selection beside its
+  // text, and a paste of those is a paste of the text.
+  inputEl.addEventListener("paste", (event) => {
+    const data = event.clipboardData;
+    if (!data || data.files.length === 0 || data.types.includes("text/plain")) return;
+    event.preventDefault();
+    attachFiles(data.files);
+  });
+  // A drop onto the composer. The webview does not hand a dropped file to the
+  // page — Tauri takes the drop and reports the paths and where it landed
+  // (`dragDropEnabled`, on by default) — so the composer is found by the
+  // point, not by an element's drop event. A drop anywhere else attaches
+  // nothing.
+  await getCurrentWebview().onDragDropEvent((event) => {
+    const drag = event.payload;
+    if (drag.type === "leave") {
+      markDrop(false);
+      return;
+    }
+    const over = overComposer(drag.position);
+    if (drag.type === "drop") {
+      markDrop(false);
+      if (over) {
+        attachPaths(drag.paths);
+        inputEl.focus();
+      }
+      return;
+    }
+    markDrop(over);
+  });
 
   try {
     homeDir = await invoke<string>("home_dir");

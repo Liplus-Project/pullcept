@@ -209,12 +209,26 @@
                  text (#222). The box carries the field's frame, so the text
                  area inside has none of its own. -->
             <div id="composer-box">
+              <!-- What is attached to the post being written (#223): one chip
+                   per file, by name, each with its ✕. Above the text, because
+                   they go out with it. Drawn by src/main.ts; hidden while there
+                   are none. -->
+              <ul id="attachments" aria-label="添付" hidden></ul>
               <textarea id="input" rows="2" placeholder="部屋に発言する"></textarea>
               <div id="composer-actions">
-                <!-- Ghost icon buttons (#221). 添付 goes first in this group
-                     once #223 has something for it to do; until then it is
-                     not drawn. -->
+                <!-- Ghost icon buttons (#221). 添付 first (#223). -->
                 <div id="composer-tools">
+                  <button
+                    id="attach"
+                    type="button"
+                    aria-label="添付"
+                    title="添付"
+                    data-icon="attach"
+                  ></button>
+                  <!-- The picker 添付 opens. Never shown itself: the button is
+                       the control, and this is the way to the system's file
+                       dialog. -->
+                  <input id="attach-input" type="file" multiple hidden />
                   <button
                     id="mention"
                     type="button"

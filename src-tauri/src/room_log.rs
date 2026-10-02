@@ -635,3 +635,91 @@ pub fn room_rename_topic(
     announce(&app);
     Ok(())
 }
+
+// ── Attachments (#223) ───────────────────────────────────────────────────────
+//
+// What is attached to a post is saved under the topic and the post carries its
+// path in the text: a post reaches a session as text typed into its terminal
+// (`terminal_input`), and a file's contents cannot be typed. The path is
+// something a CLI can open.
+//
+// Saved when the post is sent, not when the chip appears: a chip taken off
+// again leaves nothing behind. The screen calls one of the two doors below for
+// each chip and then posts, so the file is in place before any session reads
+// the path.
+//
+// Under the index lock, so a save and a delete of the same topic are ordered:
+// a save that ran after the delete had taken the folder would put a folder
+// back under a topic that is gone.
+
+/// Save what a person dropped onto the composer: a file by its path.
+///
+/// Copied rather than pointed at (`topic_index::save_attachment`). Off the
+/// main thread, because what is dropped can be large and the copy is the whole
+/// of the work.
+#[tauri::command]
+pub async fn room_attach_path(
+    app: AppHandle,
+    topic_id: String,
+    path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = std::path::Path::new(&path);
+        let name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // A folder opens without error on some platforms and copies as
+        // nothing; it is said here rather than saved as an empty file.
+        if std::fs::metadata(source).map(|meta| meta.is_dir()).unwrap_or(false) {
+            return Err(format!("{name} はフォルダです。添付できるのはファイルだけです。"));
+        }
+        let mut file = std::fs::File::open(source)
+            .map_err(|e| format!("{name} を開けませんでした: {e}"))?;
+        let dir = room_dir(&app)?;
+        let _guard = INDEX_LOCK.lock();
+        let saved = topic_index::save_attachment(&dir, &topic_id, &name, &mut file)?;
+        Ok(saved.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("Failed to save the attachment: {e}"))?
+}
+
+/// Save what the webview holds as bytes: a file picked with the button, or an
+/// image pasted with Ctrl+V. Neither has a path the webview can see.
+///
+/// The bytes are the request's raw body rather than a JSON array of numbers,
+/// which would be several times the size of the file on the way across. The
+/// topic and the name ride in headers: `Pullcept-Topic`, and `Pullcept-Name`
+/// as a JSON string with everything outside ASCII escaped, because a header
+/// carries ASCII and a name is Japanese as often as not.
+#[tauri::command]
+pub async fn room_attach_bytes(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    let header = |key: &str| {
+        request
+            .headers()
+            .get(key)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let topic_id = header("pullcept-topic").ok_or("添付の宛先のトピックが届きませんでした。")?;
+    let name: String = header("pullcept-name")
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(format!("{name} の中身が届きませんでした。"));
+    };
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = room_dir(&app)?;
+        let _guard = INDEX_LOCK.lock();
+        let saved =
+            topic_index::save_attachment(&dir, &topic_id, &name, &mut bytes.as_slice())?;
+        Ok(saved.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("Failed to save the attachment: {e}"))?
+}
