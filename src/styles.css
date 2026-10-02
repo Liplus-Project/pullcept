@@ -3,41 +3,70 @@
   /* Two grounds. `--bg` is the window's own ground, and the ground of every
      field — input, select, textarea — which keeps its `--line` border: a field
      is where text will go, and empty it has nothing else to show where that is.
-     `--surface` is a panel's tint — the participant list's ground.
+     `--surface` is a panel's tint — the participant list's and the topic
+     list's ground. `--tint` is the fill a label carries — an attachment's chip,
+     a log or a notice in a dialog — which in light is no longer the panels'
+     ground: the panels came up to Claude Desktop's sidebar (#235), close
+     enough to `--bg` that a chip drawn in it would vanish.
 
      A button on the screen has no frame and no ground of its own (#221, Master,
      2026-10-02): it is its drawing, and a light fill arrives only under the
      pointer. That is what replaced the border every button carried since
      2026-08-24, which was there so a button would be one shape on every panel.
-     The fills below keep that: they are a shade laid over whatever ground the
+     The pointer's fill keeps that: it is a shade laid over whatever ground the
      button stands on, not a colour of their own, so the same button lifts the
      same way on `--bg` and on `--surface`. 送信 alone is filled, so the screen
-     has one control it puts forward. */
+     has one control it puts forward.
+
+     The light values are the 2026-10-02 full-screen mockup's, its two side
+     columns in the colours of Claude Desktop's sidebar (#235, Master
+     「Cで、ダークは今のままでいいかな一旦」). Dark is what it was: a token
+     added for light carries there the value that draws dark as before. */
   --bg: #ffffff;
   --fg: #1b1b1f;
-  --line: #d8d8de;
-  --muted: #6b6b76;
-  --surface: #f4f4f7;
-  --accent: #3a6ea5;
+  --line: #e2e2e1;
+  --muted: #73726c;
+  --surface: #fbfbf9;
+  --tint: #f4f4f7;
+  --accent: #185fa5;
   --danger: #a52a2a;
   /* A session that is still producing — the colour of the 考え中… / 出力中
-     badge in the participant panel (#225). Not the accent: on that panel the
-     accent is oneself's colour. */
-  --ok: #2e7a4e;
+     badge in the participant panel (#225), and the ground under it. Not the
+     accent: on that panel the accent is oneself's colour. */
+  --ok: #3b6d11;
+  --ok-ground: #eaf3de;
+  /* The ground of every other state's badge — 未起動, 起動中, 終了 and the
+     rest (#225). The word on it is `--muted`. */
+  --badge-ground: #f1efe8;
   /* The pointer on a button, and an item marked as the one chosen — a picked
      row, the open tab. Chosen is the deeper of the two, so a row under the
-     pointer is not read as picked. */
-  --hover: rgb(0 0 0 / 0.06);
-  --selected: rgb(0 0 0 / 0.1);
+     pointer is not read as picked. Chosen is a colour in light (#235) and a
+     shade in dark; the pointer is a shade in both, kept light enough here
+     that it stays the shallower of the two on the panels' ground. */
+  --hover: rgb(0 0 0 / 0.04);
+  --selected: #edece8;
+  /* The composer's frame. Darker than `--line`: the box is where the screen's
+     one act is written, and the panels' lines came up close to white (#235). */
+  --composer-line: rgb(0 0 0 / 0.2);
+  /* How far a participant's colour is carried into the circle and into one's
+     own bubble (#235). Each is the share of the participant's colour in a mix:
+     the circle's ground and the bubble's ground and edge are mixed into
+     `--bg`, the circle's letter into black. In dark the letter is the colour
+     itself and the edge is the bubble's own ground, which draws no line. */
+  --avatar-ground: 13%;
+  --avatar-ink: 75%;
+  --avatar-ink-toward: #000000;
+  --mine-ground: 9%;
+  --mine-edge: 35%;
   /* One participant is told from another by hue alone: every participant
      colour is the accent's own lightness and chroma with the hue turned. The
-     pair below is #3a6ea5 measured in oklch, not a value chosen next to it, so
+     pair below is #185fa5 measured in oklch, not a value chosen next to it, so
      a participant sits at the same weight on the page as the accent does.
      This pair is what a participant may not choose — declaring a colour
      declares a hue, and these two hold whatever hue lands on them readable in
      this theme. */
-  --speaker-l: 0.528;
-  --speaker-c: 0.104;
+  --speaker-l: 0.481;
+  --speaker-c: 0.131;
   /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
      the conversation and the terminal is written in `rem`, so this one value
      moves all of it. The conversation divides it back out (`--room-font-size`
@@ -56,11 +85,22 @@
     --line: #33333a;
     --muted: #9a9aa5;
     --surface: #202026;
+    --tint: #202026;
     --accent: #7aa7d8;
     --danger: #e08585;
     --ok: #7cc49a;
+    /* The badge's word thinned into nothing, as both badges were drawn before
+       #235. `currentColor` is resolved on the badge, so it is the word's own
+       colour. */
+    --ok-ground: color-mix(in oklch, currentColor 14%, transparent);
+    --badge-ground: color-mix(in oklch, currentColor 14%, transparent);
     --hover: rgb(255 255 255 / 0.08);
     --selected: rgb(255 255 255 / 0.13);
+    --composer-line: #33333a;
+    --avatar-ground: 22%;
+    --avatar-ink: 100%;
+    --mine-ground: 14%;
+    --mine-edge: 14%;
     /* #7aa7d8 measured the same way. The dark accent is lighter and slightly
        less saturated, so carrying the light pair over here would leave every
        participant but oneself too dark to read against #17171a. */
@@ -338,7 +378,9 @@ button svg.icon {
 
 /* The speaker's initial on a tint of the speaker's own colour (#225). The tint
    is the colour thinned into the page ground, the way the bubble below is, so
-   the letter in the full colour keeps its contrast in light and dark alike. */
+   the letter keeps its contrast in light and dark alike. In light the letter is
+   the colour taken a step toward black and the tint is thinner (#235); in dark
+   both are as #225 drew them. */
 .avatar {
   grid-row: 1 / span 2;
   align-self: start;
@@ -351,8 +393,16 @@ button svg.icon {
   font-size: 0.85em;
   font-weight: 600;
   line-height: 1;
-  color: var(--speaker, var(--muted));
-  background: color-mix(in oklch, var(--speaker, var(--line)) 22%, var(--bg));
+  color: color-mix(
+    in oklch,
+    var(--speaker, var(--muted)) var(--avatar-ink),
+    var(--avatar-ink-toward)
+  );
+  background: color-mix(
+    in oklch,
+    var(--speaker, var(--line)) var(--avatar-ground),
+    var(--bg)
+  );
   user-select: none;
 }
 
@@ -393,7 +443,10 @@ button svg.icon {
    a fixed alpha over it: the result is a solid colour close to `--bg` in either
    theme, so `--fg` text keeps its contrast in light and dark alike. The hue
    comes from the same `--speaker` everyone's circle uses, so a live line and a
-   read-back line cannot disagree.
+   read-back line cannot disagree. In light the bubble also has an edge, the
+   same colour thinned less (#235). It is drawn inside the box rather than as a
+   border, so the bubble is the size it was; in dark the edge is the bubble's
+   own ground and draws nothing.
 
    No circle and no name on these (#225). The colour bar #185 moved to the right
    edge went with the bar on everyone else's lines, and the circle that took its
@@ -405,7 +458,13 @@ button svg.icon {
   align-self: flex-end;
   padding: 0.4rem 0.75rem;
   border-radius: 12px;
-  background: color-mix(in oklch, var(--speaker, var(--line)) 14%, var(--bg));
+  background: color-mix(
+    in oklch,
+    var(--speaker, var(--line)) var(--mine-ground),
+    var(--bg)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklch, var(--speaker, var(--line)) var(--mine-edge), var(--bg));
 }
 
 .message.mine .meta {
@@ -491,14 +550,15 @@ button svg.icon {
 
 /* One box: the text, and the row of what acts on it underneath (#222). The box
    is the field, so it carries the field's frame (#221: a field keeps its
-   `--line` border on `--bg`), and the text area inside it carries none. The
-   frame turns to the accent while the text has the focus, so where the keys
-   are going is still shown with the field's own edge gone from the textarea. */
+   border on `--bg`; this one's is `--composer-line`, #235), and the text area
+   inside it carries none. The frame turns to the accent while the text has the
+   focus, so where the keys are going is still shown with the field's own edge
+   gone from the textarea. */
 #composer-box {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--composer-line);
   border-radius: 10px;
   padding: 0.5rem 0.5rem 0.4rem;
 }
@@ -539,7 +599,7 @@ button svg.icon {
   gap: 0.1rem;
   max-width: 18rem;
   padding: 0.1rem 0.15rem 0.1rem 0.5rem;
-  background: var(--surface);
+  background: var(--tint);
   border-radius: 6px;
 }
 
@@ -614,7 +674,7 @@ button svg.icon {
 }
 
 #mention-list li[aria-selected="true"] {
-  background: var(--surface);
+  background: var(--tint);
 }
 
 /* Written at the size it will be read at. The `font-size` follows the
@@ -854,9 +914,10 @@ button svg.icon {
 /* The mark the selected row in the panel carries, drawn the same way here
    (`#participants .member.shown .pick`). The two selections are one selection
    and one shape (Master, 実機, 2026-08-24): the chosen fill, and the name
-   turning from `--muted` to the participant's own colour. The fill is a shade
-   over the ground rather than a ground of its own (#221), so it reads the same
-   on the header's `--bg` as on the panel's `--surface`. */
+   turning from `--muted` to the participant's own colour. The fill was a shade
+   over the ground (#221) so it would read the same on the header's `--bg` as on
+   the panel's `--surface`; in light it is a solid colour now (#235), which
+   still does, the two grounds being near white alike. */
 #terminal-tabs .tab.shown {
   color: var(--speaker, var(--fg));
   background: var(--selected);
@@ -1276,9 +1337,8 @@ button svg.icon {
   background: var(--hover);
 }
 
-/* The pane on the glass: the chosen fill, a shade over the panel's surface and
-   one deeper than the pointer's (#221), so which terminal is showing reads at a
-   glance and in either theme. */
+/* The pane on the glass: the chosen fill, one deeper than the pointer's (#221),
+   so which terminal is showing reads at a glance and in either theme. */
 #participants .member.shown button.pick {
   background: var(--selected);
 }
@@ -1312,16 +1372,21 @@ button svg.icon {
   color: var(--muted);
 }
 
-/* A state, as a badge (#225): the word on a tint of its own colour. The tint is
-   the word's colour thinned into nothing, so it sits on the panel's ground and
-   on a picked row's fill alike. The colour is the kind's — the ground colour
-   for a state where an utterance has ended or none is under way, the danger
-   colour for 起動失敗, and `--ok` for the two words that say one is still under
-   way (below). 「（あなた）」 is not a state and is not a badge. */
+/* A state, as a badge (#225): the word on a ground of its kind. The colour is
+   the kind's — the muted colour for a state where an utterance has ended or
+   none is under way, the danger colour for 起動失敗, and `--ok` for the two
+   words that say one is still under way (below). 「（あなた）」 is not a state
+   and is not a badge.
+
+   The ground is the word's colour thinned into nothing, so it sits on the
+   panel's ground and on a picked row's fill alike. In light the muted and the
+   `--ok` badges are the mockup's two solid grounds instead (#235,
+   `--badge-ground`, `--ok-ground`); 起動失敗 keeps the thinned one in both
+   themes. */
 #participants .note.badge {
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
-  background: color-mix(in oklch, currentColor 14%, transparent);
+  background: var(--badge-ground);
   font-size: 0.92em;
   line-height: 1.4;
 }
@@ -1331,6 +1396,7 @@ button svg.icon {
    terminal, so the row is the only thing left that the press happened to. */
 #participants .note[data-kind="error"] {
   color: var(--danger);
+  background: color-mix(in oklch, currentColor 14%, transparent);
 }
 
 /* 考え中… and 出力中. The one note that is true only while it is on screen: the
@@ -1343,6 +1409,7 @@ button svg.icon {
    keeps the participant's own colour beside it either way. */
 #participants .note[data-kind="active"] {
   color: var(--ok);
+  background: var(--ok-ground);
 }
 
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
@@ -1954,7 +2021,7 @@ button svg.icon {
   margin: 0;
   padding: 0.45rem 0.55rem;
   overflow: auto;
-  background: var(--surface);
+  background: var(--tint);
   border: 1px solid var(--line);
   border-radius: 4px;
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
@@ -1993,7 +2060,7 @@ button svg.icon {
   padding: 0.4rem 0.55rem;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--tint);
   color: var(--fg);
   font-size: 0.74rem;
   line-height: 1.6;
