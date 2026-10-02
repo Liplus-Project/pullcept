@@ -549,7 +549,8 @@ type IconName =
   | "start"
   | "stop"
   | "edit"
-  | "more";
+  | "more"
+  | "chevron-down";
 
 type IconShape = [tag: string, attrs: Record<string, string>];
 
@@ -660,6 +661,9 @@ const ICONS: Record<IconName, IconShape[]> = {
     ["circle", { cx: "8", cy: "8", r: "0.55" }],
     ["circle", { cx: "12.5", cy: "8", r: "0.55" }],
   ],
+  // 最新の発言へ (#243): a chevron pointing down, to the room's foot. Tabler
+  // Icons `chevron-down` (MIT, NOTICE.txt) on this grid.
+  "chevron-down": [["path", { d: "M4 6l4 4l4 -4" }]],
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -688,6 +692,7 @@ function fillIcons(): void {
 }
 
 const roomEl = document.getElementById("room") as HTMLElement;
+const scrollLatestEl = document.getElementById("scroll-latest") as HTMLButtonElement;
 const historyEl = document.getElementById("history") as HTMLElement;
 const participantsEl = document.getElementById("participants") as HTMLElement;
 const toggleHistoryEl = document.getElementById("toggle-history") as HTMLButtonElement;
@@ -1466,6 +1471,8 @@ function applyRoomFontSize(size: number, save: boolean): void {
   const value = `calc(${size}rem / var(--ui-scale))`;
   roomEl.style.setProperty("--room-font-size", value);
   inputEl.style.setProperty("--room-font-size", value);
+  // The lines change height with the size, and so does the distance to the foot.
+  syncScrollLatest();
   // Kept in step with the keys, which move the size without the picker.
   settingsRoomFontSizeEl.value = String(size);
   if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
@@ -1931,10 +1938,34 @@ function placeLine(line: HTMLElement, fold: Fold | null): void {
   box.querySelector("summary > .label")!.textContent = `${fold.label} ${count} 件`;
 }
 
+/**
+ * Whether the room is at its foot: within 40px of the bottom. One judgment for
+ * two things — an arriving line follows the room down only from here, and the
+ * button back to the newest line is shown only away from here (#243).
+ */
+function roomAtBottom(): boolean {
+  return roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
+}
+
+/**
+ * Show 最新の発言へ while the room is being read back, and hide it at the foot
+ * (#243). Run wherever the distance to the foot can change: a scroll, the
+ * room's own size, a line drawn, a fold opened, the conversation's text size.
+ */
+function syncScrollLatest(): void {
+  scrollLatestEl.hidden = roomAtBottom();
+}
+
+/** To the room's foot, where the conversation continues (#243). */
+function scrollRoomToLatest(): void {
+  roomEl.scrollTop = roomEl.scrollHeight;
+  syncScrollLatest();
+}
+
 function appendMessage(message: RoomMessage): void {
   // The room is scrolled to the bottom only when it already was, so reading
   // back through the log is not yanked away by an arriving message.
-  const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
+  const atBottom = roomAtBottom();
 
   const fold = foldOf(message.speaker, message.account);
   placeDay(message.ts);
@@ -1961,6 +1992,7 @@ function appendMessage(message: RoomMessage): void {
   drawnIds.add(message.message_id);
 
   if (atBottom) roomEl.scrollTop = roomEl.scrollHeight;
+  syncScrollLatest();
 }
 
 /**
@@ -2016,7 +2048,7 @@ function drawTopic(posts: LoggedPost[]): void {
   }
 
   // Opened at the end, which is where the conversation continues.
-  roomEl.scrollTop = roomEl.scrollHeight;
+  scrollRoomToLatest();
 }
 
 /**
@@ -5838,6 +5870,22 @@ async function main(): Promise<void> {
   // The pane is one container holding every session's terminal, so the observer
   // is on the container and the fit lands on whichever one is showing.
   new ResizeObserver(() => fitShown()).observe(terminalEl);
+
+  // 最新の発言へ (#243): shown only while the room is read back from its foot.
+  // `toggle` does not bubble, so a fold opened in the room is caught on the way
+  // down.
+  roomEl.addEventListener("scroll", syncScrollLatest, { passive: true });
+  roomEl.addEventListener("toggle", syncScrollLatest, true);
+  new ResizeObserver(() => syncScrollLatest()).observe(roomEl);
+  // Pressed without taking the focus, as the composer's buttons are: what is
+  // being written stays where it was. The button goes once pressed, so a press
+  // from the keyboard hands the focus to the text rather than to nothing.
+  scrollLatestEl.addEventListener("mousedown", (event) => event.preventDefault());
+  scrollLatestEl.addEventListener("click", () => {
+    const hadFocus = document.activeElement === scrollLatestEl;
+    scrollRoomToLatest();
+    if (hadFocus) inputEl.focus();
+  });
   renderSessionFacts();
 
   // ── closing the app ────────────────────────────────────────────────────────
