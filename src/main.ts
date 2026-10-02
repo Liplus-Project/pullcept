@@ -1709,8 +1709,8 @@ function fullDateTime(iso: string): string {
  *
  * Who said it is a circle carrying the speaker's initial, on a tint of their
  * own colour (#225). It replaced the colour bar down the line's left edge; the
- * colour is the same one, so the circle and the dot beside the name in the
- * panel still match.
+ * colour is the same one, so this circle and the one beside the name in the
+ * panel still match — the panel draws it with the same function (#253).
  *
  * The screen person's own line is a bubble at the right edge (#185) and carries
  * neither the circle nor the name: where it stands and its tint already say
@@ -2939,7 +2939,7 @@ function activityNote(name: string, view: SessionView | undefined): string {
  *
  * The colour is the one that participant's lines carry in the room, which is
  * what makes the panel a legend for the conversation rather than a second copy
- * of the same names. It is on the name itself here, not only on the dot.
+ * of the same names. It is on the name itself here, not only on the circle.
  *
  * An offline row keeps its colour and is dimmed; it does not fall to grey. The
  * colour carries the account's identity, and someone merely absent must not
@@ -2965,8 +2965,13 @@ function memberRow(row: Member): HTMLLIElement {
     entry.classList.add("offline");
   }
 
-  const dot = document.createElement("span");
-  dot.className = "dot";
+  // The circle the room draws for this speaker, drawn by the same function so
+  // the two cannot drift (#253): the account's image where it has one, the
+  // initial on its colour otherwise. The account is the seat's when the row is
+  // in the room — what the room's lines carry — and the list's otherwise; a
+  // guest declared none and keeps the initial, as its lines do. It replaces the
+  // dot and takes over its part as the legend: the circle is the line's colour.
+  const mark = avatar(name, row.participant ? row.participant.account : (row.account?.id ?? null));
 
   const who = document.createElement("span");
   who.className = "who";
@@ -3065,7 +3070,7 @@ function memberRow(row: Member): HTMLLIElement {
     pick = document.createElement("div");
     pick.className = "pick static";
   }
-  pick.append(dot, who);
+  pick.append(mark, who);
   if (noteText) {
     const note = document.createElement("span");
     note.className = "note";
@@ -3450,7 +3455,7 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  * once per session tells two sessions apart by nothing at all.
  *
  * The colour is the account's, the same one its lines carry in the room and its
- * dot carries in the panel — which is what lets a tab and a row be read as one
+ * circle carries in the panel — which is what lets a tab and a row be read as one
  * participant rather than as two names that happen to match.
  *
  * ✕ appears on an ended tab and on no other. On a running one it would be read
