@@ -665,6 +665,8 @@ const toggleParticipantsEl = document.getElementById(
 const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
+const roomTitleNameEl = document.getElementById("room-title-name") as HTMLElement;
+const roomTitleCountEl = document.getElementById("room-title-count") as HTMLElement;
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
@@ -680,6 +682,7 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
+const factsMoreEl = document.querySelector("#participants .facts-more") as HTMLDetailsElement;
 const sessionStateEl = document.getElementById("session-state") as HTMLElement;
 const transportEl = document.getElementById("session-transport") as HTMLElement;
 const commandEl = document.getElementById("session-command") as HTMLElement;
@@ -1614,18 +1617,36 @@ function shortTime(iso: string): string {
   return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/**
- * The day and the clock, for a stamp that is not from today.
- *
- * The room's own lines take `shortTime`, because every one of them was said
- * during the run that is being watched and the day is not in question. The
- * history is the other case by definition: everything in it predates this
- * window, so the day is the part that places it (#48).
- */
-function shortDateTime(iso: string): string {
+/** The local calendar day a stamp falls on, as a key two stamps compare by. */
+function dayKey(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
-  const day = at.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+  return `${at.getFullYear()}-${at.getMonth() + 1}-${at.getDate()}`;
+}
+
+/**
+ * A day, as short as it can be said and still place it (#225): 今日, else the
+ * month and the day, and the year only when it is not this one.
+ *
+ * One wording for the two places a day is shown — the room's day dividers and
+ * the topic list — so a topic and the lines in it name their day alike. The
+ * clock is not part of it: a line carries its own, and a topic's is on its
+ * tooltip.
+ */
+function dayLabel(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date();
+  if (dayKey(iso) === dayKey(now.toISOString())) return "今日";
+  const md = `${at.getMonth() + 1}月${at.getDate()}日`;
+  return at.getFullYear() === now.getFullYear() ? md : `${at.getFullYear()}年${md}`;
+}
+
+/** The day and the clock in full, for a tooltip under a short label. */
+function fullDateTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const day = at.toLocaleDateString([], { year: "numeric", month: "2-digit", day: "2-digit" });
   return `${day} ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
@@ -1634,10 +1655,19 @@ function shortDateTime(iso: string): string {
  *
  * The same element for a post arriving now and a post read back out of the
  * topic's log, because they are the same conversation: picking a topic puts its
- * posts in the room rather than beside it (#115, decision 2). What differs is
- * the stamp — a line said in this window is placed by its clock, one from
- * before it by its day as well — and that is passed in rather than decided
- * here.
+ * posts in the room rather than beside it (#115, decision 2). The stamp is the
+ * clock alone for both: the day is the divider above the line (`placeDay`,
+ * #225).
+ *
+ * Who said it is a circle carrying the speaker's initial, on a tint of their
+ * own colour (#225). It replaced the colour bar down the line's left edge; the
+ * colour is the same one, so the circle and the dot beside the name in the
+ * panel still match.
+ *
+ * The screen person's own line is a bubble at the right edge (#185) and carries
+ * neither the circle nor the name: where it stands and its tint already say
+ * whose it is. Its clock is at its foot, and a run of them shows only the last
+ * one's (src/styles.css, `.message.mine`).
  */
 function roomLine(line: {
   speaker: string;
@@ -1663,10 +1693,13 @@ function roomLine(line: {
   const head = document.createElement("div");
   head.className = "meta";
 
-  const speaker = document.createElement("span");
-  speaker.className = "speaker";
-  speaker.textContent = line.speaker;
-  head.appendChild(speaker);
+  if (!line.mine) {
+    article.appendChild(avatar(line.speaker));
+    const speaker = document.createElement("span");
+    speaker.className = "speaker";
+    speaker.textContent = line.speaker;
+    head.appendChild(speaker);
+  }
 
   if (line.to.length) {
     const to = document.createElement("span");
@@ -1679,14 +1712,62 @@ function roomLine(line: {
   time.className = "ts";
   time.dateTime = line.ts;
   time.textContent = line.stamp;
-  head.appendChild(time);
+  time.title = fullDateTime(line.ts);
 
   const body = document.createElement("div");
   body.className = "body";
   body.textContent = line.content;
 
-  article.append(head, body);
+  if (line.mine) {
+    // The clock goes to the bubble's foot, so a run of them can keep only the
+    // last one's. A head is drawn only when it has an addressee to carry.
+    if (head.childElementCount) article.appendChild(head);
+    article.append(body, time);
+  } else {
+    head.appendChild(time);
+    article.append(head, body);
+  }
   return article;
+}
+
+/**
+ * The circle that says who a line is from (#225): the name's first character on
+ * a tint of the speaker's colour, taken from `--speaker` on the element it
+ * stands in. Hidden from a screen reader, which reads the name beside it.
+ */
+function avatar(name: string): HTMLElement {
+  const mark = document.createElement("span");
+  mark.className = "avatar";
+  mark.setAttribute("aria-hidden", "true");
+  mark.textContent = (Array.from(name.trim())[0] ?? "?").toUpperCase();
+  return mark;
+}
+
+/**
+ * Put a day divider in the room ahead of a line, when the line is the first of
+ * its day on the glass (#225). The day was on every read-back line's stamp
+ * until then; it is said once, between the days, and the lines keep the clock.
+ *
+ * The day the room last drew is `roomDay`, cleared with the room in
+ * `drawTopic`. A divider says 今日 by the clock it was drawn at, so when a new
+ * one is drawn every divider on the glass is relabelled — a room left open
+ * past midnight does not end up with two of them saying 今日.
+ */
+let roomDay = "";
+
+function placeDay(ts: string): void {
+  const key = dayKey(ts);
+  if (key === "" || key === roomDay) return;
+  roomDay = key;
+  const divider = document.createElement("div");
+  divider.className = "day";
+  divider.setAttribute("role", "separator");
+  divider.dataset.ts = ts;
+  divider.appendChild(document.createElement("span"));
+  roomEl.appendChild(divider);
+  for (const one of roomEl.querySelectorAll<HTMLElement>(":scope > .day")) {
+    one.firstElementChild!.textContent = dayLabel(one.dataset.ts ?? "");
+  }
 }
 
 /**
@@ -1805,12 +1886,17 @@ function placeLine(line: HTMLElement, fold: Fold | null): void {
     box.className = "notice-fold";
     box.dataset.fold = fold.key;
     box.style.setProperty("--speaker", fold.colour);
-    box.appendChild(document.createElement("summary"));
+    // Headed by the server's circle, as its lines are (#225).
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "label";
+    summary.append(avatar(fold.label), label);
+    box.appendChild(summary);
     roomEl.appendChild(box);
   }
   box.appendChild(line);
   const count = box.querySelectorAll(":scope > .message").length;
-  box.querySelector("summary")!.textContent = `${fold.label} ${count} 件`;
+  box.querySelector("summary > .label")!.textContent = `${fold.label} ${count} 件`;
 }
 
 function appendMessage(message: RoomMessage): void {
@@ -1819,6 +1905,7 @@ function appendMessage(message: RoomMessage): void {
   const atBottom = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
 
   const fold = foldOf(message.speaker, message.account);
+  placeDay(message.ts);
   placeLine(
     roomLine({
       speaker: message.speaker,
@@ -1871,20 +1958,22 @@ function appendMessage(message: RoomMessage): void {
  */
 function drawTopic(posts: LoggedPost[]): void {
   roomEl.replaceChildren();
+  roomDay = "";
   lastSeenId = posts[posts.length - 1]?.message_id ?? null;
   drawnIds.clear();
 
   for (const post of posts) {
     const fold = foldOf(post.speaker, post.account);
+    placeDay(post.ts);
     placeLine(
       roomLine({
         speaker: post.speaker,
         colour: fold?.colour ?? speakerColor(post.speaker, null, false),
         to: post.to ?? [],
         ts: post.ts,
-        // The day as well as the clock. A topic spans days, and a bare 14:32
-        // could be any of them.
-        stamp: shortDateTime(post.ts),
+        // The clock alone: a topic spans days, and the day is the divider
+        // above (`placeDay`, #225).
+        stamp: shortTime(post.ts),
         content: post.content,
         past: true,
         mine: isMine(post.speaker, fold),
@@ -1898,16 +1987,28 @@ function drawTopic(posts: LoggedPost[]): void {
   roomEl.scrollTop = roomEl.scrollHeight;
 }
 
-/** When a topic was made, for a list that spans months. */
-function topicWhen(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "";
-  const day = at.toLocaleDateString([], {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return `${day} ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+/**
+ * The room's heading on the title bar (#225): the topic on the glass, and how
+ * many are in its room.
+ *
+ * The name is the one its row carries (`topicName`), so the two never say it
+ * differently. A topic the index does not carry yet has no row and no title —
+ * the moment between a launch or 新規 and the first post (#115) — and is called
+ * what it is, 新しいトピック.
+ *
+ * The count is the room's roster for that topic: who is connected to it now.
+ * An account that is not running is not in it, and neither is a local MCP
+ * server, which takes no seat (#193) — the panel lists both, and this counts
+ * only who is here.
+ */
+function renderRoomTitle(): void {
+  const current = currentTopic;
+  const topic = current ? topics.find((one) => one.topic_id === current.topic_id) : undefined;
+  const name = current === null ? "" : topic ? topicName(topic) : "新しいトピック";
+  roomTitleNameEl.textContent = name;
+  roomTitleNameEl.title = name;
+  roomTitleNameEl.classList.toggle("unnamed", topic !== undefined && !topic.title);
+  roomTitleCountEl.textContent = current === null ? "" : `${shownRoster().length} 人`;
 }
 
 /**
@@ -1940,6 +2041,7 @@ function renderTopics(): void {
   // not carry is the moment between ▶ and the launch answering. 新規 is where
   // that topic is drawn, so the mark goes there for that moment (#141).
   topicNewEl.classList.toggle("running", unlisted && current !== null && runsIn(current.topic_id));
+  renderRoomTitle();
 
   if (listed.length === 0) {
     const empty = document.createElement("li");
@@ -1999,7 +2101,11 @@ function topicRow(topic: Topic): HTMLLIElement {
 
   const when = document.createElement("span");
   when.className = "when";
-  when.textContent = topicWhen(topic.created_at);
+  // The day only, short (#225): 今日, or 9月28日. A list of topics spans
+  // months, and the day is the part that places one; the clock is on the
+  // tooltip for when it is wanted.
+  when.textContent = dayLabel(topic.created_at);
+  when.title = fullDateTime(topic.created_at);
   pick.appendChild(when);
 
   pick.addEventListener("click", () => void openTopic(topic));
@@ -2789,6 +2895,9 @@ function memberRow(row: Member): HTMLLIElement {
     const note = document.createElement("span");
     note.className = "note";
     note.textContent = noteText;
+    // A state is a badge, tinted by its kind (#225). 「（あなた）」 is not a state
+    // but who the row is, and stays plain beside the name.
+    if (!own) note.classList.add("badge");
     if (noteKind) note.dataset.kind = noteKind;
     // The app's own reason, on the row carrying the word. The status line has
     // it in full; this is so a row saying 起動失敗 is not a dead end. A server's
@@ -3226,6 +3335,8 @@ function closeView(view: SessionView): void {
  * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
+  // The title bar's count is this roster's length (#225).
+  renderRoomTitle();
   // The tabs are redrawn here rather than on their own schedule. Both surfaces
   // read `views` and both mark the same selection, so drawing them from one call
   // is what makes "they move together" true by construction (#68).
@@ -3912,9 +4023,36 @@ function renderSessionStats(): void {
   const stats = shownView()?.stats ?? null;
   statsEls.model.textContent = stats?.model ?? "—";
   statsEls.effort.textContent = stats?.effort ?? "—";
-  statsEls.five_hour.textContent = usedPercent(stats?.five_hour ?? null);
-  statsEls.seven_day.textContent = usedPercent(stats?.seven_day ?? null);
-  statsEls.context.textContent = usedPercent(stats?.context ?? null);
+  renderUsage(statsEls.five_hour, stats?.five_hour ?? null);
+  renderUsage(statsEls.seven_day, stats?.seven_day ?? null);
+  renderUsage(statsEls.context, stats?.context ?? null);
+}
+
+/**
+ * One usage row: the number, and a bar under the same value (#225).
+ *
+ * `—` with no bar while nothing has been reported — an empty bar would say 0%,
+ * and not yet knowing is not that (#155). The bar is capped at full; the number
+ * is not, because a spend limit can go past 100% and the number is what says by
+ * how much. At 100% or over the bar takes the danger colour, the line 制限中
+ * stands on (#161).
+ */
+function renderUsage(cell: HTMLElement, value: number | null): void {
+  const text = document.createElement("span");
+  text.className = "value";
+  text.textContent = usedPercent(value);
+  if (value === null) {
+    cell.replaceChildren(text);
+    return;
+  }
+  const meter = document.createElement("span");
+  meter.className = "meter";
+  const fill = document.createElement("span");
+  fill.className = "fill";
+  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
+  if (value >= 100) fill.dataset.kind = "error";
+  meter.appendChild(fill);
+  cell.replaceChildren(meter, text);
 }
 
 /**
@@ -5270,6 +5408,9 @@ function closeAccountDialog(): void {
 }
 
 function renderSocket(port: number | null, error?: string): void {
+  // The socket's row is folded under 詳細 (#225), and a fold must not hide that
+  // the room is not listening: the summary takes the error colour with it.
+  factsMoreEl.dataset.kind = error || port === null ? "error" : "";
   if (error) {
     socketStateEl.textContent = error;
     socketStateEl.dataset.kind = "error";

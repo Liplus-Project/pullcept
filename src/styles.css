@@ -20,6 +20,10 @@
   --surface: #f4f4f7;
   --accent: #3a6ea5;
   --danger: #a52a2a;
+  /* A session that is still producing — the colour of the 考え中… / 出力中
+     badge in the participant panel (#225). Not the accent: on that panel the
+     accent is oneself's colour. */
+  --ok: #2e7a4e;
   /* The pointer on a button, and an item marked as the one chosen — a picked
      row, the open tab. Chosen is the deeper of the two, so a row under the
      pointer is not read as picked. */
@@ -54,6 +58,7 @@
     --surface: #202026;
     --accent: #7aa7d8;
     --danger: #e08585;
+    --ok: #7cc49a;
     --hover: rgb(255 255 255 / 0.08);
     --selected: rgb(255 255 255 / 0.13);
     /* #7aa7d8 measured the same way. The dark accent is lighter and slightly
@@ -114,6 +119,35 @@ button svg.icon {
 /* Takes the slack so the controls stay pinned to the right. */
 #titlebar .spacer {
   flex: 1;
+}
+
+/* The room's heading (#225): the open topic's name, and beside it, quieter, how
+   many are in its room. The name ellipses rather than pushing the controls
+   off the bar. */
+#room-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+#room-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* 未記入, the screen's word for an empty title, is not a title. */
+#room-title-name.unnamed {
+  font-weight: normal;
+  color: var(--muted);
+}
+
+#room-title-count {
+  flex: none;
+  color: var(--muted);
 }
 
 #titlebar .who {
@@ -260,14 +294,15 @@ button svg.icon {
   padding: 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  /* Wider than the 0.75rem it was, so lines read as lines apart (#225). */
+  gap: 1.15rem;
 }
 
 /* Speaker attribution is the load-bearing distinction in this room, so one
    participant is separated from another by colour as well as by name. The axis
    is the participant: `--speaker` is set per line from that participant, so the
-   colour beside a line and the dot beside their name in the panel are the same
-   colour, and a line can be traced to a participant without reading it.
+   colour of a line's circle and the dot beside their name in the panel are the
+   same colour, and a line can be traced to a participant without reading it.
    Self/other was the earlier axis (#39) and is a two-valued one — it gave every
    participant but oneself one shared colour.
    Where the hue comes from is a ladder, resolved in src/main.ts: a hue the
@@ -283,12 +318,42 @@ button svg.icon {
    `max-width` is in `em` for the same reason — a measure fixed in `rem` would
    hold the column still and shorten every line as the text grew, so the number
    of characters to a line, which is what a measure is for, would change with
-   the size. */
+   the size.
+
+   Two columns: the circle, and the name, time and words beside it (#225). The
+   circle is what the colour bar down the left edge was — who said it, in their
+   colour — with the initial in it, so it is read and not only matched. */
 .message {
   font-size: var(--room-font-size);
   max-width: 46em;
-  border-left: 3px solid var(--speaker, var(--line));
-  padding-left: 0.7rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.65em;
+}
+
+.message > .meta,
+.message > .body {
+  grid-column: 2;
+}
+
+/* The speaker's initial on a tint of the speaker's own colour (#225). The tint
+   is the colour thinned into the page ground, the way the bubble below is, so
+   the letter in the full colour keeps its contrast in light and dark alike. */
+.avatar {
+  grid-row: 1 / span 2;
+  align-self: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1em;
+  height: 2.1em;
+  border-radius: 999px;
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--speaker, var(--muted));
+  background: color-mix(in oklch, var(--speaker, var(--line)) 22%, var(--bg));
+  user-select: none;
 }
 
 .message .meta {
@@ -313,30 +378,32 @@ button svg.icon {
 .message .body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.6;
+  /* 1.6 until #225, opened a step with the gap between lines. */
+  line-height: 1.7;
   margin-top: 0.15rem;
 }
 
 /* The screen person's own lines stand at the right edge, the way a chat app
    draws them, so whose line it is reads from where it is (#185). Everyone
    else — sessions, and the notice fold — stays at the left. The line moves as
-   a whole: the colour bar goes to the side it now faces the room from, and the
-   name and time head it from the right. The words keep their own left-to-right
-   flow; only the block is placed. Which lines are mine is decided in
-   src/main.ts (`isMine`).
-   The block is also tinted with the speaker's own colour, so it reads as a
-   bubble (#187). The tint is the speaker colour thinned into the page
-   background, not a fixed alpha over it: the result is a solid colour close to
-   `--bg` in either theme, so `--fg` text keeps its contrast in light and dark
-   alike. The hue comes from the same `--speaker` the bar uses, so a live line
-   and a read-back line cannot disagree. All four corners are rounded (#187
-   follow-up); the bar follows the right-hand curve, so it reads as the
-   bubble's own edge rather than a separate stripe. */
+   a whole; the words keep their own left-to-right flow, and only the block is
+   placed. Which lines are mine is decided in src/main.ts (`isMine`).
+   The block is tinted with the speaker's own colour, so it reads as a bubble
+   (#187). The tint is the speaker colour thinned into the page background, not
+   a fixed alpha over it: the result is a solid colour close to `--bg` in either
+   theme, so `--fg` text keeps its contrast in light and dark alike. The hue
+   comes from the same `--speaker` everyone's circle uses, so a live line and a
+   read-back line cannot disagree.
+
+   No circle and no name on these (#225). The colour bar #185 moved to the right
+   edge went with the bar on everyone else's lines, and the circle that took its
+   place is not drawn here either: the side and the tint already say whose line
+   it is. The head carries the addressee when there is one; the clock is at the
+   foot. */
 .message.mine {
+  display: block;
   align-self: flex-end;
-  border-left: none;
-  border-right: 3px solid var(--speaker, var(--line));
-  padding: 0.4rem 0.7rem;
+  padding: 0.4rem 0.75rem;
   border-radius: 12px;
   background: color-mix(in oklch, var(--speaker, var(--line)) 14%, var(--bg));
 }
@@ -345,11 +412,49 @@ button svg.icon {
   justify-content: flex-end;
 }
 
+.message.mine > .ts {
+  display: block;
+  margin-top: 0.1rem;
+  text-align: right;
+  font-size: 0.72em;
+  color: var(--muted);
+}
+
+/* Several sent in a row are one block (#225): drawn close, and the clock is
+   said once, at the end of the run. A day divider or anyone else's line ends a
+   run, because it stands between. */
+.message.mine:has(+ .message.mine) > .ts {
+  display: none;
+}
+
+.message.mine + .message.mine {
+  margin-top: -0.85rem;
+}
+
+/* Where one day ends and the next begins (#225). Said once between the days
+   rather than on every line's stamp, which is now the clock alone. A rule
+   either side of the word, in the panel's line colour. */
+#room > .day {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: calc(var(--room-font-size) * 0.72);
+  color: var(--muted);
+}
+
+#room > .day::before,
+#room > .day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 /* Notices from a local MCP server, folded (#169). A run of one server's is one
-   fold, drawn as a single quiet line in its account's colour until it is
-   opened (#193); opened, the notices are ordinary lines, spaced as the room
-   spaces lines. What makes the fold a fold is the screen's alone — each notice
-   is still its own post (src/main.ts, `placeLine`). */
+   fold, drawn as a single quiet line headed by its account's circle until it is
+   opened (#193, #225); opened, the notices are ordinary lines, spaced as the
+   room spaces lines. What makes the fold a fold is the screen's alone — each
+   notice is still its own post (src/main.ts, `placeLine`). */
 .notice-fold {
   font-size: var(--room-font-size);
   max-width: 46em;
@@ -359,14 +464,22 @@ button svg.icon {
   cursor: pointer;
   font-size: 0.78em;
   color: var(--muted);
-  border-left: 3px solid var(--speaker, var(--line));
-  padding-left: 0.7rem;
+}
+
+/* The circle at the summary's size, inline after the disclosure mark. */
+.notice-fold > summary .avatar {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 0 0.5em 0 0.2em;
+  font-size: 1em;
+  width: 1.9em;
+  height: 1.9em;
 }
 
 .notice-fold[open] {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 1.15rem;
 }
 
 /* ── composer ────────────────────────────────────────────────────────────── */
@@ -847,38 +960,32 @@ button svg.icon {
   font-weight: 600;
 }
 
-/* 新規, at the head of the list and drawn as one of its rows (#125, 決定1).
-   `.topic .pick` below is what it is measured against — the same padding and
-   the same radius — because it stands where a row stands and is picked the way
-   a row is picked. The margin is the list's own: `.topics` insets its rows by
-   0.3rem and sets them 0.15rem apart, and this sits in that column at that
-   distance from the first of them.
+/* 新規, as ＋ beside the heading (#225): the same control the account panel
+   carries beside its own, drawn by the same rule (`.panel-head button` below).
+   It stood at the head of the list as a row of its own from #125 (決定1).
 
-   Like every button on the screen it has no frame and no ground until the
-   pointer is on it (#221); the rows were already drawn that way before the
-   rule reached the rest, because a list whose rows each carried a border reads
-   as a stack of buttons rather than as a list. */
-#history .new {
-  display: block;
-  margin: 0 0.3rem 0.15rem;
-  font: inherit;
-  text-align: left;
-  color: var(--fg);
-  background: none;
-  border: none;
-  border-radius: 4px;
-  padding: 0.3rem 0.4rem;
-  cursor: pointer;
-}
-
-#history .new:hover {
-  background: var(--hover);
-}
-
-/* The room is in a topic the index does not carry (#125, AI 判断4). The same
-   shape a picked row has, because it is the same thing being said. */
+   The room is in a topic the index does not carry (#125, AI 判断4): the chosen
+   fill, the shape a picked row has, because it is the same thing being said —
+   the room is there. */
 #history .new.current {
   background: var(--selected);
+}
+
+/* A launch into a topic the list does not carry yet is in flight (#141): the
+   running mark the rows carry, at the ＋'s corner. */
+#history .new {
+  position: relative;
+}
+
+#history .new.running::after {
+  content: "";
+  position: absolute;
+  top: 0.1rem;
+  right: 0.1rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 #history .topics {
@@ -902,7 +1009,9 @@ button svg.icon {
 }
 
 /* The control that opens the topic. It takes what the row has left, so a long
-   title ellipses against the ✕ rather than pushing it out of the panel. Picked
+   title ellipses against the ✕ rather than pushing it out of the panel. The ✕
+   is not drawn until the row is under the pointer or holds the focus (#225),
+   but its column stays, so a title does not shift when it appears. Picked
    is the shape a picked row has on the panel opposite (#75): the chosen fill,
    one shade deeper than the pointer's (#221). */
 #history .topic .pick {
@@ -962,16 +1071,9 @@ button svg.icon {
   font-size: 0.8em;
 }
 
-/* The same mark on 新規, for the moment a launch into a topic the list does not
-   carry yet is in flight. */
-#history .new.running::after {
-  content: " ●";
-  color: var(--accent);
-  font-size: 0.8em;
-}
-
-/* When it was made. The day, and the clock under it — a list of topics spans
-   months, so the day is the part that places one. */
+/* When it was made: the day, short — 今日, or 9月28日 (#225). A list of topics
+   spans months, so the day is the part that places one; the clock is on the
+   tooltip. */
 #history .topic .when {
   display: block;
   margin-top: 0.05rem;
@@ -1025,6 +1127,19 @@ button svg.icon {
   background: var(--hover);
 }
 
+/* Shown only on the row the pointer is on, or the keyboard is in (#225). A
+   column of ✕ down the list read as the list's content; it is one row's
+   operation. Transparent rather than removed, so it stays in the tab order and
+   in its place — focus reaching it is what shows it. */
+#history .topic .delete {
+  opacity: 0;
+}
+
+#history .topic:hover .delete,
+#history .topic:focus-within .delete {
+  opacity: 1;
+}
+
 #history .empty {
   padding: 0.45rem 0.9rem;
   color: var(--muted);
@@ -1075,7 +1190,8 @@ button svg.icon {
   font-weight: 600;
 }
 
-#participants .panel-head button {
+/* The control beside a panel's heading — ＋ on both panels (#59, #225). */
+.panel-head button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1088,12 +1204,12 @@ button svg.icon {
   cursor: pointer;
 }
 
-#participants .panel-head button svg.icon {
+.panel-head button svg.icon {
   width: 0.9rem;
   height: 0.9rem;
 }
 
-#participants .panel-head button:hover {
+.panel-head button:hover {
   background: var(--hover);
 }
 
@@ -1192,7 +1308,22 @@ button svg.icon {
    would say the first of those, but only to someone who already knows which
    colour is theirs. */
 #participants .note {
+  flex: none;
   color: var(--muted);
+}
+
+/* A state, as a badge (#225): the word on a tint of its own colour. The tint is
+   the word's colour thinned into nothing, so it sits on the panel's ground and
+   on a picked row's fill alike. The colour is the kind's — the ground colour
+   for a state where an utterance has ended or none is under way, the danger
+   colour for 起動失敗, and `--ok` for the two words that say one is still under
+   way (below). 「（あなた）」 is not a state and is not a badge. */
+#participants .note.badge {
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, currentColor 14%, transparent);
+  font-size: 0.92em;
+  line-height: 1.4;
 }
 
 /* 起動失敗. The status line carries the app's own reason and this carries the
@@ -1206,12 +1337,12 @@ button svg.icon {
    others describe a state that holds until something happens, and this one is
    gone within a second of the terminal falling quiet (#82). Lifted out of
    `--muted` because a word that comes and goes has to be read in the moment it
-   is there, and left at the body colour rather than taken to the accent —
-   the accent is what says "oneself" on this surface, and it would be the one
-   colour on this row that already means something else. The name keeps the
-   participant's own colour beside it either way. */
+   is there. It was the body colour until its badge (#225) and is `--ok` now —
+   still not the accent, which is what says "oneself" on this surface and would
+   be the one colour on this row that already means something else. The name
+   keeps the participant's own colour beside it either way. */
 #participants .note[data-kind="active"] {
-  color: var(--fg);
+  color: var(--ok);
 }
 
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
@@ -1221,8 +1352,12 @@ button svg.icon {
    from filled to outline, which is the part that says "not here" at a glance.
    It is still not an addressee: that list comes from the room's roster, so an
    offline account cannot appear in it at all. */
-#participants .member.offline .pick {
-  opacity: 0.55;
+/* The name alone is dimmed, and less than the whole row was (`0.55` until
+   #225): at that the names of accounts not running read too faint on the dark
+   theme's panel (Master, 2026-10-02). The badge beside it says 未起動 or 終了
+   in words, so the dimming need not carry the state by itself. */
+#participants .member.offline .who {
+  opacity: 0.8;
 }
 
 #participants .member.offline .dot {
@@ -1407,6 +1542,68 @@ button svg.icon {
   border-top: 1px solid var(--line);
   padding: 0.6rem 0.9rem;
   font-size: 0.75rem;
+}
+
+/* The values read only when something is stuck — the socket, the id, how the
+   session was launched — folded under 詳細 (#225). Folded, the summary is one
+   quiet line under the values that stay open. */
+#participants .facts-more > summary {
+  padding: 0.35rem 0.9rem 0.6rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+#participants .facts-more > summary:hover {
+  color: var(--fg);
+}
+
+/* The room is not listening, and the row saying so is folded: the summary
+   says it is worth opening (src/main.ts, `renderSocket`). */
+#participants .facts-more[data-kind="error"] > summary {
+  color: var(--danger);
+}
+
+/* Inside the fold the list needs no second rule above it; the summary is the
+   divide. */
+#participants .facts-more .facts {
+  margin: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+/* A usage row (#225): a bar, and the number after it. The bar takes what the
+   row has left; the number keeps the width of its three digits and the sign. */
+#participants dd.usage {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+#participants dd.usage .meter {
+  flex: 1;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--selected);
+  overflow: hidden;
+}
+
+#participants dd.usage .fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+/* At 100% or over: the line 制限中 stands on (#161). */
+#participants dd.usage .fill[data-kind="error"] {
+  background: var(--danger);
+}
+
+#participants dd.usage .value {
+  flex: none;
+  min-width: 2.6em;
 }
 
 #participants dt {
