@@ -379,9 +379,15 @@ button svg.icon {
    Dividing it back out leaves `1rem` of the user agent's default, whatever the
    UI is set to, so the three axes stay independent.
 
-   src/main.ts overrides this on both elements when a size has been stored. */
+   The participant panel carries it as well (#260), for one reader only: its
+   circle, which keeps its size against the room's circle. The panel's text
+   and controls do not read it and stay on the UI's axis.
+
+   src/main.ts overrides this on all three elements when a size has been
+   stored. */
 #room,
-#composer textarea {
+#composer textarea,
+#participants {
   --room-font-size: calc(1rem / var(--ui-scale));
 }
 
@@ -1485,17 +1491,20 @@ button svg.icon {
 }
 
 /* The circle the participant's lines carry in the room (#253): the account's
-   image, or the initial on the line's colour. In `rem`, so it follows the
-   whole UI's multiple (#66) and not the conversation's text size — the panel
-   is on the UI's axis. The diameter is the room's circle as it was before
-   #258 at the default text size: `2.1em` of `1.1em` of a `1rem` room, 2.31rem.
-   The letter went up from 0.75rem at the same ratio as the diameter from
-   1.4rem. The row grows to hold it; its tracks do not change. */
+   image, or the initial on the line's colour. Sized on the conversation's text
+   axis (#260), not the UI's: the room's circle is `2.1em` of `1.265em` of the
+   room's text, and this one is that over 1.15 (#258), so the panel's circle
+   stays one step smaller than the room's at every UI scale and text size. In
+   `rem` until #260 it rode the UI's multiple while the room's divided it back
+   out, and the two met whenever either setting left its default. The rest of
+   the panel is still on the UI's axis. The letter keeps the ratio to the
+   diameter it took at #258 (0.75 to 1.4). The row grows to hold it; its tracks
+   do not change. */
 #participants .member .avatar {
   flex: none;
-  width: 2.31rem;
-  height: 2.31rem;
-  font-size: 1.2375rem;
+  width: calc(var(--room-font-size) * 2.31);
+  height: calc(var(--room-font-size) * 2.31);
+  font-size: calc(var(--room-font-size) * 1.2375);
 }
 
 /* The name carries the participant's own colour, which is what makes this list

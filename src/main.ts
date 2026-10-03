@@ -1470,7 +1470,8 @@ function storedRoomFontSize(): number {
  * Draw the conversation at `size`, and remember it if it was chosen.
  *
  * The property goes on the two elements that render the conversation's words —
- * `#room` and the composer's textarea — and on nothing else. What is typed is
+ * `#room` and the composer's textarea — and on one element besides, the
+ * participant panel, for its circle alone (below). What is typed is
  * the same sentence that is then read, so the two move together (#81). Their
  * nearest shared ancestor is `#conversation`, which also holds the diagnostics
  * pane and the status line; setting it there, or on the root, would reach
@@ -1481,6 +1482,11 @@ function storedRoomFontSize(): number {
  * The row under the text — 宛先, the keys, 送信 (#222) — and the list `@` opens
  * sit in the composer but do not follow. They are controls, not the sentence,
  * and they stay on the whole-UI axis (#66, #204).
+ *
+ * The participant panel takes the property too (#260), and only its circle
+ * reads it there: that circle is sized against the room's circle (#258), so it
+ * has to move with the same size. The panel's text and controls stay on the
+ * whole-UI axis.
  *
  * `save` is false for the restore at startup. Writing the value back there
  * would put a size in storage for a screen that never chose one, which is the
@@ -1494,6 +1500,7 @@ function applyRoomFontSize(size: number, save: boolean): void {
   const value = `calc(${size}rem / var(--ui-scale))`;
   roomEl.style.setProperty("--room-font-size", value);
   inputEl.style.setProperty("--room-font-size", value);
+  participantsEl.style.setProperty("--room-font-size", value);
   // The lines change height with the size, and so does the distance to the foot.
   syncScrollLatest();
   // Kept in step with the keys, which move the size without the picker.
