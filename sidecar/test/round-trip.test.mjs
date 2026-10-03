@@ -50,6 +50,15 @@ const TURN_TAKING = [
   "  足りないことがあるときだけ足してください。",
 ].join("\n");
 
+// Citing one's own post (#267). A session never receives its own post back,
+// so the id the others see on its label reaches it only through the tool's
+// answer — and only if the manners say that the answer carries it.
+const OWN_ID = [
+  "- 自分の発言は返ってきません。届いた発言はすべて他の参加者のものです。",
+  "  say_to_room が配達できたときの返答には、その発言の message_id が付きます。",
+  "  自分の発言を後から指すときは、その id を使ってください。",
+].join("\n");
+
 // Signing what is written to GitHub (#270). Sessions sharing one GitHub
 // account are told apart only by the last line of what they write, and the app
 // reads that line back onto the notice (#269) — so the manners have to give the
@@ -505,6 +514,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   );
   assertContains(
     instructions,
+    OWN_ID,
+    "instructions must say that a delivery answer carries the post's own message_id",
+  );
+  assertContains(
+    instructions,
     SIGNATURE,
     "instructions must say how to sign a GitHub write, with this session's name, tail included",
   );
@@ -614,13 +628,15 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the sidecar must push no post into the conversation; the app types them in",
   );
   assert.ok(!call.result.isError, `tool call failed: ${JSON.stringify(call.result)}`);
-  assert.equal(
-    call.result.content[0].text,
-    "Delivered to the room.",
-    "a post the room admits reads as delivered and says nothing else",
-  );
 
   const post = await nextPost(0);
+  // Delivered, and under which id: the one the room keeps and puts on the
+  // label everyone else reads (#267). Nothing else is said.
+  assert.equal(
+    call.result.content[0].text,
+    `Delivered to the room. message_id: ${post.message_id}`,
+    "a post the room admits reads as delivered and names the id it was posted under",
+  );
   assert.equal(post.type, "post");
   assert.equal(post.content, "聞こえてるわ");
   // A person is addressed exactly like a session. One vocabulary, one frame.
