@@ -48,6 +48,12 @@
   /* The composer's frame. Darker than `--line`: the box is where the screen's
      one act is written, and the panels' lines came up close to white (#235). */
   --composer-line: rgb(0 0 0 / 0.2);
+  /* 送信's ground and its drawing (#258): the blue of the app's icon
+     (src-tauri/app-icon.svg), in light and dark alike, so it is not
+     redefined below. Not `--accent`, which the participants' colours are
+     measured from (`--speaker-l` / `--speaker-c`). */
+  --send-ground: #1e9be8;
+  --send-ink: #ffffff;
   /* How far a participant's colour is carried into the circle and into one's
      own bubble (#235). Each is the share of the participant's colour in a mix:
      the circle's ground and the bubble's ground and edge are mixed into
@@ -893,8 +899,8 @@ button svg.icon {
   align-items: center;
   justify-content: center;
   font: inherit;
-  color: var(--bg);
-  background: var(--accent);
+  color: var(--send-ink);
+  background: var(--send-ground);
   border: none;
   border-radius: 6px;
   padding: 0.55rem;
@@ -908,7 +914,7 @@ button svg.icon {
 }
 
 #composer #send:hover {
-  background: color-mix(in oklch, var(--accent) 85%, var(--fg));
+  background: color-mix(in oklch, var(--send-ground) 85%, var(--fg));
 }
 
 #status {
