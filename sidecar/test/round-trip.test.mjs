@@ -50,6 +50,27 @@ const TURN_TAKING = [
   "  足りないことがあるときだけ足してください。",
 ].join("\n");
 
+// Citing one's own post (#267). A session never receives its own post back,
+// so the id the others see on its label reaches it only through the tool's
+// answer — and only if the manners say that the answer carries it.
+const OWN_ID = [
+  "- 自分の発言は返ってきません。届いた発言はすべて他の参加者のものです。",
+  "  say_to_room が配達できたときの返答には、その発言の message_id が付きます。",
+  "  自分の発言を後から指すときは、その id を使ってください。",
+].join("\n");
+
+// Signing what is written to GitHub (#270). Sessions sharing one GitHub
+// account are told apart only by the last line of what they write, and the app
+// reads that line back onto the notice (#269) — so the manners have to give the
+// exact form, with this session's own name in it, and say what an unsigned
+// write is. Asserted whole: the safe-side clause is the tail.
+const SIGNATURE = [
+  "- GitHub に本文つきで書き込むとき（issue・コメント・PR・レビュー）は、",
+  "  本文の最終行を「— test-agent」にしてください。同じアカウントを複数の",
+  "  セッションが使っていても、誰の書き込みかが分かります。署名の無い",
+  "  書き込みは、部屋のどのセッションのものでもないと扱ってください。",
+].join("\n");
+
 // Looking back. The room hands a late joiner nothing, by design, so the whole
 // of what makes the read reachable is that the manners name it and say when it
 // is worth calling (#115, decision 4C). Asserted in full for the reason the two
@@ -182,6 +203,9 @@ const SEE_THE_FLOOR = [
   "  ことが既に言われていたら送らないでください。送らない判断は正当です。",
   "- それでも足すことがあるときは、返ってきたうちいちばん新しい message_id を",
   "  last_seen に入れて、もう一度 say_to_room を呼んでください。",
+  "- 断られた発言は下書きとして一つだけ取ってあります。content を省いて",
+  "  呼ぶと、その下書きをそのまま送ります。直して送るときは content を",
+  "  渡してください。どちらも last_seen の判定は同じように受けます。",
   "- 弾かれるのは、あなたの注意が足りなかったからではありません。二人が同時に",
   "  書き始めたとき、順序を付けられるのは部屋だけです。これはその順序です。",
 ].join("\n");
@@ -491,6 +515,16 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     TURN_TAKING,
     "instructions must carry the turn-taking manners in full, tail included",
   );
+  assertContains(
+    instructions,
+    OWN_ID,
+    "instructions must say that a delivery answer carries the post's own message_id",
+  );
+  assertContains(
+    instructions,
+    SIGNATURE,
+    "instructions must say how to sign a GitHub write, with this session's name, tail included",
+  );
   // Seeing the floor. These are not advice: `last_seen` is what the room
   // judges the post on, and a refusal is a state the agent has to know how to
   // leave. An agent that does not know to send the watermark is refused on
@@ -547,10 +581,13 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     ["content", "last_seen", "to"],
     "the watermark rides on say_to_room rather than adding a tool",
   );
+  // Nothing is required. The watermark is optional because a participant that
+  // has seen nothing must still be able to speak; `content` is, because leaving
+  // it out re-sends the draft held from a refusal (#268).
   assert.deepEqual(
     schema.required,
-    ["content"],
-    "the watermark is optional: a participant that has seen nothing must still be able to speak",
+    [],
+    "neither the watermark nor content is required",
   );
 
   // ── the room -> this session: nothing on this path ────────────────────────
@@ -597,13 +634,15 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the sidecar must push no post into the conversation; the app types them in",
   );
   assert.ok(!call.result.isError, `tool call failed: ${JSON.stringify(call.result)}`);
-  assert.equal(
-    call.result.content[0].text,
-    "Delivered to the room.",
-    "a post the room admits reads as delivered and says nothing else",
-  );
 
   const post = await nextPost(0);
+  // Delivered, and under which id: the one the room keeps and puts on the
+  // label everyone else reads (#267). Nothing else is said.
+  assert.equal(
+    call.result.content[0].text,
+    `Delivered to the room. message_id: ${post.message_id}`,
+    "a post the room admits reads as delivered and names the id it was posted under",
+  );
   assert.equal(post.type, "post");
   assert.equal(post.content, "聞こえてるわ");
   // A person is addressed exactly like a session. One vocabulary, one frame.
@@ -681,6 +720,19 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "Your message was not posted.",
     "the refusal must be unambiguous that nothing was said, not a note attached to a delivery",
   );
+  // The way back to what was being said, named (#268). Without it the agent
+  // composes the whole body again, or does not know it need not.
+  assertContains(
+    refusal,
+    "Your draft is held. Leave content out of that call to send it as it was, " +
+      "or pass content to send a revised one.",
+    "the refusal must say the draft is held and how to send it, as it was or revised",
+  );
+  assertContains(
+    refusal,
+    "Saying nothing is a valid outcome",
+    "holding the draft must not take away that not sending it is valid",
+  );
   // Every field of every missed post, not just the first line. The condition
   // is that the return value carries the posts the speaker had not seen — a
   // check on the opening sentence passes on a report that dropped all of them.
@@ -757,6 +809,75 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the pull must say that what it returns is not addressed to the reader",
   );
 
+  // ── the refused draft is held, and re-sent by leaving content out (#268) ───
+  // Still the draft refused above. It goes through the floor like any post —
+  // with the watermark this call declares — and goes out as it was.
+  answer = "deliver";
+  const resent = await request("tools/call", {
+    name: "say_to_room",
+    arguments: { last_seen: "m-10" },
+  });
+  assert.ok(!resent.result.isError, `re-send failed: ${JSON.stringify(resent.result)}`);
+  const resentPost = await nextPost(4);
+  assert.equal(resentPost.content, "私も答えます", "the held draft goes out unchanged");
+  assert.equal(resentPost.last_seen, "m-10", "a re-send declares its own watermark");
+  assert.equal("to" in resentPost, false, "the held draft was to the room, and still is");
+  assert.notEqual(
+    resentPost.message_id,
+    postFrames[3].message_id,
+    "a re-send is a new post, not the refused one replayed",
+  );
+
+  // Delivered, so nothing is held any more: leaving content out is now a
+  // missing body, said as such, and nothing goes to the room.
+  const nothingHeld = await request("tools/call", {
+    name: "say_to_room",
+    arguments: { last_seen: "m-10" },
+  });
+  assert.ok(nothingHeld.result.isError, "with nothing held, content is required");
+  assertContains(
+    nothingHeld.result.content[0].text,
+    "there is no refused draft held to re-send",
+    "a call with no content and nothing held must say why it sent nothing",
+  );
+  assert.equal(postFrames.length, 5, "a call that sends nothing puts nothing on the floor");
+
+  // A held draft keeps its addressees, and the newest refusal replaces it.
+  answer = "refuse";
+  await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "古い下書き", last_seen: "m-1" },
+  });
+  await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "マスター宛の下書き", to: "Master", last_seen: "m-1" },
+  });
+  answer = "deliver";
+  await request("tools/call", { name: "say_to_room", arguments: { last_seen: "m-10" } });
+  const addressedPost = await nextPost(7);
+  assert.equal(addressedPost.content, "マスター宛の下書き", "the newest refused draft is the one held");
+  assert.deepEqual(addressedPost.to, ["Master"], "a held draft keeps who it was for");
+
+  // Passing content sends that instead — the revised draft — and clears the
+  // held one too.
+  answer = "refuse";
+  await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "直す前", last_seen: "m-1" },
+  });
+  answer = "deliver";
+  await request("tools/call", {
+    name: "say_to_room",
+    arguments: { content: "直した後", last_seen: "m-10" },
+  });
+  const revisedPost = await nextPost(9);
+  assert.equal(revisedPost.content, "直した後", "content given is what is sent");
+  const clearedAgain = await request("tools/call", {
+    name: "say_to_room",
+    arguments: { last_seen: "m-10" },
+  });
+  assert.ok(clearedAgain.result.isError, "a delivery clears the held draft, whatever was sent");
+
   // ── an unanswered post is unconfirmed, not delivered and not refused ───────
   // The frame may well have landed. Reporting either verdict would be a guess
   // the agent then acts on: "delivered" lets it believe it spoke, "refused"
@@ -766,7 +887,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     name: "say_to_room",
     arguments: { content: "届いてる？", last_seen: "m-1" },
   });
-  await nextPost(4);
+  await nextPost(10);
   // The call is itself the boundary, which is what removes the reply that has
   // none. The frame is on the wire and the call has still not resolved: what
   // the room hands back arrives inside this call, not after the turn is over.

@@ -16,9 +16,18 @@
 //!
 //! **The bridge opens its WebSocket only when a token file is already there**
 //! (`~/.github-webhook-mcp/oauth-tokens.json`, #169 premise). The app calls no
-//! tool at all, so on a machine where the bridge has never been authorised
-//! nothing arrives and nothing is asked: no browser opens at startup.
-//! Authorising stays where it is, with a session's own bridge.
+//! tool until an event has arrived, so on a machine where the bridge has never
+//! been authorised nothing arrives and nothing is asked: no browser opens at
+//! startup. Authorising stays where it is, with a session's own bridge.
+//!
+//! **An event whose body a session wrote is read once more, for its signature
+//! (#269).** One GitHub account can be shared by several sessions, and what
+//! tells them apart is the last line of the body (#270). The push carries no
+//! body, so the app calls `get_event`, which only reads — it does not mark the
+//! event processed. A signed notice opens with the name; one whose read failed,
+//! timed out, or found no signature goes out as it did before. Which events are
+//! read, how the answer is read, and the order notices keep while one is read
+//! are `webhook_bridge::Notices`.
 //!
 //! **What sessions already receive is unchanged.** A session that loads its own
 //! `github-webhook-mcp` channel keeps it; this is a second path beside it, not a
@@ -34,11 +43,12 @@ use crate::app_mcp::Reporter;
 use crate::room::{self, RoomState};
 use mcp_servers::Server;
 use std::process::Stdio;
+use std::time::Instant;
 use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use webhook_bridge::{
-    initialize_request, initialized_notification, read_line, Line, INITIALIZE_ID,
+    initialize_request, initialized_notification, read_line, Event, Line, Notices, INITIALIZE_ID,
 };
 
 /// Run one server and read it until it ends. `Ok` says how it ended, `Err` why
@@ -73,40 +83,84 @@ pub async fn receive(
     send(&mut stdin, &initialize_request()).await?;
 
     let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("reading the server failed: {e}"))?
-    {
+    let mut notices = Notices::new();
+    let mut ready = false;
+    let ended = loop {
+        let deadline = notices.next_deadline();
+        let line = tokio::select! {
+            line = lines.next_line() => line,
+            // A read the bridge has not answered in time: the notice goes out
+            // unsigned rather than waiting on.
+            _ = sleep_until(deadline), if deadline.is_some() => {
+                post_due(app, room, report, notices.due(Instant::now()));
+                continue;
+            }
+        };
+        let line = match line {
+            Ok(Some(line)) => line,
+            Ok(None) => break Ok(()),
+            Err(e) => break Err(format!("reading the server failed: {e}")),
+        };
         match read_line(&line) {
-            Line::Answer { id, failure } if id == INITIALIZE_ID => {
+            Line::Answer { id, failure, .. } if id == INITIALIZE_ID => {
                 if let Some(failure) = failure {
-                    return Err(format!("the server refused initialize: {failure}"));
+                    break Err(format!("the server refused initialize: {failure}"));
                 }
-                send(&mut stdin, &initialized_notification()).await?;
+                if let Err(e) = send(&mut stdin, &initialized_notification()).await {
+                    break Err(e);
+                }
+                ready = true;
                 report.running();
             }
-            Line::Answer { .. } | Line::Other => {}
+            Line::Answer { id, failure, text } => {
+                notices.answer(id, failure.as_deref(), text.as_deref());
+            }
+            Line::Other => {}
             Line::Event(event) => {
-                // Read now rather than when the server was started: the
-                // account's name and colour may have been edited since (#193).
-                let speaker = crate::config::mcp_speaker(app, report.server());
-                let rooms = room::post_notice(app, room, &speaker, &event.content);
-                if rooms == 0 {
-                    report.log(&format!(
-                        "[pullcept] event {} left pending: no AI session is seated in any room",
-                        event.event_id
-                    ));
+                if let Some((id, request)) = notices.push(event, ready, Instant::now()) {
+                    if let Err(e) = send(&mut stdin, &request).await {
+                        report.log(&format!("[pullcept] could not ask for an event's body: {e}"));
+                        notices.abandon(id);
+                    }
                 }
             }
         }
-    }
+        post_due(app, room, report, notices.due(Instant::now()));
+    };
+    // Nothing held is lost to the server ending: what was waiting on a read
+    // goes out unsigned.
+    post_due(app, room, report, notices.drain());
+    ended?;
 
     let status = child
         .wait()
         .await
         .map_err(|e| format!("the server could not be waited on: {e}"))?;
     Ok(format!("the server ended ({status})"))
+}
+
+/// Post each notice into every room an AI session is seated in.
+fn post_due(app: &AppHandle, room: &RoomState, report: &Reporter, due: Vec<Event>) {
+    for event in due {
+        // Read now rather than when the server was started: the account's name
+        // and colour may have been edited since (#193).
+        let speaker = crate::config::mcp_speaker(app, report.server());
+        let rooms = room::post_notice(app, room, &speaker, &event.content);
+        if rooms == 0 {
+            report.log(&format!(
+                "[pullcept] event {} left pending: no AI session is seated in any room",
+                event.event_id
+            ));
+        }
+    }
+}
+
+/// Sleep until `deadline`; never, when there is none. Only polled with one.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The server's command and arguments, with its `env` added to the app's own
