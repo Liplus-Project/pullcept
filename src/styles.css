@@ -918,7 +918,9 @@ button svg.icon {
 }
 
 #composer #send:hover {
-  background: color-mix(in oklch, var(--send-ground) 85%, var(--fg));
+  /* Toward black, not `--fg`: the ground is one colour in both themes, so the
+     pointer darkens it in both (#258). */
+  background: color-mix(in oklch, var(--send-ground) 85%, #000000);
 }
 
 #status {
