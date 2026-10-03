@@ -407,6 +407,9 @@ const INSTRUCTIONS = [
   "  ことが既に言われていたら送らないでください。送らない判断は正当です。",
   "- それでも足すことがあるときは、返ってきたうちいちばん新しい message_id を",
   "  last_seen に入れて、もう一度 say_to_room を呼んでください。",
+  "- 断られた発言は下書きとして一つだけ取ってあります。content を省いて",
+  "  呼ぶと、その下書きをそのまま送ります。直して送るときは content を",
+  "  渡してください。どちらも last_seen の判定は同じように受けます。",
   "- 弾かれるのは、あなたの注意が足りなかったからではありません。二人が同時に",
   "  書き始めたとき、順序を付けられるのは部屋だけです。これはその順序です。",
 ].join("\n");
@@ -442,7 +445,10 @@ const TOOLS = [
       properties: {
         content: {
           type: "string",
-          description: "The message body to post.",
+          description:
+            "The message body to post. Omit it only to re-send, unchanged, the " +
+            "draft held from your last refused post; pass it to send something " +
+            "else, a revised draft included.",
         },
         to: {
           anyOf: [
@@ -467,7 +473,9 @@ const TOOLS = [
             "have something to add.",
         },
       },
-      required: ["content"],
+      // `content` may be left out, to re-send the held draft (#268). A call
+      // that leaves it out with nothing held is answered with that fact.
+      required: [] as string[],
     },
   },
   /**
@@ -511,6 +519,17 @@ const TOOLS = [
   },
 ];
 
+/**
+ * The last post the room refused, kept so it can be sent again after the
+ * missed posts are read (#268), or null.
+ *
+ * One, not a list: what the agent goes on to say answers what it has just
+ * read, and an older draft answered something older. A new refusal replaces it
+ * and a delivery clears it. Whether to send it at all stays the agent's call —
+ * leaving it held and saying nothing is the valid outcome it always was.
+ */
+let heldDraft: { content: string; to: string[] } | null = null;
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: SEAT_REFUSAL === null ? TOOLS : [],
 }));
@@ -537,7 +556,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  const content = typeof args?.content === "string" ? args.content : "";
+  // Left out, `content` means the held draft, sent as it was (#268) — its
+  // addressees too, unless this call names its own. Given, it is what is sent,
+  // whatever is held.
+  const resend = args?.content === undefined;
+  if (resend && heldDraft === null) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "content is required: there is no refused draft held to re-send.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  const content = resend
+    ? heldDraft!.content
+    : typeof args?.content === "string"
+      ? args.content
+      : "";
   if (!content.trim()) {
     return {
       content: [{ type: "text", text: "content is required and must be non-empty." }],
@@ -545,7 +583,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  const to = addressees(args?.to);
+  const to = resend && args?.to === undefined ? heldDraft!.to : addressees(args?.to);
   // Passed through as given. This process cannot check it and does not try:
   // the watermark is a statement about the agent's own context, not a claim
   // about who the agent is, and a false one costs only its author a round trip.
@@ -614,11 +652,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Refused. An error rather than a quiet note, because the agent's next
     // move depends on it: nothing was posted, and this is the one moment the
     // missed posts are in front of it.
+    //
+    // Kept, so that going on after reading costs one short call rather than
+    // the whole body composed again (#268). One draft, the newest refused.
+    heldDraft = { content, to };
     return {
       content: [{ type: "text", text: describeRefusal(result.missed ?? []) }],
       isError: true,
     };
   }
+
+  // Delivered: whatever was held has been said, or set aside for this.
+  heldDraft = null;
 
   // The id the room keeps and hands everyone else on the label (#267). The
   // speaker never sees its own post come back, so this is the one place it can
@@ -773,6 +818,8 @@ function describeRefusal(missed: MissedPost[]): string {
     "Your message was not posted. Read the above and decide again. Saying " +
       "nothing is a valid outcome: if what you were going to say is already " +
       `there, do not send it. If you still have something to add, ${again}.`,
+    "Your draft is held. Leave content out of that call to send it as it was, " +
+      "or pass content to send a revised one.",
   ].join("\n");
 }
 
