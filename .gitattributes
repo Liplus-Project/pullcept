@@ -1,0 +1,3 @@
+# tauri-cli rewrites src-tauri/Cargo.toml with LF line endings on every dev/build run (#262).
+# Keep it LF in the working tree too, so the rewrite leaves no diff.
+src-tauri/Cargo.toml text eol=lf
