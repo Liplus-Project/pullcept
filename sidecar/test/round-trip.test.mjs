@@ -50,6 +50,18 @@ const TURN_TAKING = [
   "  足りないことがあるときだけ足してください。",
 ].join("\n");
 
+// Signing what is written to GitHub (#270). Sessions sharing one GitHub
+// account are told apart only by the last line of what they write, and the app
+// reads that line back onto the notice (#269) — so the manners have to give the
+// exact form, with this session's own name in it, and say what an unsigned
+// write is. Asserted whole: the safe-side clause is the tail.
+const SIGNATURE = [
+  "- GitHub に本文つきで書き込むとき（issue・コメント・PR・レビュー）は、",
+  "  本文の最終行を「— test-agent」にしてください。同じアカウントを複数の",
+  "  セッションが使っていても、誰の書き込みかが分かります。署名の無い",
+  "  書き込みは、部屋のどのセッションのものでもないと扱ってください。",
+].join("\n");
+
 // Looking back. The room hands a late joiner nothing, by design, so the whole
 // of what makes the read reachable is that the manners name it and say when it
 // is worth calling (#115, decision 4C). Asserted in full for the reason the two
@@ -490,6 +502,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     instructions,
     TURN_TAKING,
     "instructions must carry the turn-taking manners in full, tail included",
+  );
+  assertContains(
+    instructions,
+    SIGNATURE,
+    "instructions must say how to sign a GitHub write, with this session's name, tail included",
   );
   // Seeing the floor. These are not advice: `last_seen` is what the room
   // judges the post on, and a refusal is a state the agent has to know how to
