@@ -48,6 +48,12 @@
   /* The composer's frame. Darker than `--line`: the box is where the screen's
      one act is written, and the panels' lines came up close to white (#235). */
   --composer-line: rgb(0 0 0 / 0.2);
+  /* 送信's ground and its drawing (#258): the blue of the app's icon
+     (src-tauri/app-icon.svg), in light and dark alike, so it is not
+     redefined below. Not `--accent`, which the participants' colours are
+     measured from (`--speaker-l` / `--speaker-c`). */
+  --send-ground: #1e9be8;
+  --send-ink: #ffffff;
   /* How far a participant's colour is carried into the circle and into one's
      own bubble (#235). Each is the share of the participant's colour in a mix:
      the circle's ground and the bubble's ground and edge are mixed into
@@ -491,9 +497,10 @@ button svg.icon {
    the colour taken a step toward black and the tint is thinner (#235); in dark
    both are as #225 drew them.
    The circle and its letter grow together from `font-size` alone (#250, 0.85em
-   until then): the diameter is in the circle's own `em`, so the letter sits in
-   it as it did, and the column it heads widens with it. The fold's summary and
-   the account dialog set their own size and are not moved by this. */
+   until then; 1.1em until #258, which took both up by 1.15): the diameter is in
+   the circle's own `em`, so the letter sits in it as it did, and the column it
+   heads widens with it. The fold's summary, the account dialog and the
+   participant panel set their own size and are not moved by this. */
 .avatar {
   grid-row: 1 / span 2;
   align-self: start;
@@ -503,7 +510,7 @@ button svg.icon {
   width: 2.1em;
   height: 2.1em;
   border-radius: 999px;
-  font-size: 1.1em;
+  font-size: 1.265em;
   font-weight: 600;
   line-height: 1;
   color: color-mix(
@@ -538,13 +545,16 @@ button svg.icon {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.78em;
   color: var(--muted);
 }
 
+/* The head of a line — name, addressee, clock — is at the words' own size
+   (#258, 0.78em until then), so it inherits the line's and sets none. The
+   name is in the participant's colour, the one their circle and the panel's
+   row carry. */
 .message .speaker {
   font-weight: 600;
-  color: var(--fg);
+  color: var(--speaker, var(--fg));
 }
 
 /* The addressee is written in the speaker's colour, not the addressee's: it is
@@ -603,7 +613,8 @@ button svg.icon {
   display: block;
   margin-top: 0.1rem;
   text-align: right;
-  font-size: 0.72em;
+  /* At the words' size, as the head of everyone else's lines is (#258, 0.72em
+     until then). */
   color: var(--muted);
 }
 
@@ -892,8 +903,8 @@ button svg.icon {
   align-items: center;
   justify-content: center;
   font: inherit;
-  color: var(--bg);
-  background: var(--accent);
+  color: var(--send-ink);
+  background: var(--send-ground);
   border: none;
   border-radius: 6px;
   padding: 0.55rem;
@@ -907,7 +918,9 @@ button svg.icon {
 }
 
 #composer #send:hover {
-  background: color-mix(in oklch, var(--accent) 85%, var(--fg));
+  /* Toward black, not `--fg`: the ground is one colour in both themes, so the
+     pointer darkens it in both (#258). */
+  background: color-mix(in oklch, var(--send-ground) 85%, #000000);
 }
 
 #status {
@@ -1471,16 +1484,18 @@ button svg.icon {
   background: var(--selected);
 }
 
-/* The circle the participant's lines carry in the room (#253), at the row's
-   size: the account's image, or the initial on the line's colour. In `rem`,
-   so it follows the whole UI's multiple (#66) and not the conversation's text
-   size — the panel is on the UI's axis. Small enough that the row keeps about
-   the height the dot gave it. */
+/* The circle the participant's lines carry in the room (#253): the account's
+   image, or the initial on the line's colour. In `rem`, so it follows the
+   whole UI's multiple (#66) and not the conversation's text size — the panel
+   is on the UI's axis. The diameter is the room's circle as it was before
+   #258 at the default text size: `2.1em` of `1.1em` of a `1rem` room, 2.31rem.
+   The letter went up from 0.75rem at the same ratio as the diameter from
+   1.4rem. The row grows to hold it; its tracks do not change. */
 #participants .member .avatar {
   flex: none;
-  width: 1.4rem;
-  height: 1.4rem;
-  font-size: 0.75rem;
+  width: 2.31rem;
+  height: 2.31rem;
+  font-size: 1.2375rem;
 }
 
 /* The name carries the participant's own colour, which is what makes this list
