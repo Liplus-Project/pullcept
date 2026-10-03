@@ -491,9 +491,10 @@ button svg.icon {
    the colour taken a step toward black and the tint is thinner (#235); in dark
    both are as #225 drew them.
    The circle and its letter grow together from `font-size` alone (#250, 0.85em
-   until then): the diameter is in the circle's own `em`, so the letter sits in
-   it as it did, and the column it heads widens with it. The fold's summary and
-   the account dialog set their own size and are not moved by this. */
+   until then; 1.1em until #258, which took both up by 1.15): the diameter is in
+   the circle's own `em`, so the letter sits in it as it did, and the column it
+   heads widens with it. The fold's summary, the account dialog and the
+   participant panel set their own size and are not moved by this. */
 .avatar {
   grid-row: 1 / span 2;
   align-self: start;
@@ -503,7 +504,7 @@ button svg.icon {
   width: 2.1em;
   height: 2.1em;
   border-radius: 999px;
-  font-size: 1.1em;
+  font-size: 1.265em;
   font-weight: 600;
   line-height: 1;
   color: color-mix(
@@ -1471,16 +1472,18 @@ button svg.icon {
   background: var(--selected);
 }
 
-/* The circle the participant's lines carry in the room (#253), at the row's
-   size: the account's image, or the initial on the line's colour. In `rem`,
-   so it follows the whole UI's multiple (#66) and not the conversation's text
-   size — the panel is on the UI's axis. Small enough that the row keeps about
-   the height the dot gave it. */
+/* The circle the participant's lines carry in the room (#253): the account's
+   image, or the initial on the line's colour. In `rem`, so it follows the
+   whole UI's multiple (#66) and not the conversation's text size — the panel
+   is on the UI's axis. The diameter is the room's circle as it was before
+   #258 at the default text size: `2.1em` of `1.1em` of a `1rem` room, 2.31rem.
+   The letter went up from 0.75rem at the same ratio as the diameter from
+   1.4rem. The row grows to hold it; its tracks do not change. */
 #participants .member .avatar {
   flex: none;
-  width: 1.4rem;
-  height: 1.4rem;
-  font-size: 0.75rem;
+  width: 2.31rem;
+  height: 2.31rem;
+  font-size: 1.2375rem;
 }
 
 /* The name carries the participant's own colour, which is what makes this list
