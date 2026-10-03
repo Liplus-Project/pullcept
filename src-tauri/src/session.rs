@@ -17,7 +17,7 @@ use mcp_config::{
     declares_settings, launch_args, other_room_servers, register_sidecar,
     reject_incompatible_flags, resume_launch_args, server_name_for, session_id_launch_args, split_launch_options,
     status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
-    LAUNCHED_AS_ENV, ROOM_TOKEN_ENV,
+    LAUNCHED_AS_ENV, ROOM_ID_ENV, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -1156,6 +1156,12 @@ fn launch(
     // `disabledMcpjsonServers` could not name starts that entry's sidecar too,
     // and without this it would take a seat under the other account's id.
     env.push((LAUNCHED_AS_ENV, account.id.clone()));
+    // The topic this CLI is launched into, beside the account (#264). The
+    // token is the address's and does not tell topics apart, and one account
+    // can hold several registrations at once, so something reading only this
+    // process's environment needs both to pick its own. The same id the
+    // registration above carries under the same name.
+    env.push((ROOM_ID_ENV, topic_id.to_string()));
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,

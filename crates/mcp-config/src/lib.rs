@@ -750,13 +750,26 @@ pub const ROOM_TOKEN_ENV: &str = "PULLCEPT_ROOM_TOKEN";
 /// the launch knows whose CLI is reading.
 pub const LAUNCHED_AS_ENV: &str = "PULLCEPT_LAUNCHED_AS";
 
+/// The environment variable that names the room (topic) a session is in: in
+/// the registration's `env` for the sidecar (#141), and on the launched CLI's
+/// process too (#264).
+///
+/// **On the process as well, because only the launch knows which topic it
+/// is.** The token is one per address and every room of the run shares it, so
+/// it cannot tell one topic from another. Registrations are named per (account,
+/// room) and outlive the session that wrote them, so one account can hold
+/// several in `.mcp.json` at once; something holding nothing but the CLI's
+/// environment picks its own out of those by the account and this id. The
+/// value is the same one the registration carries under the same name.
+pub const ROOM_ID_ENV: &str = "PULLCEPT_ROOM_ID";
+
 /// The variables the app sets on every launch itself.
 ///
 /// An account's own environment may not name them: refused where the field
 /// is saved (`account_env::settle`), and set after the account's variables
 /// when the CLI is spawned, so the app's value holds even if that refusal
 /// were bypassed.
-pub const APP_LAUNCH_ENV: &[&str] = &[ROOM_TOKEN_ENV, LAUNCHED_AS_ENV];
+pub const APP_LAUNCH_ENV: &[&str] = &[ROOM_TOKEN_ENV, LAUNCHED_AS_ENV, ROOM_ID_ENV];
 
 /// The path the app answers a session's status-line report on (#155).
 pub const STATUS_HOOK_PATH: &str = "/hooks/status";
@@ -1364,7 +1377,7 @@ pub fn register_sidecar(dir: &Path, room: &RoomRegistration<'_>) -> Result<PathB
     env.insert("PULLCEPT_ACCOUNT_ID".into(), json!(room.account_id));
     // Which room this session is in. The address is shared by every room of
     // the run, so without this a connection could not say where it is (#141).
-    env.insert("PULLCEPT_ROOM_ID".into(), json!(room.room_id));
+    env.insert(ROOM_ID_ENV.into(), json!(room.room_id));
     // Only when declared. An undeclared participant is a participant the room
     // derives a hue for, which is not the same state as one who chose that hue.
     if let Some(hue) = room.agent_hue {
@@ -1468,6 +1481,10 @@ mod tests {
         // The room this session is in, which the sidecar names in `hello`: one
         // address serves every room of the run, so the address cannot (#141).
         assert_eq!(server["env"]["PULLCEPT_ROOM_ID"], ROOM);
+        // The launch puts the same name on the CLI's process, and an account
+        // may not override it there (#264): one name for both halves.
+        assert_eq!(ROOM_ID_ENV, "PULLCEPT_ROOM_ID");
+        assert!(APP_LAUNCH_ENV.contains(&ROOM_ID_ENV));
         // Undeclared is the key absent, not a default value: a hue written here
         // would be a declaration this participant never made.
         assert!(
