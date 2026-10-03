@@ -93,3 +93,25 @@ npx tauri icon src-tauri/app-icon.svg -o src-tauri/icons
 ## 開発環境とビルド手順
 
 [README.md](../README.md) を参照。本仕様では再記述しない。
+
+## `src-tauri/Cargo.toml` の改行
+
+`src-tauri/Cargo.toml` は、作業ツリーでも LF で取り出す（#262）。リポジトリの根の `.gitattributes` が `src-tauri/Cargo.toml text eol=lf` を置き、`core.autocrlf=true` の Windows でもこのファイルだけは CRLF に変わらない。ほかのファイルの改行の扱いは変えていない。
+
+理由は、Tauri CLI が `tauri dev` / `tauri build` のたびにこのファイルを書き直すことである。CLI は `src-tauri/Cargo.toml` を読んで `tauri` / `tauri-build` の features を設定に合わせ、組み直した文字列が読んだものと一字でも違えば書き戻す（tauri-cli 2.11.4、`crates/tauri-cli/src/interface/rust/manifest.rs` の `rewrite_manifest`）。書き戻しは LF で出る。CRLF で取り出していると、中身は同じでも改行だけが違う文字列になって書き戻され、`git status` が `M src-tauri/Cargo.toml` を出した。それが `git pull` を止め、戻す操作（`git checkout -- src-tauri/Cargo.toml`）はファイルを書き換えるので、動いているアプリの作り直しと再起動を引き起こした。LF で取り出していれば組み直した文字列は読んだものと同じで、CLI は書き戻さない。
+
+2026-10-03 に作業ツリーで確かめた（`npx tauri build --debug --no-bundle`。CLI はフロントエンドのビルドより前、起動から 1 秒でこのファイルを書く）：
+
+- 属性の無い CRLF の取り出しでは、ファイルが LF に書き換わり `M` が出た。`git diff --ignore-cr-at-eol` は空だった。
+- 属性を置いて取り出し直すと LF で出て、ビルドしてもファイルは書かれず（内容も更新時刻も同じ）、`git status` は空だった。
+- 属性を置いたまま CRLF のファイルが残っている場合は、次の書き直しで LF になり、`git status` は空に戻った。
+
+### この変更を取り込んだクローンで
+
+`.gitattributes` を取り込んだ直後は、手元の `src-tauri/Cargo.toml` が CRLF のまま、または書き直された LF のままで、`git status` が `M src-tauri/Cargo.toml` を出し続けることがある。中身は索引と同じであり、git が記録している更新時刻だけが古い。次を実行する。
+
+```
+git add --renormalize src-tauri/Cargo.toml
+```
+
+これは索引だけを書き直し、作業ツリーのファイルには触れない。動いているアプリは作り直されない。`git checkout -- src-tauri/Cargo.toml` は使わない——ファイルを書き換えるので、作り直しと再起動が起きる。
