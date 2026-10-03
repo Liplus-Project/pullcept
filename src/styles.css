@@ -545,13 +545,16 @@ button svg.icon {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.78em;
   color: var(--muted);
 }
 
+/* The head of a line — name, addressee, clock — is at the words' own size
+   (#258, 0.78em until then), so it inherits the line's and sets none. The
+   name is in the participant's colour, the one their circle and the panel's
+   row carry. */
 .message .speaker {
   font-weight: 600;
-  color: var(--fg);
+  color: var(--speaker, var(--fg));
 }
 
 /* The addressee is written in the speaker's colour, not the addressee's: it is
@@ -610,7 +613,8 @@ button svg.icon {
   display: block;
   margin-top: 0.1rem;
   text-align: right;
-  font-size: 0.72em;
+  /* At the words' size, as the head of everyone else's lines is (#258, 0.72em
+     until then). */
   color: var(--muted);
 }
 
