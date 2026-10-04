@@ -33,6 +33,7 @@
 
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+pub mod codex;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
@@ -274,9 +275,10 @@ pub const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 /// so it puts nothing of its own on that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cli {
-    /// Claude Code. The one vendor the room is built on — see the 成立条件 in
+    /// Claude Code. The original CLI — see the historical 成立条件 in
     /// `docs/0-requirements.md`.
     ClaudeCode,
+    CodexCli,
 }
 
 impl Cli {
@@ -303,6 +305,7 @@ impl Cli {
         let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
         match stem.to_ascii_lowercase().as_str() {
             "claude" => Some(Cli::ClaudeCode),
+            "codex" => Some(Cli::CodexCli),
             _ => None,
         }
     }
@@ -321,6 +324,7 @@ impl Cli {
     pub fn session_id_args(self) -> &'static [&'static str] {
         match self {
             Cli::ClaudeCode => &["--session-id", SESSION_ID_PLACEHOLDER],
+            Cli::CodexCli => &[],
         }
     }
 
@@ -354,6 +358,7 @@ impl Cli {
     pub fn resume_command(self) -> Option<&'static str> {
         match self {
             Cli::ClaudeCode => Some("claude --resume {session_id}"),
+            Cli::CodexCli => Some("codex resume {session_id}"),
         }
     }
 
@@ -370,6 +375,7 @@ impl Cli {
     pub fn reports_through_settings(self) -> bool {
         match self {
             Cli::ClaudeCode => true,
+            Cli::CodexCli => false,
         }
     }
 
@@ -403,6 +409,9 @@ impl Cli {
     /// already does it: the launch still runs, and what is lost is the state
     /// this exists to prevent rather than the session.
     pub fn room_system_prompt(self, server_name: &str) -> Option<String> {
+        if self == Cli::CodexCli {
+            return None;
+        }
         let text = match self {
             Cli::ClaudeCode => format!(
                 "You are a participant in a Pullcept room. Terminal output \
@@ -410,6 +419,7 @@ impl Cli {
                  the tool mcp__{server_name}__say_to_room. Call it by that \
                  full name even before any tool list has arrived."
             ),
+            Cli::CodexCli => unreachable!(),
         };
         line_safe_text(&text).then_some(text)
     }
@@ -422,6 +432,7 @@ impl Cli {
     pub fn transcript_path(self, home: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
         match self {
             Cli::ClaudeCode => transcript_path(home, cwd, session_id),
+            Cli::CodexCli => codex::transcript(&home.join(".codex"), session_id),
         }
     }
 }
@@ -769,7 +780,38 @@ pub const ROOM_ID_ENV: &str = "PULLCEPT_ROOM_ID";
 /// is saved (`account_env::settle`), and set after the account's variables
 /// when the CLI is spawned, so the app's value holds even if that refusal
 /// were bypassed.
-pub const APP_LAUNCH_ENV: &[&str] = &[ROOM_TOKEN_ENV, LAUNCHED_AS_ENV, ROOM_ID_ENV];
+pub const APP_LAUNCH_ENV: &[&str] = &[
+    ROOM_TOKEN_ENV,
+    LAUNCHED_AS_ENV,
+    ROOM_ID_ENV,
+    codex::LAUNCH_ID_ENV,
+    codex::LAUNCH_ROOM_ENV,
+    codex::NATIVE_URL_ENV,
+    "PULLCEPT_ROOM_URL",
+    "PULLCEPT_AGENT_NAME",
+    "PULLCEPT_ACCOUNT_ID",
+    "PULLCEPT_AGENT_HUE",
+    "PULLCEPT_UNSEEN_HISTORY",
+    codex::CHARACTER_ENV,
+];
+
+#[allow(clippy::too_many_arguments)]
+pub fn runtime_launch_args(
+    base: &[String],
+    cli: Option<Cli>,
+    server: &str,
+    character: Option<&str>,
+    disabled: &[String],
+    status: Option<&str>,
+    runner: &Path,
+    entry: &Path,
+) -> Result<Vec<String>, String> {
+    if cli == Some(Cli::CodexCli) {
+        codex::runtime_args(carried_launch_options(base), server, disabled, runner, entry)
+    } else {
+        Ok(launch_args(base, cli, server, character, disabled, status))
+    }
+}
 
 /// The path the app answers a session's status-line report on (#155).
 pub const STATUS_HOOK_PATH: &str = "/hooks/status";
@@ -1188,6 +1230,9 @@ pub fn launch_args(
     disabled: &[String],
     status_command: Option<&str>,
 ) -> Vec<String> {
+    if cli == Some(Cli::CodexCli) {
+        return codex::launch_args(carried_launch_options(base), server_name, disabled);
+    }
     let reports = cli.is_some_and(Cli::reports_through_settings);
     let base = carried_launch_options(base);
     settings_launch_args(
@@ -2489,7 +2534,7 @@ mod tests {
         // Not the word wherever it appears: a different program is a different
         // program, and the kind it gets is the one that assumes nothing.
         assert_eq!(Cli::of_command("claude-wrapper"), None);
-        assert_eq!(Cli::of_command("codex"), None);
+        assert_eq!(Cli::of_command("codex"), Some(Cli::CodexCli));
         assert_eq!(Cli::of_command(""), None);
     }
 
@@ -2645,7 +2690,7 @@ mod tests {
         // state as never having written one.
         assert_eq!(migrated_cli("claude", Some("  ")), Some(Cli::ClaudeCode));
         // A command this app knows nothing about, whatever it carries.
-        assert_eq!(migrated_cli("codex", None), None);
+        assert_eq!(migrated_cli("codex", None), Some(Cli::CodexCli));
         assert_eq!(migrated_cli("codex", Some(theirs)), None);
     }
 
@@ -2654,6 +2699,7 @@ mod tests {
     fn kind_of_cli(cli: Option<Cli>) -> Value {
         match cli {
             Some(Cli::ClaudeCode) => json!("claude_code"),
+            Some(Cli::CodexCli) => json!("codex_cli"),
             None => json!("cli"),
         }
     }
@@ -2717,7 +2763,7 @@ mod tests {
                 {"id":"person","command":"claude","args":[],"kind":"admin","resume_command":null},
                 {"id":"declared","command":"claude","args":[],"kind":"cli","resume_command":"mine"},
                 {"id":"absent","command":"claude","args":["--session-id={session_id}"]},
-                {"id":"unknown","command":"codex","args":["--session-id","{session_id}"],"kind":"ai"}
+                {"id":"unknown","command":"other-cli","args":["--session-id","{session_id}"],"kind":"ai"}
             ]}"#,
         );
         let accounts = root["accounts"].as_array().expect("accounts");

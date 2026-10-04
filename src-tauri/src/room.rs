@@ -90,11 +90,13 @@
 //! `session-stats` for the named seat and answers. The two callers are told
 //! apart by their first bytes, since a WebSocket upgrade is a `GET`.
 //!
-//! One POST path, where #149 had put a second for a `StopFailure` hook. That
+//! A status POST path, where #149 had put a second for a `StopFailure` hook. That
 //! path went out with the hook (#161): 制限中 is read off the two rate-limit
 //! percentages this same report already carries, so nothing is left for a
 //! second POST to say. The first-byte split above is unchanged — it divides
 //! the protocol from a POST, and what has gone is a second kind of POST.
+//! #272 adds `/hooks/codex-session` on this authenticated listener for a guarded
+//! native SessionStart ID. It records a session, without posting room speech.
 //!
 //! **There are several rooms, one per topic (#141, decision 3).** A room is a
 //! topic's floor and the participants in it, and a topic that is not on the
@@ -1323,9 +1325,19 @@ async fn read_hook(
     // (#161).
     let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
     let reported = mcp_config::parse_status_hook_target(&target);
-    let status = match (authorized, reported.is_some()) {
+    let native = target == mcp_config::codex::NATIVE_PATH;
+    let captured = authorized
+        && native
+        && app.state::<crate::session::RoomSeats>().capture_native(
+            app,
+            &app.state::<crate::pty::PtyState>(),
+            room,
+            &body,
+        );
+    let status = match (authorized, reported.is_some() || native) {
         (false, _) => "401 Unauthorized",
         (true, false) => "404 Not Found",
+        (true, true) if native && !captured => "409 Conflict",
         (true, true) => "200 OK",
     };
     if authorized {

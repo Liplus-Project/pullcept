@@ -1,8 +1,19 @@
 # 開発・テスト・配布
 
+## Codex の再現チェック（#272）
+
+通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。長いキャラクター追加指示があっても、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ることを確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
+
+実バイナリの discovery は opt-in である。`PULLCEPT_TEST_CODEX_BIN` に隔離 0.160.0 以上の実行ファイルを指定し、`node --test sidecar/test/codex-runtime.test.mjs` を実行する。新しい一時 CODEX_HOME と fixture のみを使い、thread／turn を作らずモデルを呼ばない。Windows では空白を含むパスの .cmd shim 経由の起動も確認する。通常の npm run sidecar:test では skip する。
+
+`sidecar/test/codex-live.mjs` は明示実行する実モデルの手動 fixture である。`PULLCEPT_PROBE_BIN` に隔離 CLI、必要なら `PULLCEPT_PROBE_AUTH` にコピー元 auth.json、`PULLCEPT_PROBE_ROOT` に専用出力先を指定する。`node sidecar/test/codex-live.mjs` を対話 PTY で実行し、通常の folder trust と専用 handler 一件の信頼を行う。コピー元を変えず、検証用コピー先だけを使う。`PULLCEPT_PROBE_RESUME` に取得 UUID を指定すると明示 resume を検証できる。相手は mock 部屋であり、実 Pullcept listener と区別する。
+
+生成物の既定先 .codex-live-evidence/ は gitignore で除外する。検証用 auth コピーを含みうるため PR に含めない。evidence.json は fixture の部屋通信と native ID だけを保存し、端末出力・資格情報を収録しない。結果の範囲は 4-status.md に記載する。
+
+
 ## テストの配置
 
-`.mcp.json` への登録と起動フラグの検査、会話の記録の在り処（「[トピック](1-room.md#トピック)」の決定3）、ステータスラインのアドレスとその読み戻し・行に載せてよい語の判定・`statusLine` の組み立て・どの行も `hooks` を宣言しないこと（#155 / #161）、および種別が持つ CLI の作法とその移行（起動コマンドからの判定、セッション id の付与と取り外し、再開の一行、`--settings` の報告を載せるかどうか、保存済みアカウントの種別の書き換え。#156）は `crates/mcp-config/`、床の判定と刻印は `crates/room-floor/`、トピックの保存（索引とディレクトリの照合、削除、題の生成、一行の解析、添付の保存とその名前の整え方・番号付け・削除で一緒に消えること。#223）は `crates/topic-index/`、アカウントの環境変数（欄の解析、マスク、DPAPI による暗号化と復号、出たままの行の保持。#163）は `crates/account-env/` という、いずれも tauri 非依存の crate に置く。
+`.mcp.json` への登録と起動フラグの検査、会話の記録の在り処（「[トピック](1-room.md#トピック)」の決定3）、ステータスラインのアドレスとその読み戻し・行に載せてよい語の判定・`statusLine` の組み立て・Claude の起動行が `hooks` を宣言しないこと（#155 / #161）、および種別が持つ CLI の作法とその移行（起動コマンドからの判定、セッション id の付与と取り外し、再開の一行、`--settings` の報告を載せるかどうか、保存済みアカウントの種別の書き換え。#156）は `crates/mcp-config/`、床の判定と刻印は `crates/room-floor/`、トピックの保存（索引とディレクトリの照合、削除、題の生成、一行の解析、添付の保存とその名前の整え方・番号付け・削除で一緒に消えること。#223）は `crates/topic-index/`、アカウントの環境変数（欄の解析、マスク、DPAPI による暗号化と復号、出たままの行の保持。#163）は `crates/account-env/` という、いずれも tauri 非依存の crate に置く。
 
 移行がここに在るのは、この規則の一番の対象だからである。人が保存したアカウントを書き換える手続きであり、間違えれば失うのは利用者の設定である。`src-tauri` 側の `config.json` の読み書きからそこだけを切り出し、種別の名前は呼ぶ側から渡す——名前は画面と共有する列挙のものであり、この crate に二つ目の綴りを置かないためである。
 

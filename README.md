@@ -21,6 +21,8 @@ Pullcept は、人間と複数の独立した AI / Li+ セッションが、一�
 
 ## 現在の実装状況
 
+Codex CLI（0.160.0 以上）をアカウント種別から選べます。対話起動、MCP の返信・履歴、初回 native ID の保存と明示 resume に対応します。初回のフォルダー／専用 hook 信頼は診断端末で行います。利用方法は [起動とアカウント](docs/3-accounts.md#codex-cli-の起動と再開272)、実 CLI／実モデル fixture と未確認 GUI 操作の区別は [実装状況](docs/4-status.md) を参照してください。
+
 ### 実装済み
 
 - Tauri 2 による Windows デスクトップアプリの基盤

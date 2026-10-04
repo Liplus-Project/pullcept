@@ -1,5 +1,14 @@
 # 受容したトレードオフ
 
+## Codex の native hook と設定への依存（#272）
+
+native ID は初回の実会話で取得するため、起動直後にはまだ再開 ID が無い。ID のためだけのモデルターンや空 thread の事前割当を避け、通常の個別 hook 信頼を利用者に委ねる。未信頼の間は ID を得られないことを診断面で案内する。
+
+対応基準は 0.160.0。project config／hook discovery／会話保存形式への依存を mcp-config::codex と専用補助スクリプトに置く。linked worktree の hook は CLI が root checkout へ解決するため、同じ repository と相対位置を metadata で検証してから追記する。CLI の変更で一致を確認できなければ推測で登録せず拒否する。
+
+キャラクターは MCP instructions の追加指示で、既存 AGENTS／CLI identity を保つ。実モデルの遵守を一例確認したが、Claude output style と同じ優先順位・人格の完全一致を保証しない。Claude 専用 metrics は未取得として表示する。
+
+
 | 決定 | 代償 |
 |---|---|
 | 単一ベンダー構成 | 常駐エージェントが同一の利用枠を共有する |
