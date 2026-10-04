@@ -390,6 +390,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         // Launched as the account its entry names, which is what every launch
         // the app makes is (#208).
         [launchedAsEnv()]: TEST_ACCOUNT,
+        PULLCEPT_LAUNCHED_ROOM: "test-room",
         PULLCEPT_ROOM_ID: "test-room",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -1104,9 +1105,10 @@ test("a session seated in a topic that already holds posts is told so", async (t
 // that account then appears twice. The second case is the same shape from
 // outside the app: `claude` started by hand in that directory, whose process
 // carries no launched-as account at all.
-for (const [label, launchedAs] of [
-  ["another account's CLI", OTHER_ACCOUNT],
-  ["a CLI the app did not launch", ""],
+for (const [label, launchedAs, launchedRoom] of [
+  ["another account's CLI", OTHER_ACCOUNT, "test-room"],
+  ["a CLI the app did not launch", "", ""],
+  ["the same account in another topic", TEST_ACCOUNT, "another-room"],
 ]) {
   test(`a registration started by ${label} stays out of the room`, async (t) => {
     const http = createServer();
@@ -1130,6 +1132,7 @@ for (const [label, launchedAs] of [
           PULLCEPT_AGENT_NAME: "test-agent",
           PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
           [launchedAsEnv()]: launchedAs,
+          PULLCEPT_LAUNCHED_ROOM: launchedRoom,
           PULLCEPT_ROOM_ID: "test-room",
         },
         stdio: ["pipe", "pipe", "pipe"],

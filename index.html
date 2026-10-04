@@ -502,6 +502,7 @@
             <select id="dialog-kind">
               <option value="admin">admin（人間）</option>
               <option value="claude_code">Claude Code</option>
+              <option value="codex_cli">Codex CLI</option>
               <option value="cli">CLI（汎用）</option>
               <option value="mcp">MCP サーバ</option>
             </select>
@@ -563,6 +564,8 @@
                 placeholder="例: character_Lay（output style の name）"
               />
             </label>
+            <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
+            <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。初回は診断端末で作業フォルダーと Pullcept の SessionStart hook の信頼を確認してください。ID は最初の会話で保存されます。キャラクター欄は MCP の追加指示で、Claude の output style 名としては扱いません。状態情報は未取得です。</p>
             <!-- 起動オプション。**その人が足したいものだけを書く欄である**
                  （#156、決定3）。セッション id の渡し方は種別が持つため、
                  `Claude Code` では `--session-id {session_id}` をここへ書かな

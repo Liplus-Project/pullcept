@@ -15,8 +15,8 @@ use tauri::Manager;
 /// (#39). The one moment anyone can say which this is, is the moment the
 /// account is created, and there is already a form there (#59).
 ///
-/// **Two of the three launch, and what separates them is what this app knows
-/// about the command under them** (#156). `ClaudeCode` names a CLI whose
+/// **Three kinds launch, and what separates them is what this app knows
+/// about the command under them** (#156 / #272). `ClaudeCode` and `CodexCli` name CLIs whose
 /// conventions Pullcept holds (`mcp_config::Cli`) — how a session id is handed
 /// over, how a session is resumed, how it reports itself. `Cli` is an account
 /// this app knows nothing of the sort about: it launches, and the app puts
@@ -24,7 +24,7 @@ use tauri::Manager;
 /// A second CLI is a second variant here and a second arm over there, not a
 /// second reading of somebody's launch options.
 ///
-/// **The fourth is not launched at all: a local MCP server the app runs itself**
+/// **A local MCP server is not launched as a CLI: the app runs it itself**
 /// (#193). It speaks in the room — what the server pushes is posted as the
 /// account's — and no CLI is started under it; the server is started from its
 /// entry in `mcp-servers.json`, which the account names as `server`.
@@ -50,6 +50,8 @@ pub enum AccountKind {
     /// A Claude Code session this app launches, with that CLI's conventions on
     /// its line.
     ClaudeCode,
+    /// Codex CLI 0.160+ with native SessionStart identity and project TOML.
+    CodexCli,
     /// A session of some CLI this app knows no conventions of.
     ///
     /// The default, and it is the safe one rather than the common one: a kind
@@ -77,6 +79,7 @@ impl AccountKind {
         match self {
             AccountKind::Admin | AccountKind::Cli | AccountKind::Mcp => None,
             AccountKind::ClaudeCode => Some(mcp_config::Cli::ClaudeCode),
+            AccountKind::CodexCli => Some(mcp_config::Cli::CodexCli),
         }
     }
 }
@@ -504,6 +507,7 @@ const LEGACY_LAUNCHED_KIND: &str = "ai";
 fn kind_of_cli(cli: Option<mcp_config::Cli>) -> Value {
     kind_value(match cli {
         Some(mcp_config::Cli::ClaudeCode) => AccountKind::ClaudeCode,
+        Some(mcp_config::Cli::CodexCli) => AccountKind::CodexCli,
         None => AccountKind::Cli,
     })
 }

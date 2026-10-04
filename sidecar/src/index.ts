@@ -108,6 +108,7 @@ const ACCOUNT_ID = process.env.PULLCEPT_ACCOUNT_ID?.trim() || null;
  * the servers it starts — so it says whose CLI is reading.
  */
 const LAUNCHED_AS = process.env.PULLCEPT_LAUNCHED_AS?.trim() || null;
+const LAUNCHED_ROOM = process.env.PULLCEPT_LAUNCHED_ROOM?.trim() || null;
 
 /**
  * Why this process stays out of the room, or null when it takes its seat (#208).
@@ -131,7 +132,7 @@ const LAUNCHED_AS = process.env.PULLCEPT_LAUNCHED_AS?.trim() || null;
  * either way, and says so for that reason instead.
  */
 const SEAT_REFUSAL: string | null =
-  !ROOM_URL || LAUNCHED_AS === ACCOUNT_ID
+  !ROOM_URL || (LAUNCHED_AS === ACCOUNT_ID && (ACCOUNT_ID === null || LAUNCHED_ROOM === ROOM_ID))
     ? null
     : LAUNCHED_AS === null
       ? `this CLI was not launched by Pullcept (PULLCEPT_LAUNCHED_AS is not set), ` +
@@ -335,6 +336,7 @@ const LOOKING_BACK = [
 ];
 
 const INSTRUCTIONS = [
+  ...(process.env.PULLCEPT_CHARACTER ? ["この席の追加指示（CLI の既存指示も保つ）:", process.env.PULLCEPT_CHARACTER, ""] : []),
   "あなたは Pullcept の部屋に参加しています。",
   `この部屋でのあなたの名前は「${AGENT_NAME}」です。`,
   "",
