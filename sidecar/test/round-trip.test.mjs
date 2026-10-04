@@ -82,7 +82,7 @@ const UNLABELLED = "- 札の無い入力は、利用者が端末に直接打っ�
 // is worth calling (#115, decision 4C). How to page further back is the tool's
 // own description (#273).
 const LOOKING_BACK =
-  "- 来る前の発言は届きません。話が分からないときだけ read_room_history を呼んでください。";
+  "来る前の発言は届きません。今のトピックの過去が必要なときは read_room_history ツールで参照できます。";
 
 // Looking back, as it is said to a seat taken in front of posts it does not
 // have. The tool and the decision are the same as above; what changes is that
@@ -90,15 +90,31 @@ const LOOKING_BACK =
 // — a session cannot notice from inside that the conversation started before it
 // arrived, and the launch is the only party that knows (#133).
 const SEATED_LATE =
-  "- 今のトピックには、あなたが来る前の発言が既にあり、あなたには届いていません。要るときは read_room_history を呼んでください。引くかどうかはあなたが決めます。";
+  "今のトピックには、あなたが来る前の発言が既にあり、あなたには届いていません。過去が要るときは read_room_history ツールで参照できます。引くかどうかはあなたが決めます。";
 
-// Speaking. A post that came in as user input invites a reply written to the
-// terminal, which the room never reads (#195). The two added in #273: what
+// The opening, which a session must have even if it reads nothing else: that it
+// is in the room and under which name, that it speaks through say_to_room and
+// not the terminal, how to look back, and last_seen (#272). In the general form
+// of looking back, since that is what this launch declares.
+const OPENING = [
+  "あなたは Pullcept の部屋に参加しています。部屋での名前は「test-agent」です。",
+  "部屋への発言・返信は say_to_room ツールで投稿してください。端末出力は部屋への投稿ではありません。",
+  LOOKING_BACK,
+  "say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。",
+].join("\n");
+
+// What a Codex account adds to the manners (#272): the person's own text, at
+// a length well past the limit, so the test can see that it arrives whole and
+// that the manners ahead of it are still within the limit (#273).
+const CHARACTER = "長いキャラクターの追加指示。".repeat(100);
+const CHARACTER_BLOCK = `\n\nこの席の追加指示（CLI の既存指示も保つ）:\n${CHARACTER}`;
+
+// Speaking. That say_to_room is the way, and the terminal is not, is in the
+// opening above (#195, #272). The two added in #273: what
 // shows only in the terminal is named by where it is, and a body carries no
 // signature of its own, since the room shows who spoke.
 const SPEAKING = [
   "話す:",
-  "- 部屋へ届くのは say_to_room だけです。ターミナルの出力は部屋には届きません。",
   "- ターミナルにしか出ない物（画像・ファイル）は、その場所（パスや URL）を発言に書いてください。",
   "- 部屋が名前を表示するので、本文に自分の名前は付けません。",
   "- 簡潔に。長い説明は要点から。",
@@ -403,7 +419,9 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         // Launched as the account its entry names, which is what every launch
         // the app makes is (#208).
         [launchedAsEnv()]: TEST_ACCOUNT,
+        PULLCEPT_LAUNCHED_ROOM: "test-room",
         PULLCEPT_ROOM_ID: "test-room",
+        PULLCEPT_CHARACTER: CHARACTER,
       },
       stdio: ["pipe", "pipe", "pipe"],
     },
@@ -468,17 +486,32 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the server must not declare the claude/channel capability",
   );
   const instructions = init.result.instructions ?? "";
+  // The account's character rides last, whole, and outside the count (#272 /
+  // #273): it is the person's own text, of the person's own length, and a
+  // client that cuts the instructions must cut it rather than the manners.
+  assert.ok(
+    instructions.endsWith(CHARACTER_BLOCK),
+    "the full character must survive, after the room's manners",
+  );
+  const manners = instructions.slice(0, -CHARACTER_BLOCK.length);
   // Whole, or not at all: a client that cuts the manners cuts their tail, and
   // the tail is where the floor used to be (#273).
   assert.ok(
-    instructions.length <= INSTRUCTIONS_LIMIT,
-    `instructions must fit in ${INSTRUCTIONS_LIMIT} chars with the name in; got ${instructions.length}`,
+    manners.length <= INSTRUCTIONS_LIMIT,
+    `the manners must fit in ${INSTRUCTIONS_LIMIT} chars with the name in; got ${manners.length}`,
   );
+  // What a session must have even if it reads nothing else, at the very top
+  // (#272).
+  const head = [...instructions].slice(0, 512).join("");
+  assert.match(head, /Pullcept の部屋に参加/);
+  assert.match(head, /say_to_room ツールで投稿/);
+  assert.match(head, /端末出力は部屋への投稿ではありません/);
+  assert.match(head, /read_room_history ツールで参照/);
+  assert.match(head, /say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。/);
   assert.match(instructions, /say_to_room/, "instructions must name the posting tool");
-  assertContains(
-    instructions,
-    "部屋での名前は「test-agent」です。",
-    "instructions must tell the agent the name it answers to",
+  assert.ok(
+    instructions.startsWith(OPENING),
+    `instructions must open with the room, the name, the posting tool, looking back and last_seen\n--- expected to start with ---\n${OPENING}\n--- actual ---\n${instructions}`,
   );
   // The arrival, in full, and the label in the form the app actually writes
   // it (#183, #195).
@@ -1123,9 +1156,10 @@ test("a session seated in a topic that already holds posts is told so", async (t
 // that account then appears twice. The second case is the same shape from
 // outside the app: `claude` started by hand in that directory, whose process
 // carries no launched-as account at all.
-for (const [label, launchedAs] of [
-  ["another account's CLI", OTHER_ACCOUNT],
-  ["a CLI the app did not launch", ""],
+for (const [label, launchedAs, launchedRoom] of [
+  ["another account's CLI", OTHER_ACCOUNT, "test-room"],
+  ["a CLI the app did not launch", "", ""],
+  ["the same account in another topic", TEST_ACCOUNT, "another-room"],
 ]) {
   test(`a registration started by ${label} stays out of the room`, async (t) => {
     const http = createServer();
@@ -1149,6 +1183,7 @@ for (const [label, launchedAs] of [
           PULLCEPT_AGENT_NAME: "test-agent",
           PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
           [launchedAsEnv()]: launchedAs,
+          PULLCEPT_LAUNCHED_ROOM: launchedRoom,
           PULLCEPT_ROOM_ID: "test-room",
         },
         stdio: ["pipe", "pipe", "pipe"],

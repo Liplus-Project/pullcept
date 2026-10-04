@@ -12,6 +12,7 @@ crates/*/target/
 # Environment
 .env
 .env.*
+.codex-live-evidence/
 
 # IDE
 .vscode/

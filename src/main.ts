@@ -234,7 +234,7 @@ interface SessionStats {
  * `mcp-servers.json` (#200), or given by the app to an entry the file holds
  * with no account; either way no other kind turns into it or out of it.
  */
-type AccountKind = "admin" | "claude_code" | "cli" | "mcp";
+type AccountKind = "admin" | "claude_code" | "codex_cli" | "cli" | "mcp";
 
 /**
  * Whether this account launches a session.
@@ -245,7 +245,7 @@ type AccountKind = "admin" | "claude_code" | "cli" | "mcp";
  * the file, not from a row (#193).
  */
 function launches(account: Account): boolean {
-  return account.kind === "claude_code" || account.kind === "cli";
+  return account.kind === "claude_code" || account.kind === "codex_cli" || account.kind === "cli";
 }
 
 /**
@@ -771,6 +771,7 @@ const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HT
 const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
+const dialogCommandEl = document.getElementById("dialog-cli-command") as HTMLInputElement;
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
 const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
 const dialogResumeFieldEl = document.getElementById("dialog-resume-field") as HTMLElement;
@@ -2714,6 +2715,7 @@ const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
   // drawn, so a screen whose accounts are all one kind reads as it did before
   // the split — the second heading appears when a second kind does.
   { kind: "claude_code", label: "Claude Code" },
+  { kind: "codex_cli", label: "Codex CLI" },
   { kind: "cli", label: "CLI" },
   // Under the AI accounts, as a heading of its own (#193, Master 判断
   // 2026-09-28). A server speaks and launches nothing, so it is not one of them.
@@ -5165,6 +5167,9 @@ function showDialogKind(): void {
   dialogLaunchEl.hidden = !launchesKind(kind);
   dialogMcpEl.hidden = kind !== "mcp";
   dialogResumeFieldEl.hidden = kind !== "cli";
+  const codex = kind === "codex_cli";
+  dialogCharacterEl.placeholder = codex ? "部屋での追加指示（CLI の既存指示も適用）" : "例: character_Lay（output style の name）";
+  document.getElementById("dialog-codex-note")!.hidden = !codex;
   if (launchesKind(kind)) refreshDialogLine();
   // Chosen on a form making an account: the server is written and started at
   // 決定, so what there is to fill in now is what it is started with (#200).
@@ -5173,7 +5178,7 @@ function showDialogKind(): void {
 
 /** `launches`, for a kind the form holds rather than an account. */
 function launchesKind(kind: AccountKind): boolean {
-  return kind === "claude_code" || kind === "cli";
+  return kind === "claude_code" || kind === "codex_cli" || kind === "cli";
 }
 
 /**
@@ -5219,7 +5224,7 @@ async function refreshDialogPreview(): Promise<void> {
     });
     // The form may have been closed or reopened during the round trip.
     if (draft?.id !== id) return;
-    dialogPreviewEl.textContent = `${draft.command} ${joinArgs(merged)}`;
+    dialogPreviewEl.textContent = `${dialogCommandEl.value.trim()} ${joinArgs(merged)}`;
   } catch {
     dialogPreviewEl.textContent = "";
   }
@@ -5256,10 +5261,8 @@ async function refreshDialogNotice(): Promise<void> {
     const report = await invoke<LaunchFieldReport>("launch_field_report", {
       character: dialogCharacterEl.value.trim() || null,
       options: dialogOptionsEl.value,
-      // The draft's, because no field writes it: it is the command the kind
-      // names (`config.rs`), and an account carrying one from an older file is
-      // the way an unlaunchable one is reached.
-      command: draft.command,
+      // The current form's command, including a custom native executable.
+      command: dialogCommandEl.value.trim(),
       // Only where the field is the answer. On a kind that holds its own way
       // back, a line stored here is not the one that runs (#156, 決定6).
       resume: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
@@ -5377,6 +5380,7 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
   drawDialogAvatar();
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
+  dialogCommandEl.value = draft.command;
   dialogOptionsEl.value = joinArgs(draft.args);
   dialogResumeEl.value = draft.resume_command ?? "";
   void drawDialogEnv(draft);
@@ -5656,7 +5660,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // read in; the app refuses the launch as well, and that refusal is the
   // authority — this check only gets there first, at the moment it can be
   // fixed rather than at the moment it fails (#99).
-  if (character && args.some((arg) => arg.split("=")[0] === "--settings")) {
+  if (kind !== "codex_cli" && character && args.some((arg) => arg.split("=")[0] === "--settings")) {
     dialogError(
       "起動オプションの --settings とキャラクターは同じ設定を指します。どちらか一方にしてください。",
     );
@@ -5690,6 +5694,7 @@ async function commitAccountDialog(): Promise<boolean> {
 
   const settled: Account = {
     ...settling,
+    command: launchesKind(kind) ? dialogCommandEl.value.trim() : settling.command,
     name,
     kind,
     avatar,
@@ -6543,7 +6548,11 @@ async function main(): Promise<void> {
   window.addEventListener("resize", () => closeAccountMenu(false));
   window.addEventListener("blur", () => closeAccountMenu(false));
   sessionIdCopyEl.addEventListener("click", () => void copySessionId());
-  dialogKindEl.addEventListener("change", () => showDialogKind());
+  dialogKindEl.addEventListener("change", () => {
+    if (dialogKindEl.value === "codex_cli" && dialogCommandEl.value === "claude") dialogCommandEl.value = "codex";
+    if (dialogKindEl.value === "claude_code" && dialogCommandEl.value === "codex") dialogCommandEl.value = "claude";
+    showDialogKind();
+  });
   // The form's circle is drawn from the name and the colour above it (#236).
   dialogNameEl.addEventListener("input", () => drawDialogAvatar());
   dialogHueEl.addEventListener("change", () => drawDialogAvatar());
@@ -6559,6 +6568,7 @@ async function main(): Promise<void> {
     drawDialogAvatar();
   });
   dialogOptionsEl.addEventListener("input", () => refreshDialogLine());
+  dialogCommandEl.addEventListener("input", () => refreshDialogLine());
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
   dialogCharacterEl.addEventListener("input", () => refreshDialogLine());

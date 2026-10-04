@@ -1,5 +1,16 @@
 # 実装状況
 
+## Codex CLI の検証範囲（#272、2026-10-04）
+
+`codex_cli` の保存・種別選択・起動／再開・native TOML 登録・初回 ID 通知を実装した。Claude の argv 回帰、設定と hook の保持、秘密の非表示、起動／アカウント／トピック照合、履歴消失と I/O 不明の区別、複数登録の排他は crate／sidecar テストが持つ。
+
+**実 CLI／実モデルで確認した範囲:** Windows の隔離 Codex CLI 0.160.0 と専用 CODEX_HOME で、通常の folder trust と専用 handler の個別信頼を操作した。実会話の callback が root native UUID を返し、改行を含む札と応答中の追加入力を受けた。停止後に同じ UUID を明示 resume し、前の合言葉を保持したまま read_room_history と say_to_room を呼び、MCP の追加キャラクター指示 `TESTCHAR:` を付けて応答した。HTTP callback と WebSocket の相手は fixture であり、Pullcept 本体の listener ではない。
+
+**追加モデル呼出しなしで確認した範囲:** standalone、独立 Git root、nested cwd、別 Git root への --cd、ドットを含む profile の markers を native config/read で確認した。独立 root と linked root／nested は、通常の folder trust 後に hooks/list で対応する project handler を列挙した。linked worktree の local config layer と hook scope は異なり、正式に対応する root checkout へ登録することで一致した。独立 root の handler は個別信頼後の trusted、linked nested の新 handler は untrusted として列挙され、自動信頼していない。
+
+**未確認:** Codex アカウント作成から停止・再開までの Pullcept 実 GUI／実 listener 操作、Claude と Codex の実アプリ内同時往復、人間の打ちかけ時の保留／解放を Codex の実 GUI で通す操作。打ちかけの判定と改行・送信キーの分離は既存 terminal-input テスト、保留列は共通 PTY 実装に依存する。fixture の結果を実 GUI の確認へ読み替えない。
+
+
 ## 実装済み
 
 - Tauri 2 による Windows デスクトップアプリの基盤
@@ -24,7 +35,7 @@
 - トピックの一覧（会話面の左の列、新しい順、一覧の外に固定の「新規」（#225 から見出しの横の ＋）と索引に無い現在のトピックでのその選択状態、選択による部屋への読み戻し、参加者パネルと対の寸法、名前から導く色）
 - 参加者モデル（統一 `post` フレーム、発言者以外の全セッションへの配送、接続同一性による自分の発言の抑止と名簿の同一性、人間を含む名簿）
 - アカウント（作成・編集・削除、種別、名前と色と作業ディレクトリと起動オプション、リストでのオフライン表示、一つのアカウントは一つの部屋に一席まで、`config.json` からの移行）
-- 種別が持つ CLI の作法（#156 / #147。`admin` / `Claude Code` / `CLI（汎用）` の三種別、種別ごとのセッション id の渡し方・再開の一行（起動オプションを後ろに載せ、`--session-id` は載せない。#167）・`--settings` の報告・会話の在り処・部屋の道具の名乗り、その人が足すものだけを書く起動オプションの欄、汎用の種別では出さないステータスラインと名乗り、起動コマンドから見分ける既存アカウントの移行と再開コマンド・`--session-id` の扱い）
+- 種別が持つ CLI の作法（#156 / #147。`admin` / `Claude Code` / `Codex CLI` / `CLI（汎用）` の CLI 作法（`mcp` の宣言は #193）、種別ごとのセッション id の渡し方・再開の一行（起動オプションを後ろに載せ、`--session-id` は載せない。#167）・`--settings` の報告・会話の在り処・部屋の道具の名乗り、その人が足すものだけを書く起動オプションの欄、汎用の種別では出さないステータスラインと名乗り、起動コマンドから見分ける既存アカウントの移行と再開コマンド・`--session-id` の扱い）
 - アカウントのキャラクター（output style の `name:` を持つ欄、起動時の `--settings` による選択、ファイルを書き出さない形、起動オプションの `--settings` との併記の拒否、宣言しないアカウントは既定のまま）
 - アカウントの環境変数（#163。`名前=値` を一行ずつ書く一つの欄、DPAPI による値の暗号化、`CommandBuilder::env` による受け渡し、命令文とプレビューに載せないこと、先頭と末尾だけの表示、出たままの行が元の値を保つこと、値を囲む引用符の除去と片側だけの引用符の拒否、隠し表示を書き換えた値の拒否（#165）、アプリ自身が設定する名前の拒否、復号できない値での起動の拒否）
 - 他のアカウントの部屋サーバを起動しないこと（`--settings` の `disabledMcpjsonServers`、名指しの出所は `.mcp.json` の実物、止めるものが無ければ素通し）

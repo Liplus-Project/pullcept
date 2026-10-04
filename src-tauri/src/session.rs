@@ -14,10 +14,10 @@ use crate::room::RoomState;
 use crate::room_log::{self, TopicRef};
 use mcp_config::{
     carried_launch_options, console_safe, declared_character, declares_session_id,
-    declares_settings, launch_args, other_room_servers, register_sidecar,
-    reject_incompatible_flags, resume_launch_args, server_name_for, session_id_launch_args, split_launch_options,
-    status_hook_url, status_line_command, substitute_session_id, Cli, RoomRegistration,
-    LAUNCHED_AS_ENV, ROOM_ID_ENV, ROOM_TOKEN_ENV,
+    declares_settings, other_room_servers, register_sidecar, reject_incompatible_flags,
+    resume_launch_args, runtime_launch_args, server_name_for, session_id_launch_args,
+    split_launch_options, status_hook_url, status_line_command, substitute_session_id, Cli,
+    RoomRegistration, LAUNCHED_AS_ENV, ROOM_ID_ENV, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -74,9 +74,139 @@ fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
             break;
         }
     }
-    Err("Could not find sidecar/src/index.ts next to node_modules/tsx. \
+    Err(
+        "Could not find sidecar/src/index.ts next to node_modules/tsx. \
          Run npm install, or set PULLCEPT_SIDECAR_ENTRY and PULLCEPT_SIDECAR_RUNNER."
-        .to_string())
+            .to_string(),
+    )
+}
+
+fn ensure_codex_version(command: &str, env: &[(String, String)], cwd: &Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let mut cmd = if cfg!(windows) && !command.to_ascii_lowercase().ends_with(".exe") {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", command]);
+        cmd
+    } else {
+        Command::new(command)
+    };
+    cmd.arg("--version")
+        .current_dir(cwd)
+        .envs(env.iter().cloned())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Codex の版を確認できません: {e}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if std::time::Instant::now() >= deadline {
+            #[cfg(windows)] {
+                use std::os::windows::process::CommandExt;
+                let _=Command::new("taskkill").args(["/PID",&child.id().to_string(),"/T","/F"])
+                    .creation_flags(0x08000000).stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Codex の版確認がタイムアウトしました。".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let result = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !result.status.success()
+        || !mcp_config::codex::supported_version(&String::from_utf8_lossy(&result.stdout))
+    {
+        return Err("Codex CLI 0.160.0 以上が必要です。診断端末で codex --version を確認してください。Pullcept は CLI のインストールや認証を変更しません。".into());
+    }
+    Ok(())
+}
+
+fn codex_hook_dir(
+    app: &AppHandle,
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+    verify_hook: bool,
+) -> Result<PathBuf, String> {
+    let script = entry.parent().unwrap().join("codex-project.mjs");
+    let home = env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+        .map(|(_, value)| PathBuf::from(value))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        .or_else(|| app.path().home_dir().ok().map(|home| home.join(".codex")))
+        .ok_or("Codex home が見つかりません。")?;
+    let home=if home.is_absolute() {home} else {cwd.join(home)};
+    let mut discovery = mcp_config::codex::discovery_options(options, &home)?;
+    discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
+    let mut child = std::process::Command::new("node");
+    child
+        .arg(script)
+        .arg(command)
+        .arg(cwd)
+        .arg(serde_json::to_string(&discovery).unwrap())
+        .envs(env.iter().cloned())
+        .env("CODEX_HOME",&home)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    let output = child.output().map_err(|_| {
+        "Codex の project discovery を起動できません。node と CLI コマンドを確認してください。"
+            .to_string()
+    })?;
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        "Codex の project discovery が失敗しました。診断端末で CLI の設定を確認してください。"
+            .to_string()
+    })?;
+    if let Some(error) = data.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_string());
+    }
+    let folders = data
+        .get("projects")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Codex config/read returned no project layers")?;
+    let effective = mcp_config::codex::effective_cwd(cwd, options)?;
+    let config_dir = mcp_config::codex::hook_dir_from_layers(&effective, folders)?;
+    let dir = mcp_config::codex::native_hook_dir(&effective, &config_dir)?;
+    let hook = dir.join(".codex/hooks.json");
+    if verify_hook
+        && folders
+            .iter()
+            .find(|v| {
+                v.get("folder")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    == std::fs::canonicalize(config_dir.join(".codex")).ok()
+            })
+            .is_some_and(|v| v["disabled"].is_null())
+    {
+        let expected =
+            std::fs::canonicalize(hook).map_err(|_| "Codex hook を登録できませんでした。")?;
+        let found = data["hooks"].as_array().is_some_and(|hooks| {
+            hooks.iter().any(|h| {
+                h["path"]
+                    .as_str()
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    == Some(expected.clone())
+            })
+        });
+        if !found {
+            return Err("Codex の hooks/list が専用 SessionStart hook を列挙しませんでした。診断端末で project trust と hook の設定を確認してください。".into());
+        }
+    }
+    Ok(dir)
 }
 
 /// The status-line script, which ships beside the sidecar entry point (#155).
@@ -202,6 +332,10 @@ enum Seat {
 /// would use now, not what this one used.
 #[derive(Clone, serde::Serialize)]
 pub struct RunningSession {
+    #[serde(skip)]
+    launch_id: Option<String>,
+    #[serde(skip)]
+    native_id: Option<String>,
     pub pty_id: String,
     /// When the PTY was spawned, RFC 3339. The stamp `StartedSession` carries.
     pub started_at: String,
@@ -257,6 +391,63 @@ pub struct SeatedAccount {
 }
 
 impl RoomSeats {
+    pub fn capture_native(
+        &self,
+        app: &AppHandle,
+        ptys: &PtyState,
+        room: &RoomState,
+        body: &[u8],
+    ) -> bool {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+            return false;
+        };
+        let get = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+        let (Some(topic), Some(account), Some(_launch), Some(id)) = (
+            get("room_id"),
+            get("account_id"),
+            get("launch_id"),
+            get("session_id"),
+        ) else {
+            return false;
+        };
+        if get("hook_event_name") != Some("SessionStart") || !mcp_config::codex::valid_id(id) {
+            return false;
+        }
+        let Some(topic_ref) = room.topic_of(topic) else {
+            return false;
+        };
+        let mut seats = self.seats.lock();
+        let Some(Seat::Running(session)) = seats.get_mut(&seat_key(topic, account)) else {
+            return false;
+        };
+        if !ptys.is_running(&session.pty_id)
+            || session.launch_id.as_deref().is_none_or(|active| {
+                mcp_config::codex::native_matches(
+                    &value,
+                    topic,
+                    account,
+                    active,
+                    session
+                        .native_id
+                        .as_deref()
+                        .or(session.resumed_from.as_deref()),
+                )
+                .is_none()
+            })
+        {
+            return false;
+        }
+        match room_log::record_session(app, &topic_ref, account, id) {
+            Ok(()) => {
+                session.native_id = Some(id.to_string());
+                true
+            }
+            Err(err) => {
+                room_log::report(app, err);
+                false
+            }
+        }
+    }
     pub fn new() -> Self {
         RoomSeats {
             seats: Arc::new(Mutex::new(BTreeMap::new())),
@@ -469,13 +660,18 @@ pub fn preview_launch_args(
     topic_id: Option<String>,
     character: Option<String>,
     cwd: Option<String>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
     let server_name = server_name_for(account_id.trim(), &topic_id);
     let others = room
         .port()
         .zip(cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()))
         .and_then(|(port, dir)| {
+            if kind == AccountKind::CodexCli {
+                return mcp_config::codex::effective_cwd(Path::new(dir), &args)
+                    .ok()
+                    .and_then(|cwd| mcp_config::codex::other_servers(&cwd, &server_name).ok());
+            }
             other_room_servers(
                 Path::new(dir),
                 &format!("ws://127.0.0.1:{port}"),
@@ -485,13 +681,26 @@ pub fn preview_launch_args(
         })
         .unwrap_or_default();
     let status = status_command(room.port(), &topic_id, account_id.trim());
-    launch_args(
+    if kind != AccountKind::CodexCli {
+        return Ok(mcp_config::launch_args(
+            &args,
+            kind.cli(),
+            &server_name,
+            character.as_deref(),
+            &others,
+            status.as_deref(),
+        ));
+    }
+    let (entry, runner) = resolve_sidecar_paths()?;
+    runtime_launch_args(
         &args,
         kind.cli(),
         &server_name,
         character.as_deref(),
         &others,
         status.as_deref(),
+        &runner,
+        &entry,
     )
 }
 
@@ -561,13 +770,35 @@ struct LaunchLine {
 /// Nothing is read out of the file. Whether a transcript is intact is a
 /// question about its contents, and this one is about whether there is anything
 /// there at all (#131, 制約).
-fn transcript_found(app: &AppHandle, cli: Option<Cli>, cwd: &Path, session_id: &str) -> bool {
+fn transcript_found(
+    app: &AppHandle,
+    account: &Account,
+    cli: Option<Cli>,
+    cwd: &Path,
+    session_id: &str,
+) -> bool {
     let Some(cli) = cli else {
         return true;
     };
     let Ok(home) = app.path().home_dir() else {
         return true;
     };
+    if cli == Cli::CodexCli {
+        let env = match account_env::open_all(&account.env) {
+            Ok(env) => env,
+            Err(_) => return true,
+        };
+        let home = env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+            .map(|(_, value)| PathBuf::from(value))
+            .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+            .unwrap_or_else(|| home.join(".codex"));
+        let home=if home.is_absolute() {home} else {cwd.join(home)};
+        return mcp_config::codex::transcript_checked(&home, session_id)
+            .map(|p| p.is_some())
+            .unwrap_or(true);
+    }
     match cli.transcript_path(&home, cwd, session_id) {
         Some(path) => path.is_file(),
         None => true,
@@ -626,7 +857,7 @@ fn resolve_launch(
 
     let mut dropped_resume = None;
     if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
-        if transcript_found(app, cli, cwd, session_id) {
+        if transcript_found(app, account, cli, cwd, session_id) {
             let mut parts = split_launch_options(line);
             // The first token is the command, and a resume line whose first
             // token is empty would spawn nothing under a name the person never
@@ -644,7 +875,11 @@ fn resolve_launch(
                 ));
             }
             return Ok(LaunchLine {
-                command,
+                command: if cli.is_some() {
+                    account.command.clone()
+                } else {
+                    command
+                },
                 // Still holding the placeholder: the id this line goes back
                 // into is `resumed_from`, and one pass fills the composed line
                 // with it (`launch`). A line filled here would also be a line
@@ -712,6 +947,8 @@ fn resolve_launch(
 /// What the caller gets back after a session joins.
 #[derive(Debug, serde::Serialize)]
 pub struct StartedSession {
+    #[serde(skip)]
+    launch_id: Option<String>,
     pub pty_id: String,
     /// Absolute path of the `.mcp.json` this touched, so the UI can say where.
     pub mcp_config: String,
@@ -895,6 +1132,9 @@ pub fn start_session(
         ));
     }
 
+    if account.kind == AccountKind::CodexCli {
+        mcp_config::codex::reject_options(&account.args)?;
+    }
     if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
             "Account \"{name}\" passes {flag}, which stops the session reading what is typed into its terminal, \
@@ -916,7 +1156,16 @@ pub fn start_session(
     // account holds that account's entry by design (#40) — so without this the
     // session would spawn the sibling's sidecar too, and the room would list
     // that sibling twice (#103).
-    let others = other_room_servers(&cwd, &room_url, &server_name)?;
+    let project_cwd = if account.kind == AccountKind::CodexCli {
+        mcp_config::codex::effective_cwd(&cwd, &account.args)?
+    } else {
+        cwd.clone()
+    };
+    let others = if account.kind == AccountKind::CodexCli {
+        mcp_config::codex::other_servers(&project_cwd, &server_name)?
+    } else {
+        other_room_servers(&cwd, &room_url, &server_name)?
+    };
 
     // The character and the sibling registrations both ride in `--settings`,
     // so launch options carrying their own `--settings` are on the same axis as
@@ -931,7 +1180,10 @@ pub fn start_session(
     // (#143), and does not widen this condition: a line with its own
     // `--settings` and nothing else to declare is left untouched by
     // `launch_args` rather than refused, so a line that ran before still runs.
-    if (character.is_some() || !others.is_empty()) && declares_settings(&launch_line.args) {
+    if account.kind != AccountKind::CodexCli
+        && (character.is_some() || !others.is_empty())
+        && declares_settings(&launch_line.args)
+    {
         // Two refusals rather than one sentence with a hole in it: what the
         // person can do about it differs. A character is theirs to clear; a
         // sibling registration is another account's, and the way out of that
@@ -959,15 +1211,23 @@ pub fn start_session(
     // The refusal names the variable, never its value.
     let account_env = account_env::open_all(&account.env)
         .map_err(|err| format!("「{name}」は起動できません。{err}"))?;
+    if account.kind == AccountKind::CodexCli {
+        if account.args.iter().any(|arg| !console_safe(arg)) {
+            return Err("Codex の起動オプションに Windows の起動行で保持できない文字があります。診断表示に出るオプションを修正してください。".into());
+        }
+        ensure_codex_version(&account.command, &account_env, &cwd)?;
+    }
 
     // One account, one seat per room (`RoomSeats`). Claimed before anything is
     // written or spawned, so a refusal costs nothing and leaves nothing behind.
-    seats.claim(&topic.topic_id, &account.id, &pty_state).map_err(|()| {
-        format!(
+    seats
+        .claim(&topic.topic_id, &account.id, &pty_state)
+        .map_err(|()| {
+            format!(
             "Account \"{name}\" already holds a seat in this topic. One account holds one seat \
              per topic: stop its running session here before starting it again."
         )
-    })?;
+        })?;
 
     match launch(
         app.clone(),
@@ -1006,9 +1266,7 @@ pub fn start_session(
             // (#141, decision 2), and a topic the list does not carry is a
             // running session nothing on the screen leads back to.
             let recorded = match &launch_line.session_id {
-                Some(session_id) => {
-                    room_log::record_session(&app, &topic, &account.id, session_id)
-                }
+                Some(session_id) => room_log::record_session(&app, &topic, &account.id, session_id),
                 None => room_log::realize_topic(&app, &topic),
             };
             if let Err(err) = recorded {
@@ -1020,12 +1278,14 @@ pub fn start_session(
             seats.hold(
                 &account.id,
                 RunningSession {
+                    launch_id: started.launch_id.clone(),
+                    native_id: launch_line.resumed_from.clone(),
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
                     // The line that ran, which on a resume is not the account's
                     // launch command at all.
                     command: launch_line.command.clone(),
-                    cwd: cwd.to_string_lossy().to_string(),
+                    cwd: project_cwd.to_string_lossy().to_string(),
                     // The topic read at the top of this launch, not the room's
                     // current one: the two are the same here, and reading the
                     // room again would make them the same only by luck.
@@ -1090,20 +1350,47 @@ fn launch(
     rows: u16,
 ) -> Result<StartedSession, String> {
     let (sidecar_entry, sidecar_runner) = resolve_sidecar_paths()?;
-    let mcp_config = register_sidecar(
-        cwd,
-        &RoomRegistration {
-            room_url,
-            token: &room.token(),
-            account_id: &account.id,
-            room_id: topic_id,
-            agent_name: name,
-            agent_hue: account.hue,
-            unseen_history,
-            sidecar_entry: &sidecar_entry,
-            sidecar_runner: &sidecar_runner,
-        },
-    )?;
+    let registration = RoomRegistration {
+        room_url,
+        token: &room.token(),
+        account_id: &account.id,
+        room_id: topic_id,
+        agent_name: name,
+        agent_hue: account.hue,
+        unseen_history,
+        sidecar_entry: &sidecar_entry,
+        sidecar_runner: &sidecar_runner,
+    };
+    let mcp_config = if account.kind == AccountKind::CodexCli {
+        let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
+        let path =
+            mcp_config::codex::register(&project_cwd, &registration, account.character.as_deref())?;
+        let hook_dir = codex_hook_dir(
+            &app,
+            &account.command,
+            &account.args,
+            cwd,
+            account_env,
+            &sidecar_entry,
+            false,
+        )?;
+        mcp_config::codex::register_hook(
+            &hook_dir,
+            &sidecar_entry.parent().unwrap().join("codex-session.mjs"),
+        )?;
+        codex_hook_dir(
+            &app,
+            &account.command,
+            &account.args,
+            cwd,
+            account_env,
+            &sidecar_entry,
+            true,
+        )?;
+        path
+    } else {
+        register_sidecar(cwd, &registration)?
+    };
 
     let started_at = crate::room::now_iso();
     // What this session reports about itself while it runs, addressed to this
@@ -1118,14 +1405,16 @@ fn launch(
     // what spawns. Nothing is written for the settings: `--settings` takes the
     // JSON inline, and a file per account would grow the very directory this
     // account is sharing (#99).
-    let composed = launch_args(
+    let composed = runtime_launch_args(
         &line.args,
         account.kind.cli(),
         server_name,
         character,
         others,
         status.as_deref(),
-    );
+        &sidecar_runner,
+        &sidecar_entry,
+    )?;
     // The id goes in last, over the whole line. The account's own options may
     // name where it goes and the CLI's conventions may have put it there too
     // (#156), and one pass over the composed line fills both — filling either
@@ -1162,6 +1451,34 @@ fn launch(
     // process's environment needs both to pick its own. The same id the
     // registration above carries under the same name.
     env.push((ROOM_ID_ENV, topic_id.to_string()));
+    env.push((mcp_config::codex::LAUNCH_ROOM_ENV, topic_id.to_string()));
+    let launch_id =
+        (account.kind == AccountKind::CodexCli).then(|| uuid::Uuid::new_v4().to_string());
+    if let Some(id) = &launch_id {
+        env.push((mcp_config::codex::LAUNCH_ID_ENV, id.clone()));
+        env.push((
+            mcp_config::codex::NATIVE_URL_ENV,
+            format!(
+                "http://127.0.0.1:{room_port}{}",
+                mcp_config::codex::NATIVE_PATH
+            ),
+        ));
+        env.push(("PULLCEPT_ROOM_URL", room_url.to_string()));
+        env.push(("PULLCEPT_AGENT_NAME", name.to_string()));
+        env.push(("PULLCEPT_ACCOUNT_ID", account.id.clone()));
+        env.push((
+            "PULLCEPT_AGENT_HUE",
+            account.hue.map(|h| format!("{h:.1}")).unwrap_or_default(),
+        ));
+        env.push((
+            "PULLCEPT_UNSEEN_HISTORY",
+            if unseen_history { "1" } else { "0" }.into(),
+        ));
+        env.push((
+            mcp_config::codex::CHARACTER_ENV,
+            account.character.clone().unwrap_or_default(),
+        ));
+    }
     let pty_id = pty::spawn_pty_with_env(
         app,
         pty_state,
@@ -1174,6 +1491,7 @@ fn launch(
     )?;
 
     Ok(StartedSession {
+        launch_id,
         pty_id,
         mcp_config: mcp_config.to_string_lossy().to_string(),
         started_at,
