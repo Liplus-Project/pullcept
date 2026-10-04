@@ -6,7 +6,7 @@
 
 Codex の MCP 登録先は有効 cwd の `.codex/config.toml`。既存のキーとコメントを保持し、アカウント／トピックごとの登録を追加する。登録は既定で無効で、起動の `-c` で自席の定義だけを有効にする。現在の席属性を `env_vars` 経由で渡し、前回の部屋 URL が上書きしないよう定義全体を置き換える。部屋トークンは環境だけにあり、設定・argv・プレビューには値を保存しない。承認を起動時に指定するのは二道具 `say_to_room` と `read_room_history` に限る。
 
-`-C` / `--cd`（等号形式を含む）は元の process cwd に対して解決し、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。profile 名は native runtime が受理する plain name を使う。0.160.0 はドットを含む名前を拒否する。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
+`-C パス` / `--cd パス` / `--cd=パス` は元の process cwd に対して解決し（短い `-C=パス` は明示拒否する）、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。profile 名は native runtime が受理する plain name を使う。0.160.0 はドットを含む名前を拒否する。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
 
 **初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` を確認し、その handler 一件を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の developer_instructions 選択を使う。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。Claude 専用 metrics は未取得の `—` のままである。
 
