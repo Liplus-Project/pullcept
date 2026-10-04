@@ -2,7 +2,7 @@
 
 ## Codex の再現チェック（#272）
 
-通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。長いキャラクター追加指示があっても、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ることを確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
+通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。長いキャラクター追加指示があっても、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ること、追加指示が作法の後ろに全文で付き、その前の作法が 1024 字以内であること（#273）を確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
 
 実バイナリの discovery は opt-in である。`PULLCEPT_TEST_CODEX_BIN` に隔離 0.160.0 以上の実行ファイルを指定し、`node --test sidecar/test/codex-runtime.test.mjs` を実行する。新しい一時 CODEX_HOME と fixture のみを使い、thread／turn を作らずモデルを呼ばない。Windows では空白を含むパスの .cmd shim 経由の起動も確認する。通常の npm run sidecar:test では skip する。
 
@@ -41,7 +41,7 @@ CI が実行するもの:
 |---|---|
 | `npm run build` | フロントエンドの型検査とビルド |
 | `npm run sidecar:check` | サイドカーの型検査 |
-| `npm run sidecar:test` | サイドカーの往復ハーネス（channel を宣言しないこと、部屋からの `post` フレームを会話へ流さないこと、札と `role` を述べる作法。#195。`say_to_room` の `to` の一つの名前と名前の並び、宛先の作法。#204。本文の `@名前` が宛先になることを述べる作法。#206）、webhook の受信に使うブリッジの宣言と push の形と終わり方（#169） |
+| `npm run sidecar:test` | サイドカーの往復ハーネス（channel を宣言しないこと、部屋からの `post` フレームを会話へ流さないこと、札と `role` を述べる作法。#195。`say_to_room` の `to` の一つの名前と名前の並び、宛先の作法。#204。本文の `@名前` が宛先になることを述べる作法。#206。名前を差し込んだ `instructions` が 1024 字以内であること、道具の説明へ移した作法の全文。#273）、webhook の受信に使うブリッジの宣言と push の形と終わり方（#169） |
 | `cargo check --target x86_64-pc-windows-gnu` | アプリのコンパイル |
 | `cargo test`（`crates/mcp-config`） | `.mcp.json` マージ保全、起動フラグ検査（端末を読まなくするフラグの拒否、利用者の channel フラグを拒否も追加もしないこと。#195）、起動しないサーバの名指し、会話の記録の在り処（実機で確認した二例、英数字でない文字の畳み方、CLI が名前を切り詰める長さ） |
 | `cargo test`（`crates/room-floor`） | 床の判定（未読による拒否、自分の発言の除外、解決できない `last_seen`、席の位置、同時発話の順序付け、拒否が運ぶ宣言色とアカウント）、宛先の並び（空白と空の名前と二度目の名前を除くこと、拒否が運ぶ宛先が並びであること。#204）、本文の `@名前` の照合と除去（部屋の名前に当たるものだけを取ること、最長一致、名前の直後の境界、大文字と小文字、全角の `＠`、書いた順と重複、消した後の空白と行、`to` 引数の後ろへ足すこと、`@名前` だけの発言を取らないこと、通知の本文と `to` に手を付けないこと。#206） |
