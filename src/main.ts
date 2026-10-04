@@ -19,6 +19,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 interface RoomMessage {
@@ -1013,6 +1014,34 @@ const TERMINAL_OPTIONS = {
   convertEol: false,
   scrollback: 5000,
 };
+
+/**
+ * Draw a terminal with the WebGL renderer, or leave it on the DOM one.
+ *
+ * Every terminal is put through this, for the same reason they share
+ * `TERMINAL_OPTIONS`: two panes on this screen draw the same way. The point is
+ * the block elements and box-drawing characters a TUI builds its pictures from
+ * (`█▛▜▐▌`, the CLI's mascot among them). The DOM renderer sets each one in the
+ * font, and the glyphs do not quite meet at the cell edges, so a picture made of
+ * them shows a grid of thin lines. The WebGL renderer paints those characters
+ * cell by cell itself (`customGlyphs`, which the DOM renderer ignores), and the
+ * cells meet (#278).
+ *
+ * The DOM renderer stays the floor. Where WebGL cannot start, loading throws and
+ * the terminal keeps drawing as it did; where the context is lost later — the
+ * GPU resets, or the webview takes back the oldest context once too many are
+ * open — the addon is disposed and the terminal falls back to the DOM renderer
+ * rather than going blank.
+ */
+function useWebglRenderer(term: Terminal): void {
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch {
+    // No WebGL here. The DOM renderer is already drawing; nothing to undo.
+  }
+}
 
 /**
  * The line a terminal opens with when it is picked up rather than launched.
@@ -4656,6 +4685,7 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
+  useWebglRenderer(term);
   term.options.theme = terminalTheme();
 
   const view: SessionView = {
