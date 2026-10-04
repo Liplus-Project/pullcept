@@ -270,9 +270,8 @@ interface Account {
   /** Declared when the account was made. What the participant list groups on,
    *  and nothing else — the room still has one kind of participant. */
   kind: AccountKind;
-  /** Which character this account speaks as: the `name:` of an output style in
-   *  its working directory's `.claude/output-styles/`, or null when it declares
-   *  none and that directory's own default stands. An attribute of the account
+  /** Claude's output style name or Codex's effective developer-instruction
+   *  character heading name (#276). Null delegates to the CLI's defaults. An attribute of the account
    *  rather than a string inside `args`, for the reason the name and the hue
    *  are attributes (#40) — it is who this account is when it runs (#99). */
   character: string | null;
@@ -5168,7 +5167,7 @@ function showDialogKind(): void {
   dialogMcpEl.hidden = kind !== "mcp";
   dialogResumeFieldEl.hidden = kind !== "cli";
   const codex = kind === "codex_cli";
-  dialogCharacterEl.placeholder = codex ? "部屋での追加指示（CLI の既存指示も適用）" : "例: character_Lay（output style の name）";
+  dialogCharacterEl.placeholder = codex ? "例: character_Codex_Lin（定義の見出し名）" : "例: character_Lay（output style の name）";
   document.getElementById("dialog-codex-note")!.hidden = !codex;
   if (launchesKind(kind)) refreshDialogLine();
   // Chosen on a form making an account: the server is written and started at
@@ -5200,7 +5199,35 @@ function launchesKind(kind: AccountKind): boolean {
  * That is the case worth seeing before 決定 — pointing an account at a shared
  * directory is what puts `--settings` on a line that had none.
  */
+let dialogPreviewGeneration = 0;
+let codexPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+let codexPreviewRunning = false;
+let codexPreviewQueued = false;
 async function refreshDialogPreview(): Promise<void> {
+  const generation = ++dialogPreviewGeneration;
+  if (codexPreviewTimer !== null) clearTimeout(codexPreviewTimer);
+  if (dialogKindEl.value !== "codex_cli") {
+    codexPreviewQueued = false;
+    await renderDialogPreview(generation);
+    return;
+  }
+  codexPreviewTimer = setTimeout(() => {
+    codexPreviewTimer = null;
+    codexPreviewQueued = true;
+    void drainCodexPreview();
+  }, 250);
+}
+async function drainCodexPreview(): Promise<void> {
+  if (codexPreviewRunning) return;
+  codexPreviewRunning = true;
+  try {
+    while (codexPreviewQueued) {
+      codexPreviewQueued = false;
+      await renderDialogPreview(dialogPreviewGeneration);
+    }
+  } finally { codexPreviewRunning = false; }
+}
+async function renderDialogPreview(generation: number): Promise<void> {
   if (!draft) return;
   const id = draft.id;
   try {
@@ -5221,12 +5248,16 @@ async function refreshDialogPreview(): Promise<void> {
       // holds now, and the draft is only written at 決定.
       character: dialogCharacterEl.value.trim() || null,
       cwd: dialogCwdEl.value.trim() || null,
+      command: dialogCommandEl.value.trim() || null,
+      envText: dialogEnvDrawn === null ? null : dialogEnvEl.value,
+      env: draft.env,
     });
     // The form may have been closed or reopened during the round trip.
-    if (draft?.id !== id) return;
+    if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
     dialogPreviewEl.textContent = `${dialogCommandEl.value.trim()} ${joinArgs(merged)}`;
-  } catch {
-    dialogPreviewEl.textContent = "";
+  } catch (error) {
+    if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
+    dialogPreviewEl.textContent = dialogKindEl.value === "codex_cli" ? String(error) : "";
   }
 }
 
@@ -5259,6 +5290,7 @@ async function refreshDialogNotice(): Promise<void> {
   const id = draft.id;
   try {
     const report = await invoke<LaunchFieldReport>("launch_field_report", {
+      kind,
       character: dialogCharacterEl.value.trim() || null,
       options: dialogOptionsEl.value,
       // The current form's command, including a custom native executable.
@@ -5278,7 +5310,8 @@ async function refreshDialogNotice(): Promise<void> {
     }
     if (!report.options) {
       said.push(
-        `起動オプションに、Windows の起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
+        kind === "codex_cli" ? "Codex のオプションを安全に運べません。省略せず、起動を拒否します。プレビューの理由を確認してください。" :
+          `起動オプションに、Windows の起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
           "保存はできますが、起動時はこの欄を丸ごと載せずに起動します。",
       );
     }
@@ -5435,6 +5468,7 @@ async function drawDialogEnv(forDraft: Account): Promise<void> {
   dialogEnvEl.value = text;
   dialogEnvDrawn = text;
   dialogEnvEl.readOnly = false;
+  refreshDialogLine();
 }
 
 /** Drop the form's image edit, and the object URL a picked image holds. */
@@ -6575,6 +6609,7 @@ async function main(): Promise<void> {
   // So does the working directory: which registrations the line stops is read
   // out of the directory it is pointed at (#103).
   dialogCwdEl.addEventListener("input", () => refreshDialogLine());
+  dialogEnvEl.addEventListener("input", () => refreshDialogLine());
   // The resume line is not in the preview — the preview answers for a fresh
   // launch — but it is a line that runs, and what it cannot carry is a topic
   // this account cannot go back into (#154, 決定4).

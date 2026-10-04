@@ -4,9 +4,11 @@
 
 `codex_cli` の保存・種別選択・起動／再開・native TOML 登録・初回 ID 通知を実装した。Claude の argv 回帰、設定と hook の保持、秘密の非表示、起動／アカウント／トピック照合、履歴消失と I/O 不明の区別、複数登録の排他は crate／sidecar テストが持つ。
 
-**実 CLI／実モデルで確認した範囲:** Windows の隔離 Codex CLI 0.160.0 と専用 CODEX_HOME で、通常の folder trust と専用 handler の個別信頼を操作した。実会話の callback が root native UUID を返し、改行を含む札と応答中の追加入力を受けた。停止後に同じ UUID を明示 resume し、前の合言葉を保持したまま read_room_history と say_to_room を呼び、MCP の追加キャラクター指示 `TESTCHAR:` を付けて応答した。HTTP callback と WebSocket の相手は fixture であり、Pullcept 本体の listener ではない。
+**実 CLI／実モデルで確認した範囲:** Windows の隔離 Codex CLI 0.160.0 と専用 CODEX_HOME で、通常の folder trust と専用 handler の個別信頼を操作した。実会話の callback が root native UUID を返し、改行を含む札と応答中の追加入力を受けた。停止後に同じ UUID を明示 resume し、前の合言葉を保持したまま read_room_history と say_to_room を呼び、当時の MCP 追加キャラクター指示 `TESTCHAR:` を付けて応答した（この旧経路は #276 で撤去）。HTTP callback と WebSocket の相手は fixture であり、Pullcept 本体の listener ではない。
 
-**追加モデル呼出しなしで確認した範囲:** standalone、独立 Git root、nested cwd、別 Git root への --cd、ドットを含む profile の markers を native config/read で確認した。独立 root と linked root／nested は、通常の folder trust 後に hooks/list で対応する project handler を列挙した。linked worktree の local config layer と hook scope は異なり、正式に対応する root checkout へ登録することで一致した。独立 root の handler は個別信頼後の trusted、linked nested の新 handler は untrusted として列挙され、自動信頼していない。
+**追加モデル呼出しなしで確認した範囲:** standalone、独立 Git root、nested cwd、別 Git root への --cd、profile ファイルの markers を adapter 経由の native config/read で確認した。これは dotted profile 名の runtime 受理を示すものではなく、0.160.0 の runtime はその名前を拒否する。独立 root と linked root／nested は、通常の folder trust 後に hooks/list で対応する project handler を列挙した。linked worktree の local config layer と hook scope は異なり、正式に対応する root checkout へ登録することで一致した。独立 root の handler は個別信頼後の trusted、linked nested の新 handler は untrusted として列挙され、自動信頼していない。
+
+**#276 のモデル不要実測:** 隔離0.160.0と一時 CODEX_HOME で、指示なしの sentinel 判定、global／plain-name profile-v2／未信頼 project 除外／信頼済み project 優先、--cd と手動 -c の優先、Lin／Lay の一つだけと共通原文の保持、設定原本のバイト保持を確認した。patched portable-pty の ConPTY → cmd /C call → native exe／空白入り .cmd で、日本語・CRLF・引用符・%PATH%・&|()・バックスラッシュ・絵文字が実 developer input_text と完全一致した。thread／turn は作らずモデルを呼んでいない。選択後の実モデル遵守は未検証であり、旧 MCP 指示の実会話証拠とは区別する。
 
 **未確認:** Codex アカウント作成から停止・再開までの Pullcept 実 GUI／実 listener 操作、Claude と Codex の実アプリ内同時往復、人間の打ちかけ時の保留／解放を Codex の実 GUI で通す操作。打ちかけの判定と改行・送信キーの分離は既存 terminal-input テスト、保留列は共通 PTY 実装に依存する。fixture の結果を実 GUI の確認へ読み替えない。
 

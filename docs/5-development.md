@@ -2,9 +2,11 @@
 
 ## Codex の再現チェック（#272）
 
-通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。長いキャラクター追加指示があっても、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ること、追加指示が作法の後ろに全文で付き、その前の作法が 1024 字以内であること（#273）を確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
+通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。旧 PULLCEPT_CHARACTER に長い自由文が残っていても MCP に入らないこと、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ること、作法全文が 1024 字以内であること（#273、#276）を確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
 
 実バイナリの discovery は opt-in である。`PULLCEPT_TEST_CODEX_BIN` に隔離 0.160.0 以上の実行ファイルを指定し、`node --test sidecar/test/codex-runtime.test.mjs` を実行する。新しい一時 CODEX_HOME と fixture のみを使い、thread／turn を作らずモデルを呼ばない。Windows では空白を含むパスの .cmd shim 経由の起動も確認する。通常の npm run sidecar:test では skip する。
+
+キャラ選択の native 検証は同じ `PULLCEPT_TEST_CODEX_BIN` で `node --test sidecar/test/codex-character-native.test.mjs` を実行する。Windows で `PULLCEPT_TEST_CODEX_PTY=1` も設定すると `crates/codex-character-probe` をビルドし、アプリと同じ patched portable-pty / cmd /C call の配送を実測する。新しい一時 config と既知の指示だけを使い、通常 CI は両方を skip する。sentinel／文法／TOML同値／8191超拒否／Claude・native ID の回帰と sidecar initialize は通常テストで確認する。プレビューのnative探索は async command の spawn_blocking で UI 処理から外す。Codexのみ250ms debounceと同時実行一件を使い、実行中の編集は最新入力で再探索する。
 
 `sidecar/test/codex-live.mjs` は明示実行する実モデルの手動 fixture である。`PULLCEPT_PROBE_BIN` に隔離 CLI、必要なら `PULLCEPT_PROBE_AUTH` にコピー元 auth.json、`PULLCEPT_PROBE_ROOT` に専用出力先を指定する。`node sidecar/test/codex-live.mjs` を対話 PTY で実行し、通常の folder trust と専用 handler 一件の信頼を行う。コピー元を変えず、検証用コピー先だけを使う。`PULLCEPT_PROBE_RESUME` に取得 UUID を指定すると明示 resume を検証できる。相手は mock 部屋であり、実 Pullcept listener と区別する。
 

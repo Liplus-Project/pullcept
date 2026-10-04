@@ -607,7 +607,8 @@ pub fn session_id_launch_args(base: &[String], cli: Option<Cli>) -> Vec<String> 
 /// its launch (#156, 決定5).
 pub fn resume_launch_args(resume: &[String], options: &[String], cli: Cli) -> Vec<String> {
     let mut args = resume.to_vec();
-    args.extend(cli.without_session_id_args(carried_launch_options(options)));
+    let carried = if cli == Cli::CodexCli { options } else { carried_launch_options(options) };
+    args.extend(cli.without_session_id_args(carried));
     args
 }
 
@@ -792,7 +793,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     "PULLCEPT_ACCOUNT_ID",
     "PULLCEPT_AGENT_HUE",
     "PULLCEPT_UNSEEN_HISTORY",
-    codex::CHARACTER_ENV,
+    "PULLCEPT_CHARACTER", // Legacy reserved app variable; never forwarded.
 ];
 
 #[allow(clippy::too_many_arguments)]
@@ -807,7 +808,7 @@ pub fn runtime_launch_args(
     entry: &Path,
 ) -> Result<Vec<String>, String> {
     if cli == Some(Cli::CodexCli) {
-        codex::runtime_args(carried_launch_options(base), server, disabled, runner, entry)
+        codex::runtime_args(base, server, disabled, runner, entry)
     } else {
         Ok(launch_args(base, cli, server, character, disabled, status))
     }

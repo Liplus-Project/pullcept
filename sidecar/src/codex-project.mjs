@@ -10,7 +10,7 @@ const config=[];
 for(let i=0;i<options.length;i++) {
   const arg=options[i];
   if(["-c","--config","--enable","--disable"].includes(arg)) {config.push(arg,options[++i]);}
-  else if(arg.startsWith("--config=") || arg.startsWith("--enable=") || arg.startsWith("--disable="))config.push(arg);
+  else if(arg.startsWith("--config=") || arg.startsWith("-c=") || arg.startsWith("--enable=") || arg.startsWith("--disable="))config.push(arg);
   else if(["-p","--profile"].includes(arg) || arg.startsWith("--profile="))throw Error("Profile must be resolved by the product discovery adapter");
   else if(["-C","--cd"].includes(arg))cwd=resolve(initialCwd,options[++i]);
   else if(arg.startsWith("--cd="))cwd=resolve(initialCwd,arg.slice(5));
@@ -18,8 +18,8 @@ for(let i=0;i<options.length;i++) {
 }
 const shell=process.platform==="win32" && !bin.toLowerCase().endsWith(".exe");
 const words=[...config,"app-server","--listen","stdio://"];
-if(shell && [bin,...words].some(word=>/[&|<>^()"\r\n]/.test(word))) throw Error("Unsupported Windows command characters");
-const child=spawn(shell ? `"${bin}"` : bin,shell ? words.map(word=>`"${word}"`) : words,{
+if(shell && [bin,...words].some(word=>/[&|<>^()%\r\n]/.test(word))) throw Error("Unsupported Windows command characters");
+const child=spawn(shell ? `"${bin}"` : bin,shell ? words.map(word=>`"${word.replaceAll('"','\\"')}"`) : words,{
   cwd,env:process.env,stdio:["pipe","pipe","ignore"],windowsHide:true,
   shell,
 });

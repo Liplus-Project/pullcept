@@ -1,0 +1,10 @@
+[package]
+name = "codex-character-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+portable-pty = { path = "../../portable-pty-patch" }
+mcp-config = { path = "../mcp-config" }
+serde_json = "1"

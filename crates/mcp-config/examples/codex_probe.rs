@@ -23,12 +23,7 @@ fn main() {
         sidecar_entry: &entry,
         sidecar_runner: &runner,
     };
-    codex::register(
-        &dir,
-        &room,
-        Some("Start every room reply with TESTCHAR:. Keep the reply short."),
-    )
-    .unwrap();
+    codex::register(&dir, &room).unwrap();
     let hook_dir = codex::native_hook_dir(&dir, &dir).unwrap();
     codex::register_hook(&hook_dir, &repo.join("sidecar/src/codex-session.mjs")).unwrap();
     let mut base = vec![

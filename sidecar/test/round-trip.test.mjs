@@ -103,11 +103,8 @@ const OPENING = [
   "say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。",
 ].join("\n");
 
-// What a Codex account adds to the manners (#272): the person's own text, at
-// a length well past the limit, so the test can see that it arrives whole and
-// that the manners ahead of it are still within the limit (#273).
+// Legacy freeform env is ignored (#276); the room manners stay within #273.
 const CHARACTER = "長いキャラクターの追加指示。".repeat(100);
-const CHARACTER_BLOCK = `\n\nこの席の追加指示（CLI の既存指示も保つ）:\n${CHARACTER}`;
 
 // Speaking. That say_to_room is the way, and the terminal is not, is in the
 // opening above (#195, #272). The two added in #273: what
@@ -486,14 +483,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the server must not declare the claude/channel capability",
   );
   const instructions = init.result.instructions ?? "";
-  // The account's character rides last, whole, and outside the count (#272 /
-  // #273): it is the person's own text, of the person's own length, and a
-  // client that cuts the instructions must cut it rather than the manners.
-  assert.ok(
-    instructions.endsWith(CHARACTER_BLOCK),
-    "the full character must survive, after the room's manners",
-  );
-  const manners = instructions.slice(0, -CHARACTER_BLOCK.length);
+  assert.ok(!instructions.includes(CHARACTER), "legacy character env must not enter MCP instructions");
+  const manners = instructions;
   // Whole, or not at all: a client that cuts the manners cuts their tail, and
   // the tail is where the floor used to be (#273).
   assert.ok(
