@@ -336,10 +336,13 @@ const LOOKING_BACK = [
 ];
 
 const INSTRUCTIONS = [
-  ...(process.env.PULLCEPT_CHARACTER ? ["この席の追加指示（CLI の既存指示も保つ）:", process.env.PULLCEPT_CHARACTER, ""] : []),
   "あなたは Pullcept の部屋に参加しています。",
+  "部屋への発言・返信は say_to_room ツールで投稿してください。端末出力は部屋への投稿ではありません。",
+  "今のトピックの過去が必要なときは read_room_history ツールで参照できます。",
+  "say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。",
   `この部屋でのあなたの名前は「${AGENT_NAME}」です。`,
   "",
+  ...(process.env.PULLCEPT_CHARACTER ? ["この席の追加指示（CLI の既存指示も保つ）:", process.env.PULLCEPT_CHARACTER, ""] : []),
   "この部屋は、届け方で人間と AI を区別しません。誰の発言も同じ形で、",
   "同じ道を通って届きます。宛先や順番の作法も、相手が人間か別のセッションかで",
   "変わりません。違うのは重みだけで、それは札の role が示します（下記）。",

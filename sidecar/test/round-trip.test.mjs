@@ -392,6 +392,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         [launchedAsEnv()]: TEST_ACCOUNT,
         PULLCEPT_LAUNCHED_ROOM: "test-room",
         PULLCEPT_ROOM_ID: "test-room",
+        PULLCEPT_CHARACTER: "長いキャラクターの追加指示。".repeat(100),
       },
       stdio: ["pipe", "pipe", "pipe"],
     },
@@ -456,6 +457,12 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the server must not declare the claude/channel capability",
   );
   const instructions = init.result.instructions ?? "";
+  const head = [...instructions].slice(0, 512).join("");
+  assert.match(head, /Pullcept の部屋に参加/);
+  assert.match(head, /say_to_room ツールで投稿/);
+  assert.match(head, /端末出力は部屋への投稿ではありません/);
+  assert.match(head, /read_room_history ツールで参照/);
+  assert.ok(instructions.includes("長いキャラクターの追加指示。".repeat(100)), "the full character must survive after the room guidance");
   assert.match(instructions, /say_to_room/, "instructions must name the posting tool");
   // The manners and the material they are judged on ship together. Manners
   // that say "answer what is addressed to you" without naming where the

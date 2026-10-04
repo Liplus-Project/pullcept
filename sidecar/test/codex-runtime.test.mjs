@@ -7,10 +7,10 @@ import {join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 const bin=process.env.PULLCEPT_TEST_CODEX_BIN;
 const helper=fileURLToPath(new URL("../src/codex-project.mjs",import.meta.url));
-async function discover(home,cwd,options=[]) {
+async function discover(home,cwd,options=[],command=bin) {
   return new Promise((resolve,reject)=>{
     const env={...process.env,CODEX_HOME:home};delete env.OPENAI_API_KEY;delete env.CODEX_API_KEY;
-    const child=spawn(process.execPath,[helper,bin,cwd,JSON.stringify(options)],{env,windowsHide:true});
+    const child=spawn(process.execPath,[helper,command,cwd,JSON.stringify(options)],{env,windowsHide:true});
     let out="";child.stdout.on("data",b=>out+=b);child.stderr.resume();
     child.once("error",reject);child.once("exit",()=>{try{resolve(JSON.parse(out))}catch{reject(Error("No discovery response"))}});
   });
@@ -34,6 +34,12 @@ test("real Codex 0.160 discovers standalone cwd, Git root, nested cwd and profil
     for(const options of [["-C",repo],["--cd",repo],[`--cd=${repo}`],[`-C=${repo}`]]) {
       result=await discover(home,plain,options);assert.ok(!result.error,JSON.stringify(result));
       assert.equal(result.projects[0].folder.toLowerCase(),join(repo,".codex").toLowerCase());
+    }
+    if(process.platform==="win32") {
+      const shim=join(scratch,"native shim.cmd");writeFileSync(shim,`@echo off\r\n"${bin}" %*\r\n`);
+      result=await discover(home,plain,["-c","features.codex_hooks=true"],shim);
+      assert.ok(!result.error,JSON.stringify(result));
+      assert.equal(result.projects[0].folder.toLowerCase(),join(plain,".codex").toLowerCase());
     }
   }finally{rmSync(scratch,{recursive:true,force:true});}
 });
