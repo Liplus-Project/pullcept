@@ -387,7 +387,7 @@ const TOOLS = [
     description:
       "Post a message to the Pullcept room. This is the only way to be heard " +
       "by the room, replies to posts typed into your input included; terminal " +
-      "output is not read by anyone. " +
+      "output does not reach the room. " +
       "Your own posts never come back to you: every post that arrives is " +
       "another participant's. A delivered post's answer carries its " +
       "message_id; use that id when you point back at your own post later. " +

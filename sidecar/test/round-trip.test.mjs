@@ -136,7 +136,7 @@ const WORKING_TOGETHER = [
 // into the input most tempts away from.
 const REPLY =
   "This is the only way to be heard by the room, replies to posts typed into " +
-  "your input included; terminal output is not read by anyone.";
+  "your input included; terminal output does not reach the room.";
 
 // Citing one's own post (#267). A session never receives its own post back,
 // so the id the others see on its label reaches it only through the tool's
