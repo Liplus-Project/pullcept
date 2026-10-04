@@ -290,7 +290,7 @@ pub fn spawn_pty(
     rows: u16,
     cwd: Option<String>,
 ) -> Result<String, String> {
-    spawn_pty_with_env(app, state, command, args, &[], cols, rows, cwd)
+    spawn_pty_with_env(app, state, command, args, &[], cols, rows, cwd, false)
 }
 
 /// `spawn_pty` with variables set on the child's environment.
@@ -309,6 +309,7 @@ pub fn spawn_pty_with_env(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    codex_shell: bool,
 ) -> Result<String, String> {
     let pty_system = NativePtySystem::default();
 
@@ -328,6 +329,9 @@ pub fn spawn_pty_with_env(
     let mut cmd = if cfg!(windows) {
         let mut c = CommandBuilder::new("cmd.exe");
         c.arg("/C");
+        // Keep an initial quoted .cmd path intact. Codex options are encoded
+        // before reaching this route, including every literal percent sign.
+        if codex_shell { c.arg("call"); }
         c.arg(&command);
         for arg in &args {
             c.arg(arg);

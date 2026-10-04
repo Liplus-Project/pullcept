@@ -1,11 +1,12 @@
 //! Codex CLI 0.160: project MCP registration, guarded root hook, native history.
 use super::*;
 use toml_edit::{value, Array, Document as DocumentMut, Item, Table};
+mod character;
+pub use character::{apply_character, check_command_length, instruction_value, select_character, transport_options};
 
 pub const LAUNCH_ID_ENV: &str = "PULLCEPT_LAUNCH_ID";
 pub const LAUNCH_ROOM_ENV: &str = "PULLCEPT_LAUNCHED_ROOM";
 pub const NATIVE_URL_ENV: &str = "PULLCEPT_NATIVE_URL";
-pub const CHARACTER_ENV: &str = "PULLCEPT_CHARACTER";
 pub const NATIVE_PATH: &str = "/hooks/codex-session";
 pub const SIDECAR_ENV: &[&str] = &[
     ROOM_TOKEN_ENV,
@@ -17,7 +18,6 @@ pub const SIDECAR_ENV: &[&str] = &[
     ROOM_ID_ENV,
     "PULLCEPT_AGENT_HUE",
     "PULLCEPT_UNSEEN_HISTORY",
-    CHARACTER_ENV,
 ];
 
 pub fn runtime_args(
@@ -31,7 +31,7 @@ pub fn runtime_args(
     if paths.iter().any(|p| !console_safe(p) || p.contains("'''")) {
         return Err("Codex MCP runner path cannot be carried by the Windows launch line".into());
     }
-    let mut args = launch_args(base, own, disabled);
+    let mut args = launch_args(&transport_options(base)?, own, disabled);
     let vars = SIDECAR_ENV
         .iter()
         .map(|key| format!("'{key}'"))
@@ -39,7 +39,7 @@ pub fn runtime_args(
         .join(",");
     // Replace the whole table, including any persisted env. Works before project trust,
     // and a trusted project's previous registration cannot override the current launch.
-    args.extend(["-c".into(), format!("mcp_servers.{own}={{command='node',args=['''{}''','''{}'''],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}}}}}}", paths[0], paths[1])]);
+    args.extend(["-c".into(), format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}}}}}}", instruction_value(&paths[0]), instruction_value(&paths[1]))]);
     Ok(args)
 }
 
@@ -327,7 +327,6 @@ pub fn other_servers(dir: &Path, own: &str) -> Result<Vec<String>, String> {
 pub fn register(
     dir: &Path,
     room: &RoomRegistration<'_>,
-    character: Option<&str>,
 ) -> Result<PathBuf, String> {
     let mut doc = document(dir)?;
     let name = server_name_for(room.account_id, room.room_id);
@@ -395,9 +394,6 @@ pub fn register(
     }
     if room.unseen_history {
         env["PULLCEPT_UNSEEN_HISTORY"] = value("1");
-    }
-    if let Some(character) = character.filter(|v| !v.trim().is_empty()) {
-        env[CHARACTER_ENV] = value(character);
     }
     entry["env"] = Item::Table(env);
     servers.insert(&name, Item::Table(entry));
@@ -541,6 +537,7 @@ pub fn supported_version(text: &str) -> bool {
 }
 
 pub fn reject_options(args: &[String]) -> Result<(), String> {
+    transport_options(args)?;
     let mut value_next = false;
     for arg in args {
         if value_next {
@@ -651,9 +648,9 @@ mod tests {
         let dir = scratch();
         let script = dir.join("sidecar.ts");
         std::fs::write(dir.join(".codex/config.toml"), "# retained comment\nmodel = 'gpt-6'\ndeveloper_instructions = 'existing identity'\n[mcp_servers.foreign]\ncommand='custom'\n").unwrap();
-        register(&dir, &room(&script, "a", "t"), Some("日本語で簡潔に答える")).unwrap();
-        register(&dir, &room(&script, "b", "t"), None).unwrap();
-        register(&dir, &room(&script, "a", "u"), None).unwrap();
+        register(&dir, &room(&script, "a", "t")).unwrap();
+        register(&dir, &room(&script, "b", "t")).unwrap();
+        register(&dir, &room(&script, "a", "u")).unwrap();
         let doc = document(&dir).unwrap();
         assert!(doc.to_string().contains("# retained comment"));
         assert_eq!(
@@ -666,10 +663,7 @@ mod tests {
         );
         let own = server_name_for("a", "t");
         assert_eq!(doc["mcp_servers"][&own]["enabled"].as_bool(), Some(false));
-        assert_eq!(
-            doc["mcp_servers"][&own]["env"][CHARACTER_ENV].as_str(),
-            Some("日本語で簡潔に答える")
-        );
+        assert!(doc["mcp_servers"][&own]["env"].get("PULLCEPT_CHARACTER").is_none());
         assert!(!doc.to_string().contains("secret-never-in-argv"));
         let others = other_servers(&dir, &own).unwrap();
         assert_eq!(others.len(), 2);
@@ -741,7 +735,7 @@ mod tests {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, &link).unwrap();
-        assert!(register(&dir, &room(Path::new("script"), "a", "t"), None).is_err());
+        assert!(register(&dir, &room(Path::new("script"), "a", "t")).is_err());
         assert!(register_hook(&dir, Path::new("script")).is_err());
         assert!(!outside.join("config.toml").exists());
         assert!(!outside.join("hooks.json").exists());

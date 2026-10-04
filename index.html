@@ -565,7 +565,7 @@
               />
             </label>
             <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
-            <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。初回は診断端末で作業フォルダーと Pullcept の SessionStart hook の信頼を確認してください。ID は最初の会話で保存されます。キャラクター欄は MCP の追加指示で、Claude の output style 名としては扱いません。状態情報は未取得です。</p>
+            <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。初回は診断端末で作業フォルダーと Pullcept の SessionStart hook の信頼を確認してください。ID は最初の会話で保存されます。キャラクター欄には有効な developer_instructions の「# character_Codex_Lin」等の見出し名を入力してください。共通指示と選んだ一つだけを使います。空欄は CLI 設定に任せます。旧自由文は保存されたままですが、追加指示としては送りません。未知名・重複・空本文は起動を拒否します。状態情報は未取得です。</p>
             <!-- 起動オプション。**その人が足したいものだけを書く欄である**
                  （#156、決定3）。セッション id の渡し方は種別が持つため、
                  `Claude Code` では `--session-id {session_id}` をここへ書かな

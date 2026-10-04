@@ -6,7 +6,7 @@ native ID は初回の実会話で取得するため、起動直後にはまだ�
 
 対応基準は 0.160.0。project config／hook discovery／会話保存形式への依存を mcp-config::codex と専用補助スクリプトに置く。linked worktree の hook は CLI が root checkout へ解決するため、同じ repository と相対位置を metadata で検証してから追記する。CLI の変更で一致を確認できなければ推測で登録せず拒否する。
 
-キャラクターは MCP instructions の追加指示で、既存 AGENTS／CLI identity を保つ。実モデルの遵守を一例確認したが、Claude output style と同じ優先順位・人格の完全一致を保証しない。Claude 専用 metrics は未取得として表示する。
+キャラクターは native CLI の有効 developer_instructions から一つを選ぶ（#276、[選択文法](3-accounts.md#codex-のキャラ選択276)）。共通指示と AGENTS／Li+ は保持するが、競合する人格指示の遵守保証は持たない。選択時の二回のモデル不要 discovery と、CLI prompt 形式への依存、Windows 8191文字上限による明示拒否を受容する。MCP は部屋の作法だけを持つ。Claude 専用 metrics は未取得として表示する。
 
 
 | 決定 | 代償 |

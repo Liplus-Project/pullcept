@@ -6,13 +6,45 @@
 
 Codex の MCP 登録先は有効 cwd の `.codex/config.toml`。既存のキーとコメントを保持し、アカウント／トピックごとの登録を追加する。登録は既定で無効で、起動の `-c` で自席の定義だけを有効にする。現在の席属性を `env_vars` 経由で渡し、前回の部屋 URL が上書きしないよう定義全体を置き換える。部屋トークンは環境だけにあり、設定・argv・プレビューには値を保存しない。承認を起動時に指定するのは二道具 `say_to_room` と `read_room_history` に限る。
 
-`-C` / `--cd`（等号形式を含む）は元の process cwd に対して解決し、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。ドットを含む profile 名も扱う。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
+`-C` / `--cd`（等号形式を含む）は元の process cwd に対して解決し、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。profile 名は native runtime が受理する plain name を使う。0.160.0 はドットを含む名前を拒否する。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
 
-**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` を確認し、その handler 一件を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions が札・返信・履歴を案内する。キャラクター欄はそこへの追加指示であり、Claude の output style 名とは異なる。既存 AGENTS／CLI 指示を置き換えず、それらを上書きする人格保証も持たない。Claude 専用 metrics は未取得の `—` のままである。
+**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` を確認し、その handler 一件を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の developer_instructions 選択を使う。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。Claude 専用 metrics は未取得の `—` のままである。
 
 hook の場所は同条件の native `config/read` の project layer から決め、登録後に `hooks/list` でも列挙を確認する（未信頼フォルダーは通常の CLI 信頼画面へ進む）。standalone cwd・独立 Git root・サブディレクトリに加え、linked worktree では正式な root-checkout mapping を使う。`.git` の gitdir、commondir、登録 checkout、main checkout の所属を照合し、同一 Git repository の対応する相対位置に専用 handler だけを追記する。実際に書く設定／hook の境界外 symlink は拒否する。[native loader 0.160.0](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/loader/mod.rs#L1106) と [trust resolver](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/git-utils/src/trust.rs) に合わせた動作である。
 
 初回の実会話で hook stdin の `session_id` を受け、起動 nonce・アカウント・トピック・生きている PTY を照合して索引へ保存する。最初のターン前は ID 未取得が正常である。子セッション・古い起動・別の席・保存 ID と異なる通知は採用しない。停止後は保存 UUID を `codex resume <id>` に渡す。`CODEX_HOME` の会話ファイルが正常な探索で見つからない時だけ新規に戻り、権限／I/O エラーで調べられない時は ID を保持して明示 resume を試す。過去を押し込まず、必要な履歴は席が道具で引く。
+
+## Codex のキャラ選択（#276）
+
+キャラクター欄には `character_Codex_Lin` のように見出しの名前を正確に入力する。定義元は、実 CLI がその起動条件で解決した **有効な developer_instructions 一文字列**だけである。ファイルを別途検索したり、複数 layer の本文を連結したりしない。CLI の通常の優先順位（user base → 選択 profile-v2 → 信頼済み project layer → 手動 `-c`、managed 設定は CLI の制約に従う）で一つの本文が決まる。上位の文字列は下位の文字列を置換するため、共通部分は有効な本文の中へ置く。未信頼の project 本文は採用しない。
+
+モデルを呼ばない native `debug prompt-input` を、元 cwd・`--cd`・`--profile`・`-c`・`CODEX_HOME`・アカウント環境で実行する。ランダムな developer_instructions sentinel を上書きした比較実行と role/content 全体を照合し、その一か所の本文だけを取り出す。本文が無い時は別の permissions／skills／AGENTS を拾わない。比較が曖昧、TOML が壊れている、CLI が失敗、出力が8 MiB超、又は各実行が15秒超なら起動を止める。CLI stderr や他の指示・秘密はエラーへ出さない。
+
+定義の例:
+
+```toml
+developer_instructions = """
+共通指示をここへ置く。
+# character_Codex_Lin
+NAME=Codex Lin
+NICKNAME=Lin
+Lin の本文。
+## 詳細
+ここも Lin の本文。
+# character_Codex_Lay
+NAME=Codex Lay
+NICKNAME=Lay
+Lay の本文。
+# 共通の続き
+この見出し以降は両方に残る。
+"""
+```
+
+列0の `# character_<名前>` が開始、次の列0の H1 (`# `) が終端である。開始見出しの末尾空白を除いた文字列が選択名となる。名前の空白と空の名前は拒否する。H2以下、空行、区切り線は本文の一部で、バッククォート又はチルダ3個以上のコードフェンス内の見出しは区切りにしない。フェンスは同種で開始以上の長さ、残りが空白の行で閉じる。LF／CRLF・空白・区切りを保持し、選択したブロックを元位置に残して、他のキャラブロックだけを除く。キャラ外の共通指示はそのまま残る。全定義を検査し、重複・空本文を拒否する。未知名は別キャラへ代替しない。
+
+選択した本文を最後の `-c developer_instructions=...` として合成する。TOML Unicode escape で日本語・改行・引用符・シェル文字を保持する。手動 `-c` の文字列／配列／inline table も同値に符号化し、持ち運べない他のオプションは省略せず拒否する。短いフラグの値は空白で分ける（`-p 名前`、`-C パス`、`-c key=value`）。`-p名前`／`-p=名前` 等の連結・等号形式は探索と起動で明示拒否し、長い `--profile=名前`／`--cd=パス`／`--config=key=value` は扱う。Windows の合成行が8191文字を超える時も切り詰めず拒否する。Codex の PTY は `cmd /C call` で空白を含む .cmd コマンドを保ち、文字列の % は TOML escape で渡す。プレビューと起動・再開は同じ helper／parser／argv 合成を通る。プレビューは編集したコマンド・環境も使い、失敗理由を表示する。
+
+空欄はアプリのキャラ探索／developer_instructions 上書きを行わず既存 CLI に任せる。旧保存値は削除しないが、自由文から名前選択へ意味が変わるため、そのままでは未知名として拒否する。Codex の `PULLCEPT_CHARACTER` を MCP instructions へ送る旧経路は無い。原本 developer_instructions・AGENTS.md・Li+・グローバル設定は変更しない。既存 app-owned MCP の登録更新と専用 SessionStart hook の追記は従来どおりである。Claude の output style 選択は従来どおり。
 
 以後の `.mcp.json`・`--settings`・output style・`--session-id` は Claude Code の作法であり、Codex の設定と初回 ID 取得はこの節を参照する。
 

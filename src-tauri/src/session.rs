@@ -126,6 +126,44 @@ fn ensure_codex_version(command: &str, env: &[(String, String)], cwd: &Path) -> 
     Ok(())
 }
 
+fn codex_character_args(
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+    character: Option<&str>,
+    mut composed: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if !console_safe(command) || command.contains('%') {
+        return Err("Codex のコマンドを Windows の起動の行へ安全に運べません。起動を止めました。".into());
+    }
+    if let Some(selected) = character.map(str::trim).filter(|name| !name.is_empty()) {
+        let options = mcp_config::codex::transport_options(options)?;
+        let mut child = std::process::Command::new("node");
+        child.arg(entry.parent().unwrap().join("codex-character.mjs"))
+            .arg(command).arg(cwd).arg(serde_json::to_string(&options).unwrap())
+            .envs(env.iter().cloned()).current_dir(cwd)
+            .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            child.creation_flags(0x08000000);
+        }
+        let output = child.output().map_err(|_| "Codex のキャラ探索を起動できません。node と CLI コマンドを確認してください。")?;
+        let data: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| "Codex のキャラ探索に失敗しました。CLI の設定を診断端末で確認してください。")?;
+        if !output.status.success() || data.get("error").is_some() {
+            return Err("Codex の有効指示を確認できません。診断端末で CLI の設定・profile・信頼を確認してください。".into());
+        }
+        let source = data.get("instructions").and_then(serde_json::Value::as_str)
+            .ok_or("Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。")?;
+        mcp_config::codex::apply_character(&mut composed, source, selected)?;
+    }
+    mcp_config::codex::check_command_length(command, &composed)?;
+    Ok(composed)
+}
+
 fn codex_hook_dir(
     app: &AppHandle,
     command: &str,
@@ -144,7 +182,8 @@ fn codex_hook_dir(
         .or_else(|| app.path().home_dir().ok().map(|home| home.join(".codex")))
         .ok_or("Codex home が見つかりません。")?;
     let home=if home.is_absolute() {home} else {cwd.join(home)};
-    let mut discovery = mcp_config::codex::discovery_options(options, &home)?;
+    let options = mcp_config::codex::transport_options(options)?;
+    let mut discovery = mcp_config::codex::discovery_options(&options, &home)?;
     discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
     let mut child = std::process::Command::new("node");
     child
@@ -177,7 +216,7 @@ fn codex_hook_dir(
         .get("projects")
         .and_then(serde_json::Value::as_array)
         .ok_or("Codex config/read returned no project layers")?;
-    let effective = mcp_config::codex::effective_cwd(cwd, options)?;
+    let effective = mcp_config::codex::effective_cwd(cwd, &options)?;
     let config_dir = mcp_config::codex::hook_dir_from_layers(&effective, folders)?;
     let dir = mcp_config::codex::native_hook_dir(&effective, &config_dir)?;
     let hook = dir.join(".codex/hooks.json");
@@ -599,6 +638,7 @@ pub fn launch_field_report(
     options: String,
     command: String,
     resume: Option<String>,
+    kind: Option<AccountKind>,
 ) -> LaunchFieldReport {
     let character = character.unwrap_or_default();
     let character = character.trim();
@@ -607,9 +647,9 @@ pub fn launch_field_report(
     LaunchFieldReport {
         // Blank declares no character, and declaring none is not a refusal —
         // the working directory's own default is an answer (#99).
-        character: character.is_empty() || declared_character(Some(character)).is_some(),
+        character: kind == Some(AccountKind::CodexCli) || character.is_empty() || declared_character(Some(character)).is_some(),
         // As many as were written, since the set is carried whole or not at all.
-        options: carried_launch_options(&options).len() == options.len(),
+        options: if kind == Some(AccountKind::CodexCli) { mcp_config::codex::transport_options(&options).is_ok() } else { carried_launch_options(&options).len() == options.len() },
         command: console_safe(&command),
         // The whole line, because the whole line is what is refused: its
         // arguments are how it goes back, and a resume that lost them is a
@@ -652,14 +692,18 @@ pub fn launch_field_report(
 /// being edited — and it is the field the person is most likely to be looking
 /// at while they wonder what changed.
 #[tauri::command]
-pub fn preview_launch_args(
-    room: tauri::State<RoomState>,
+pub async fn preview_launch_args(
+    app: AppHandle,
+    room: tauri::State<'_, RoomState>,
     args: Vec<String>,
     account_id: String,
     kind: AccountKind,
     topic_id: Option<String>,
     character: Option<String>,
     cwd: Option<String>,
+    command: Option<String>,
+    env_text: Option<String>,
+    env: Option<Vec<account_env::EnvVar>>,
 ) -> Result<Vec<String>, String> {
     let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
     let server_name = server_name_for(account_id.trim(), &topic_id);
@@ -692,7 +736,7 @@ pub fn preview_launch_args(
         ));
     }
     let (entry, runner) = resolve_sidecar_paths()?;
-    runtime_launch_args(
+    let composed = runtime_launch_args(
         &args,
         kind.cli(),
         &server_name,
@@ -701,7 +745,16 @@ pub fn preview_launch_args(
         status.as_deref(),
         &runner,
         &entry,
-    )
+    )?;
+    let command = command.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "codex".into());
+    let cwd = cwd.filter(|value| !value.trim().is_empty()).map(PathBuf::from)
+        .or_else(|| app.path().home_dir().ok()).ok_or("作業フォルダーが見つかりません。")?;
+    let previous = env.unwrap_or_default();
+    let sealed = if let Some(text) = env_text { crate::config::seal_account_env(text, previous)? } else { previous };
+    let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), composed)
+    }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?
 }
 
 /// The line one launch runs, resolved against the topic it is being started
@@ -1121,12 +1174,15 @@ pub fn start_session(
             launch_line.command
         ));
     }
+    if account.kind == AccountKind::CodexCli && launch_line.command.contains('%') {
+        return Err("Codex のコマンド名に % は使えません。環境展開せず起動を止めました。".into());
+    }
     // A resume line is one line the person wrote, and its arguments are how it
     // goes back: dropping them the way launch options are dropped would leave
     // the resume command starting a fresh session instead, which is the shape
     // this app refuses everywhere — a launch that quietly did half of what was
     // asked looks like it worked.
-    if launch_line.resumed_from.is_some() && !launch_line.args.iter().all(|arg| console_safe(arg)) {
+    if account.kind != AccountKind::CodexCli && launch_line.resumed_from.is_some() && !launch_line.args.iter().all(|arg| console_safe(arg)) {
         return Err(format!(
             "「{name}」の再開コマンドには、Windows の起動の行に載せられない文字があります（`& | < > ^ ( ) \"`）。載せずに起動すれば戻る先へ戻らないため、この起動は行いません。"
         ));
@@ -1142,7 +1198,9 @@ pub fn start_session(
         ));
     }
 
-    let character = declared_character(account.character.as_deref());
+    let character = if account.kind == AccountKind::CodexCli {
+        account.character.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    } else { declared_character(account.character.as_deref()) };
 
     let port = room
         .port()
@@ -1363,8 +1421,7 @@ fn launch(
     };
     let mcp_config = if account.kind == AccountKind::CodexCli {
         let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
-        let path =
-            mcp_config::codex::register(&project_cwd, &registration, account.character.as_deref())?;
+        let path = mcp_config::codex::register(&project_cwd, &registration)?;
         let hook_dir = codex_hook_dir(
             &app,
             &account.command,
@@ -1415,6 +1472,9 @@ fn launch(
         &sidecar_runner,
         &sidecar_entry,
     )?;
+    let composed = if account.kind == AccountKind::CodexCli {
+        codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, composed)?
+    } else { composed };
     // The id goes in last, over the whole line. The account's own options may
     // name where it goes and the CLI's conventions may have put it there too
     // (#156), and one pass over the composed line fills both — filling either
@@ -1474,10 +1534,6 @@ fn launch(
             "PULLCEPT_UNSEEN_HISTORY",
             if unseen_history { "1" } else { "0" }.into(),
         ));
-        env.push((
-            mcp_config::codex::CHARACTER_ENV,
-            account.character.clone().unwrap_or_default(),
-        ));
     }
     let pty_id = pty::spawn_pty_with_env(
         app,
@@ -1488,6 +1544,7 @@ fn launch(
         cols,
         rows,
         Some(cwd.to_string_lossy().to_string()),
+        account.kind == AccountKind::CodexCli,
     )?;
 
     Ok(StartedSession {

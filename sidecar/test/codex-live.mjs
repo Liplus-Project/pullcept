@@ -23,7 +23,7 @@ room.on("connection",ws=>ws.on("message",data=>{const v=JSON.parse(data);evidenc
 }));
 const env={...process.env,TERM:"xterm-256color",CODEX_HOME:home,PULLCEPT_PROBE_WORKSPACE:workspace,PULLCEPT_ROOM_URL:`ws://127.0.0.1:${room.address().port}`,PULLCEPT_ROOM_TOKEN:randomUUID(),PULLCEPT_LAUNCHED_AS:"codex-test",PULLCEPT_LAUNCHED_ROOM:"codex-topic",PULLCEPT_ROOM_ID:"codex-topic",PULLCEPT_LAUNCH_ID:randomUUID(),PULLCEPT_NATIVE_URL:`http://127.0.0.1:${native.address().port}/hooks/codex-session`};
 delete env.OPENAI_API_KEY;delete env.CODEX_API_KEY;
-Object.assign(env,{PULLCEPT_AGENT_NAME:"Codex Test",PULLCEPT_ACCOUNT_ID:"codex-test",PULLCEPT_UNSEEN_HISTORY:"1",PULLCEPT_CHARACTER:"Start every room reply with TESTCHAR:. Keep the reply short."});
+Object.assign(env,{PULLCEPT_AGENT_NAME:"Codex Test",PULLCEPT_ACCOUNT_ID:"codex-test",PULLCEPT_UNSEEN_HISTORY:"1"});
 if(process.env.PULLCEPT_PROBE_RESUME)env.PULLCEPT_PROBE_RESUME=process.env.PULLCEPT_PROBE_RESUME;
 const prepared=execFileSync('cargo',['run','--quiet','--manifest-path','crates/mcp-config/Cargo.toml','--example','codex_probe'],{env,cwd:repo,encoding:"utf8",windowsHide:true});
 const bin=process.env.PULLCEPT_PROBE_BIN;if(!bin)throw Error("PULLCEPT_PROBE_BIN is required");
