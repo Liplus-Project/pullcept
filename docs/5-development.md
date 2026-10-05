@@ -107,6 +107,18 @@ npx tauri icon src-tauri/app-icon.svg -o src-tauri/icons
 
 [README.md](../README.md) を参照。本仕様では再記述しない。
 
+## `@xterm/addon-webgl` へのパッチ（#278）
+
+`@xterm/addon-webgl` は、インストールのたびにローカルのパッチを当てて使う。`package.json` の `postinstall` が `scripts/patch-xterm-webgl.mjs` を走らせ、`node_modules/@xterm/addon-webgl/lib/` の二つの束（`addon-webgl.mjs` と `addon-webgl.js`）の中で、ブロック要素を塗る `fillRect` の呼び出しを、四辺を整数ピクセルへ丸めてから塗る形に書き換える。何を直すかは「[診断面](2-screen.md#診断面)」にある。
+
+- **版を固定する。** `package.json` は `0.19.0` をそのまま書き（`^` を付けない）、スクリプトも版を確かめる。書き換える箇所は、その版の圧縮済みの文字列そのものを目印にして探す。版が違う、または目印がちょうど一つ見つからなければ、スクリプトは失敗し、`npm install` / `npm ci` も失敗する。版を上げたときに線が黙って戻ることは無く、新しい版の描き方を読み直してスクリプトを直すまで入らない。既に当たっていれば（印 `/*pullcept#278*/` がある）何もしない。
+- **この手段にした理由。** 塗り方はアドオンの内部の関数であり、xterm.js の公開の API からは差し替えられない。フォークを持つと版の追随と配布の手間が常に付いてくる。`patch-package` のような道具を足すと依存が一つ増えるが、書き換えるのは二つのファイルの一か所ずつであり、短いスクリプトで足りる。`postinstall` に置けば `npm ci` でも走るため、CI と別の機械でも同じ状態になる。DOM の描画へ戻る経路（`useWebglRenderer`）には触れていない。
+- **`--ignore-scripts` では当たらない。** その場合は線が戻る。CI はスクリプトを止めずに `npm ci` を走らせている。
+
+### この変更を取り込んだクローンで
+
+`npm install` を一度走らせる（パッチはインストールの時に当たる）。開発サーバが動いていた場合は、Vite が依存を事前に束ねた控え（`node_modules/.vite`）に古いアドオンが残っている。Vite がこの控えを作り直すかは `node_modules/.package-lock.json` の中身などで決まり、パッチの有無はそこに現れないため、開発サーバを止めて `node_modules/.vite` を消してから起動し直す。
+
 ## `src-tauri/Cargo.toml` の改行
 
 `src-tauri/Cargo.toml` は、作業ツリーでも LF で取り出す（#262）。リポジトリの根の `.gitattributes` が `src-tauri/Cargo.toml text eol=lf` を置き、`core.autocrlf=true` の Windows でもこのファイルだけは CRLF に変わらない。ほかのファイルの改行の扱いは変えていない。

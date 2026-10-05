@@ -200,6 +200,7 @@ crates/room-floor/    同時発話の順序付け（tauri 非依存、テスト�
 crates/topic-index/   トピックの保存と索引の照合（tauri 非依存、テスト対象）
 crates/mcp-servers/   アプリ本体が起動する MCP サーバの設定ファイルと欄の読み方（tauri 非依存、テスト対象）
 portable-pty-patch/   Windows 対応を含む portable-pty のローカルパッチ
+scripts/              インストール時に @xterm/addon-webgl へ当てるパッチ（#278）
 .github/workflows/    Windows CI とリリース用 CD
 ```
 
