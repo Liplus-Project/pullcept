@@ -1025,7 +1025,8 @@ const TERMINAL_OPTIONS = {
  * font, and the glyphs do not quite meet at the cell edges, so a picture made of
  * them shows a grid of thin lines. The WebGL renderer paints those characters
  * cell by cell itself (`customGlyphs`, which the DOM renderer ignores), and the
- * cells meet (#278).
+ * cells meet (#278). Inside a cell, the rectangles of one block element meet
+ * only because of the install-time patch in `scripts/patch-xterm-webgl.mjs`.
  *
  * The DOM renderer stays the floor. Where WebGL cannot start, loading throws and
  * the terminal keeps drawing as it did; where the context is lost later — the
