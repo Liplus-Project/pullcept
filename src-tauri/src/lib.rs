@@ -1,4 +1,5 @@
 mod app_mcp;
+mod codex_status;
 mod config;
 mod pty;
 mod room;

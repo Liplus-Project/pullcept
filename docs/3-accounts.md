@@ -8,7 +8,7 @@ Codex の MCP 登録先は有効 cwd の `.codex/config.toml`。既存のキー�
 
 `-C パス` / `--cd パス` / `--cd=パス` は元の process cwd に対して解決し（短い `-C=パス` は明示拒否する）、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。profile 名は native runtime が受理する plain name を使う。0.160.0 はドットを含む名前を拒否する。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
 
-**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` と、ファイル方式なら Li+ の `codex-output-style.py` を確認し、それぞれの handler を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の方式で選ぶ。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。Claude 専用 metrics は未取得の `—` のままである。
+**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` と、ファイル方式なら Li+ の `codex-output-style.py` を確認し、それぞれの handler を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の方式で選ぶ。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。パネルの五欄は rollout から読む（下記「[Codex の席は自分の様子を rollout で知らせる](#codex-の席は自分の様子を-rollout-で知らせる283)」）。
 
 hook の場所は同条件の native `config/read` の project layer から決め、登録後に `hooks/list` でも列挙を確認する（未信頼フォルダーは通常の CLI 信頼画面へ進む）。standalone cwd・独立 Git root・サブディレクトリに加え、linked worktree では正式な root-checkout mapping を使う。`.git` の gitdir、commondir、登録 checkout、main checkout の所属を照合し、同一 Git repository の対応する相対位置に専用 handler だけを追記する。実際に書く設定／hook の境界外 symlink は拒否する。[native loader 0.160.0](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/loader/mod.rs#L1106) と [trust resolver](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/git-utils/src/trust.rs) に合わせた動作である。
 
@@ -407,7 +407,7 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 ### セッションは自分の様子をステータスラインで知らせる
 
-**起動する行の `--settings` に Claude Code の `statusLine` を載せ、その席が何を使って走っているかをアプリへ知らせる**（#155）。パネルの末尾の五欄はこの合図だけから出る（「[参加者パネル](2-screen.md#参加者パネル)」）。
+**起動する行の `--settings` に Claude Code の `statusLine` を載せ、その席が何を使って走っているかをアプリへ知らせる**（#155）。`Claude Code` の席では、パネルの末尾の五欄はこの合図だけから出る（`Codex CLI` の席は下記「Codex の席は自分の様子を rollout で知らせる」。「[参加者パネル](2-screen.md#参加者パネル)」）。
 
 **出所はステータスラインの JSON であり、端末の出力ではない**（決定1）。Claude Code はステータスライン用のコマンドを走らせるとき、そのセッションの JSON を stdin で渡す。要る五つは全てそこに在る（公式 docs `code.claude.com/docs/en/statusline`、2026-09-17 に読んだ。実機の CLI では計っていない）。
 
@@ -449,4 +449,26 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 **自前の `--settings` を持つ行には載らない。** 承認（#143）と同じ例外の内側であり、ステータスラインのために併記の拒否を広げない。その席は五欄が「—」のままであり、「制限中」も出ない。
 
-**種別が `Claude Code` の席にだけ載る**（#156、決定5）。`statusLine` の書き方は Claude Code のものであり、作法を持たない種別の行へ載せる正しい形をアプリは持たない。その席の五欄は「—」のままになる。
+**種別が `Claude Code` の席にだけ載る**（#156、決定5）。`statusLine` の書き方は Claude Code のものであり、作法を持たない種別の行へ載せる正しい形をアプリは持たない。`CLI（汎用）` の席の五欄は「—」のままになる。`Codex CLI` の席は statusLine を持たず、下記の rollout から同じ五欄を出す。
+
+### Codex の席は自分の様子を rollout で知らせる（#283）
+
+**Codex CLI はステータスラインのコマンドを持たない。代わりに、会話記録の rollout へ同じ値を書く。** アプリはその席の rollout `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<時刻>-<native id>.jsonl` を読み、Claude Code の席と同じ `session-stats` として画面へ渡す。パネルの表示・「—」・「制限中」の読み方は共通のままである（`SessionStats::from_codex`）。起動の行には何も足さない。
+
+| 欄 | rollout の出所 |
+|---|---|
+| モデル | `turn_context` 行の `payload.model` |
+| エフォート | `turn_context` 行の `payload.effort` |
+| 5 時間 | `event_msg` / `token_count` 行の `payload.rate_limits` のうち `window_minutes` が 300 の窓の `used_percent` |
+| 週次 | 同じく `window_minutes` が 10080 の窓の `used_percent` |
+| コンテキスト | 同じ行の `payload.info.last_token_usage.total_tokens` ÷ `payload.info.model_context_window` |
+
+**行の形は Codex の公開仕様ではない。** 2026-10-05 に Codex CLI 0.160.0 の実セッションで観測した形だけに基づく。JSON でない行・知らない種類の行・途中で切れた行・欄の欠けた行は、読めない欄を変えないだけで、例外で止まらない。一度も読めていない欄は「—」である。`turn_context` はそのターンの写しとして二欄とも置き換え、欠けた方は「—」になる。`token_count` は `info` と `rate_limits` の片方だけを運ぶことがあり、運ばなかった方は前の値のままである。5 時間と週次は `primary` / `secondary` の位置ではなく窓の長さで見分け、`limit_id` が `codex` 以外の枠の値は採らない——別の枠の数字で「制限中」を立てないためである。
+
+**読むのは末尾の追記分だけである。** 読んだ位置を持ち、次はそこから読む。ファイル全体を読み直さない。改行の届いていない行は次の回まで待つ。64 KiB を超える行（道具の出力の行は数 MB に達する）は持たずに読み飛ばす。読む五欄の行は 2 KiB 前後である。
+
+**再開では、起動時点のファイル長から読む。** 前回の実行が書いた値を今回の値として出さない。Claude Code の席が次の報告まで「—」であるのと同じ形であり、再開した席は最初のターンまで「—」である。
+
+**新規起動では、id とファイルの出現を待つ。** native id は最初の `SessionStart` の callback（上記「Codex CLI の起動と再開」）で届き、rollout の作成はそれより遅れることがある。アプリは起動ごとに一本の見張りを立て、1 秒ごとに席の native id とファイルを探し直す。id が無い・ファイルが無い・読めない、はどれも「今回は無し、次の回に探す」であり、起動も会話も止めない。ファイルが 1 分見つからなければ、探す間隔を 10 秒に落とす（`sessions/` の走査を毎秒続けないため）。見張りは、その起動が席を離れたか PTY が終わった時点で終わる。五欄は最後の値のまま残る（上記「更新はセッションが動いたときだけである」と同じ）。
+
+**`CODEX_HOME` は会話の実在の判定と同じ答えを使う。** アカウントの環境変数、アプリの環境変数、`~/.codex` の順であり、相対パスは起動ディレクトリに対して解決する。

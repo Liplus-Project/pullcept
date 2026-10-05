@@ -534,6 +534,27 @@ impl RoomSeats {
             }
         }
     }
+
+    /// The native id one launch's seat holds now (#283): `None` once that
+    /// launch no longer holds the seat, `Some(None)` before the id has arrived.
+    ///
+    /// Keyed on the PTY as well as the seat, so a watcher left over from an
+    /// earlier launch of the same account in the same topic reads its own
+    /// launch as gone rather than the next one's id.
+    pub fn native_id_of(
+        &self,
+        topic_id: &str,
+        account_id: &str,
+        pty_id: &str,
+    ) -> Option<Option<String>> {
+        match self.seats.lock().get(&seat_key(topic_id, account_id)) {
+            Some(Seat::Running(session)) if session.pty_id == pty_id => {
+                Some(session.native_id.clone())
+            }
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         RoomSeats {
             seats: Arc::new(Mutex::new(BTreeMap::new())),
@@ -888,13 +909,7 @@ fn transcript_found(
             Ok(env) => env,
             Err(_) => return true,
         };
-        let home = env
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
-            .map(|(_, value)| PathBuf::from(value))
-            .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
-            .unwrap_or_else(|| home.join(".codex"));
-        let home=if home.is_absolute() {home} else {cwd.join(home)};
+        let home = codex_home(&home, &env, cwd);
         return mcp_config::codex::transcript_checked(&home, session_id)
             .map(|p| p.is_some())
             .unwrap_or(true);
@@ -902,6 +917,27 @@ fn transcript_found(
     match cli.transcript_path(&home, cwd, session_id) {
         Some(path) => path.is_file(),
         None => true,
+    }
+}
+
+/// The `CODEX_HOME` a Codex seat runs under: the account's own variable, then
+/// the app's environment, then `~/.codex`. A relative one is the CLI's, read
+/// against the directory it is spawned in.
+///
+/// One answer for both readers of the CLI's files — whether a conversation is
+/// there to resume (`transcript_found`) and where its rollout is tailed from
+/// (`codex_status`, #283) — so the two cannot look in different places.
+fn codex_home(user_home: &Path, account_env: &[(String, String)], cwd: &Path) -> PathBuf {
+    let home = account_env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+        .map(|(_, value)| PathBuf::from(value))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        .unwrap_or_else(|| user_home.join(".codex"));
+    if home.is_absolute() {
+        home
+    } else {
+        cwd.join(home)
     }
 }
 
@@ -1334,6 +1370,27 @@ pub fn start_session(
         )
         })?;
 
+    // Where a Codex seat's rollout lives, and — on a resume — how long the file
+    // already was before this launch. That length is where the reading starts,
+    // so the panel shows what this run reports and not the last run's values
+    // (#283). Taken before the spawn, while nothing of this run is in it yet.
+    let rollout = if account.kind == AccountKind::CodexCli {
+        app.path().home_dir().ok().map(|user_home| {
+            let home = codex_home(&user_home, &account_env, &cwd);
+            let resumed = launch_line
+                .resumed_from
+                .as_deref()
+                .and_then(|id| mcp_config::codex::transcript(&home, id))
+                .and_then(|path| {
+                    let len = std::fs::metadata(&path).ok()?.len();
+                    Some((path, len))
+                });
+            (home, resumed)
+        })
+    } else {
+        None
+    };
+
     match launch(
         app.clone(),
         &room,
@@ -1401,6 +1458,18 @@ pub fn start_session(
                     resumed_from: launch_line.resumed_from.clone(),
                 },
             );
+            // After the seat is held, since the seat is what the watcher reads
+            // the native id off and what tells it the session has ended.
+            if let Some((home, resumed)) = rollout {
+                crate::codex_status::watch(
+                    app.clone(),
+                    topic.topic_id.clone(),
+                    account.id.clone(),
+                    started.pty_id.clone(),
+                    home,
+                    resumed,
+                );
+            }
             Ok(started)
         }
         Err(err) => {

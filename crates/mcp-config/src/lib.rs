@@ -372,6 +372,10 @@ impl Cli {
     /// a row that never says 制限中, since the limit is read off two of those
     /// five (#161), and what a settings key a CLI does not know can cost is the
     /// launch.
+    ///
+    /// Codex answers false and still reports: it has no status-line command,
+    /// and the app reads the same five off its rollout instead (#283,
+    /// `codex::status`). Nothing about that touches the launch line.
     pub fn reports_through_settings(self) -> bool {
         match self {
             Cli::ClaudeCode => true,
