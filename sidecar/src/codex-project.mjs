@@ -44,13 +44,21 @@ lines.on("line",line=>{let response;try{response=JSON.parse(line)}catch{return;}
     if(response.error)return finish({error:"Codex config/read failed"});
     const layers=response.result?.layers ?? [];
     const projects=layers.filter(layer=>layer.name?.type==="project" || layer.source?.type==="project");
-    projectLayers=projects.map(layer=>({folder:layer.name?.dotCodexFolder ?? layer.source?.dotCodexFolder,disabled:layer.disabledReason ?? null}));
+    // Preserve only the project-owned extension selector, never instruction text.
+    projectLayers=projects.map(layer=>({folder:layer.name?.dotCodexFolder ?? layer.source?.dotCodexFolder,disabled:layer.disabledReason ?? null,
+      ...(Object.hasOwn(layer.config?.liplus ?? {}, "output_style") ? {outputStyle:
+        layer.config.liplus.output_style === false || (typeof layer.config.liplus.output_style === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(layer.config.liplus.output_style)) ? layer.config.liplus.output_style : null} : {})}));
     child.stdin.write(JSON.stringify({id:3,method:"hooks/list",params:{cwds:[cwd]}})+"\n");
   }
   if(response.id===3) {
     if(response.error)return finish({error:"Codex hooks/list failed"});
-    const hooks=(response.result?.data ?? []).flatMap(v=>v.hooks ?? []).filter(v=>v.eventName==="sessionStart" && v.command?.includes("codex-session.mjs"));
-    finish({projects:projectLayers,hooks:hooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus}))});
+    const startHooks=(response.result?.data ?? []).flatMap(v=>v.hooks ?? []).filter(v=>v.eventName==="sessionStart");
+    const hooks=startHooks.filter(v=>v.command?.includes("codex-session.mjs"));
+    const styleHooks=startHooks.filter(v=>v.command?.includes("codex-output-style.py"));
+    finish({projects:projectLayers,hooks:hooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus})),
+      styleHooks:styleHooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus,command:v.command,
+        matcher:v.matcher,enabled:v.enabled,async:v.async,additionalContextLimit:v.additionalContextLimit}))});
   }
 });
 child.stdin.write(JSON.stringify({id:1,method:"initialize",params:{clientInfo:{name:"pullcept_project_discovery",version:"0.1.0"},capabilities:{experimentalApi:true}}})+"\n");

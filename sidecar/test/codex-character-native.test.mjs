@@ -77,5 +77,22 @@ test("actual patched ConPTY/cmd delivers selected Unicode and shell text to nati
       const result = JSON.parse(execFileSync(probe, [], {input:JSON.stringify({command, options, cwd:scratch, home, expected}), encoding:"utf8", windowsHide:true}));
       assert.equal(result.equal, true); assert.equal(result.transport, "patched-ConPTY-cmd");
     }
+    // File-mode persona is env-only; ConPTY keeps manual common instructions.
+    const optionsFile = compose(["-c", 'developer_instructions="COMMON_FILE_FIXTURE"']);
+    const envFile = join(scratch, "style-env.txt");
+    const envShim = join(scratch, "style shim.cmd");
+    writeFileSync(envShim, `@echo off\r\necho %LI_PLUS_OUTPUT_STYLE%>"${envFile}"\r\n"${bin}" %*\r\n`);
+    const inherited = process.env.LI_PLUS_OUTPUT_STYLE;
+    try {
+      process.env.LI_PLUS_OUTPUT_STYLE = "INHERITED_BAD";
+      for (const selectedFile of ["character_codex_luna", "character_instance", null]) {
+        const result = JSON.parse(execFileSync(probe, [], {input:JSON.stringify({command:envShim, options:optionsFile,
+          cwd:scratch, home, expected:"COMMON_FILE_FIXTURE", output_style:selectedFile}), encoding:"utf8", windowsHide:true}));
+        assert.equal(result.equal, true);
+        const delivered = readFileSync(envFile, "utf8").trim();
+        if (selectedFile) assert.equal(delivered, selectedFile);
+        else assert.notEqual(delivered, "INHERITED_BAD");
+      }
+    } finally { if (inherited === undefined) delete process.env.LI_PLUS_OUTPUT_STYLE; else process.env.LI_PLUS_OUTPUT_STYLE = inherited; }
   } finally { rmSync(scratch, {recursive:true, force:true}); }
 });

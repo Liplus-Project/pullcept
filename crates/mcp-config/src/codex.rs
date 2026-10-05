@@ -7,6 +7,7 @@ pub use character::{apply_character, check_command_length, instruction_value, se
 pub const LAUNCH_ID_ENV: &str = "PULLCEPT_LAUNCH_ID";
 pub const LAUNCH_ROOM_ENV: &str = "PULLCEPT_LAUNCHED_ROOM";
 pub const NATIVE_URL_ENV: &str = "PULLCEPT_NATIVE_URL";
+pub const OUTPUT_STYLE_ENV: &str = "LI_PLUS_OUTPUT_STYLE";
 pub const NATIVE_PATH: &str = "/hooks/codex-session";
 pub const SIDECAR_ENV: &[&str] = &[
     ROOM_TOKEN_ENV,

@@ -126,6 +126,18 @@ fn ensure_codex_version(command: &str, env: &[(String, String)], cwd: &Path) -> 
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct LaunchPreview {
+    args: Vec<String>,
+    character_mode: Option<String>,
+    character_name: Option<String>,
+}
+
+struct CodexCharacterLaunch {
+    preview: LaunchPreview,
+    output_style: Option<String>,
+}
+
 fn codex_character_args(
     command: &str,
     options: &[String],
@@ -134,16 +146,47 @@ fn codex_character_args(
     entry: &Path,
     character: Option<&str>,
     mut composed: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<CodexCharacterLaunch, String> {
     if !console_safe(command) || command.contains('%') {
         return Err("Codex のコマンドを Windows の起動の行へ安全に運べません。起動を止めました。".into());
     }
-    if let Some(selected) = character.map(str::trim).filter(|name| !name.is_empty()) {
-        let options = mcp_config::codex::transport_options(options)?;
+    let selected = character.map(str::trim).filter(|name| !name.is_empty());
+    let options = mcp_config::codex::transport_options(options)?;
+    let home = env.iter().find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+        .map(|(_, value)| PathBuf::from(value))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|home| PathBuf::from(home).join(".codex")))
+        .ok_or("Codex home が見つかりません。")?;
+    let home = if home.is_absolute() { home } else { cwd.join(home) };
+    let mut discovery = mcp_config::codex::discovery_options(&options, &home)?;
+    discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
+    let effective = mcp_config::codex::effective_cwd(cwd, &options)?;
+    let mut resolver = std::process::Command::new("node");
+    resolver.arg(entry.parent().unwrap().join("codex-style.mjs"))
+        .arg(command).arg(cwd).arg(serde_json::to_string(&discovery).unwrap())
+        .arg(effective).arg(selected.unwrap_or(""))
+        .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV)
+        .env("CODEX_HOME", &home).current_dir(cwd)
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        resolver.creation_flags(0x08000000);
+    }
+    let output = resolver.output().map_err(|_| "Codex の output style 確認を起動できません。node と Python 3.11 以上を確認してください。")?;
+    let style: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Codex の output style 確認が失敗しました。")?;
+    if !output.status.success() || style.get("error").is_some() {
+        return Err(style["error"].as_str().unwrap_or("Codex のキャラクターを確認できません。project の output style と専用 SessionStart hook の登録・信頼、Python 3.11 以上を確認してください。").to_string());
+    }
+    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled", "legacy"].contains(mode))
+        .ok_or("Codex の output style 応答が不正です。")?.to_string();
+    let name = style["name"].as_str().map(str::to_string);
+    if mode == "legacy" {
+      if let Some(selected) = selected {
         let mut child = std::process::Command::new("node");
         child.arg(entry.parent().unwrap().join("codex-character.mjs"))
             .arg(command).arg(cwd).arg(serde_json::to_string(&options).unwrap())
-            .envs(env.iter().cloned()).current_dir(cwd)
+            .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV).current_dir(cwd)
             .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         #[cfg(windows)]
         {
@@ -159,9 +202,13 @@ fn codex_character_args(
         let source = data.get("instructions").and_then(serde_json::Value::as_str)
             .ok_or("Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。")?;
         mcp_config::codex::apply_character(&mut composed, source, selected)?;
+      }
     }
     mcp_config::codex::check_command_length(command, &composed)?;
-    Ok(composed)
+    Ok(CodexCharacterLaunch {
+        preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name },
+        output_style: (mode == "file").then(|| selected.map(str::to_string)).flatten(),
+    })
 }
 
 fn codex_hook_dir(
@@ -704,7 +751,7 @@ pub async fn preview_launch_args(
     command: Option<String>,
     env_text: Option<String>,
     env: Option<Vec<account_env::EnvVar>>,
-) -> Result<Vec<String>, String> {
+) -> Result<LaunchPreview, String> {
     let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
     let server_name = server_name_for(account_id.trim(), &topic_id);
     let others = room
@@ -726,14 +773,14 @@ pub async fn preview_launch_args(
         .unwrap_or_default();
     let status = status_command(room.port(), &topic_id, account_id.trim());
     if kind != AccountKind::CodexCli {
-        return Ok(mcp_config::launch_args(
+        return Ok(LaunchPreview { args: mcp_config::launch_args(
             &args,
             kind.cli(),
             &server_name,
             character.as_deref(),
             &others,
             status.as_deref(),
-        ));
+        ), character_mode: None, character_name: None });
     }
     let (entry, runner) = resolve_sidecar_paths()?;
     let composed = runtime_launch_args(
@@ -753,7 +800,7 @@ pub async fn preview_launch_args(
     let sealed = if let Some(text) = env_text { crate::config::seal_account_env(text, previous)? } else { previous };
     let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
     tauri::async_runtime::spawn_blocking(move || {
-        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), composed)
+        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), composed).map(|launch| launch.preview)
     }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?
 }
 
@@ -1472,9 +1519,10 @@ fn launch(
         &sidecar_runner,
         &sidecar_entry,
     )?;
-    let composed = if account.kind == AccountKind::CodexCli {
-        codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, composed)?
-    } else { composed };
+    let (composed, output_style) = if account.kind == AccountKind::CodexCli {
+        let launch = codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, composed)?;
+        (launch.preview.args, launch.output_style)
+    } else { (composed, None) };
     // The id goes in last, over the whole line. The account's own options may
     // name where it goes and the CLI's conventions may have put it there too
     // (#156), and one pass over the composed line fills both — filling either
@@ -1492,8 +1540,12 @@ fn launch(
     // (`APP_LAUNCH_ENV`).
     let mut env: Vec<(&str, String)> = account_env
         .iter()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case(mcp_config::codex::OUTPUT_STYLE_ENV))
         .map(|(key, value)| (key.as_str(), value.clone()))
         .collect();
+    if let Some(selected) = output_style {
+        env.push((mcp_config::codex::OUTPUT_STYLE_ENV, selected));
+    }
     // The token the status-line script presents, in the environment rather
     // than on the line: the line is drawn on screen, and the token is what
     // makes the room this room (#155).
