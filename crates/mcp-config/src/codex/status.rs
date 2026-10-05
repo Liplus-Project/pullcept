@@ -54,9 +54,14 @@ impl Status {
     /// replaced, a missing one by `None`. A `token_count` may carry `info` or
     /// `rate_limits` alone; the half it does not carry is left as it stood.
     pub fn apply_line(&mut self, line: &[u8]) -> bool {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            return false;
-        };
+        match serde_json::from_slice::<Value>(line) {
+            Ok(value) => self.apply(&value),
+            Err(_) => false,
+        }
+    }
+
+    /// [`Status::apply_line`], for a line already parsed.
+    pub fn apply(&mut self, value: &Value) -> bool {
         let before = self.clone();
         let payload = &value["payload"];
         match value["type"].as_str() {
@@ -131,6 +136,12 @@ pub struct Tail {
     /// Inside a line longer than `LINE_MAX`: dropped up to its newline.
     skipping: bool,
     pub status: Status,
+    /// The last turn end read and not yet taken (#294, `limit::turn_end`).
+    turn_end: Option<super::limit::TurnEnd>,
+    /// The reset the last `token_count` reported for its fullest window
+    /// (#294, `limit::rollout_reset`): what the room is told while the
+    /// app-server has not said better.
+    pub resets_at: Option<i64>,
 }
 
 impl Tail {
@@ -153,7 +164,15 @@ impl Tail {
         while let Some(end) = bytes.iter().position(|&b| b == b'\n') {
             self.hold(&bytes[..end]);
             if !self.skipping {
-                changed |= self.status.apply_line(&self.line);
+                if let Ok(value) = serde_json::from_slice::<Value>(&self.line) {
+                    changed |= self.status.apply(&value);
+                    if let Some(end) = super::limit::turn_end(&value) {
+                        self.turn_end = Some(end);
+                    }
+                    if let Some(reset) = super::limit::rollout_reset(&value) {
+                        self.resets_at = Some(reset);
+                    }
+                }
             }
             self.line.clear();
             self.skipping = false;
@@ -161,6 +180,12 @@ impl Tail {
         }
         self.hold(bytes);
         changed
+    }
+
+    /// The last turn end read since the previous call, if any. One read may
+    /// carry several; the last is the seat's state.
+    pub fn take_turn_end(&mut self) -> Option<super::limit::TurnEnd> {
+        self.turn_end.take()
     }
 
     fn hold(&mut self, part: &[u8]) {
@@ -378,6 +403,22 @@ mod tests {
         assert_eq!(tail.status.five_hour, Some(85.0));
         assert_eq!(tail.status.model.as_deref(), Some("gpt-6-luna"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_last_turn_end_and_reset_are_kept_for_the_limit() {
+        use super::super::limit::TurnEnd;
+        let mut tail = Tail::new(0);
+        assert_eq!(tail.take_turn_end(), None);
+        tail.feed(lines(&[
+            TOKENS,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","error":null}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"}}}"#,
+        ])
+        .as_bytes());
+        assert_eq!(tail.resets_at, Some(1791613577), "93 is the fuller window in TOKENS");
+        assert_eq!(tail.take_turn_end(), Some(TurnEnd::UsageLimit));
+        assert_eq!(tail.take_turn_end(), None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod app_mcp;
+mod codex_limit;
 mod codex_status;
 mod config;
 mod pty;
@@ -25,6 +26,9 @@ pub fn run() {
         .manage(RoomSeats::new())
         // The MCP servers the app runs itself, by name (#172).
         .manage(McpServers::new())
+        // The Codex seats stopped on their usage limit, and the posts the room
+        // keeps back from them (#294).
+        .manage(codex_limit::CodexLimits::new())
         .setup(|app| {
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.

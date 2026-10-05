@@ -20,15 +20,21 @@
 //!
 //! What reaches the screen is the same `session-stats` the status-line receiver
 //! emits (`SessionStats::emit`), carrying the five as read so far, sent only
-//! when one of them changed.
+//! when one of them changed — or when 制限中 turned over.
+//!
+//! **The same round drives the seat's usage limit** (#294, `codex_limit`):
+//! the turn end and the reset each read leaves behind are handed to the
+//! seat's `Limiter`, which stops the seat, asks the app-server when a question
+//! is due, and hands the seat back. The limit is the launch's, like this
+//! thread: when the thread ends, what was held for the seat goes with it.
 
+use crate::codex_limit::Limiter;
 use crate::pty::PtyState;
-use crate::room::SessionStats;
 use crate::session::RoomSeats;
 use mcp_config::codex::status::Tail;
 use std::path::PathBuf;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 
 /// How often the rollout is looked at. The CLI writes a `token_count` per model
 /// answer; a second behind it is well inside what a person reads the panel at.
@@ -57,91 +63,99 @@ const SEARCH_SLOW: u32 = 10;
 /// resume went back into and its length at launch: reading starts there, so
 /// the last run's values are not shown as this one's. Any other file this
 /// launch ends up writing is read from its start.
-pub fn watch(
-    app: AppHandle,
-    topic_id: String,
-    account_id: String,
-    pty_id: String,
-    home: PathBuf,
-    resumed: Option<(PathBuf, u64)>,
-) {
+pub fn watch(limiter: Limiter, home: PathBuf, resumed: Option<(PathBuf, u64)>) {
     let spawned = std::thread::Builder::new()
         .name("codex-status".into())
         .spawn(move || {
-            let mut followed: Option<Followed> = None;
-            loop {
-                std::thread::sleep(POLL);
-                if !app.state::<PtyState>().is_running(&pty_id) {
-                    return;
-                }
-                let Some(native) =
-                    app.state::<RoomSeats>()
-                        .native_id_of(&topic_id, &account_id, &pty_id)
-                else {
-                    return;
-                };
-                let Some(id) = native else {
-                    continue;
-                };
-                if followed.as_ref().is_none_or(|f| f.id != id) {
-                    followed = Some(Followed {
-                        id,
-                        path: None,
-                        tail: None,
-                        misses: 0,
-                    });
-                }
-                let Some(Followed {
-                    id,
-                    path,
-                    tail,
-                    misses,
-                }) = followed.as_mut()
-                else {
-                    continue;
-                };
-                if path.is_none() {
-                    *misses = misses.saturating_add(1);
-                    if *misses > SEARCH_EVERY_AFTER && *misses % SEARCH_SLOW != 0 {
-                        continue;
-                    }
-                    let Some(found) = mcp_config::codex::transcript(&home, id) else {
-                        continue;
-                    };
-                    *misses = 0;
-                    // Placed once, at the first finding: a file found again
-                    // after a failed read keeps the offset it had reached.
-                    if tail.is_none() {
-                        let start = match &resumed {
-                            Some((file, length)) if *file == found => *length,
-                            _ => 0,
-                        };
-                        *tail = Some(Tail::new(start));
-                    }
-                    *path = Some(found);
-                }
-                let (Some(file), Some(tail)) = (path.as_deref(), tail.as_mut()) else {
-                    continue;
-                };
-                match tail.read(file) {
-                    Ok(true) => {
-                        SessionStats::from_codex(
-                            topic_id.clone(),
-                            account_id.clone(),
-                            &tail.status,
-                        )
-                        .emit(&app);
-                    }
-                    Ok(false) => {}
-                    // Gone or unreadable for now: find it again next round. The
-                    // reading so far is kept; a file replaced under the same
-                    // name is read from its start (`Tail::read`).
-                    Err(_) => *path = None,
-                }
-            }
+            follow(&limiter, &home, resumed);
+            limiter.forget();
         });
     if let Err(err) = spawned {
-        // The session runs without its five values, which read `—`.
+        // The session runs without its five values, which read `—`, and
+        // without its limit being watched: the room types into it as before.
         eprintln!("[codex-status] watcher could not start: {err}");
+    }
+}
+
+/// The watcher's rounds, until the launch leaves the seat or its PTY ends.
+fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u64)>) {
+    let (app, topic_id, account_id, pty_id) = (
+        &limiter.app,
+        &limiter.topic_id,
+        &limiter.account_id,
+        &limiter.pty_id,
+    );
+    let mut followed: Option<Followed> = None;
+    loop {
+        std::thread::sleep(POLL);
+        if !app.state::<PtyState>().is_running(pty_id) {
+            return;
+        }
+        let Some(native) = app
+            .state::<RoomSeats>()
+            .native_id_of(topic_id, account_id, pty_id)
+        else {
+            return;
+        };
+        let Some(id) = native else {
+            continue;
+        };
+        if followed.as_ref().is_none_or(|f| f.id != id) {
+            followed = Some(Followed {
+                id,
+                path: None,
+                tail: None,
+                misses: 0,
+            });
+        }
+        let Some(Followed {
+            id,
+            path,
+            tail,
+            misses,
+        }) = followed.as_mut()
+        else {
+            continue;
+        };
+        if path.is_none() {
+            *misses = misses.saturating_add(1);
+            if *misses > SEARCH_EVERY_AFTER && *misses % SEARCH_SLOW != 0 {
+                continue;
+            }
+            let Some(found) = mcp_config::codex::transcript(home, id) else {
+                continue;
+            };
+            *misses = 0;
+            // Placed once, at the first finding: a file found again
+            // after a failed read keeps the offset it had reached.
+            if tail.is_none() {
+                let start = match &resumed {
+                    Some((file, length)) if *file == found => *length,
+                    _ => 0,
+                };
+                *tail = Some(Tail::new(start));
+            }
+            *path = Some(found);
+        }
+        let Some(tail) = tail.as_mut() else {
+            continue;
+        };
+        let changed = match path.as_deref().map(|file| tail.read(file)) {
+            Some(Ok(changed)) => changed,
+            // Gone or unreadable for now: find it again next round. The
+            // reading so far is kept; a file replaced under the same
+            // name is read from its start (`Tail::read`).
+            Some(Err(_)) => {
+                *path = None;
+                false
+            }
+            None => false,
+        };
+        // Every round, read or not: a stopped seat's due question does
+        // not wait for the file to move.
+        let turned = limiter.round(tail.take_turn_end(), tail.resets_at);
+        if changed || turned {
+            limiter.stats(&tail.status).emit(app);
+        }
     }
 }
