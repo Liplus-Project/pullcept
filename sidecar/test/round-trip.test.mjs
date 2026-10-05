@@ -98,7 +98,7 @@ const SEATED_LATE =
 // of looking back, since that is what this launch declares.
 const OPENING = [
   "あなたは Pullcept の部屋に参加しています。部屋での名前は「test-agent」です。",
-  "部屋への発言・返信は say_to_room ツールで投稿してください。端末出力は部屋への投稿ではありません。",
+  "部屋への発言・返信は say_to_room ツールで投稿してください。部屋の発言に返すとき、端末出力は誰にも読まれないものとして扱ってください。返事を端末だけに書くことは、黙っているのと同じです。",
   LOOKING_BACK,
   "say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。",
 ].join("\n");
@@ -496,7 +496,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   const head = [...instructions].slice(0, 512).join("");
   assert.match(head, /Pullcept の部屋に参加/);
   assert.match(head, /say_to_room ツールで投稿/);
-  assert.match(head, /端末出力は部屋への投稿ではありません/);
+  assert.match(head, /部屋の発言に返すとき、端末出力は誰にも読まれないものとして扱ってください。/);
   assert.match(head, /read_room_history ツールで参照/);
   assert.match(head, /say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。/);
   assert.match(instructions, /say_to_room/, "instructions must name the posting tool");

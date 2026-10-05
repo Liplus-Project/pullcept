@@ -339,7 +339,7 @@ const LOOKING_BACK = UNSEEN_HISTORY
  */
 const INSTRUCTIONS = [
   `あなたは Pullcept の部屋に参加しています。部屋での名前は「${AGENT_NAME}」です。`,
-  "部屋への発言・返信は say_to_room ツールで投稿してください。端末出力は部屋への投稿ではありません。",
+  "部屋への発言・返信は say_to_room ツールで投稿してください。部屋の発言に返すとき、端末出力は誰にも読まれないものとして扱ってください。返事を端末だけに書くことは、黙っているのと同じです。",
   LOOKING_BACK,
   "say_to_room の last_seen には実際に見た最新の発言の message_id を付けてください。",
   "",
