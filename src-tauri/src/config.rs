@@ -131,9 +131,9 @@ pub struct Account {
     /// field while it is deciding this one (#156).
     #[serde(default)]
     pub kind: AccountKind,
-    /// Which character this account speaks as: the `name:` of an output style
-    /// in its working directory's `.claude/output-styles/`, or `None` when it
-    /// declares none and the directory's own default stands.
+    /// Which character this account speaks as: Claude's output style name, or
+    /// Codex's project `.codex/output-styles/` stem (legacy inline heading before
+    /// migration). `None` leaves the product's project default in place.
     ///
     /// A field of the account rather than a string inside `args`, because the
     /// character is who this account is when it runs — the same axis its name

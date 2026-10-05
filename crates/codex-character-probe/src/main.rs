@@ -50,6 +50,10 @@ fn main() {
     cmd.arg("2>nul");
     cmd.cwd(cwd);
     cmd.env("CODEX_HOME", home);
+    cmd.env_remove(mcp_config::codex::OUTPUT_STYLE_ENV);
+    if let Some(style) = fixture["output_style"].as_str() {
+        cmd.env(mcp_config::codex::OUTPUT_STYLE_ENV, style);
+    }
     let mut child = pair.slave.spawn_command(cmd).unwrap();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();

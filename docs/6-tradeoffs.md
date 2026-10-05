@@ -6,7 +6,7 @@ native ID は初回の実会話で取得するため、起動直後にはまだ�
 
 対応基準は 0.160.0。project config／hook discovery／会話保存形式への依存を mcp-config::codex と専用補助スクリプトに置く。linked worktree の hook は CLI が root checkout へ解決するため、同じ repository と相対位置を metadata で検証してから追記する。CLI の変更で一致を確認できなければ推測で登録せず拒否する。
 
-キャラクターは native CLI の有効 developer_instructions から一つを選ぶ（#276、[選択文法](3-accounts.md#codex-のキャラ選択276)）。共通指示と AGENTS／Li+ は保持するが、競合する人格指示の遵守保証は持たない。選択時の二回のモデル不要 discovery と、CLI prompt 形式への依存、Windows 8191文字上限による明示拒否を受容する。MCP は部屋の作法だけを持つ。Claude 専用 metrics は未取得として表示する。
+キャラクターは信頼済み project の `.codex/output-styles` から installed Li+ helper v1 で選び、専用 SessionStart handler が全文を一回配送する（#281、[選択契約](3-accounts.md#codex-のキャラ選択281)）。Python 3.11 以上、loader 配備、native project と handler 個別の信頼が必要となり、プレビューでもモデル不要の project discovery と helper process が加わる。本文は argv に載らず、長さによる8191文字制約を避けられる。登録・信頼・v1 応答を確認できなければ起動を拒否する。selector も style フォルダーも無い移行前 project は inline 互換を維持し、そこでの二回の prompt discovery と CLI prompt 形式依存、8191文字超の明示拒否を受容する。共通指示と AGENTS／Li+ は保持するが、競合する人格指示の遵守保証は持たない。MCP は部屋の作法だけを持つ。Claude 専用 metrics は未取得として表示する。
 
 
 | 決定 | 代償 |

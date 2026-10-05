@@ -8,13 +8,27 @@ Codex の MCP 登録先は有効 cwd の `.codex/config.toml`。既存のキー�
 
 `-C パス` / `--cd パス` / `--cd=パス` は元の process cwd に対して解決し（短い `-C=パス` は明示拒否する）、設定登録・hook discovery・画面の cwd に同じ有効 cwd を使う。実対話の profile・`-c`・環境変数を保持する。app-server は `--profile` を受け付けないため、discovery には選んだ `$CODEX_HOME/<名前>.config.toml` の `project_root_markers` だけを渡し、利用者の `-c` をその後に適用する。profile 名は native runtime が受理する plain name を使う。0.160.0 はドットを含む名前を拒否する。読めない profile や安全に保持できない markers は拒否する。remote 接続・CLI 自身による `--worktree` 作成・非対話サブコマンドは、このローカル席の起動欄では使えない。
 
-**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` を確認し、その handler 一件を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の developer_instructions 選択を使う。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。Claude 専用 metrics は未取得の `—` のままである。
+**初回は診断端末でフォルダーと専用 hook を信頼する。** `SessionStart` の一覧で `codex-session.mjs` と、ファイル方式なら Li+ の `codex-output-style.py` を確認し、それぞれの handler を信頼する。アプリは既存 handler と信頼状態を保持し、信頼 hash を書かず、全 hook の確認を迂回しない。MCP instructions は札・返信・履歴を案内する。キャラクターは下記の方式で選ぶ。AGENTS.md と Li+ の指示は CLI が既存どおり読み込む。Claude 専用 metrics は未取得の `—` のままである。
 
 hook の場所は同条件の native `config/read` の project layer から決め、登録後に `hooks/list` でも列挙を確認する（未信頼フォルダーは通常の CLI 信頼画面へ進む）。standalone cwd・独立 Git root・サブディレクトリに加え、linked worktree では正式な root-checkout mapping を使う。`.git` の gitdir、commondir、登録 checkout、main checkout の所属を照合し、同一 Git repository の対応する相対位置に専用 handler だけを追記する。実際に書く設定／hook の境界外 symlink は拒否する。[native loader 0.160.0](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/loader/mod.rs#L1106) と [trust resolver](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/git-utils/src/trust.rs) に合わせた動作である。
 
 初回の実会話で hook stdin の `session_id` を受け、起動 nonce・アカウント・トピック・生きている PTY を照合して索引へ保存する。最初のターン前は ID 未取得が正常である。子セッション・古い起動・別の席・保存 ID と異なる通知は採用しない。停止後は保存 UUID を `codex resume <id>` に渡す。`CODEX_HOME` の会話ファイルが正常な探索で見つからない時だけ新規に戻り、権限／I/O エラーで調べられない時は ID を保持して明示 resume を試す。過去を押し込まず、必要な履歴は席が道具で引く。
 
-## Codex のキャラ選択（#276）
+## Codex のキャラ選択（#281）
+
+キャラクター欄には `.codex/output-styles/character_codex_luna.md` の **拡張子を除いた名前** `character_codex_luna` を入力する。大文字小文字を区別し、ASCII の英数字で始まる英数字・`_`・`-` の128文字以下とする。空欄は project `.codex/config.toml` の `[liplus] output_style` に任せる。selector 未設定でも `.codex/output-styles` があれば `character_instance.md` を既定に使う。false は空欄時に persona を無効にする。アカウントに名前を指定すれば既定の本文を選択本文で置き換え、一つだけ配送する。共通 developer_instructions は変更しない。Claude と同じ artifact を共有できるが、Claude 側の共有リンク・frontmatter の設定は環境移行時に行う。
+
+native `config/read` が返した有効 project layer のうち、selector 又は style フォルダーを持つ最優先の root を採用する。disabledReason のある layer を参照 root にせず、profile の project_root_markers、手動 -c、--cd、CODEX_HOME の discovery 条件を保持する。style 選択自体は project 設定専用で、profile/global/-c に置いた `[liplus]` との連動は約束しない。
+
+Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex-output-style.py` が必要である。[loader 契約](https://github.com/Liplus-Project/liplus-language/blob/main/adapter/codex/character-config.md) の `resolve --cwd <有効cwd> --root <信頼済みroot> [--style <アカウント名>]` をプレビューと起動・再開で共通に使う。本文を返させず、protocol_version 1、mode、name、root、sha256、byte_count、handler metadata を検証する。本文 parser は Li+ helper だけが持つ。
+
+専用 handler は native `hooks/list` の project source、enabled、trusted、同期実行、additionalContextLimit=0、startup/resume/clear/compact の一回ずつの登録を確認する。登録が無い・変更されて再信頼が必要・別 root の style handler と重複する場合は起動を止める。プレビューに方式と選択名を表示する。missing、空本文、不正 UTF-8、frontmatter 不整合、境界外 symlink/junction、上限128 KiB超などは loader と同じ結果で拒否し、旧方式には戻らない。エラーへ本文・CLI stderr・秘密を出さない。
+
+アカウントの非空選択名だけを app-owned `LI_PLUS_OUTPUT_STYLE` に設定し、子プロセスへ渡す。本文は argv と環境へ載らず、長い本文でも Windows の8191文字制約を消費しない。空欄では inherited override を除去して project の既定を使う。原本 config と style、共通指示は更新しない。`codex-session.mjs` は ID callback 専用のままである。実環境での全文配送と画面起動は、Li+ loader 配備・個別 hook trust・新 Pullcept build の配備後の検証を要する。
+
+### 移行前の inline 選択（#276）
+
+selector も `.codex/output-styles` も無い project では、次の従来方式を維持する。
 
 キャラクター欄には `character_Codex_Lin` のように見出しの名前を正確に入力する。定義元は、実 CLI がその起動条件で解決した **有効な developer_instructions 一文字列**だけである。ファイルを別途検索したり、複数 layer の本文を連結したりしない。CLI の通常の優先順位（user base → 選択 profile-v2 → 信頼済み project layer → 手動 `-c`、managed 設定は CLI の制約に従う）で一つの本文が決まる。上位の文字列は下位の文字列を置換するため、共通部分は有効な本文の中へ置く。未信頼の project 本文は採用しない。
 
@@ -44,7 +58,7 @@ Lay の本文。
 
 選択した本文を最後の `-c developer_instructions=...` として合成する。TOML Unicode escape で日本語・改行・引用符・シェル文字を保持する。手動 `-c` の文字列／配列／inline table も同値に符号化し、持ち運べない他のオプションは省略せず拒否する。短いフラグの値は空白で分ける（`-p 名前`、`-C パス`、`-c key=value`）。`-p名前`／`-p=名前` 等の連結・等号形式は探索と起動で明示拒否し、長い `--profile=名前`／`--cd=パス`／`--config=key=value` は扱う。Windows の合成行が8191文字を超える時も切り詰めず拒否する。Codex の PTY は `cmd /C call` で空白を含む .cmd コマンドを保ち、文字列の % は TOML escape で渡す。プレビューと起動・再開は同じ helper／parser／argv 合成を通る。プレビューは編集したコマンド・環境も使い、失敗理由を表示する。
 
-空欄はアプリのキャラ探索／developer_instructions 上書きを行わず既存 CLI に任せる。旧保存値は削除しないが、自由文から名前選択へ意味が変わるため、そのままでは未知名として拒否する。Codex の `PULLCEPT_CHARACTER` を MCP instructions へ送る旧経路は無い。原本 developer_instructions・AGENTS.md・Li+・グローバル設定は変更しない。既存 app-owned MCP の登録更新と専用 SessionStart hook の追記は従来どおりである。Claude の output style 選択は従来どおり。
+inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI に任せる。旧保存値は削除しないが、自由文から名前選択へ意味が変わるため、そのままでは未知名として拒否する。Codex の `PULLCEPT_CHARACTER` を MCP instructions へ送る旧経路は無い。原本 developer_instructions・AGENTS.md・Li+・グローバル設定は変更しない。既存 app-owned MCP の登録更新と ID 専用 SessionStart hook の追記は従来どおりである。Claude の output style 選択は従来どおり。
 
 以後の `.mcp.json`・`--settings`・output style・`--session-id` は Claude Code の作法であり、Codex の設定と初回 ID 取得はこの節を参照する。
 

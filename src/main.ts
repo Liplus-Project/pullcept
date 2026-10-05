@@ -5198,7 +5198,7 @@ function showDialogKind(): void {
   dialogMcpEl.hidden = kind !== "mcp";
   dialogResumeFieldEl.hidden = kind !== "cli";
   const codex = kind === "codex_cli";
-  dialogCharacterEl.placeholder = codex ? "例: character_Codex_Lin（定義の見出し名）" : "例: character_Lay（output style の name）";
+  dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
   document.getElementById("dialog-codex-note")!.hidden = !codex;
   if (launchesKind(kind)) refreshDialogLine();
   // Chosen on a form making an account: the server is written and started at
@@ -5265,7 +5265,7 @@ async function renderDialogPreview(generation: number): Promise<void> {
     const parsed = await invoke<string[]>("parse_launch_options", {
       text: dialogOptionsEl.value,
     });
-    const merged = await invoke<string[]>("preview_launch_args", {
+    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null}>("preview_launch_args", {
       args: parsed,
       accountId: id,
       // The field rather than the draft, for the reason the character is read
@@ -5285,7 +5285,10 @@ async function renderDialogPreview(generation: number): Promise<void> {
     });
     // The form may have been closed or reopened during the round trip.
     if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
-    dialogPreviewEl.textContent = `${dialogCommandEl.value.trim()} ${joinArgs(merged)}`;
+    const character = merged.character_mode === "file" ? `キャラクター: ${merged.character_name}（project のファイル）\n`
+      : merged.character_mode === "disabled" ? "キャラクター: project の既定は無効\n"
+      : merged.character_mode === "legacy" ? `キャラクター: ${merged.character_name || "CLI の既定"}（従来の指示）\n` : "";
+    dialogPreviewEl.textContent = `${character}${dialogCommandEl.value.trim()} ${joinArgs(merged.args)}`;
   } catch (error) {
     if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
     dialogPreviewEl.textContent = dialogKindEl.value === "codex_cli" ? String(error) : "";

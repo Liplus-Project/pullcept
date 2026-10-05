@@ -349,8 +349,11 @@ pub fn spawn_pty_with_env(
         cmd.cwd(dir);
     }
 
-    // On top of this process's own environment, which `CommandBuilder` starts
-    // from: these are additions, and nothing the person's shell set is removed.
+    // Add account/app variables to the inherited environment. Codex's reserved
+    // style override is cleared first so a blank account uses the project default.
+    if codex_shell {
+        cmd.env_remove(mcp_config::codex::OUTPUT_STYLE_ENV);
+    }
     for (key, value) in env {
         cmd.env(key, value);
     }
