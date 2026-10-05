@@ -79,7 +79,7 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
   for (const key of Object.keys(childEnv)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete childEnv[key];
   const args = [helper, "resolve", "--cwd", cwd, "--root", root];
   if (selected) args.push("--style", selected);
-  const metadata = await run("python", args, cwd, childEnv);
+  const metadata = await run(process.platform === "win32" ? "python" : "python3", args, cwd, childEnv);
   if (metadata.protocol_version !== 1 || !["file", "disabled"].includes(metadata.mode) || metadata.root !== root ||
       !Number.isInteger(metadata.byte_count) || metadata.byte_count < 0 || metadata.byte_count > 128 * 1024 ||
       (metadata.mode === "file" && (typeof metadata.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metadata.name) ||
