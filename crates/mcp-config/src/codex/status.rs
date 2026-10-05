@@ -8,7 +8,7 @@
 //! |---|---|
 //! | model, effort | `turn_context`: `payload.model`, `payload.effort` |
 //! | 5 h, weekly | `event_msg` / `token_count`: `payload.rate_limits.{primary,secondary}.used_percent`, told apart by `window_minutes` (300 / 10080) |
-//! | context | the same line: `payload.info.last_token_usage.total_tokens` over `payload.info.model_context_window` |
+//! | context | the same line: `payload.info.last_token_usage.total_tokens` against `payload.info.model_context_window`, by Codex's own formula (`context`) |
 //!
 //! **The shapes are observed, not published** (Codex CLI 0.160.0, 2026-10-05).
 //! So nothing here may fail on a line: one that is not JSON, of a type not
@@ -98,10 +98,29 @@ fn window(limits: &Value, minutes: u64) -> Option<f64> {
         .and_then(|w| finite(&w["used_percent"]))
 }
 
+/// Tokens Codex counts as always taken (system prompt, tools) and removes from
+/// both sides before it computes what is left. Codex-internal, not published,
+/// and free to change between versions (openai/codex `codex-rs/protocol/src/protocol.rs`,
+/// `percent_of_context_window_remaining`, read 2026-10-05).
+const BASELINE_TOKENS: f64 = 12000.0;
+
+/// Used percent as Codex's `/status` shows it: Codex rounds the *remaining*
+/// percent to a whole number, and the panel shows `100 -` that, so the two
+/// always add up to 100.
 fn context(info: &Value) -> Option<f64> {
-    let used = finite(&info["last_token_usage"]["total_tokens"])?;
-    let size = finite(&info["model_context_window"]).filter(|n| *n > 0.0)?;
-    Some(used / size * 100.0)
+    let total = finite(&info["last_token_usage"]["total_tokens"])?;
+    let window = finite(&info["model_context_window"]).filter(|n| *n > 0.0)?;
+    Some(100.0 - remaining_percent(total, window))
+}
+
+fn remaining_percent(total: f64, window: f64) -> f64 {
+    if window <= BASELINE_TOKENS {
+        return 0.0;
+    }
+    let effective = window - BASELINE_TOKENS;
+    let used = (total - BASELINE_TOKENS).max(0.0);
+    let remaining = (effective - used).max(0.0);
+    (remaining / effective * 100.0).clamp(0.0, 100.0).round()
 }
 
 /// One rollout, read forward from an offset a complete line at a time.
@@ -214,8 +233,25 @@ mod tests {
         assert_eq!(s.effort.as_deref(), Some("high"));
         assert_eq!(s.five_hour, Some(85.0));
         assert_eq!(s.seven_day, Some(93.0));
-        let context = s.context.unwrap();
-        assert!((context - 31834.0 / 258400.0 * 100.0).abs() < 1e-9);
+        // (258400 - 12000 - (31834 - 12000)) / (258400 - 12000) = 91.95% left -> 92 -> 8 used.
+        assert_eq!(s.context, Some(8.0));
+    }
+
+    #[test]
+    fn context_matches_codex_status() {
+        // Observed 2026-10-05: `/status` said `93% left (29.1K used / 258K)`.
+        assert_eq!(100.0 - remaining_percent(29100.0, 258000.0), 7.0);
+        // The baseline is not counted as used: a fresh session reads 0.
+        assert_eq!(remaining_percent(0.0, 258000.0), 100.0);
+        assert_eq!(remaining_percent(12000.0, 258000.0), 100.0);
+        // Past the window, nothing is left; never below 0.
+        assert_eq!(remaining_percent(300000.0, 258000.0), 0.0);
+        // A window no larger than the baseline has nothing left at all.
+        assert_eq!(remaining_percent(0.0, 12000.0), 0.0);
+        assert_eq!(remaining_percent(0.0, 5000.0), 0.0);
+        let mut tail = Tail::new(0);
+        tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100},"model_context_window":12000}}}"#]).as_bytes());
+        assert_eq!(tail.status.context, Some(100.0));
     }
 
     #[test]
