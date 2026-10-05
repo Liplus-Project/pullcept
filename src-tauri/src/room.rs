@@ -97,6 +97,9 @@
 //! the protocol from a POST, and what has gone is a second kind of POST.
 //! #272 adds `/hooks/codex-session` on this authenticated listener for a guarded
 //! native SessionStart ID. It records a session, without posting room speech.
+//! A Codex seat's five values do not come in on this socket: the app reads
+//! them off the session's rollout itself (#283, `codex_status`) and emits the
+//! same `session-stats`.
 //!
 //! **There are several rooms, one per topic (#141, decision 3).** A room is a
 //! topic's floor and the participants in it, and a topic that is not on the
@@ -1185,11 +1188,14 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
 /// `statusline`, read 2026-09-17; not measured on a live CLI). Absent reaches
 /// the screen as absent, so a row reads `—` rather than `0%`.
 ///
-/// **This is where the app reads what a CLI sent, and it is the only place.**
+/// **This is where the app reads what a CLI sent, and one of two places.**
 /// The values are what was asked for, so the field names below are the CLI's
 /// and are a thing to keep in step with it. The terminal's own output is still
 /// not read (#82); what is read is a structured report the CLI hands out for
-/// this.
+/// this. The other place is a Codex CLI seat's rollout (#283,
+/// `mcp_config::codex::status`): Codex has no status-line command, so the app
+/// reads the same five out of the file the CLI writes them into, and hands
+/// them to the screen as this same event (`from_codex`, `emit`).
 ///
 /// **Two of the five are also where 制限中 comes from** (#161). The screen reads
 /// the word off `five_hour` and `seven_day` rather than off a signal of its own:
@@ -1229,6 +1235,29 @@ impl SessionStats {
             seven_day: data["rate_limits"]["seven_day"]["used_percentage"].as_f64(),
             context: data["context_window"]["used_percentage"].as_f64(),
         })
+    }
+
+    /// One Codex CLI seat's values as its rollout has reported them so far (#283).
+    pub fn from_codex(
+        topic_id: String,
+        account_id: String,
+        status: &mcp_config::codex::status::Status,
+    ) -> Self {
+        SessionStats {
+            topic_id,
+            account_id,
+            model: status.model.clone(),
+            effort: status.effort.clone(),
+            five_hour: status.five_hour,
+            seven_day: status.seven_day,
+            context: status.context,
+        }
+    }
+
+    /// Hand the report to the screen. The one event both paths end in, so the
+    /// panel draws a Codex seat and a Claude Code seat the same way.
+    pub fn emit(self, app: &AppHandle) {
+        let _ = app.emit("session-stats", self);
     }
 }
 
@@ -1351,7 +1380,7 @@ async fn read_hook(
         // because one report arrived malformed.
         if let Some((room_id, account_id)) = reported {
             if let Some(stats) = SessionStats::read(room_id, account_id, &body) {
-                let _ = app.emit("session-stats", stats);
+                stats.emit(app);
             }
         }
     }
