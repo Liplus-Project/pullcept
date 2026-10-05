@@ -461,7 +461,17 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 | エフォート | `turn_context` 行の `payload.effort` |
 | 5 時間 | `event_msg` / `token_count` 行の `payload.rate_limits` のうち `window_minutes` が 300 の窓の `used_percent` |
 | 週次 | 同じく `window_minutes` が 10080 の窓の `used_percent` |
-| コンテキスト | 同じ行の `payload.info.last_token_usage.total_tokens` ÷ `payload.info.model_context_window` |
+| コンテキスト | 同じ行の `payload.info.last_token_usage.total_tokens` と `payload.info.model_context_window` から、下記の Codex の式で出す |
+
+**コンテキストは Codex の `/status` と同じ式で出す（#285）。** 単純な割り算（`total_tokens` ÷ `model_context_window`）は Codex の表示と合わない——2026-10-05 の実機で、パネルが 11% のとき `/status` は `93% left (29.1K used / 258K)` であった。Codex は使用量と上限の両方から基準量 12000 トークンを引き、残りの割合を整数に丸めて出す（openai/codex の `codex-rs/protocol/src/protocol.rs` の `percent_of_context_window_remaining`、2026-10-05 に読んで確認）。アプリは同じ式で残りを出し、パネルには `100 − 残り` を使用率として出す。上の例では 7% である。
+
+- 上限が 12000 以下なら、残りは 0%。
+- 有効な上限 = 上限 − 12000。
+- 使用量 = `total_tokens` − 12000（0 を下回れば 0）。
+- 残り = 有効な上限 − 使用量（0 を下回れば 0）。
+- 残り％ = 残り ÷ 有効な上限 × 100 を 0〜100 に収め、整数に丸める。
+
+**12000 は Codex の内部値であり、公開仕様ではない。** Codex の版で変わりうる。変われば、パネルと `/status` の値は再びずれる。Claude Code の席が Claude Code の出す使用率をそのまま出すのと同じく、各 CLI が自分で見せている数字を出すための式である。
 
 **行の形は Codex の公開仕様ではない。** 2026-10-05 に Codex CLI 0.160.0 の実セッションで観測した形だけに基づく。JSON でない行・知らない種類の行・途中で切れた行・欄の欠けた行は、読めない欄を変えないだけで、例外で止まらない。一度も読めていない欄は「—」である。`turn_context` はそのターンの写しとして二欄とも置き換え、欠けた方は「—」になる。`token_count` は `info` と `rate_limits` の片方だけを運ぶことがあり、運ばなかった方は前の値のままである。5 時間と週次は `primary` / `secondary` の位置ではなく窓の長さで見分け、`limit_id` が `codex` 以外の枠の値は採らない——別の枠の数字で「制限中」を立てないためである。
 
