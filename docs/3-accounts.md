@@ -14,6 +14,8 @@ hook の場所は同条件の native `config/read` の project layer から決�
 
 初回の実会話で hook stdin の `session_id` を受け、起動 nonce・アカウント・トピック・生きている PTY を照合して索引へ保存する。最初のターン前は ID 未取得が正常である。子セッション・古い起動・別の席・保存 ID と異なる通知は採用しない。停止後は保存 UUID を `codex resume <id>` に渡す。`CODEX_HOME` の会話ファイルが正常な探索で見つからない時だけ新規に戻り、権限／I/O エラーで調べられない時は ID を保持して明示 resume を試す。過去を押し込まず、必要な履歴は席が道具で引く。
 
+**Codex の席は代替画面を使わずに起動する（#293）。** 新規起動の行と再開の行（`codex resume <id> …`）の両方の末尾に `--no-alt-screen` を足す。Codex 0.160.0 の TUI は既定（`tui.alternate_screen = "auto"`）で代替画面に描くため、端末ペインの scrollback に履歴が溜まらず、上へスクロールできない。このフラグで TUI は inline で描き、ペインに履歴が残る（`codex --help` / `codex resume --help` の「Runs the TUI in inline mode, preserving terminal scrollback history.」）。clap は再開の行でも位置引数の後のフラグを受け取る。入力欄は最下行にあり、キーを打つと最下部へ戻る（xterm.js の既定動作）。**起動オプションが画面の扱いを既に決めていれば足さない**——`--no-alt-screen` そのもの、または `-c` / `--config` の値で鍵が `tui.alternate_screen` のもの（`-c key=value` と `--config=key=value` のどちらの書き方でも）である。二重に指定して起動を落とさないためであり、利用者の指定がそのまま効く。プレビューは起動と同じ合成を通るため、この語もプレビューの行に出る。`Claude Code` の行には足さない。
+
 ## Codex のキャラ選択（#281）
 
 キャラクター欄には `.codex/output-styles/character_codex_luna.md` の **拡張子を除いた名前** `character_codex_luna` を入力する。大文字小文字を区別し、ASCII の英数字で始まる英数字・`_`・`-` の128文字以下とする。空欄は project `.codex/config.toml` の `[liplus] output_style` に任せる。selector 未設定でも `.codex/output-styles` があれば `character_instance.md` を既定に使う。false は空欄時に persona を無効にする。アカウントに名前を指定すれば既定の本文を選択本文で置き換え、一つだけ配送する。共通 developer_instructions は変更しない。Claude と同じ artifact を共有できるが、Claude 側の共有リンク・frontmatter の設定は環境移行時に行う。

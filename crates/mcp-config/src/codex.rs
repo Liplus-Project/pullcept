@@ -58,7 +58,44 @@ pub fn launch_args(base: &[String], own: &str, disabled: &[String]) -> Vec<Strin
         ]);
     }
     args.extend(["-c".into(), "features.codex_hooks=true".into()]);
+    if !sets_alternate_screen(base) {
+        args.push(NO_ALT_SCREEN.into());
+    }
     args
+}
+
+/// Inline TUI: the seat's terminal keeps Codex's output as scrollback (#293).
+/// Accepted after `resume <id>` as well as on a fresh line (`codex resume --help`, 0.160).
+pub const NO_ALT_SCREEN: &str = "--no-alt-screen";
+
+/// The person already chose the screen mode: the flag itself, or a `-c` value keyed
+/// `tui.alternate_screen` in any form the option parsing accepts. Adding ours then
+/// would only risk a launch the CLI refuses.
+fn sets_alternate_screen(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" {
+            return false;
+        }
+        if arg == NO_ALT_SCREEN {
+            return true;
+        }
+        let config = if ["-c", "--config"].contains(&arg) {
+            i += 1;
+            args.get(i).map(String::as_str)
+        } else {
+            arg.strip_prefix("--config=").or_else(|| arg.strip_prefix("-c="))
+        };
+        if config
+            .and_then(|c| c.split_once('='))
+            .is_some_and(|(key, _)| key.trim() == "tui.alternate_screen")
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Codex resolves a --cd value against the process's original working directory.
@@ -797,6 +834,7 @@ mod tests {
         let composed = substitute_session_id(&launch_args(&args, "own", &[]), ID);
         assert_eq!(&composed[..4], &["resume", ID, "--model", "gpt-6"]);
         assert!(!composed.contains(&"--last".into()));
+        assert_eq!(composed.last().map(String::as_str), Some(NO_ALT_SCREEN));
         std::fs::remove_file(file).unwrap();
         assert!(transcript(&dir, ID).is_none());
         std::fs::remove_dir_all(dir).unwrap();
@@ -944,6 +982,46 @@ mod tests {
             "an I/O failure is not missing history"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn every_line_runs_inline_unless_the_person_chose_the_screen_mode() {
+        let count = |args: &[String]| args.iter().filter(|a| *a == NO_ALT_SCREEN).count();
+        let fresh = launch_args(&["--model".into(), "gpt-6".into()], "own", &[]);
+        assert_eq!(count(&fresh), 1);
+        assert_eq!(fresh.last().map(String::as_str), Some(NO_ALT_SCREEN));
+        let resumed = launch_args(
+            &resume_launch_args(&["resume".into(), ID.into()], &[], Cli::CodexCli),
+            "own",
+            &[],
+        );
+        assert_eq!(&resumed[..2], &["resume", ID]);
+        assert_eq!(count(&resumed), 1);
+        let runtime = runtime_args(
+            &[],
+            "own",
+            &[],
+            Path::new("C:/runner/cli.mjs"),
+            Path::new("C:/repo/sidecar.ts"),
+        )
+        .unwrap();
+        assert_eq!(count(&runtime), 1);
+        let own = launch_args(&[NO_ALT_SCREEN.into()], "own", &[]);
+        assert_eq!(count(&own), 1);
+        for chosen in [
+            vec!["-c".to_string(), "tui.alternate_screen=always".into()],
+            vec!["--config".into(), "tui.alternate_screen=\"never\"".into()],
+            vec!["-c=tui.alternate_screen=auto".into()],
+            vec!["--config=tui.alternate_screen=never".into()],
+        ] {
+            assert_eq!(count(&launch_args(&chosen, "own", &[])), 0, "{chosen:?}");
+            // A form the launch refuses (`-c=`) never reaches the line at all.
+            if let Ok(normalized) = transport_options(&chosen) {
+                assert_eq!(count(&launch_args(&normalized, "own", &[])), 0, "{chosen:?}");
+            }
+        }
+        let other = launch_args(&["-c".into(), "tui.theme=dark".into()], "own", &[]);
+        assert_eq!(count(&other), 1);
+        assert!(reject_options(&[NO_ALT_SCREEN.into()]).is_ok());
     }
     #[test]
     fn runtime_table_replaces_stale_env_and_carries_only_current_launch_names() {
