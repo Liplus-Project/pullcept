@@ -28,7 +28,7 @@ print(json.dumps(reply))
 `;
 function fixture() {
   const scratch = mkdtempSync(join(tmpdir(), "pullcept styles "));
-  const root = realpathSync(scratch), nested = join(root, "nested");
+  const root = realpathSync.native(scratch), nested = join(root, "nested");
   mkdirSync(nested); mkdirSync(join(root, ".codex/hooks"), {recursive:true});
   mkdirSync(join(root, ".codex/output-styles"));
   const helper = join(root, ".codex/hooks/codex-output-style.py"), path = join(root, ".codex/hooks.json");

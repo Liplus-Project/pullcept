@@ -47,7 +47,7 @@ test("real Codex 0.160 discovers standalone cwd, Git root, nested cwd and profil
 });
 
 test("native layers and real installed Li+ v1 peer preserve common instructions and reject untrusted delivery", {skip:!bin || !process.env.PULLCEPT_TEST_STYLE_HELPER}, async () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pullcept actual style 日本語 ")));
+  const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "pullcept actual style 日本語 ")));
   try {
     const home = join(scratch, "home"), root = join(scratch, "project"), cwd = join(root, "nested");
     mkdirSync(home); mkdirSync(cwd, {recursive:true}); mkdirSync(join(root, ".codex/hooks"), {recursive:true});
