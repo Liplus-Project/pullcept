@@ -441,7 +441,16 @@ pub struct RoomState {
     /// server, because nothing on this axis tells one from another: the
     /// account on the post does.
     notice_origin: String,
+    /// The origin the app's own notices are posted from (#294): a Codex seat
+    /// stopping on its usage limit, and its recovery. Minted like the two
+    /// above and held by no connection; handled as a notice in every respect
+    /// but its role (`app`) and its speaker, which is the app (`APP_SPEAKER`)
+    /// with no account.
+    app_origin: String,
 }
+
+/// The name the app's own notices are said under (#294).
+pub const APP_SPEAKER: &str = "Pullcept";
 
 impl RoomState {
     pub fn new() -> Self {
@@ -464,6 +473,7 @@ impl RoomState {
             token: Uuid::new_v4().to_string(),
             local_origin: Uuid::new_v4().to_string(),
             notice_origin: Uuid::new_v4().to_string(),
+            app_origin: Uuid::new_v4().to_string(),
         }
     }
 
@@ -819,8 +829,24 @@ fn deliver(
     room: &RoomState,
     room_id: &str,
     origin: &str,
+    post: Post,
+    last_seen: Option<&str>,
+) -> Result<PostOutcome, String> {
+    deliver_except(app, room, room_id, origin, post, last_seen, None)
+}
+
+/// [`deliver`], leaving one terminal untyped: the seat an app notice is about
+/// (#294). A Codex seat stopped on its limit is not typed the notice of its
+/// own stop or recovery: that would be a turn it cannot run, or a post it is
+/// told about twice.
+fn deliver_except(
+    app: &AppHandle,
+    room: &RoomState,
+    room_id: &str,
+    origin: &str,
     mut post: Post,
     last_seen: Option<&str>,
+    except_pty: Option<&str>,
 ) -> Result<PostOutcome, String> {
     let message_id = post.message_id.clone();
 
@@ -842,7 +868,7 @@ fn deliver(
             // the colour and the account are the ones `post_notice` read off
             // the server's account (#193) — the app is the one saying it, and
             // it is not a sender that could name itself.
-            None if origin == room.notice_origin => {
+            None if origin == room.notice_origin || origin == room.app_origin => {
                 (inner.floor.seq(), post.hue, post.account.clone())
             }
             // Unseated: nothing was ever delivered here, so nothing is
@@ -855,7 +881,7 @@ fn deliver(
         // post and a session's `say_to_room` get the same reading, against the
         // names seated under this same acquisition. A notice is external
         // content and passes through as it arrived (`room_floor::Sender`).
-        let sender = if origin == room.notice_origin {
+        let sender = if origin == room.notice_origin || origin == room.app_origin {
             room_floor::Sender::Notice
         } else {
             room_floor::Sender::Participant
@@ -899,10 +925,13 @@ fn deliver(
         // it (#183, #195). Taken under this acquisition so the seats reached
         // are the ones the floor judged against; the typing itself waits until
         // the lock is dropped.
-        let seats: Vec<(String, Option<String>)> = inner
+        //
+        // The names ride along for one reading: whether a post held back from
+        // a stopped Codex seat was addressed to it (#294).
+        let seats: Vec<(String, Option<String>, String)> = inner
             .participants
             .iter()
-            .map(|(id, seat)| (id.clone(), seat.account.clone()))
+            .map(|(id, seat)| (id.clone(), seat.account.clone(), seat.name.clone()))
             .collect();
         (admission, hue, logged, topic, seats)
     };
@@ -932,7 +961,7 @@ fn deliver(
     // No session in the room is not an error — the room accepts what is said
     // in it; a later joiner simply missed it, and can pull it.
     let role = role_of(app, room, origin, post.account.as_deref());
-    type_into_sessions(app, room_id, &seats, origin, &role, &post);
+    type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty);
 
     let _ = app.emit(
         "room-message",
@@ -973,6 +1002,8 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
         terminal_input::Source::Screen
     } else if origin == room.notice_origin {
         terminal_input::Source::Notice
+    } else if origin == room.app_origin {
+        terminal_input::Source::App
     } else {
         kind = account.and_then(|id| crate::config::account_kind_name(app, id));
         terminal_input::Source::Socket(kind.as_deref())
@@ -994,13 +1025,19 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// maps to no running terminal is not typed into; there is no other way left
 /// to push to it, and it reads the topic through the pull
 /// (`terminal_input::targets`).
+///
+/// **A Codex seat stopped on its usage limit is not typed into** (#294): the
+/// post is kept for it (`codex_limit::CodexLimits`) and handed over as one
+/// line when the recovery is confirmed. Every other seat, every Claude Code
+/// seat among them, is typed into as before.
 fn type_into_sessions(
     app: &AppHandle,
     room_id: &str,
-    seats: &[(String, Option<String>)],
+    seats: &[(String, Option<String>, String)],
     speaker: &str,
     role: &str,
     post: &Post,
+    except_pty: Option<&str>,
 ) {
     let ptys = app.state::<PtyState>();
     let running = app.state::<RoomSeats>().seated(&ptys);
@@ -1014,7 +1051,7 @@ fn type_into_sessions(
     let targets = terminal_input::targets(
         seats
             .iter()
-            .map(|(origin, account)| (origin.as_str(), account.as_deref())),
+            .map(|(origin, account, _)| (origin.as_str(), account.as_deref())),
         speaker,
         pty_of,
     );
@@ -1030,8 +1067,68 @@ fn type_into_sessions(
         &post.to,
         &post.content,
     );
+    let limits = app.state::<crate::codex_limit::CodexLimits>();
     for target in targets {
+        if except_pty == Some(target.pty_id.as_str()) {
+            continue;
+        }
+        let held = limits.hold(&target.pty_id, || mcp_config::codex::limit::Held {
+            message_id: post.message_id.clone(),
+            speaker: post.speaker.clone(),
+            at: at.clone(),
+            content: post.content.clone(),
+            addressed: seats
+                .iter()
+                .filter(|(origin, _, _)| target.origins.contains(origin))
+                .any(|(_, _, name)| post.to.contains(name)),
+        });
+        if held {
+            continue;
+        }
         ptys.type_in(&target.pty_id, text.clone());
+    }
+}
+
+/// Say one notice of the app's own into one room (#294), typed into every
+/// session in it but `except_pty`'s. Said as [`APP_SPEAKER`] with no account,
+/// under the role `app`, through `deliver` like every other post: the same
+/// floor, log and `room-message`. Answers the id it was filed under, or `None`
+/// when the room is gone.
+pub fn post_app_notice(
+    app: &AppHandle,
+    room: &RoomState,
+    room_id: &str,
+    content: &str,
+    except_pty: Option<&str>,
+) -> Option<String> {
+    let outcome = deliver_except(
+        app,
+        room,
+        room_id,
+        &room.app_origin,
+        Post {
+            message_id: Uuid::new_v4().to_string(),
+            speaker: APP_SPEAKER.to_string(),
+            hue: None,
+            account: None,
+            content: content.to_string(),
+            to: Vec::new(),
+            ts: now_iso(),
+        },
+        None,
+        except_pty,
+    );
+    match outcome {
+        Ok(outcome) if outcome.delivered => outcome.message_id,
+        // The floor holds nothing against a notice; said rather than assumed.
+        Ok(_) => {
+            eprintln!("[codex-limit] the floor of room {room_id} refused a notice");
+            None
+        }
+        Err(err) => {
+            eprintln!("[codex-limit] {err}");
+            None
+        }
     }
 }
 
@@ -1212,6 +1309,12 @@ pub struct SessionStats {
     pub five_hour: Option<f64>,
     pub seven_day: Option<f64>,
     pub context: Option<f64>,
+    /// 制限中, said by the app rather than read off the percentages (#294).
+    /// A Codex seat carries it: the app watches that seat's stop and recovery
+    /// (`codex_limit`), and the rollout's percentages were seen stuck at 99
+    /// for a seat that had stopped. `None` for every other seat, whose screen
+    /// still reads the word off `five_hour` and `seven_day` (#161).
+    pub limited: Option<bool>,
 }
 
 impl SessionStats {
@@ -1234,6 +1337,7 @@ impl SessionStats {
             five_hour: data["rate_limits"]["five_hour"]["used_percentage"].as_f64(),
             seven_day: data["rate_limits"]["seven_day"]["used_percentage"].as_f64(),
             context: data["context_window"]["used_percentage"].as_f64(),
+            limited: None,
         })
     }
 
@@ -1242,6 +1346,7 @@ impl SessionStats {
         topic_id: String,
         account_id: String,
         status: &mcp_config::codex::status::Status,
+        limited: bool,
     ) -> Self {
         SessionStats {
             topic_id,
@@ -1251,6 +1356,7 @@ impl SessionStats {
             five_hour: status.five_hour,
             seven_day: status.seven_day,
             context: status.context,
+            limited: Some(limited),
         }
     }
 

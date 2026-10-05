@@ -59,6 +59,11 @@ pub const ROLE_ADMIN: &str = "admin";
 /// The role of a notice from a local MCP server the app runs (#169, #193).
 pub const ROLE_MCP: &str = "mcp";
 
+/// The role of a notice the app says itself, about a seat in the room (#294):
+/// a Codex seat stopping on its usage limit and coming back, and the one line
+/// handed to that seat when it comes back. Said by no account and no server.
+pub const ROLE_APP: &str = "app";
+
 /// The role of a post from a room connection that is bound to no account a
 /// session is launched as.
 ///
@@ -74,6 +79,8 @@ pub enum Source<'a> {
     Screen,
     /// A notice the app itself received from a local MCP server.
     Notice,
+    /// A notice the app says itself, about a seat (#294).
+    App,
     /// A room socket connection, with the kind of the account it declared at
     /// `hello`, as the config stores it — or `None` when it declared none, or
     /// one the config does not hold.
@@ -93,7 +100,9 @@ pub enum Source<'a> {
 /// A notice is `mcp`, the kind of the account it is said as. A socket
 /// connection carries the kind of the account it declared, when that is a kind
 /// a session is launched as; any other declaration — none, an `admin` account,
-/// an `mcp` account — is [`ROLE_UNBOUND`]. `mcp` is not taken from the socket
+/// an `mcp` account — is [`ROLE_UNBOUND`]. The app's own notices are `app`
+/// ([`ROLE_APP`]), which no account kind is and the socket never makes. `mcp`
+/// is not taken from the socket
 /// either: a server does not sit in the room, and its account is spoken for by
 /// the app alone.
 ///
@@ -103,7 +112,8 @@ pub fn role(source: Source<'_>) -> &str {
     match source {
         Source::Screen => ROLE_ADMIN,
         Source::Notice => ROLE_MCP,
-        Source::Socket(Some(kind)) if kind != ROLE_ADMIN && kind != ROLE_MCP => kind,
+        Source::App => ROLE_APP,
+        Source::Socket(Some(kind)) if ![ROLE_ADMIN, ROLE_MCP, ROLE_APP].contains(&kind) => kind,
         Source::Socket(_) => ROLE_UNBOUND,
     }
 }
@@ -178,6 +188,24 @@ pub fn compose(
 /// Windows the `TZ` environment variable is not read.
 pub fn at(ts: &str) -> Option<String> {
     at_in(ts, &Local)
+}
+
+/// A Unix time as a notice says it to a person (#294): this PC's local month,
+/// day and minute — `10月5日 22:45`. The reset time of a Codex seat's usage
+/// limit is the one value read this way; it can be days off (the weekly
+/// window), so the day is always there.
+///
+/// `None` for a time that is not one.
+pub fn clock(unix_secs: i64) -> Option<String> {
+    clock_in(unix_secs, &Local)
+}
+
+fn clock_in<Tz: TimeZone>(unix_secs: i64, zone: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let instant = zone.timestamp_opt(unix_secs, 0).single()?;
+    Some(instant.format("%-m月%-d日 %H:%M").to_string())
 }
 
 /// [`at`], read in a given zone rather than this PC's — what lets a test fix
@@ -662,6 +690,20 @@ mod tests {
     #[test]
     fn a_notice_is_said_as_an_mcp_account() {
         assert_eq!(role(Source::Notice), "mcp");
+    }
+
+    #[test]
+    fn the_app_speaks_as_app_and_the_socket_cannot() {
+        assert_eq!(role(Source::App), "app");
+        assert_eq!(role(Source::Socket(Some("app"))), ROLE_UNBOUND);
+    }
+
+    #[test]
+    fn a_reset_time_is_the_local_day_and_minute() {
+        // 2026-10-05T13:45:08Z, the 5-hour reset observed on #290.
+        assert_eq!(clock_in(1791207908, &east(9)).as_deref(), Some("10月5日 22:45"));
+        assert_eq!(clock_in(1791207908, &Utc).as_deref(), Some("10月5日 13:45"));
+        assert_eq!(clock_in(i64::MAX, &Utc), None);
     }
 
     fn running<'a>(accounts: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {

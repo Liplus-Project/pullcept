@@ -2,6 +2,7 @@
 use super::*;
 use toml_edit::{value, Array, Document as DocumentMut, Item, Table};
 mod character;
+pub mod limit;
 pub mod status;
 pub use character::{apply_character, check_command_length, instruction_value, select_character, transport_options};
 

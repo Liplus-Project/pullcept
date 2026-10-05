@@ -211,6 +211,13 @@ interface SessionStats {
   five_hour: number | null;
   seven_day: number | null;
   context: number | null;
+  /**
+   * 制限中 as the app says it, for a Codex seat (#294): set on the stop the
+   * rollout reports and cleared only when Codex's app-server confirms the
+   * recovery. Null for every other seat, which reads the word off the two
+   * percentages as before (#161).
+   */
+  limited: boolean | null;
 }
 
 /**
@@ -2940,6 +2947,9 @@ function pruneAwaiting(topicId: string): void {
  */
 function limitedByUsage(stats: SessionStats | null): boolean {
   if (!stats) return false;
+  // A Codex seat: the app's word, not the percentages, which were seen stuck
+  // at 99 for a seat that had stopped (#294).
+  if (stats.limited !== null && stats.limited !== undefined) return stats.limited;
   return (stats.five_hour ?? 0) >= 100 || (stats.seven_day ?? 0) >= 100;
 }
 
