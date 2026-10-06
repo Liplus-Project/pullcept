@@ -125,7 +125,7 @@ pub struct Started {
     next_id: u64,
 }
 
-/// A fresh token: 256 bits from two v4 UUIDs, held only in memory and the
+/// A fresh token: two v4 UUIDs (244 random bits), held only in memory and the
 /// terminal's environment.
 pub fn new_token() -> String {
     format!(
