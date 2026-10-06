@@ -33,6 +33,16 @@ function run(bin, args, cwd, env) {
       accept(value);
     }));
 }
+// The installed loader's own SessionStart reply, produced the way Codex would run it.
+function runHook(bin, args, cwd, env, input) {
+  return new Promise((accept, reject) => {
+    const child = execFile(bin, args, {cwd, env, windowsHide:true, timeout:15000, maxBuffer:512 * 1024}, (error, stdout) => {
+      if (error) return reject(Error(FAILURE));
+      try { accept(JSON.parse(stdout)); } catch { reject(Error(FAILURE)); }
+    });
+    child.stdin.end(input);
+  });
+}
 
 export async function fileModeRoot(projects, cwd) {
   if (!Array.isArray(projects)) fail();
@@ -53,7 +63,9 @@ export async function fileModeRoot(projects, cwd) {
   return null;
 }
 
-export async function resolveOutputStyle(discovery, cwd, selected, env = process.env) {
+// `withBody` (#299): also the character text the loader would deliver, for a seat
+// that hands it to app-server as developerInstructions with that hook turned off.
+export async function resolveOutputStyle(discovery, cwd, selected, env = process.env, withBody = false) {
   const root = await fileModeRoot(discovery.projects, cwd);
   if (root === null) return {mode:"legacy", name:selected || null};
   const helper = resolve(root, ".codex/hooks/codex-output-style.py");
@@ -90,18 +102,34 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
       JSON.stringify(handler.matchers) !== JSON.stringify(["startup", "resume", "clear", "compact"]) ||
       !within(root, await realpath(helper)) ||
       createHash("sha256").update(await readFile(helper)).digest("hex") !== handler.sha256) fail();
-  return {protocol_version:1, mode:metadata.mode, name:metadata.name, root:metadata.root,
+  const result = {protocol_version:1, mode:metadata.mode, name:metadata.name, root:metadata.root,
     sha256:metadata.sha256, byte_count:metadata.byte_count};
+  if (!withBody) return result;
+  result.hook_keys = hooks.map(hook => hook.key);
+  if (result.hook_keys.some(key => typeof key !== "string" || key === "")) fail();
+  result.body = null;
+  if (metadata.mode === "file") {
+    // The hook path itself: same helper, same selection, same bytes.
+    const reply = await runHook(process.platform === "win32" ? "python" : "python3", [helper, "hook", "--root", root], cwd,
+      {...childEnv, LI_PLUS_OUTPUT_STYLE:metadata.name},
+      JSON.stringify({hook_event_name:"SessionStart", source:"startup", cwd}));
+    const body = reply?.hookSpecificOutput?.additionalContext;
+    if (typeof body !== "string" || reply.hookSpecificOutput.hookEventName !== "SessionStart" ||
+        Buffer.byteLength(body, "utf8") !== metadata.byte_count ||
+        createHash("sha256").update(body, "utf8").digest("hex") !== metadata.sha256) fail();
+    result.body = body;
+  }
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const [bin, cwd, options, effective, selected = ""] = process.argv.slice(2);
+    const [bin, cwd, options, effective, selected = "", body = ""] = process.argv.slice(2);
     const env = {...process.env};
     for (const key of Object.keys(env)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete env[key];
     const discovery = await run(process.execPath, [resolve(dirname(process.argv[1]), "codex-project.mjs"), bin, cwd, options], cwd, env);
     if (discovery.error) fail();
-    process.stdout.write(JSON.stringify(await resolveOutputStyle(discovery, effective, selected, env)));
+    process.stdout.write(JSON.stringify(await resolveOutputStyle(discovery, effective, selected, env, body === "body")));
   } catch (error) {
     process.stdout.write(JSON.stringify({error:error instanceof StyleFailure ? error.message : FAILURE}));
     process.exitCode = 1;

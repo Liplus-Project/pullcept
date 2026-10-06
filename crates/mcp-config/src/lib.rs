@@ -793,6 +793,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     codex::LAUNCH_ROOM_ENV,
     codex::NATIVE_URL_ENV,
     codex::OUTPUT_STYLE_ENV,
+    codex::app_server::REMOTE_TOKEN_ENV,
     "PULLCEPT_ROOM_URL",
     "PULLCEPT_AGENT_NAME",
     "PULLCEPT_ACCOUNT_ID",

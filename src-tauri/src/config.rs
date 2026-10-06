@@ -226,6 +226,17 @@ pub struct Account {
     /// fallback (#236).
     #[serde(default)]
     pub avatar: bool,
+    /// A Codex CLI account's seat runs through its own app-server, and its
+    /// character is handed to the thread as `developerInstructions` instead
+    /// of by the Li+ output style SessionStart hook (#299).
+    ///
+    /// `false` — the hook, as every Codex seat ran before #299 — for an
+    /// account saved before this field existed and for every new account:
+    /// the hook stays the default until a seat switched to this has been
+    /// seen answering in character (docs/3-accounts.md). Read only on a
+    /// Codex CLI account.
+    #[serde(default)]
+    pub codex_app_server: bool,
 }
 
 /// Which of the two panels flanking the room are open.
@@ -331,6 +342,7 @@ impl Default for AppConfig {
                 env: Vec::new(),
                 server: None,
                 avatar: false,
+                codex_app_server: false,
             }],
             panels: PanelState::default(),
         }

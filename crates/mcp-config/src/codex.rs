@@ -1,6 +1,7 @@
 //! Codex CLI 0.160: room MCP on the launch line, guarded root hook, native history.
 use super::*;
 use toml_edit::{Document as DocumentMut, Item};
+pub mod app_server;
 mod character;
 pub mod limit;
 pub mod status;
@@ -30,11 +31,17 @@ pub fn runtime_args(
     runner: &Path,
     entry: &Path,
 ) -> Result<Vec<String>, String> {
-    let paths = [runner, entry].map(|p| p.to_string_lossy().replace('\\', "/"));
-    if paths.iter().any(|p| !console_safe(p) || p.contains("'''")) {
-        return Err("Codex MCP runner path cannot be carried by the Windows launch line".into());
-    }
+    let paths = sidecar_paths(runner, entry)?;
     let mut args = launch_args(&transport_options(base)?, own, disabled);
+    args.extend(["-c".into(), room_server_definition(own, &paths[0], &paths[1])]);
+    Ok(args)
+}
+
+/// The room server's whole `-c` table for a seat named `own` (#297). The same
+/// table rides on the CLI's line (`runtime_args`) or, for a seat launched
+/// through its own app-server (#299), on that server's line: wherever the
+/// process that starts MCP servers is.
+pub(crate) fn room_server_definition(own: &str, runner: &str, entry: &str) -> String {
     let vars = SIDECAR_ENV
         .iter()
         .map(|key| format!("'{key}'"))
@@ -42,8 +49,17 @@ pub fn runtime_args(
         .join(",");
     // The only registration (#297). The whole table, so it works before project trust
     // and an entry left in a trusted project's config cannot override this launch.
-    args.extend(["-c".into(), format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}}}}}}", instruction_value(&paths[0]), instruction_value(&paths[1]))]);
-    Ok(args)
+    format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}}}}}}", instruction_value(runner), instruction_value(entry))
+}
+
+/// The runner and entry paths as the room server's table carries them, or why
+/// they cannot be carried.
+pub fn sidecar_paths(runner: &Path, entry: &Path) -> Result<[String; 2], String> {
+    let paths = [runner, entry].map(|p| p.to_string_lossy().replace('\\', "/"));
+    if paths.iter().any(|p| !console_safe(p) || p.contains("'''")) {
+        return Err("Codex MCP runner path cannot be carried by the Windows launch line".into());
+    }
+    Ok(paths)
 }
 
 pub fn launch_args(base: &[String], own: &str, disabled: &[String]) -> Vec<String> {

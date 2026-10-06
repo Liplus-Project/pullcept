@@ -505,7 +505,12 @@ pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String>
 /// Returns nothing, including no error. The sweep it calls cannot fail — see
 /// `PtyState::kill_all` for why, and for what would have to change (#96)
 /// before a failure is a thing this could report.
+///
+/// The Codex seats' own app-servers go with their terminals here rather than a
+/// moment later on their watchers' next round, which an app closing may not
+/// wait for (#299).
 #[tauri::command]
-pub fn kill_all_ptys(state: tauri::State<PtyState>) {
+pub fn kill_all_ptys(app: AppHandle, state: tauri::State<PtyState>) {
     state.kill_all();
+    crate::codex_app_server::stop_all(&app);
 }

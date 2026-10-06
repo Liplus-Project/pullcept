@@ -57,7 +57,7 @@ lines.on("line",line=>{let response;try{response=JSON.parse(line)}catch{return;}
     const hooks=startHooks.filter(v=>v.command?.includes("codex-session.mjs"));
     const styleHooks=startHooks.filter(v=>v.command?.includes("codex-output-style.py"));
     finish({projects:projectLayers,hooks:hooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus})),
-      styleHooks:styleHooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus,command:v.command,
+      styleHooks:styleHooks.map(v=>({key:v.key,source:v.source,path:v.sourcePath,trust:v.trustStatus,command:v.command,
         matcher:v.matcher,enabled:v.enabled,async:v.async,additionalContextLimit:v.additionalContextLimit}))});
   }
 });
