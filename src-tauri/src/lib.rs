@@ -1,4 +1,5 @@
 mod app_mcp;
+mod character_editor;
 mod codex_app_server;
 mod codex_limit;
 mod codex_status;
@@ -91,6 +92,9 @@ pub fn run() {
             app_mcp::delete_mcp_server,
             app_mcp::restart_mcp_server,
             app_mcp::open_mcp_servers_file,
+            character_editor::open_character_file,
+            character_editor::save_character_file,
+            character_editor::character_file_wearers,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

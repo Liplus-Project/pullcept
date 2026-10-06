@@ -2661,3 +2661,55 @@ button svg.icon {
   border-radius: 6px;
   padding: 0.25rem 0.4rem;
 }
+
+/* The character's body (#100): a box that scrolls inside itself, under the
+   name, the way 環境変数 is one. Prose rather than one value per line, so it
+   wraps where 環境変数 does not. */
+#account-dialog .character-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+#account-dialog .character-file[hidden],
+#account-dialog .character-file button[hidden] {
+  display: none;
+}
+
+#account-dialog .field.body {
+  align-items: start;
+}
+
+#account-dialog #dialog-character-body {
+  resize: vertical;
+  min-height: 12rem;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+#account-dialog .character-path {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.74rem;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+#account-dialog .character-file button {
+  align-self: start;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+
+#account-dialog .character-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}

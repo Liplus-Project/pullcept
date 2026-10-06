@@ -781,6 +781,12 @@ const dialogAvatarClearEl = document.getElementById("dialog-avatar-clear") as HT
 const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HTMLInputElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
+// The character's body (#100): the file the three fields name, its place, and what is said about it.
+const dialogCharacterFileEl = document.getElementById("dialog-character-file") as HTMLElement;
+const dialogCharacterBodyEl = document.getElementById("dialog-character-body") as HTMLTextAreaElement;
+const dialogCharacterPathEl = document.getElementById("dialog-character-path") as HTMLElement;
+const dialogCharacterNoticeEl = document.getElementById("dialog-character-notice") as HTMLElement;
+const dialogCharacterReloadEl = document.getElementById("dialog-character-reload") as HTMLButtonElement;
 const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
 const dialogCodexAppServerFieldEl = document.getElementById("dialog-codex-app-server-field") as HTMLElement;
 const dialogCommandEl = document.getElementById("dialog-cli-command") as HTMLInputElement;
@@ -5296,6 +5302,8 @@ function showDialogKind(): void {
   document.getElementById("dialog-codex-note")!.hidden = !codex;
   dialogCodexAppServerFieldEl.hidden = !codex;
   if (launchesKind(kind)) refreshDialogLine();
+  // The kind picks the folder the character file is in, or that there is none (#100).
+  void refreshCharacterFile();
   // Chosen on a form making an account: the server is written and started at
   // 決定, so what there is to fill in now is what it is started with (#200).
   if (kind === "mcp" && editing === null) drawNewMcp();
@@ -5565,6 +5573,8 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
   // Cleared before the round trip that refills it, so the account being opened
   // is never read against the last one's notice.
   dialogNoticeEl.textContent = "";
+  // The body is read for this account's place by `showDialogKind` below (#100).
+  resetCharacterFile();
   dialogSection = "basic";
   showDialogKind();
   dialogEl.showModal();
@@ -5581,6 +5591,212 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
     drawDialogMcp();
     mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
     void refreshMcpServers();
+  }
+}
+
+/** The character file as the app read it (`character_file::Opened`, #100). */
+interface CharacterOpened {
+  path: string;
+  exists: boolean;
+  folder_exists: boolean;
+  body: string;
+  crlf: boolean;
+  bom: boolean;
+  name_in_file: string | null;
+  stamp: string | null;
+}
+
+/** The three fields that place a character file (#100), or null for a kind that has none. */
+interface CharacterPlace {
+  kind: "claude_code" | "codex_cli";
+  cwd: string;
+  name: string;
+}
+
+/** The file the body field was last filled from; null when it shows none. */
+let characterOpened: CharacterOpened | null = null;
+/** The place `characterOpened` (or the refusal on screen) was read for, as one key. */
+let characterOpenedKey: string | null = null;
+/** Bumped by every read, so a read that lands after a later one is dropped. */
+let characterReads = 0;
+let characterTimer: number | undefined;
+/** The 決定 that was asked to be pressed again, as place and body: a second
+ *  press of the same is the confirmation (the shape 削除 has). */
+let characterArmed: string | null = null;
+
+function characterPlace(): CharacterPlace | null {
+  const kind = dialogKindEl.value;
+  if (kind !== "claude_code" && kind !== "codex_cli") return null;
+  return { kind, cwd: dialogCwdEl.value.trim(), name: dialogCharacterEl.value.trim() };
+}
+
+function characterKey(place: CharacterPlace): string {
+  return `${place.kind}\n${place.cwd}\n${place.name}`;
+}
+
+/** Whether the body holds an edit not yet written. */
+function characterDirty(): boolean {
+  return characterOpened !== null && dialogCharacterBodyEl.value !== characterOpened.body;
+}
+
+/** Forget the file, for a form opening on another account. */
+function resetCharacterFile(): void {
+  characterReads++;
+  window.clearTimeout(characterTimer);
+  characterOpened = null;
+  characterOpenedKey = null;
+  characterArmed = null;
+  dialogCharacterBodyEl.value = "";
+  // Until the file arrives, so nothing typed is overwritten by a read landing late.
+  dialogCharacterBodyEl.disabled = true;
+}
+
+/** What is said under the body about the file on screen. */
+function drawCharacterNotice(place: CharacterPlace): void {
+  const opened = characterOpened;
+  const lines: string[] = [];
+  if (opened && !opened.exists) lines.push("このファイルはまだありません。本文を書いて決定すると新しく作ります。");
+  if (opened?.name_in_file && opened.name_in_file !== place.name) {
+    lines.push(
+      place.kind === "claude_code"
+        ? `このファイルの frontmatter の name は「${opened.name_in_file}」です。Claude は name で選ぶため、キャラクター欄の「${place.name}」ではこのファイルが選ばれません。`
+        : `このファイルの frontmatter の name は「${opened.name_in_file}」です。Codex はファイル名と違う name のファイルで起動を止めます。`,
+    );
+  }
+  if (opened && place.kind === "codex_cli" && !opened.folder_exists) {
+    lines.push(
+      "この作業ディレクトリには .codex/output-styles がありません。決定で作ると、ここで起動する Codex の席はすべてファイル方式になり、キャラクター欄が空の席は character_instance.md を要します。",
+    );
+  }
+  dialogCharacterNoticeEl.textContent = lines.join("\n");
+}
+
+/**
+ * Read the file the three fields name into the body field (#100), when they
+ * name another one than the field holds.
+ *
+ * An edit not yet written is not dropped for it: the field keeps the edit and
+ * says that reading the new place would discard it, and 読み直す does that.
+ */
+async function refreshCharacterFile(force = false): Promise<void> {
+  window.clearTimeout(characterTimer);
+  const place = characterPlace();
+  dialogCharacterFileEl.hidden = place === null;
+  if (place === null) return;
+  const key = characterKey(place);
+  if (!force && key === characterOpenedKey) {
+    dialogCharacterReloadEl.hidden = true;
+    // Back on the file shown, after a warning about leaving it. A refusal or
+    // the empty name's hint on screen stays as it is.
+    if (characterOpened !== null) drawCharacterNotice(place);
+    return;
+  }
+  if (!force && characterDirty()) {
+    dialogCharacterReloadEl.hidden = false;
+    dialogCharacterNoticeEl.textContent =
+      "本文に保存していない変更があります。種別・作業ディレクトリ・キャラクターが変わったため、新しい場所のファイルを読むと変更は捨てられます。読むには「読み直す」を、変更を残すには元の値に戻してください。";
+    return;
+  }
+  dialogCharacterReloadEl.hidden = true;
+  const read = ++characterReads;
+  if (!place.name) {
+    characterOpened = null;
+    characterOpenedKey = key;
+    dialogCharacterBodyEl.value = "";
+    dialogCharacterBodyEl.disabled = true;
+    dialogCharacterPathEl.textContent = `${place.cwd || "<作業ディレクトリ>"}\\${place.kind === "codex_cli" ? ".codex" : ".claude"}\\output-styles\\<キャラクター>.md`;
+    dialogCharacterNoticeEl.textContent = "キャラクター欄に名前を書くと、そのファイルをここで開きます。";
+    return;
+  }
+  let opened: CharacterOpened | null = null;
+  let refusal = "";
+  try {
+    opened = await invoke<CharacterOpened>("open_character_file", { kind: place.kind, cwd: place.cwd, name: place.name });
+  } catch (err) {
+    refusal = String(err);
+  }
+  if (read !== characterReads) return;
+  characterOpened = opened;
+  characterOpenedKey = key;
+  characterArmed = null;
+  dialogCharacterBodyEl.value = opened?.body ?? "";
+  dialogCharacterBodyEl.disabled = opened === null;
+  dialogCharacterPathEl.textContent = opened?.path ?? "—";
+  if (opened) drawCharacterNotice(place);
+  else dialogCharacterNoticeEl.textContent = refusal;
+}
+
+/** `refreshCharacterFile` after typing settles, for the fields read per key. */
+function scheduleCharacterFile(): void {
+  window.clearTimeout(characterTimer);
+  characterTimer = window.setTimeout(() => void refreshCharacterFile(), 300);
+}
+
+/**
+ * Write the body at 決定, when it was changed (#100).
+ *
+ * Answers whether the form may go on, and whether anything was written. Before
+ * writing, names the other accounts the same file is the character of, and on a
+ * Codex directory with no style folder says that making one switches its seats
+ * to file mode; either asks for 決定 a second time.
+ */
+async function settleCharacterFile(
+  settlingId: string,
+): Promise<{ ok: boolean; written: boolean }> {
+  const place = characterPlace();
+  const opened = characterOpened;
+  if (place === null || opened === null || !characterDirty()) return { ok: true, written: false };
+  if (characterKey(place) !== characterOpenedKey) {
+    dialogError("キャラクターのファイルの場所が変わりました。「読み直す」で開き直すか、元の値に戻してください。");
+    revealDialogField(dialogCharacterBodyEl, false);
+    return { ok: false, written: false };
+  }
+  const body = dialogCharacterBodyEl.value;
+  const asks: string[] = [];
+  try {
+    const wearers = await invoke<string[]>("character_file_wearers", {
+      kind: place.kind,
+      cwd: place.cwd,
+      name: place.name,
+      others: accounts
+        .filter((one) => one.id !== settlingId)
+        .map((one) => ({ name: one.name, kind: one.kind, cwd: one.cwd, character: one.character })),
+    });
+    if (wearers.length > 0) {
+      asks.push(`このファイルは ${wearers.map((one) => `「${one}」`).join("")} のキャラクターでもあります。保存するとそちらも変わります。`);
+    }
+  } catch (err) {
+    dialogError(String(err));
+    revealDialogField(dialogCharacterBodyEl, false);
+    return { ok: false, written: false };
+  }
+  if (place.kind === "codex_cli" && !opened.folder_exists) {
+    asks.push(".codex/output-styles を作ると、この作業ディレクトリの Codex の席はファイル方式になります。");
+  }
+  const token = `${characterKey(place)}\n${body}`;
+  if (asks.length > 0 && characterArmed !== token) {
+    characterArmed = token;
+    dialogError(`${asks.join("")}もう一度「決定」を押すと保存します。`);
+    revealDialogField(dialogCharacterBodyEl, false);
+    return { ok: false, written: false };
+  }
+  try {
+    const saved = await invoke<{ written: boolean; opened: CharacterOpened }>("save_character_file", {
+      kind: place.kind,
+      cwd: place.cwd,
+      name: place.name,
+      body,
+      crlf: opened.crlf,
+      bom: opened.bom,
+      stamp: opened.stamp,
+    });
+    characterOpened = saved.opened;
+    characterArmed = null;
+    return { ok: true, written: saved.written };
+  } catch (err) {
+    dialogError(String(err));
+    revealDialogField(dialogCharacterBodyEl, false);
+    return { ok: false, written: false };
   }
 }
 
@@ -5869,6 +6085,11 @@ async function commitAccountDialog(): Promise<boolean> {
     }
   }
 
+  // The character's body (#100), after everything about the account itself that
+  // can still refuse the form: it is a file of its own, as the image is.
+  const characterFile = await settleCharacterFile(settling.id);
+  if (!characterFile.ok) return false;
+
   // Last, after everything that can still refuse the form: the image is a file
   // of its own, and one written for a form that is then refused would be an
   // image for an account that was never decided (#236).
@@ -5913,9 +6134,10 @@ async function commitAccountDialog(): Promise<boolean> {
   // rename here has to be re-declared or the roster keeps the old pair.
   if (settled.id === localAccountId) await join();
   status(
-    target
+    (target
       ? `アカウント「${settled.name}」を保存しました。`
-      : `アカウント「${settled.name}」を追加しました。`,
+      : `アカウント「${settled.name}」を追加しました。`) +
+      (characterFile.written ? "キャラクターの本文を書き込みました（席の次の起動から効きます）。" : ""),
   );
   return true;
 }
@@ -6758,6 +6980,10 @@ async function main(): Promise<void> {
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
   dialogCharacterEl.addEventListener("input", () => refreshDialogLine());
+  // The name and the working directory place the character file (#100).
+  dialogCharacterEl.addEventListener("input", () => scheduleCharacterFile());
+  dialogCwdEl.addEventListener("input", () => scheduleCharacterFile());
+  dialogCharacterReloadEl.addEventListener("click", () => void refreshCharacterFile(true));
   dialogCodexAppServerEl.addEventListener("change", () => refreshDialogLine());
   // So does the working directory: which registrations the line stops is read
   // out of the directory it is pointed at (#103).
@@ -6778,6 +7004,7 @@ async function main(): Promise<void> {
     dialogOptionsEl,
     dialogResumeEl,
     dialogEnvEl,
+    dialogCharacterBodyEl,
   ]) {
     field.addEventListener("input", () => disarmDelete());
   }
@@ -6795,6 +7022,7 @@ async function main(): Promise<void> {
     draft = null;
     mcpDrawn = null;
     resetDialogAvatar();
+    resetCharacterFile();
     disarmDelete();
   });
   dialogFormEl.addEventListener("submit", (event) => {
