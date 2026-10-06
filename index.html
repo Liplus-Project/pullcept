@@ -472,268 +472,301 @@
            for an edit alike. -->
       <dialog id="account-dialog" aria-labelledby="account-dialog-title">
         <form id="account-form" method="dialog">
-          <h2 id="account-dialog-title">アカウント</h2>
+          <!-- Sections down the side (#304), the shape the settings dialog has:
+               the form grew past what reads at a glance, and a section the
+               person is not in is one fewer set of fields to read past. The
+               sections are faces of one form, not forms of their own — a field
+               in a section not on screen keeps what was typed into it, and 決定
+               reads every section, the hidden ones too. Which sections a kind
+               has is `dialogSectionsFor` in src/main.ts; 削除・取消・決定 and the
+               reason a decision is refused sit below every section. -->
+          <div class="account-sections">
+            <nav class="account-nav">
+              <h2 id="account-dialog-title">アカウント</h2>
+              <div class="account-tabs" role="tablist" aria-label="アカウントの項目">
+                <button id="dialog-tab-basic" type="button" role="tab" data-section-tab="basic" aria-controls="dialog-section-basic">基本</button>
+                <button id="dialog-tab-character" type="button" role="tab" data-section-tab="character" aria-controls="dialog-section-character">キャラクター</button>
+                <button id="dialog-tab-launch" type="button" role="tab" data-section-tab="launch" aria-controls="dialog-launch">起動</button>
+                <button id="dialog-tab-env" type="button" role="tab" data-section-tab="env" aria-controls="dialog-section-env">環境変数</button>
+                <button id="dialog-tab-server" type="button" role="tab" data-section-tab="server" aria-controls="dialog-mcp">サーバ</button>
+              </div>
+            </nav>
 
-          <label class="field">
-            名前
-            <input id="dialog-name" type="text" spellcheck="false" />
-          </label>
+            <div class="account-body">
+              <section id="dialog-section-basic" class="pane" data-section="basic" role="tabpanel" aria-labelledby="dialog-tab-basic">
+                <label class="field">
+                  名前
+                  <input id="dialog-name" type="text" spellcheck="false" />
+                </label>
 
-          <!-- Declared here, and only here. The room sees what kind of
-               connection someone arrived on, which says nothing about whether
-               they are a person — a human joining from another client arrives
-               the same way a session does (#59).
+                <!-- Declared here, and only here. The room sees what kind of
+                     connection someone arrived on, which says nothing about whether
+                     they are a person — a human joining from another client arrives
+                     the same way a session does (#59).
 
-               起動する種別は CLI ごとに在る（#156）。その CLI の作法——
-               セッション id の渡し方、再開の仕方、`--settings` に載せる hook
-               とステータスライン——を種別が持つため、下の欄に書くのは、その
-               人が足したいものだけになる。どれにも当てはまらない起動は
-               `CLI（汎用）` であり、アプリは何も足さない。
+                     起動する種別は CLI ごとに在る（#156）。その CLI の作法——
+                     セッション id の渡し方、再開の仕方、`--settings` に載せる hook
+                     とステータスライン——を種別が持つため、下の欄に書くのは、その
+                     人が足したいものだけになる。どれにも当てはまらない起動は
+                     `CLI（汎用）` であり、アプリは何も足さない。
 
-               `MCP サーバ` はアプリ本体が起動するローカル MCP サーバのアカ
-               ウントである（#193）。作るときにだけ選べ（#200）、選べば下に
-               サーバの欄が出て、決定で `mcp-servers.json` にエントリを書き、
-               アカウントを作り、そのサーバを起動する。ファイルへ手で足した
-               エントリにはアプリがアカウントを作る。どちらの道で来ても種別
-               は後から変えられず、他の種別からもこれにはならない——既に在る
-               アカウントの窓では、この選択肢は `mcp` のアカウントにだけ出る。 -->
-          <label class="field">
-            種別
-            <select id="dialog-kind">
-              <option value="admin">admin（人間）</option>
-              <option value="claude_code">Claude Code</option>
-              <option value="codex_cli">Codex CLI</option>
-              <option value="cli">CLI（汎用）</option>
-              <option value="mcp">MCP サーバ</option>
-            </select>
-          </label>
+                     `MCP サーバ` はアプリ本体が起動するローカル MCP サーバのアカ
+                     ウントである（#193）。作るときにだけ選べ（#200）、選べば横に
+                     サーバの項目が出て、決定で `mcp-servers.json` にエントリを書き、
+                     アカウントを作り、そのサーバを起動する。ファイルへ手で足した
+                     エントリにはアプリがアカウントを作る。どちらの道で来ても種別
+                     は後から変えられず、他の種別からもこれにはならない——既に在る
+                     アカウントの窓では、この選択肢は `mcp` のアカウントにだけ出る。 -->
+                <label class="field">
+                  種別
+                  <select id="dialog-kind">
+                    <option value="admin">admin（人間）</option>
+                    <option value="claude_code">Claude Code</option>
+                    <option value="codex_cli">Codex CLI</option>
+                    <option value="cli">CLI（汎用）</option>
+                    <option value="mcp">MCP サーバ</option>
+                  </select>
+                </label>
 
-          <label class="field">
-            色
-            <select id="dialog-hue"></select>
-          </label>
+                <label class="field">
+                  色
+                  <select id="dialog-hue"></select>
+                </label>
 
-          <!-- 発言の行と畳んだ通知の丸印に、頭文字の代わりに出す画像（#236）。
-               選んだ画像は画面の側で中央を正方形に切り抜き、128×128 の PNG
-               に縮めてから、決定でアプリのデータ置き場の `avatars/` に保存す
-               る。他の欄と同じく決定までは何も書かない（#59）——選んでから取
-               消せば、ファイルは残らない。外すと頭文字に戻る。
+                <!-- 発言の行と畳んだ通知の丸印に、頭文字の代わりに出す画像（#236）。
+                     選んだ画像は画面の側で中央を正方形に切り抜き、128×128 の PNG
+                     に縮めてから、決定でアプリのデータ置き場の `avatars/` に保存す
+                     る。他の欄と同じく決定までは何も書かない（#59）——選んでから取
+                     消せば、ファイルは残らない。外すと頭文字に戻る。
 
-               label ではなく div：中にボタンが二つあり、label にすると「画像」
-               の文字を押しただけで、最初のボタン（選ぶ）が押されてしまう。 -->
-          <div class="field">
-            画像
-            <div class="avatar-pick">
-              <span id="dialog-avatar" class="avatar" aria-hidden="true"></span>
-              <button id="dialog-avatar-pick" type="button">選ぶ</button>
-              <button id="dialog-avatar-clear" type="button">外す</button>
-              <input
-                id="dialog-avatar-input"
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                hidden
-              />
+                     label ではなく div：中にボタンが二つあり、label にすると「画像」
+                     の文字を押しただけで、最初のボタン（選ぶ）が押されてしまう。 -->
+                <div class="field">
+                  画像
+                  <div class="avatar-pick">
+                    <span id="dialog-avatar" class="avatar" aria-hidden="true"></span>
+                    <button id="dialog-avatar-pick" type="button">選ぶ</button>
+                    <button id="dialog-avatar-clear" type="button">外す</button>
+                    <input
+                      id="dialog-avatar-input"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      hidden
+                    />
+                  </div>
+                </div>
+              </section>
+
+              <!-- Who the session speaks as. Its own section because #100 adds
+                   the character's body here, beside the name it is selected by. -->
+              <section id="dialog-section-character" class="pane" data-section="character" role="tabpanel" aria-labelledby="dialog-tab-character">
+                <!-- 誰として喋るか。作業ディレクトリの
+                     `.claude/output-styles/` に置かれた output style の
+                     frontmatter の `name:` を書く。ファイル名ではない。
+
+                     欄であることに意味がある。起動オプションの文字列の中へ書い
+                     ても同じ行にはなるが、それはアカウントの属性になっていない
+                     ——名前と色が起動時宣言から属性へ移った理由と同じである
+                     (#40 / #99)。
+
+                     空ならこの欄は何も足さず、作業ディレクトリの
+                     `settings.json` が指す既定がそのまま立つ。 -->
+                <label class="field">
+                  キャラクター
+                  <input
+                    id="dialog-character"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="例: character_Lay（output style の name）"
+                  />
+                </label>
+              </section>
+
+              <!-- How to start a session. Shown for a launched kind only: a person
+                   is not launched, and there is no command under them to write
+                   options for. -->
+              <section id="dialog-launch" class="pane launch" data-section="launch" role="tabpanel" aria-labelledby="dialog-tab-launch">
+                <label class="field">
+                  作業ディレクトリ
+                  <input id="dialog-cwd" type="text" spellcheck="false" />
+                </label>
+                <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
+                <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。キャラクター欄には project の .codex/output-styles にあるファイル名を、拡張子なしで入力します。空欄は project の既定に任せます。ファイル方式が未設定なら、従来の「# character_Codex_Lin」等の見出し名で選べます。下のプレビューで方式と選択名を確認できます。初回は診断端末でフォルダーと専用 SessionStart hook を信頼してください。本文が読めない、又は hook を信頼していない場合は起動を止めます。ID は最初の会話で保存されます。状態の五欄は最初の会話のあとに表示されます。</p>
+                <!-- Codex の席を、席ごとの app-server 経由で立てる（#299）。入れると
+                     キャラクターは thread/start の developerInstructions で渡り、
+                     Li+ の output style の SessionStart hook はその席の server でだけ
+                     止まる。会話 id は起動の時点で決まる。既定は切（hook 方式）：
+                     モデルの一往復でキャラどおりに答えることを確かめるまで。 -->
+                <label id="dialog-codex-app-server-field" class="field" hidden>
+                  app-server 方式
+                  <input id="dialog-codex-app-server" type="checkbox" />
+                </label>
+                <!-- 起動オプション。**その人が足したいものだけを書く欄である**
+                     （#156、決定3）。セッション id の渡し方は種別が持つため、
+                     `Claude Code` では `--session-id {session_id}` をここへ書かな
+                     い——書いたものと走る行は違い、走る行は下の表示が見せる。
+
+                     `CLI（汎用）` にはその作法が無い。`{session_id}` をここへ書
+                     けば、そこへこのアプリが決めた UUID が入る。書かなければ id
+                     を配らない。それは resume を持たない CLI が恒常的に置かれる
+                     状態であり、失敗ではない——その場合の参加者は、部屋の読み出
+                     し（`read_room_history`）で自分から辿る (#115)。 -->
+                <label class="field">
+                  起動オプション
+                  <input
+                    id="dialog-options"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="例: --dangerously-skip-permissions"
+                  />
+                </label>
+                <!-- 再開コマンド。トピックが持っているセッションへ戻る一行であり、
+                     先頭の語が command になる。トピックはアカウントごとに
+                     `{account_id: session_uuid}` を持ち、その id がここへ入る
+                     (#115、決定4B)。
+
+                     起動コマンドと別の欄なのは、戻り方が起動と同じ呼び出しとは
+                     限らないためである。空なら resume 無しであり、そのアカウント
+                     は開き直したトピックへ新規のセッションとして着席する。席が
+                     一つ戻らなくてもトピックは開く（決定6）。
+
+                     **`CLI（汎用）` にだけ出す**（#156、決定6）。CLI を名指す種
+                     別は戻り方を作法として持っており、そこへ欄を出せば、既に答え
+                     のある問いに二つ目の答えを置くことになる。 -->
+                <label id="dialog-resume-field" class="field">
+                  再開コマンド
+                  <input
+                    id="dialog-resume"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="例: claude --resume {session_id}"
+                  />
+                </label>
+                <!-- What will actually run. The app adds the room's own settings
+                     to whatever is typed above, so the line written here is not
+                     the line that launches; showing the result is cheaper than
+                     explaining the addition. It sits beside the field it explains. -->
+                <span id="dialog-preview" class="preview"></span>
+                <!-- 起動とキャラクターの欄に、Windows の起動の行へ載せられない文字が入ったときに
+                     出る（#154、決定4）。保存は止めない——欄を直すかどうかはその
+                     人の判断であり、ここが言うのは起動した時に何が起きるかであ
+                     る。キャラクターと起動オプションは載らないだけで起動は成り立
+                     ち、コマンドと再開コマンドは起動そのものが成り立たない。
+
+                     何も無ければ消える。空のまま行を占めるのは下の `.error` の役
+                     であり、あちらは決定を止める理由を出す場所で、ここは止めない
+                     知らせを出す場所である。 -->
+                <p id="dialog-notice" class="notice" role="status"></p>
+              </section>
+
+              <section id="dialog-section-env" class="pane" data-section="env" role="tabpanel" aria-labelledby="dialog-tab-env">
+                <!-- 環境変数（#163）。`名前=値` を一行ずつ書く欄であり、欄は一つ
+                     である。普通の値と秘密の値を区別しない。
+
+                     値は起動する CLI のプロセスの環境変数として渡り、起動の行に
+                     は載らない——上の表示に出ないのはそのためである。保存の前に
+                     DPAPI で暗号化され、画面には先頭と末尾だけが出る
+                     （`GH_TOKEN=github_pat...Nx4h`）。
+
+                     出たままの行は、保存しても元の値を保つ。値を入れ直す必要が
+                     あるのは、変えたい行だけである。行を消せば変数も消える。 -->
+                <label class="field env">
+                  環境変数
+                  <textarea
+                    id="dialog-env"
+                    rows="3"
+                    spellcheck="false"
+                    placeholder="例: GH_CONFIG_DIR=C:\Users\me\.config\gh-lin"
+                  ></textarea>
+                </label>
+              </section>
+
+              <!-- The local MCP server an `mcp` account is (#193). What the settings
+                   menu held as its one section until then (#172), moved into the
+                   window of the account the server speaks as, and scoped to that
+                   one server: whether it is running, what it is started with, its
+                   log, and the file it is listed in.
+
+                   保存 and 再起動 act at once, on the file and on the server, the
+                   way they did in the settings menu: an edit is saved while the
+                   server keeps running, and it is started when the person says so.
+                   決定 saves the fields as well when they were edited and not
+                   saved, so an edit is not lost to the window closing over it; 取消
+                   leaves the file as the last 保存 left it.
+
+                   On a form making an account of this kind (#200) the section is
+                   the three fields alone: there is no server yet to have a state,
+                   a log or a 保存 of its own, and 決定 is what writes the entry and
+                   starts it. -->
+              <div id="dialog-mcp" class="pane mcp-server" data-section="server" role="tabpanel" aria-labelledby="dialog-tab-server" hidden>
+                <div class="mcp-head">
+                  <span class="label">サーバ</span>
+                  <span id="mcp-state" class="state"></span>
+                  <span class="spacer"></span>
+                  <button id="mcp-restart" type="button">再起動</button>
+                </div>
+                <!-- The file no longer holds what the running server was started
+                     from, or holds no entry for this account at all. Empty, and
+                     gone, when neither. -->
+                <p id="mcp-stale" class="notice" role="status"></p>
+
+                <div id="mcp-fields" class="mcp-fields">
+                  <label class="field">
+                    コマンド
+                    <input id="mcp-command" type="text" spellcheck="false" />
+                  </label>
+                  <!-- One argument per line. Nothing splits a line, so a path with
+                       spaces in it is one line as it is. -->
+                  <label class="field env">
+                    引数
+                    <textarea id="mcp-args" rows="2" spellcheck="false"></textarea>
+                  </label>
+                  <!-- One NAME=value per line, added to the app's own environment.
+                       Stored in the file as written, the way Claude Desktop stores
+                       its own. -->
+                  <label class="field env">
+                    環境変数
+                    <textarea
+                      id="mcp-env"
+                      rows="2"
+                      spellcheck="false"
+                      placeholder="例: WEBHOOK_WORKER_URL=https://github-webhook.example.com"
+                    ></textarea>
+                  </label>
+                  <menu class="mcp-actions">
+                    <span class="spacer"></span>
+                    <button id="mcp-save" type="button">保存</button>
+                  </menu>
+                </div>
+                <p id="mcp-error" class="mcp-error" role="alert"></p>
+
+                <div id="mcp-log-head" class="mcp-head">
+                  <span class="label">ログ</span>
+                  <span class="spacer"></span>
+                  <button id="mcp-open-file" type="button">設定ファイルを開く</button>
+                </div>
+                <pre id="mcp-log" class="log" tabindex="0" aria-label="サーバのログ"></pre>
+                <p id="mcp-file" class="path"></p>
+                <p id="mcp-file-error" class="mcp-error" role="alert"></p>
+              </div>
             </div>
           </div>
 
-          <!-- How to start a session. Shown for a launched kind only: a person
-               is not launched, and there is no command under them to write
-               options for. -->
-          <div id="dialog-launch" class="launch">
-            <label class="field">
-              作業ディレクトリ
-              <input id="dialog-cwd" type="text" spellcheck="false" />
-            </label>
-            <!-- 誰として喋るか。作業ディレクトリの
-                 `.claude/output-styles/` に置かれた output style の
-                 frontmatter の `name:` を書く。ファイル名ではない。
+          <div class="account-foot">
+            <p id="dialog-error" class="error" role="alert"></p>
 
-                 欄であることに意味がある。起動オプションの文字列の中へ書い
-                 ても同じ行にはなるが、それはアカウントの属性になっていない
-                 ——名前と色が起動時宣言から属性へ移った理由と同じである
-                 (#40 / #99)。
-
-                 空ならこの欄は何も足さず、作業ディレクトリの
-                 `settings.json` が指す既定がそのまま立つ。 -->
-            <label class="field">
-              キャラクター
-              <input
-                id="dialog-character"
-                type="text"
-                spellcheck="false"
-                placeholder="例: character_Lay（output style の name）"
-              />
-            </label>
-            <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
-            <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。キャラクター欄には project の .codex/output-styles にあるファイル名を、拡張子なしで入力します。空欄は project の既定に任せます。ファイル方式が未設定なら、従来の「# character_Codex_Lin」等の見出し名で選べます。下のプレビューで方式と選択名を確認できます。初回は診断端末でフォルダーと専用 SessionStart hook を信頼してください。本文が読めない、又は hook を信頼していない場合は起動を止めます。ID は最初の会話で保存されます。状態の五欄は最初の会話のあとに表示されます。</p>
-            <!-- Codex の席を、席ごとの app-server 経由で立てる（#299）。入れると
-                 キャラクターは thread/start の developerInstructions で渡り、
-                 Li+ の output style の SessionStart hook はその席の server でだけ
-                 止まる。会話 id は起動の時点で決まる。既定は切（hook 方式）：
-                 モデルの一往復でキャラどおりに答えることを確かめるまで。 -->
-            <label id="dialog-codex-app-server-field" class="field" hidden>
-              app-server 方式
-              <input id="dialog-codex-app-server" type="checkbox" />
-            </label>
-            <!-- 起動オプション。**その人が足したいものだけを書く欄である**
-                 （#156、決定3）。セッション id の渡し方は種別が持つため、
-                 `Claude Code` では `--session-id {session_id}` をここへ書かな
-                 い——書いたものと走る行は違い、走る行は下の表示が見せる。
-
-                 `CLI（汎用）` にはその作法が無い。`{session_id}` をここへ書
-                 けば、そこへこのアプリが決めた UUID が入る。書かなければ id
-                 を配らない。それは resume を持たない CLI が恒常的に置かれる
-                 状態であり、失敗ではない——その場合の参加者は、部屋の読み出
-                 し（`read_room_history`）で自分から辿る (#115)。 -->
-            <label class="field">
-              起動オプション
-              <input
-                id="dialog-options"
-                type="text"
-                spellcheck="false"
-                placeholder="例: --dangerously-skip-permissions"
-              />
-            </label>
-            <!-- 再開コマンド。トピックが持っているセッションへ戻る一行であり、
-                 先頭の語が command になる。トピックはアカウントごとに
-                 `{account_id: session_uuid}` を持ち、その id がここへ入る
-                 (#115、決定4B)。
-
-                 起動コマンドと別の欄なのは、戻り方が起動と同じ呼び出しとは
-                 限らないためである。空なら resume 無しであり、そのアカウント
-                 は開き直したトピックへ新規のセッションとして着席する。席が
-                 一つ戻らなくてもトピックは開く（決定6）。
-
-                 **`CLI（汎用）` にだけ出す**（#156、決定6）。CLI を名指す種
-                 別は戻り方を作法として持っており、そこへ欄を出せば、既に答え
-                 のある問いに二つ目の答えを置くことになる。 -->
-            <label id="dialog-resume-field" class="field">
-              再開コマンド
-              <input
-                id="dialog-resume"
-                type="text"
-                spellcheck="false"
-                placeholder="例: claude --resume {session_id}"
-              />
-            </label>
-            <!-- What will actually run. The app adds the room's own settings
-                 to whatever is typed above, so the line written here is not
-                 the line that launches; showing the result is cheaper than
-                 explaining the addition. It sits beside the field it explains. -->
-            <span id="dialog-preview" class="preview"></span>
-            <!-- 上の欄に、Windows の起動の行へ載せられない文字が入ったときに
-                 出る（#154、決定4）。保存は止めない——欄を直すかどうかはその
-                 人の判断であり、ここが言うのは起動した時に何が起きるかであ
-                 る。キャラクターと起動オプションは載らないだけで起動は成り立
-                 ち、コマンドと再開コマンドは起動そのものが成り立たない。
-
-                 何も無ければ消える。空のまま行を占めるのは下の `.error` の役
-                 であり、あちらは決定を止める理由を出す場所で、ここは止めない
-                 知らせを出す場所である。 -->
-            <p id="dialog-notice" class="notice" role="status"></p>
-            <!-- 環境変数（#163）。`名前=値` を一行ずつ書く欄であり、欄は一つ
-                 である。普通の値と秘密の値を区別しない。
-
-                 値は起動する CLI のプロセスの環境変数として渡り、起動の行に
-                 は載らない——上の表示に出ないのはそのためである。保存の前に
-                 DPAPI で暗号化され、画面には先頭と末尾だけが出る
-                 （`GH_TOKEN=github_pat...Nx4h`）。
-
-                 出たままの行は、保存しても元の値を保つ。値を入れ直す必要が
-                 あるのは、変えたい行だけである。行を消せば変数も消える。 -->
-            <label class="field env">
-              環境変数
-              <textarea
-                id="dialog-env"
-                rows="3"
-                spellcheck="false"
-                placeholder="例: GH_CONFIG_DIR=C:\Users\me\.config\gh-lin"
-              ></textarea>
-            </label>
-          </div>
-
-          <!-- The local MCP server an `mcp` account is (#193). What the settings
-               menu held as its one section until then (#172), moved into the
-               window of the account the server speaks as, and scoped to that
-               one server: whether it is running, what it is started with, its
-               log, and the file it is listed in.
-
-               保存 and 再起動 act at once, on the file and on the server, the
-               way they did in the settings menu: an edit is saved while the
-               server keeps running, and it is started when the person says so.
-               決定 saves the fields as well when they were edited and not
-               saved, so an edit is not lost to the window closing over it; 取消
-               leaves the file as the last 保存 left it.
-
-               On a form making an account of this kind (#200) the section is
-               the three fields alone: there is no server yet to have a state,
-               a log or a 保存 of its own, and 決定 is what writes the entry and
-               starts it. -->
-          <div id="dialog-mcp" class="mcp-server" hidden>
-            <div class="mcp-head">
-              <span class="label">サーバ</span>
-              <span id="mcp-state" class="state"></span>
+            <menu class="actions">
+              <!-- Two clicks: this one cannot be taken back and it sits beside
+                   two that can. Not `window.confirm`, whose two failure
+                   directions are both wrong here (#57). 終了 in the list asked
+                   the same question in this same shape until #71 moved it into a
+                   dialog of its own; whether this one follows is #72. -->
+              <button id="dialog-delete" type="button" class="delete">削除</button>
               <span class="spacer"></span>
-              <button id="mcp-restart" type="button">再起動</button>
-            </div>
-            <!-- The file no longer holds what the running server was started
-                 from, or holds no entry for this account at all. Empty, and
-                 gone, when neither. -->
-            <p id="mcp-stale" class="notice" role="status"></p>
-
-            <div id="mcp-fields" class="mcp-fields">
-              <label class="field">
-                コマンド
-                <input id="mcp-command" type="text" spellcheck="false" />
-              </label>
-              <!-- One argument per line. Nothing splits a line, so a path with
-                   spaces in it is one line as it is. -->
-              <label class="field env">
-                引数
-                <textarea id="mcp-args" rows="2" spellcheck="false"></textarea>
-              </label>
-              <!-- One NAME=value per line, added to the app's own environment.
-                   Stored in the file as written, the way Claude Desktop stores
-                   its own. -->
-              <label class="field env">
-                環境変数
-                <textarea
-                  id="mcp-env"
-                  rows="2"
-                  spellcheck="false"
-                  placeholder="例: WEBHOOK_WORKER_URL=https://github-webhook.example.com"
-                ></textarea>
-              </label>
-              <menu class="mcp-actions">
-                <span class="spacer"></span>
-                <button id="mcp-save" type="button">保存</button>
-              </menu>
-            </div>
-            <p id="mcp-error" class="mcp-error" role="alert"></p>
-
-            <div id="mcp-log-head" class="mcp-head">
-              <span class="label">ログ</span>
-              <span class="spacer"></span>
-              <button id="mcp-open-file" type="button">設定ファイルを開く</button>
-            </div>
-            <pre id="mcp-log" class="log" tabindex="0" aria-label="サーバのログ"></pre>
-            <p id="mcp-file" class="path"></p>
-            <p id="mcp-file-error" class="mcp-error" role="alert"></p>
+              <button id="dialog-cancel" type="button">取消</button>
+              <button id="dialog-commit" type="submit" value="commit">決定</button>
+            </menu>
           </div>
-
-          <p id="dialog-error" class="error" role="alert"></p>
-
-          <menu class="actions">
-            <!-- Two clicks: this one cannot be taken back and it sits beside
-                 two that can. Not `window.confirm`, whose two failure
-                 directions are both wrong here (#57). 終了 in the list asked
-                 the same question in this same shape until #71 moved it into a
-                 dialog of its own; whether this one follows is #72. -->
-            <button id="dialog-delete" type="button" class="delete">削除</button>
-            <span class="spacer"></span>
-            <button id="dialog-cancel" type="button">取消</button>
-            <button id="dialog-commit" type="submit" value="commit">決定</button>
-          </menu>
         </form>
       </dialog>
 

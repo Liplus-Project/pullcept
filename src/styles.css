@@ -1999,7 +1999,12 @@ button svg.icon {
 /* In this webview, not an OS window: it is a step inside one act, and a second
    window is a thing to find, move and lose behind the app. */
 #account-dialog {
-  width: min(30rem, calc(100vw - 3rem));
+  /* The settings dialog's shape (#304): the sections down the side, the one on
+     screen beside them. A height of its own rather than its content's, so the
+     buttons below hold still while the sections are switched. */
+  width: min(44rem, calc(100vw - 3rem));
+  height: min(34rem, calc(100vh - 3rem));
+  container-type: inline-size;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line);
@@ -2012,16 +2017,141 @@ button svg.icon {
   background: rgb(0 0 0 / 0.45);
 }
 
-#account-form {
+#account-dialog[open] {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  padding: 1rem 1.1rem 0.9rem;
+}
+
+#account-form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#account-dialog .account-sections {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+}
+
+/* The side menu, in the settings dialog's colours: this column is a surface,
+   and the section on the right is the window's ground. */
+#account-dialog .account-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 0.6rem;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
 }
 
 #account-dialog h2 {
-  margin: 0;
+  margin: 0 0 0 0.4rem;
   font-size: 0.95rem;
+}
+
+#account-dialog .account-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+#account-dialog .account-tabs [role="tab"] {
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#account-dialog .account-tabs [role="tab"]:hover {
+  background: var(--hover);
+}
+
+/* The section on screen, marked the way a picked row is (#221). */
+#account-dialog .account-tabs [aria-selected="true"],
+#account-dialog .account-tabs [aria-selected="true"]:hover {
+  background: var(--selected);
+}
+
+#account-dialog .account-tabs [role="tab"][hidden] {
+  display: none;
+}
+
+/* The section on screen. It scrolls inside itself rather than pushing the
+   buttons below out of the window, at the UI's larger multiples too. */
+#account-dialog .account-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.1rem 0.8rem;
+}
+
+/* One section: its fields one under another. Only the section on screen is
+   drawn: `display: none` written out, because the rule above it gives every
+   section a `display`, and that beats what `[hidden]` brings on its own. */
+#account-dialog .pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+#account-dialog .pane[hidden] {
+  display: none;
+}
+
+/* Under every section: the reason a decision is refused and the three
+   buttons. */
+#account-dialog .account-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 1.1rem 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+/* A narrow window (#304): the side menu is a row of tabs above the section,
+   and a field's name sits over its box rather than beside it. */
+@container (max-width: 34rem) {
+  #account-dialog .account-sections {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  #account-dialog .account-nav {
+    padding: 0.8rem 0.8rem 0.5rem;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  #account-dialog .account-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  #account-dialog .account-tabs [role="tab"] {
+    flex: none;
+  }
+
+  #account-dialog .account-body {
+    padding: 0.8rem;
+  }
+
+  #account-dialog .account-foot {
+    padding: 0.5rem 0.8rem 0.7rem;
+  }
+
+  /* Through `.pane` so it outranks the field rule below, which it follows
+     in nothing but the width. */
+  #account-dialog .pane .field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.25rem;
+  }
 }
 
 #account-dialog .field {
@@ -2032,7 +2162,7 @@ button svg.icon {
   color: var(--muted);
 }
 
-/* `display: none` written out, for the reason the `.launch` rule below needs
+/* `display: none` written out, for the reason the `.pane` rule above needs
    it: the rule above gives every field a `display`, and that beats what
    `[hidden]` brings on its own. The resume line is the field this is for — it
    belongs to the kind that has no way back of its own (#156). */
@@ -2102,18 +2232,6 @@ button svg.icon {
   border-radius: 6px;
   padding: 0.3rem 0.8rem;
   cursor: pointer;
-}
-
-/* Only for a session. A person has no command under them, so these would be
-   fields that never do anything. */
-#account-dialog .launch {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-
-#account-dialog .launch[hidden] {
-  display: none;
 }
 
 /* ── the server an `mcp` account is (#193) ──
