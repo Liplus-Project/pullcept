@@ -231,6 +231,21 @@ fn overrides(settings: &ThreadSettings, params: &mut Map<String, Value>) {
     }
 }
 
+/// What an app-server seat is handed as `developerInstructions` (#301): the
+/// character text as delivered (unchanged, first), then the room's text
+/// (`Cli::room_system_prompt`, the same one Claude seats get), a blank line
+/// between. `developerInstructions` replaces the CLI's own
+/// `developer_instructions`, so a seat with no character passes in `base` the
+/// effective text it would otherwise have run with, and keeps it.
+pub fn developer_instructions(base: Option<&str>, room: Option<&str>) -> Option<String> {
+    match (base.filter(|b| !b.is_empty()), room) {
+        (Some(base), Some(room)) => Some(format!("{base}\n\n{room}")),
+        (Some(base), None) => Some(base.to_string()),
+        (None, Some(room)) => Some(room.to_string()),
+        (None, None) => None,
+    }
+}
+
 /// `thread/start`: the character as developer instructions, the person's
 /// permissions, model and effort.
 pub fn start_params(cwd: &str, instructions: Option<&str>, settings: &ThreadSettings) -> Value {
@@ -452,6 +467,31 @@ mod tests {
         assert!(bare.get("developerInstructions").is_none() && bare.get("config").is_none());
         let inject = inject_params(ID);
         assert_eq!(inject["items"][0]["role"], "developer");
+    }
+
+    #[test]
+    fn the_room_text_follows_the_character_and_never_changes_it() {
+        let room = crate::Cli::CodexCli
+            .room_system_prompt("pullcept-room-lin-r1")
+            .expect("a safe text");
+        // The same text a Claude seat is handed on its launch line.
+        assert_eq!(Some(room.clone()), crate::Cli::ClaudeCode.room_system_prompt("pullcept-room-lin-r1"));
+        assert!(room.contains("mcp__pullcept-room-lin-r1__say_to_room"));
+        assert!(room.contains("instructions of the room MCP server mcp__pullcept-room-lin-r1."));
+        let character = "# ルナ\n口調は柔らかく。\n";
+        let both = developer_instructions(Some(character), Some(&room)).unwrap();
+        // The character's bytes come through whole, so the length and sha256
+        // the loader checked are still the character's own.
+        assert!(both.starts_with(character));
+        assert_eq!(&both[character.len()..], format!("\n\n{room}"));
+        assert_eq!(developer_instructions(None, Some(&room)).as_deref(), Some(room.as_str()));
+        assert_eq!(developer_instructions(Some("x"), None).as_deref(), Some("x"));
+        assert_eq!(developer_instructions(Some(""), None), None);
+        assert_eq!(developer_instructions(None, None), None);
+        let start = start_params("C:/w", Some(&both), &ThreadSettings::default());
+        let resume = resume_params(ID, "C:/w", Some(&both), &ThreadSettings::default());
+        assert_eq!(start["developerInstructions"], resume["developerInstructions"]);
+        assert!(resume["developerInstructions"].as_str().unwrap().ends_with(&room));
     }
 
     #[test]

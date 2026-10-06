@@ -134,6 +134,9 @@ pub struct LaunchPreview {
     /// The seat server's line, for an account launched through its own
     /// app-server (#299); `args` is then the terminal's line.
     server_args: Option<Vec<String>>,
+    /// The room's text an app-server seat is handed after its character in
+    /// `developerInstructions` (#301). A Claude seat's is on `args`.
+    room_prompt: Option<String>,
 }
 
 struct CodexCharacterLaunch {
@@ -167,7 +170,7 @@ fn codex_character_args(
     }
     mcp_config::codex::check_command_length(command, &composed)?;
     Ok(CodexCharacterLaunch {
-        preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name, server_args: None },
+        preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name, server_args: None, room_prompt: None },
         output_style: (mode == "file").then(|| selected.map(str::to_string)).flatten(),
     })
 }
@@ -213,15 +216,15 @@ fn codex_style(
     Ok(style)
 }
 
-/// The effective developer instructions the legacy heading selection reads
-/// (`codex-character.mjs`), model-free.
-fn codex_legacy_instructions(
+/// The effective developer instructions (`codex-character.mjs`), model-free:
+/// `None` when the CLI runs with none.
+fn codex_effective_instructions(
     command: &str,
     options: &[String],
     cwd: &Path,
     env: &[(String, String)],
     entry: &Path,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let mut child = std::process::Command::new("node");
     child.arg(entry.parent().unwrap().join("codex-character.mjs"))
         .arg(command).arg(cwd).arg(serde_json::to_string(options).unwrap())
@@ -238,18 +241,39 @@ fn codex_legacy_instructions(
     if !output.status.success() || data.get("error").is_some() {
         return Err("Codex の有効指示を確認できません。診断端末で CLI の設定・profile・信頼を確認してください。".into());
     }
-    data.get("instructions").and_then(serde_json::Value::as_str).map(str::to_string)
+    match data.get("instructions") {
+        Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
+        Some(serde_json::Value::Null) => Ok(None),
+        _ => Err("Codex のキャラ探索に失敗しました。CLI の設定を診断端末で確認してください。".into()),
+    }
+}
+
+/// The effective developer instructions, required (the legacy heading selection).
+fn codex_legacy_instructions(
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+) -> Result<String, String> {
+    codex_effective_instructions(command, options, cwd, env, entry)?
         .ok_or_else(|| "Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。".to_string())
 }
 
 /// How an app-server seat's character is delivered (#299): the text handed
 /// to the thread as `developerInstructions`, and the Li+ output style hook
 /// turned off on the seat's server so the text is not delivered twice.
+///
+/// `instructions` is the character followed by the room's text (#301,
+/// `app_server::developer_instructions`). The character part is the loader's
+/// bytes as checked against its length and sha256 (`codex-style.mjs`); the
+/// room's text is appended after that check, never folded into it.
 struct CodexDelivery {
     mode: String,
     name: Option<String>,
     instructions: Option<String>,
     hook_keys: Vec<String>,
+    room_prompt: Option<String>,
 }
 
 fn codex_delivery(
@@ -259,6 +283,7 @@ fn codex_delivery(
     env: &[(String, String)],
     entry: &Path,
     character: Option<&str>,
+    server_name: &str,
 ) -> Result<CodexDelivery, String> {
     if !console_safe(command) || command.contains('%') {
         return Err("Codex のコマンドを Windows の起動の行へ安全に運べません。起動を止めました。".into());
@@ -284,7 +309,16 @@ fn codex_delivery(
         },
         _ => None,
     };
-    Ok(CodexDelivery { mode, name, instructions, hook_keys })
+    let room_prompt = mcp_config::Cli::CodexCli.room_system_prompt(server_name);
+    // `developerInstructions` replaces the CLI's own developer instructions.
+    // A seat with no character text keeps the ones it would have run with,
+    // and the room's text follows them.
+    let base = match (&instructions, &room_prompt) {
+        (None, Some(_)) => codex_effective_instructions(command, &options, cwd, env, entry)?,
+        _ => instructions,
+    };
+    let instructions = mcp_config::codex::app_server::developer_instructions(base.as_deref(), room_prompt.as_deref());
+    Ok(CodexDelivery { mode, name, instructions, hook_keys, room_prompt })
 }
 
 fn codex_hook_dir(
@@ -884,7 +918,7 @@ pub async fn preview_launch_args(
             character.as_deref(),
             &others,
             status.as_deref(),
-        ), character_mode: None, character_name: None, server_args: None });
+        ), character_mode: None, character_name: None, server_args: None, room_prompt: None });
     }
     let (entry, runner) = resolve_sidecar_paths()?;
     if codex_app_server.unwrap_or(false) {
@@ -897,7 +931,7 @@ pub async fn preview_launch_args(
         return tauri::async_runtime::spawn_blocking(move || {
             mcp_config::codex::reject_options(&args)?;
             let plan = mcp_config::codex::app_server::plan(&mcp_config::codex::transport_options(&args)?)?;
-            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref())?;
+            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref(), &server_name)?;
             // Placeholders where the launch puts its own values: the token's
             // digest, the port the server binds and the thread it starts.
             let server = mcp_config::codex::app_server::server_args(
@@ -907,6 +941,7 @@ pub async fn preview_launch_args(
                 character_mode: Some(delivery.mode),
                 character_name: delivery.name,
                 server_args: Some(server),
+                room_prompt: delivery.room_prompt,
             })
         }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?;
     }
@@ -1870,7 +1905,7 @@ fn launch_codex_app_server(
     // removal of what builds before #297 left in it.
     mcp_config::codex::prepare_project(&project_cwd)?;
     let plan = app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
-    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character)?;
+    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name)?;
     let token = crate::codex_app_server::new_token();
     let server_args = app_server::server_args(
         &plan,

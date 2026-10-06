@@ -84,6 +84,10 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 
 **再開でも毎回 `developerInstructions` を送り直す。** `thread/resume` にも同じ本文を載せる。アカウントのキャラクターを変えた後の再開は、新しい本文で始まる。
 
+**`developerInstructions` には、キャラの本文の後に部屋の一文を足す（#301）。** 一文は Claude の席が `--append-system-prompt` で受け取るものと同じ本文であり、同じ関数（`crates/mcp-config` の `room_system_prompt`）から作る（下記「[席は部屋の道具の名を起動時に受け取る](#席は部屋の道具の名を起動時に受け取る)」）。並びは「キャラの本文」「空行」「部屋の一文」で、キャラの本文は一文字も変えない。本文の長さと sha256 の照合（上の 1.）はキャラの本文だけに対して行い、部屋の一文はその照合の後で足す。`thread/start` にも、毎回の `thread/resume` にも同じ合成を載せる。
+
+**キャラの本文が無い席は、CLI 自身の有効な developer instructions を先頭に置く。** `developerInstructions` は CLI の `developer_instructions` を置き換える（`codex-rs/core/src/config/mod.rs`、`developer_instructions.or(cfg.developer_instructions)`）。persona が無効（false）の席や、inline 方式で名前を選んでいない席では、部屋の一文だけを送るとその人の指示が消える。そこでその席では #276 と同じモデル不要の読み取り（`codex-character.mjs`）で有効な本文を読み、その後に部屋の一文を足す。有効な本文が無ければ部屋の一文だけを送る。読み取りに失敗すれば起動を止める。
+
 **会話 id は `thread/start` の答えから取り、`codex-session.mjs` は使わない。** hook 方式では初回の実会話で hook が id を知らせていた（#272）。app-server 方式では起動した時点で id が決まるので、新しい会話はその場でトピックに記録する。この席では `codex-session.mjs` を `hooks.json` に登録せず、server の環境に `PULLCEPT_NATIVE_URL` も `PULLCEPT_LAUNCH_ID` も置かない。以前の起動が残した登録があっても、その補助は環境が無ければ何も送らずに終わる。五欄（#283）と利用上限の扱い（#294）はこの id から rollout を読むので、最初の会話を待たずに働き始める。
 
 **空の会話には `thread/inject_items` で印を一つ記録する。`turn/start` は使わない。** Codex は記録の無い会話を rollout に書かず、記録の無い会話に TUI は繋がれない。そこで新しい会話に developer の発言を一つ、`Pullcept opened this conversation as a seat in a room. Room posts arrive as user input.` と記録する。比べた二つの方法は次のとおりで、前者を選んだ。
@@ -213,7 +217,19 @@ Claude Code の起動する行へアプリが足すのは `--settings` の JSON 
 
 ### 席は部屋の道具の名を起動時に受け取る
 
-**起動する行へ一文を載せる**（#147、決定1）。`--append-system-prompt` であり、内容は、その席が部屋へ発言するときに呼ぶ道具の完全名（`mcp__<.mcp.json の登録鍵>__say_to_room`。上記「`.mcp.json` の登録単位」）と、端末への出力が部屋に届かないことの二つである。
+**起動する行へ一文を載せる**（#147、決定1）。`--append-system-prompt` であり、内容は、その席が部屋へ発言するときに呼ぶ道具の完全名（`mcp__<.mcp.json の登録鍵>__say_to_room`。上記「`.mcp.json` の登録単位」）と、端末への出力が部屋に届かないことの二つ、それに部屋の詳しい作法の在り処である（#301）。
+
+**作法の本文は写さず、在り処だけを指す（#301）。** 作法はサイドカーの `instructions`（「[部屋の作法](1-room.md#部屋の作法)」）の一か所にだけ在る。一文は「部屋の詳しい作法は部屋の MCP サーバ `mcp__<登録鍵>` の instructions に在り、届いたらそれに従う」と言う。`instructions` は MCP サーバが繋がった後に届くため、最初の部屋の発言より遅れることがある。最初の発言から効かなければならないのは道具の完全名の方であり、それは「道具の一覧が届く前でもこの名前で呼ぶ」として残す。
+
+**Codex の席にも同じ一文を渡す（#301）。** app-server 方式の席は `developerInstructions` のキャラの本文の後に載せる（上記「[Codex の席を app-server 経由で起動する](#codex-の席を-app-server-経由で起動する299)」）。本文は Claude の席と同じ関数から作り、種別ごとに書き分けない。プレビューには「部屋のルール（developerInstructions のキャラクターの後）」として本文を出す。Claude の席では起動の行の `--append-system-prompt` にそのまま見える。
+
+**hook 方式の Codex の席には渡さない（#301）。** 調べた結果は次のとおりである。
+
+- Li+ のキャラの配送とは衝突しない。Li+ の output style hook は本文を SessionStart の `additionalContext` で配り（`sidecar/src/codex-style.mjs` の `body` が読む `hookSpecificOutput.additionalContext`）、`developer_instructions` とは別の入口である。
+- だが `-c developer_instructions=…` は CLI の全 layer（user・profile・信頼済み project・手動 `-c`）で決まった有効な本文を置き換える。部屋の一文を足すには、起動のたびに有効な本文を読み、それに一文を足した全文を `-c` で載せ直すしかない。
+- それは既定の起動経路（hook 方式の file mode）に、今は走らないモデル不要の `debug prompt-input` 二回（各15秒上限）と、その失敗による起動停止を新たに持ち込む。さらに #281 の file mode は本文を argv にも環境にも載せない契約であり（[要件](0-requirements.md)）、有効な本文の全文（日本語は TOML の Unicode escape で数倍に膨らむ）を起動の行に載せればその契約を破り、Windows の 8191 文字の上限で起動を拒否する席を新たに生む。
+
+したがって hook 方式の席は従来どおりサイドカーの `instructions` だけで作法を受け取る。部屋の一文が要る Codex の席は app-server 方式に切り替える。
 
 **渡す時点が起動時であることが要件である。** 道具の一覧とサイドカーの `instructions` は、そのセッションが最初に何か道具を呼んだ後にまとめて届く（実測、2026-09-17。返事をしなかったセッションには両方の注入が一度も無く、Bash を一度踏んだ後に注入されて以後は部屋へ返せている別のセッションと並べて確定した）。部屋の発言だけで動くセッションにはその契機が来ないため、道具の存在を知らされないまま文章だけ返す状態に入る——実機で見えていたのは、端末には合言葉を答えているのに部屋のログには何も無い形であり、記録にも `say_to_room` の呼び出しが一度も無かった。**呼んで失敗したのではなく、呼ぶものがあることを知らない。** モデルの違いではない（同日の切り分けの一つめはそう読んだが、交絡であった）。**2026-09-28 の実測では、`instructions` は道具を一度も呼んでいないセッションに届いていた**（Claude Code 2.1.283、#195。「[部屋は channel を使わなくなった](0-requirements.md#部屋は-channel-を使わなくなった195)」）。CLI の版で挙動が変わったと見られる。この一文は残す——古い版の CLI で同じ状態に入らないためであり、札の読み方を起動の行で補う必要はない（#195）。
 

@@ -403,28 +403,36 @@ impl Cli {
     /// spoken to through this tool and that terminal output does not reach it —
     /// facts about the room rather than about the channel that delivered the
     /// post, so a room reached some other way does not make this text wrong
-    /// (#147, 決定4). Nothing about how to converse: that is the sidecar's
+    /// (#147, 決定4). Nothing else about how to converse: that is the sidecar's
     /// `instructions`, which every session that calls the tool once has, and a
     /// second copy of it here would be paid for on every launch and would drift
-    /// from the first.
+    /// from the first. What this does carry is where those rules are (#301):
+    /// the room server's `instructions`, named by its full name, to be
+    /// followed once they arrive — they may come only after the server
+    /// connects, possibly after the first post, which is why the tool's name
+    /// above has to work without them.
+    ///
+    /// English, because the launch line refuses anything outside ASCII
+    /// (`line_safe_text`); a Japanese text would be refused and the seat told
+    /// nothing.
     ///
     /// `None` on a text this launch line cannot carry (`line_safe_text`). The
     /// safer side for an addition is not to add it, the way the status line
     /// already does it: the launch still runs, and what is lost is the state
     /// this exists to prevent rather than the session.
     pub fn room_system_prompt(self, server_name: &str) -> Option<String> {
-        if self == Cli::CodexCli {
-            return None;
-        }
-        let text = match self {
-            Cli::ClaudeCode => format!(
-                "You are a participant in a Pullcept room. Terminal output \
-                 does not reach the room. The only way to be heard there is \
-                 the tool mcp__{server_name}__say_to_room. Call it by that \
-                 full name even before any tool list has arrived."
-            ),
-            Cli::CodexCli => unreachable!(),
-        };
+        // One text for both kinds (#301): Codex seats are handed it as part of
+        // their `developerInstructions` (`codex::app_server::developer_instructions`),
+        // Claude seats on `--append-system-prompt`. Only the carrier differs.
+        let text = format!(
+            "You are a participant in a Pullcept room. Terminal output \
+             does not reach the room. The only way to be heard there is \
+             the tool mcp__{server_name}__say_to_room. Call it by that \
+             full name even before any tool list has arrived. The \
+             detailed rules of the room are in the instructions of the \
+             room MCP server mcp__{server_name}. Follow them once they \
+             arrive."
+        );
         line_safe_text(&text).then_some(text)
     }
 
@@ -2822,6 +2830,17 @@ mod tests {
         // And the fact the terminal is not a way of being heard, which is the
         // half that says why the tool has to be called at all.
         assert!(told.contains("Terminal output does not reach the room"), "{told}");
+        // The rules themselves stay in one place, the room server's
+        // `instructions`; this only points there (#301), on both kinds.
+        assert!(told.contains(&format!("The detailed rules of the room are in the instructions of the room MCP server mcp__{room}. Follow them once they arrive.")), "{told}");
+        assert!(!told.contains("claim"), "{told}");
+        assert_eq!(Cli::CodexCli.room_system_prompt(&room), Some(told.clone()));
+        // Short against the 8191-character Windows command line it rides on:
+        // the longest server name this app composes still leaves the rest of
+        // the line to the person's own options.
+        let longest = server_name_for(&"a".repeat(64), &"b".repeat(64));
+        let long = Cli::ClaudeCode.room_system_prompt(&longest).expect("a safe text");
+        assert!(long.len() < 512, "{} characters", long.len());
     }
 
     #[test]

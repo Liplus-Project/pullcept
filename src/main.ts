@@ -5282,7 +5282,7 @@ async function renderDialogPreview(generation: number): Promise<void> {
     const parsed = await invoke<string[]>("parse_launch_options", {
       text: dialogOptionsEl.value,
     });
-    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null; server_args: string[] | null}>("preview_launch_args", {
+    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null; server_args: string[] | null; room_prompt: string | null}>("preview_launch_args", {
       args: parsed,
       accountId: id,
       // The field rather than the draft, for the reason the character is read
@@ -5311,6 +5311,9 @@ async function renderDialogPreview(generation: number): Promise<void> {
     dialogPreviewEl.textContent = merged.server_args
       ? `${character}方式: app-server（キャラクターは developerInstructions、Li+ の output style hook はこの席で停止）
 ` +
+        // The room's text Claude seats carry on --append-system-prompt, here after the character (#301).
+        (merged.room_prompt ? `部屋のルール（developerInstructions のキャラクターの後）: ${merged.room_prompt}
+` : "") +
         `app-server: ${command} ${joinArgs(merged.server_args)}
 画面: ${command} ${joinArgs(merged.args)}`
       : `${character}${dialogCommandEl.value.trim()} ${joinArgs(merged.args)}`;
