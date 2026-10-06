@@ -2,6 +2,7 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync} from "node:fs";
 import {join} from "node:path";
+import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
 import {fileModeRoot, resolveOutputStyle} from "../src/codex-style.mjs";
 
@@ -20,6 +21,11 @@ mode=settings.get('mode','file')
 if '--style' in args: mode='file'
 if mode=='disabled': name=None
 helper=pathlib.Path(__file__).resolve()
+if args[0]=='hook':
+ event=json.loads(sys.stdin.read())
+ if event.get('hook_event_name')!='SessionStart' or not os.environ.get('LI_PLUS_OUTPUT_STYLE'): sys.exit(3)
+ print(json.dumps({'hookSpecificOutput':{'hookEventName':'SessionStart','additionalContext':settings.get('body','')+os.environ['LI_PLUS_OUTPUT_STYLE']}},ensure_ascii=False))
+ sys.exit(0)
 reply={'protocol_version':1,'mode':mode,'name':name,'root':str(root),'sha256':'a'*64 if mode=='file' else None,
  'byte_count':100000 if mode=='file' else 0,'handler':{'path':str(helper),'sha256':hashlib.sha256(helper.read_bytes()).hexdigest(),
  'additional_context_limit':0,'matchers':['startup','resume','clear','compact']}}
@@ -34,7 +40,7 @@ function fixture() {
   const helper = join(root, ".codex/hooks/codex-output-style.py"), path = join(root, ".codex/hooks.json");
   writeFileSync(helper, peer); writeFileSync(path, "{}"); writeFileSync(join(root, "peer.json"), "{}");
   const discovery = {projects:[{folder:join(root, ".codex"), disabled:null}], styleHooks:[{
-    source:"project", path, trust:"trusted", enabled:true, async:false, additionalContextLimit:0,
+    key:`${path}:session_start:0:1`, source:"project", path, trust:"trusted", enabled:true, async:false, additionalContextLimit:0,
     matcher:"startup|resume|clear|compact",
     command:`${process.platform === "win32" ? "python" : "python3"} "${root}/.codex/hooks/codex-output-style.py" hook --root "${root}"`,
   }]};
@@ -106,5 +112,27 @@ test("loader failures and malformed protocol fail closed without exposing output
     await assert.rejects(resolveOutputStyle(f.discovery, f.root, ""), error => !error.message.includes("SECRET_FIXTURE"));
     const idHelper = readFileSync(new URL("../src/codex-session.mjs", import.meta.url), "utf8");
     assert.equal(idHelper.includes("LI_PLUS_OUTPUT_STYLE"), false);
+  } finally { f.close(); }
+});
+
+test("body mode returns the loader's own hook text and the hook keys to turn off (#299)", async () => {
+  const f = fixture();
+  try {
+    const text = "キャラ本文 & | %PATH%\n", name = "character_codex_luna";
+    const full = text + name, bytes = Buffer.byteLength(full, "utf8");
+    const sha = createHash("sha256").update(full, "utf8").digest("hex");
+    f.settings({body:text, reply:{sha256:sha, byte_count:bytes}});
+    const plain = await resolveOutputStyle(f.discovery, f.nested, name);
+    assert.equal(Object.hasOwn(plain, "body"), false);
+    const result = await resolveOutputStyle(f.discovery, f.nested, name, process.env, true);
+    assert.equal(result.body, full);
+    assert.deepEqual(result.hook_keys, [f.discovery.styleHooks[0].key]);
+    // Text that does not match what resolve measured is refused, not delivered.
+    f.settings({body:"other", reply:{sha256:sha, byte_count:bytes}});
+    await assert.rejects(resolveOutputStyle(f.discovery, f.nested, name, process.env, true));
+    f.settings({mode:"disabled"});
+    const disabled = await resolveOutputStyle(f.discovery, f.root, "", process.env, true);
+    assert.equal(disabled.body, null);
+    assert.deepEqual(disabled.hook_keys, [f.discovery.styleHooks[0].key]);
   } finally { f.close(); }
 });

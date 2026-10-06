@@ -131,6 +131,9 @@ pub struct LaunchPreview {
     args: Vec<String>,
     character_mode: Option<String>,
     character_name: Option<String>,
+    /// The seat server's line, for an account launched through its own
+    /// app-server (#299); `args` is then the terminal's line.
+    server_args: Option<Vec<String>>,
 }
 
 struct CodexCharacterLaunch {
@@ -152,19 +155,48 @@ fn codex_character_args(
     }
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
+    let style = codex_style(command, &options, cwd, env, entry, selected, false)?;
+    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled", "legacy"].contains(mode))
+        .ok_or("Codex の output style 応答が不正です。")?.to_string();
+    let name = style["name"].as_str().map(str::to_string);
+    if mode == "legacy" {
+      if let Some(selected) = selected {
+        let source = codex_legacy_instructions(command, &options, cwd, env, entry)?;
+        mcp_config::codex::apply_character(&mut composed, &source, selected)?;
+      }
+    }
+    mcp_config::codex::check_command_length(command, &composed)?;
+    Ok(CodexCharacterLaunch {
+        preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name, server_args: None },
+        output_style: (mode == "file").then(|| selected.map(str::to_string)).flatten(),
+    })
+}
+
+/// The project's output style, as `codex-style.mjs` resolves it through the
+/// installed Li+ loader. `body` also asks for the text the loader's hook would
+/// deliver and the keys of that hook (#299).
+fn codex_style(
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+    selected: Option<&str>,
+    body: bool,
+) -> Result<serde_json::Value, String> {
     let home = env.iter().find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
         .map(|(_, value)| PathBuf::from(value))
         .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|home| PathBuf::from(home).join(".codex")))
         .ok_or("Codex home が見つかりません。")?;
     let home = if home.is_absolute() { home } else { cwd.join(home) };
-    let mut discovery = mcp_config::codex::discovery_options(&options, &home)?;
+    let mut discovery = mcp_config::codex::discovery_options(options, &home)?;
     discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
-    let effective = mcp_config::codex::effective_cwd(cwd, &options)?;
+    let effective = mcp_config::codex::effective_cwd(cwd, options)?;
     let mut resolver = std::process::Command::new("node");
     resolver.arg(entry.parent().unwrap().join("codex-style.mjs"))
         .arg(command).arg(cwd).arg(serde_json::to_string(&discovery).unwrap())
-        .arg(effective).arg(selected.unwrap_or(""))
+        .arg(effective).arg(selected.unwrap_or("")).arg(if body { "body" } else { "" })
         .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV)
         .env("CODEX_HOME", &home).current_dir(cwd)
         .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
@@ -178,37 +210,81 @@ fn codex_character_args(
     if !output.status.success() || style.get("error").is_some() {
         return Err(style["error"].as_str().unwrap_or("Codex のキャラクターを確認できません。project の output style と専用 SessionStart hook の登録・信頼、Python 3.11 以上を確認してください。").to_string());
     }
+    Ok(style)
+}
+
+/// The effective developer instructions the legacy heading selection reads
+/// (`codex-character.mjs`), model-free.
+fn codex_legacy_instructions(
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+) -> Result<String, String> {
+    let mut child = std::process::Command::new("node");
+    child.arg(entry.parent().unwrap().join("codex-character.mjs"))
+        .arg(command).arg(cwd).arg(serde_json::to_string(options).unwrap())
+        .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV).current_dir(cwd)
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    let output = child.output().map_err(|_| "Codex のキャラ探索を起動できません。node と CLI コマンドを確認してください。")?;
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Codex のキャラ探索に失敗しました。CLI の設定を診断端末で確認してください。")?;
+    if !output.status.success() || data.get("error").is_some() {
+        return Err("Codex の有効指示を確認できません。診断端末で CLI の設定・profile・信頼を確認してください。".into());
+    }
+    data.get("instructions").and_then(serde_json::Value::as_str).map(str::to_string)
+        .ok_or_else(|| "Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。".to_string())
+}
+
+/// How an app-server seat's character is delivered (#299): the text handed
+/// to the thread as `developerInstructions`, and the Li+ output style hook
+/// turned off on the seat's server so the text is not delivered twice.
+struct CodexDelivery {
+    mode: String,
+    name: Option<String>,
+    instructions: Option<String>,
+    hook_keys: Vec<String>,
+}
+
+fn codex_delivery(
+    command: &str,
+    options: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    entry: &Path,
+    character: Option<&str>,
+) -> Result<CodexDelivery, String> {
+    if !console_safe(command) || command.contains('%') {
+        return Err("Codex のコマンドを Windows の起動の行へ安全に運べません。起動を止めました。".into());
+    }
+    let selected = character.map(str::trim).filter(|name| !name.is_empty());
+    let options = mcp_config::codex::transport_options(options)?;
+    let style = codex_style(command, &options, cwd, env, entry, selected, true)?;
     let mode = style["mode"].as_str().filter(|mode| ["file", "disabled", "legacy"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
-    if mode == "legacy" {
-      if let Some(selected) = selected {
-        let mut child = std::process::Command::new("node");
-        child.arg(entry.parent().unwrap().join("codex-character.mjs"))
-            .arg(command).arg(cwd).arg(serde_json::to_string(&options).unwrap())
-            .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV).current_dir(cwd)
-            .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            child.creation_flags(0x08000000);
-        }
-        let output = child.output().map_err(|_| "Codex のキャラ探索を起動できません。node と CLI コマンドを確認してください。")?;
-        let data: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|_| "Codex のキャラ探索に失敗しました。CLI の設定を診断端末で確認してください。")?;
-        if !output.status.success() || data.get("error").is_some() {
-            return Err("Codex の有効指示を確認できません。診断端末で CLI の設定・profile・信頼を確認してください。".into());
-        }
-        let source = data.get("instructions").and_then(serde_json::Value::as_str)
-            .ok_or("Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。")?;
-        mcp_config::codex::apply_character(&mut composed, source, selected)?;
-      }
+    let mut hook_keys = Vec::new();
+    for key in style["hook_keys"].as_array().into_iter().flatten() {
+        hook_keys.push(key.as_str().ok_or("Codex の hook 名が不正です。")?.to_string());
     }
-    mcp_config::codex::check_command_length(command, &composed)?;
-    Ok(CodexCharacterLaunch {
-        preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name },
-        output_style: (mode == "file").then(|| selected.map(str::to_string)).flatten(),
-    })
+    let instructions = match mode.as_str() {
+        "file" => Some(style["body"].as_str().filter(|body| !body.trim().is_empty())
+            .ok_or("Codex のキャラ本文を読めません。起動を止めました。")?.to_string()),
+        // The heading selection the hook method passes as `-c developer_instructions`.
+        "legacy" => match selected {
+            Some(selected) => Some(mcp_config::codex::select_character(
+                &codex_legacy_instructions(command, &options, cwd, env, entry)?, selected)?),
+            None => None,
+        },
+        _ => None,
+    };
+    Ok(CodexDelivery { mode, name, instructions, hook_keys })
 }
 
 fn codex_hook_dir(
@@ -707,6 +783,7 @@ pub fn launch_field_report(
     command: String,
     resume: Option<String>,
     kind: Option<AccountKind>,
+    codex_app_server: Option<bool>,
 ) -> LaunchFieldReport {
     let character = character.unwrap_or_default();
     let character = character.trim();
@@ -717,7 +794,13 @@ pub fn launch_field_report(
         // the working directory's own default is an answer (#99).
         character: kind == Some(AccountKind::CodexCli) || character.is_empty() || declared_character(Some(character)).is_some(),
         // As many as were written, since the set is carried whole or not at all.
-        options: if kind == Some(AccountKind::CodexCli) { mcp_config::codex::transport_options(&options).is_ok() } else { carried_launch_options(&options).len() == options.len() },
+        // On an app-server seat the options also have to have a place on one
+        // of its two lines (#299).
+        options: if kind == Some(AccountKind::CodexCli) {
+            mcp_config::codex::transport_options(&options).is_ok_and(|carried| {
+                !codex_app_server.unwrap_or(false) || mcp_config::codex::app_server::plan(&carried).is_ok()
+            })
+        } else { carried_launch_options(&options).len() == options.len() },
         command: console_safe(&command),
         // The whole line, because the whole line is what is refused: its
         // arguments are how it goes back, and a resume that lost them is a
@@ -772,6 +855,7 @@ pub async fn preview_launch_args(
     command: Option<String>,
     env_text: Option<String>,
     env: Option<Vec<account_env::EnvVar>>,
+    codex_app_server: Option<bool>,
 ) -> Result<LaunchPreview, String> {
     let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
     let server_name = server_name_for(account_id.trim(), &topic_id);
@@ -800,9 +884,32 @@ pub async fn preview_launch_args(
             character.as_deref(),
             &others,
             status.as_deref(),
-        ), character_mode: None, character_name: None });
+        ), character_mode: None, character_name: None, server_args: None });
     }
     let (entry, runner) = resolve_sidecar_paths()?;
+    if codex_app_server.unwrap_or(false) {
+        let command = command.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "codex".into());
+        let cwd = cwd.filter(|value| !value.trim().is_empty()).map(PathBuf::from)
+            .or_else(|| app.path().home_dir().ok()).ok_or("作業フォルダーが見つかりません。")?;
+        let previous = env.unwrap_or_default();
+        let sealed = if let Some(text) = env_text { crate::config::seal_account_env(text, previous)? } else { previous };
+        let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            mcp_config::codex::reject_options(&args)?;
+            let plan = mcp_config::codex::app_server::plan(&mcp_config::codex::transport_options(&args)?)?;
+            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref())?;
+            // Placeholders where the launch puts its own values: the token's
+            // digest, the port the server binds and the thread it starts.
+            let server = mcp_config::codex::app_server::server_args(
+                &plan, &server_name, &runner, &entry, &delivery.hook_keys, "<sha256>")?;
+            Ok(LaunchPreview {
+                args: mcp_config::codex::app_server::tui_args(&plan, "<会話 id>", "ws://127.0.0.1:<port>"),
+                character_mode: Some(delivery.mode),
+                character_name: delivery.name,
+                server_args: Some(server),
+            })
+        }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?;
+    }
     let composed = runtime_launch_args(
         &args,
         kind.cli(),
@@ -1084,6 +1191,11 @@ fn resolve_launch(
 pub struct StartedSession {
     #[serde(skip)]
     launch_id: Option<String>,
+    /// The thread an app-server seat runs, known from `thread/start` or
+    /// `thread/resume` before the terminal exists (#299). `None` on the hook
+    /// method, whose id arrives later through `/hooks/codex-session`.
+    #[serde(skip)]
+    native_id: Option<String>,
     pub pty_id: String,
     /// Absolute path of the file this launch registered into, so the UI can say
     /// where: `.mcp.json` for Claude, the seat hook's `.codex/hooks.json` for Codex.
@@ -1273,6 +1385,11 @@ pub fn start_session(
 
     if account.kind == AccountKind::CodexCli {
         mcp_config::codex::reject_options(&account.args)?;
+        // Every option needs a place on the server's line, the terminal's or
+        // the thread's (#299). Refused here, before anything is claimed.
+        if account.codex_app_server {
+            mcp_config::codex::app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
+        }
     }
     if let Err(flag) = reject_incompatible_flags(&launch_line.args) {
         return Err(format!(
@@ -1429,7 +1546,11 @@ pub fn start_session(
             // The session stays in this topic whatever the screen opens next
             // (#141, decision 2), and a topic the list does not carry is a
             // running session nothing on the screen leads back to.
-            let recorded = match &launch_line.session_id {
+            //
+            // An app-server seat's thread is known now (#299): a fresh one is
+            // recorded at once, rather than at the first conversation.
+            let fresh_thread = started.native_id.as_deref().filter(|_| launch_line.resumed_from.is_none());
+            let recorded = match launch_line.session_id.as_deref().or(fresh_thread) {
                 Some(session_id) => room_log::record_session(&app, &topic, &account.id, session_id),
                 None => room_log::realize_topic(&app, &topic),
             };
@@ -1443,7 +1564,7 @@ pub fn start_session(
                 &account.id,
                 RunningSession {
                     launch_id: started.launch_id.clone(),
-                    native_id: launch_line.resumed_from.clone(),
+                    native_id: started.native_id.clone().or_else(|| launch_line.resumed_from.clone()),
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
                     // The line that ran, which on a resume is not the account's
@@ -1536,6 +1657,27 @@ fn launch(
     rows: u16,
 ) -> Result<StartedSession, String> {
     let (sidecar_entry, sidecar_runner) = resolve_sidecar_paths()?;
+    if account.kind == AccountKind::CodexCli && account.codex_app_server {
+        return launch_codex_app_server(
+            app,
+            room,
+            pty_state,
+            account,
+            line,
+            name,
+            character,
+            server_name,
+            room_url,
+            cwd,
+            topic_id,
+            unseen_history,
+            account_env,
+            cols,
+            rows,
+            &sidecar_entry,
+            &sidecar_runner,
+        );
+    }
     let registration = RoomRegistration {
         room_url,
         token: &room.token(),
@@ -1685,8 +1827,133 @@ fn launch(
 
     Ok(StartedSession {
         launch_id,
+        native_id: None,
         pty_id,
         mcp_config: mcp_config.to_string_lossy().to_string(),
+        started_at,
+        topic_id: topic_id.to_string(),
+        resumed_from: line.resumed_from.clone(),
+        dropped_resume: line.dropped_resume.clone(),
+    })
+}
+
+/// A Codex seat through its own app-server (#299): the server first, with the
+/// room on its line and the thread ready, then the real TUI attached to it.
+///
+/// Nothing is registered in the project: no room entry (#297) and no
+/// `codex-session.mjs` hook — the thread id comes from `thread/start`, and
+/// the server's environment carries no `PULLCEPT_NATIVE_URL`, so a
+/// registration an earlier launch left in `hooks.json` exits without a post.
+#[allow(clippy::too_many_arguments)]
+fn launch_codex_app_server(
+    app: AppHandle,
+    room: &RoomState,
+    pty_state: tauri::State<PtyState>,
+    account: &Account,
+    line: &LaunchLine,
+    name: &str,
+    character: Option<&str>,
+    server_name: &str,
+    room_url: &str,
+    cwd: &Path,
+    topic_id: &str,
+    unseen_history: bool,
+    account_env: &[(String, String)],
+    cols: u16,
+    rows: u16,
+    sidecar_entry: &Path,
+    sidecar_runner: &Path,
+) -> Result<StartedSession, String> {
+    use mcp_config::codex::app_server;
+    let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
+    // The `.codex` folder native discovery lists a project layer for, and the
+    // removal of what builds before #297 left in it.
+    mcp_config::codex::prepare_project(&project_cwd)?;
+    let plan = app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
+    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character)?;
+    let token = crate::codex_app_server::new_token();
+    let server_args = app_server::server_args(
+        &plan,
+        server_name,
+        sidecar_runner,
+        sidecar_entry,
+        &delivery.hook_keys,
+        &crate::codex_app_server::token_sha256(&token),
+    )?;
+    mcp_config::codex::check_command_length(&account.command, &server_args)?;
+
+    // The server is the process that starts MCP servers and runs hooks, so
+    // the room's variables are its, the way they were the CLI's. The account's
+    // first and the app's last (`APP_LAUNCH_ENV`).
+    let mut server_env: Vec<(String, String)> = account_env
+        .iter()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case(mcp_config::codex::OUTPUT_STYLE_ENV))
+        .cloned()
+        .collect();
+    server_env.extend(
+        [
+            (ROOM_TOKEN_ENV, room.token()),
+            (LAUNCHED_AS_ENV, account.id.clone()),
+            (ROOM_ID_ENV, topic_id.to_string()),
+            (mcp_config::codex::LAUNCH_ROOM_ENV, topic_id.to_string()),
+            ("PULLCEPT_ROOM_URL", room_url.to_string()),
+            ("PULLCEPT_AGENT_NAME", name.to_string()),
+            ("PULLCEPT_ACCOUNT_ID", account.id.clone()),
+            ("PULLCEPT_AGENT_HUE", account.hue.map(|h| format!("{h:.1}")).unwrap_or_default()),
+            ("PULLCEPT_UNSEEN_HISTORY", if unseen_history { "1" } else { "0" }.into()),
+        ]
+        .map(|(key, value)| (key.to_string(), value)),
+    );
+
+    let started = crate::codex_app_server::start(crate::codex_app_server::Request {
+        command: &account.command,
+        server_args,
+        cwd,
+        thread_cwd: &project_cwd,
+        env: server_env,
+        instructions: delivery.instructions.as_deref(),
+        hook_keys: &delivery.hook_keys,
+        settings: &plan.thread,
+        resume: line.resumed_from.as_deref(),
+        token: &token,
+    })?;
+
+    let started_at = crate::room::now_iso();
+    let tui = app_server::tui_args(&plan, &started.thread_id, &started.url);
+    // The terminal holds the token, by name on its line and by value only in
+    // its environment.
+    let mut env: Vec<(&str, String)> = account_env
+        .iter()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case(mcp_config::codex::OUTPUT_STYLE_ENV))
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    env.push((app_server::REMOTE_TOKEN_ENV, token));
+    let spawned = pty::spawn_pty_with_env(
+        app.clone(),
+        pty_state,
+        line.command.clone(),
+        tui,
+        &env,
+        cols,
+        rows,
+        Some(cwd.to_string_lossy().to_string()),
+        true,
+    );
+    let pty_id = match spawned {
+        Ok(pty_id) => pty_id,
+        Err(err) => {
+            started.abandon();
+            return Err(err);
+        }
+    };
+    let thread_id = started.thread_id.clone();
+    let url = started.url.clone();
+    started.adopt(&app, &pty_id);
+    Ok(StartedSession {
+        launch_id: None,
+        native_id: Some(thread_id),
+        pty_id,
+        mcp_config: format!("Codex app-server {url}"),
         started_at,
         topic_id: topic_id.to_string(),
         resumed_from: line.resumed_from.clone(),

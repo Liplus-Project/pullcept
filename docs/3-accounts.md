@@ -69,6 +69,50 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 以後の `.mcp.json`・`--settings`・output style・`--session-id` は Claude Code の作法であり、Codex の設定と初回 ID 取得はこの節を参照する。
 
 
+## Codex の席を app-server 経由で起動する（#299）
+
+**アカウントごとの切り替えであり、既定は今の hook 方式のままである。** アカウントの窓で種別が `Codex CLI` のときだけ「app-server 方式」の欄が出る。入れて決定したアカウントの席は、次の起動から席ごとの `codex app-server` を経由して立つ。外せば次の起動から hook 方式（上の #281）に戻る。走っている席は切り替えても変わらない。既定を切り替えないのは、モデルの一往復で席がキャラどおりに答えることを、まだ確かめていないためである（「[実装状況](4-status.md)」の #299 の検証範囲）。Claude の席は何も変わらない。
+
+**一つの席に一つの app-server を立て、その上に本物の TUI を繋ぐ。** 起動は次の順に進む。
+
+1. キャラクターを #281 と同じ loader で解決する。file mode では helper の `hook` を、hook がするのと同じ入力（`SessionStart`、`startup`、有効 cwd）と同じ環境（`LI_PLUS_OUTPUT_STYLE` に選択名）で一度だけ走らせ、hook が配るはずの本文を受け取る。本文の UTF-8 の長さと sha256 が `resolve` の metadata と一致しなければ、配らずに起動を止める（`sidecar/src/codex-style.mjs` の `body`）。移行前の inline 選択（#276）では、有効な developer instructions から見出しを選んだ本文を使う。persona が無効（false）なら本文は無い。
+2. 席の app-server を `codex <オプション> -c mcp_servers.<自席>={…} -c features.codex_hooks=true -c hooks.state={…} app-server --listen ws://127.0.0.1:0 --ws-auth capability-token --ws-token-sha256 <digest>` で起動する。部屋の MCP の定義は #297 と同じものを、今度は server の行に載せる。部屋の変数（部屋トークン・URL・名前・アカウント・部屋 id・色・未読の印）は server の環境にある。待ち受けの港は OS に選ばせ、server が標準出力に書く `listening on:` の行から読む。
+3. アプリが server に繋ぎ（`Authorization: Bearer`）、`initialize`、`hooks/list`、`thread/start`（再開なら `thread/resume`）を送る。新しい会話には `thread/inject_items` で印を一つ記録する（下記）。
+4. 端末で `codex resume <会話 id> --remote ws://127.0.0.1:<港> --remote-auth-token-env PULLCEPT_CODEX_REMOTE_TOKEN` を起動する。TUI は自分で thread を始めず、アプリが用意した会話に繋がる。
+
+**キャラクターは `thread/start` の `developerInstructions` で渡し、hook では渡さない。** 二重に配らないために、その席の server でだけ Li+ の output style の SessionStart handler（`.codex/hooks/codex-output-style.py` を `hook` で呼ぶもの）を止める。止めるのは `-c hooks.state={'<hook の鍵>'={enabled=false}}` であり、鍵は native `hooks/list` が返す `<hooks.json の絶対パス>:session_start:<組>:<番号>` を #281 の検証で特定した一つだけである。`-c` の値は既存の `hooks.state` に再帰的にまざるので、その hook の信頼（`trusted_hash`）は残る。Li+ の他の hook（cold-start、Trigger Check Gate など）は止めない。`-c hooks.state."<鍵>".enabled=false` の書き方は使えない：Codex は `-c` の鍵を `.` で区切るため、パスを含む鍵が割れる（`codex-rs/config/src/overrides.rs`）。thread を作る前に `hooks/list` を読み直し、止めたはずの鍵が `enabled: false` で並び、`codex-output-style.py` を呼ぶ有効な SessionStart hook が一つも残っていないことを確かめる。残っていれば起動を止める。ファイル（`hooks.json`・`config.toml`）は書き換えない。
+
+**再開でも毎回 `developerInstructions` を送り直す。** `thread/resume` にも同じ本文を載せる。アカウントのキャラクターを変えた後の再開は、新しい本文で始まる。
+
+**会話 id は `thread/start` の答えから取り、`codex-session.mjs` は使わない。** hook 方式では初回の実会話で hook が id を知らせていた（#272）。app-server 方式では起動した時点で id が決まるので、新しい会話はその場でトピックに記録する。この席では `codex-session.mjs` を `hooks.json` に登録せず、server の環境に `PULLCEPT_NATIVE_URL` も `PULLCEPT_LAUNCH_ID` も置かない。以前の起動が残した登録があっても、その補助は環境が無ければ何も送らずに終わる。五欄（#283）と利用上限の扱い（#294）はこの id から rollout を読むので、最初の会話を待たずに働き始める。
+
+**空の会話には `thread/inject_items` で印を一つ記録する。`turn/start` は使わない。** Codex は記録の無い会話を rollout に書かず、記録の無い会話に TUI は繋がれない。そこで新しい会話に developer の発言を一つ、`Pullcept opened this conversation as a seat in a room. Room posts arrive as user input.` と記録する。比べた二つの方法は次のとおりで、前者を選んだ。
+
+- `thread/inject_items`：モデルを呼ばない。キャラクターの口に言葉を入れない（記録は developer 役であり、キャラの発言ではない）。TUI はすぐ繋がり、席は最初の発言を待つ。
+- 最初の部屋の発言で `turn/start` を打つ：その発言が来るまで端末を立てられず、席が開かない。一往復ぶんのモデル呼び出しがかかる。発言は端末を通らずに入るので、利用上限で止まった席の預かり（#294）や、人が打ちかけのときの保留を迂回する。
+
+**認証トークンは最初から必須であり、認証の無い server は立てない。** トークンは起動のたびに新しく作る（UUID v4 二つ、256 ビット）。server が受け取るのは sha256 の digest だけで（`--ws-token-sha256`）、トークンそのものは argv・設定・プレビューに載らない。端末には環境変数 `PULLCEPT_CODEX_REMOTE_TOKEN` で渡し、行にはその名前だけが載る。アカウントの環境変数でこの名前は上書きできない（`APP_LAUNCH_ENV`）。待ち受けは `127.0.0.1` だけである。トークンの無い接続・違うトークンの接続は HTTP 401 で拒まれる（2026-10-06、0.160.1 の隔離 CODEX_HOME で実測）。
+
+**起動オプションは、server・端末・会話のどれかに行き先がある物だけを受ける。** 行き先が無い物は省かずに起動を止める（プレビューと起動の前に同じ判定）。
+
+- 会話へ（`thread/start` と `thread/resume` の引数）：`-m`／`--model`、`-a`／`--ask-for-approval`（`untrusted`／`on-request`／`never`）、`-s`／`--sandbox`（`read-only`／`workspace-write`／`danger-full-access`）、`--yolo`（`--dangerously-bypass-approvals-and-sandbox`、承認 `never` と sandbox `danger-full-access` になる）、`-c model=…`、`-c approval_policy=…`、`-c sandbox_mode=…`、`-c model_reasoning_effort=…`。旗は同じ項目の `-c` より強い。`-c` の物は server の行にも載る。
+- server の行へ：それ以外の `-c`（`tui.*` を除く）、`--enable`、`--disable`。
+- 端末の行へ：`-c tui.*`、`--no-alt-screen`（#295）。人が画面の方式を選んでいなければ `--no-alt-screen` を足す。
+- `-C`／`--cd`：作業ディレクトリとして読み、行には載せない。
+- それ以外（`-p`／`--profile`、`--search`、`-i`、`--oss` など）は拒否する。
+
+server の答えに入る model・承認・sandbox・effort を、渡した値と照らす。違えば起動を止める。
+
+**server は席が閉じるときに必ず止める。** 三つの止め方を重ねる。
+
+- 端末の終わり：席ごとの見張りが 500 ms ごとに端末を見て、終わっていれば server を木ごと止める（`taskkill /T /F`）。
+- アプリの終わり：全端末を閉じるとき（`kill_all_ptys`）とアプリのイベントループの終わり（`RunEvent::Exit`）に、全部の server を止める。
+- アプリのプロセスの終わり（強制終了を含む）：server は作られた直後に `KILL_ON_JOB_CLOSE` の job object に入り、アプリのプロセスが消えると OS が木ごと止める（Windows）。
+
+起動の途中で失敗したら、作った会話を `thread/delete` で消してから server を止める。端末の起動に失敗した場合も同じである。
+
+**プレビューは二行を出す。** アカウントの窓のプレビューは、方式・server の行・端末の行を出す。トークンの digest、港、会話 id は起動時に決まるので、`<sha256>`、`<port>`、`<会話 id>` の印で示す。
+
 ## 起動オプション
 
 セッションの起動オプションはアカウントの属性であり、アカウントのモーダルで編集する（下記「アカウント」）。決定するまで保存しない。

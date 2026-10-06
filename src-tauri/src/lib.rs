@@ -1,4 +1,5 @@
 mod app_mcp;
+mod codex_app_server;
 mod codex_limit;
 mod codex_status;
 mod config;
@@ -29,6 +30,8 @@ pub fn run() {
         // The Codex seats stopped on their usage limit, and the posts the room
         // keeps back from them (#294).
         .manage(codex_limit::CodexLimits::new())
+        // Each Codex seat's own app-server, by its terminal (#299).
+        .manage(codex_app_server::CodexServers::new())
         .setup(|app| {
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
@@ -89,6 +92,12 @@ pub fn run() {
             app_mcp::restart_mcp_server,
             app_mcp::open_mcp_servers_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // However the app is left, no seat's app-server outlives it (#299).
+            if let tauri::RunEvent::Exit = event {
+                codex_app_server::stop_all(app);
+            }
+        });
 }

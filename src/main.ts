@@ -308,6 +308,10 @@ interface Account {
    *  the initial (#236). The flag only: the image is a file the app keeps
    *  (`account_avatar`), read once into `avatarImages`. */
   avatar: boolean;
+  /** A Codex CLI account's seat runs through its own app-server and gets its
+   *  character as `developerInstructions` (#299). Absent or false: the Li+
+   *  output style hook, which stays the default. */
+  codex_app_server?: boolean;
 }
 
 /** One stored environment variable. `sealed` is opaque here — ciphertext this
@@ -778,6 +782,8 @@ const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HT
 const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
+const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
+const dialogCodexAppServerFieldEl = document.getElementById("dialog-codex-app-server-field") as HTMLElement;
 const dialogCommandEl = document.getElementById("dialog-cli-command") as HTMLInputElement;
 const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
 const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
@@ -5210,6 +5216,7 @@ function showDialogKind(): void {
   const codex = kind === "codex_cli";
   dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
   document.getElementById("dialog-codex-note")!.hidden = !codex;
+  dialogCodexAppServerFieldEl.hidden = !codex;
   if (launchesKind(kind)) refreshDialogLine();
   // Chosen on a form making an account: the server is written and started at
   // 決定, so what there is to fill in now is what it is started with (#200).
@@ -5275,7 +5282,7 @@ async function renderDialogPreview(generation: number): Promise<void> {
     const parsed = await invoke<string[]>("parse_launch_options", {
       text: dialogOptionsEl.value,
     });
-    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null}>("preview_launch_args", {
+    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null; server_args: string[] | null}>("preview_launch_args", {
       args: parsed,
       accountId: id,
       // The field rather than the draft, for the reason the character is read
@@ -5292,13 +5299,21 @@ async function renderDialogPreview(generation: number): Promise<void> {
       command: dialogCommandEl.value.trim() || null,
       envText: dialogEnvDrawn === null ? null : dialogEnvEl.value,
       env: draft.env,
+      codexAppServer: dialogCodexAppServerEl.checked,
     });
     // The form may have been closed or reopened during the round trip.
     if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
     const character = merged.character_mode === "file" ? `キャラクター: ${merged.character_name}（project のファイル）\n`
       : merged.character_mode === "disabled" ? "キャラクター: project の既定は無効\n"
       : merged.character_mode === "legacy" ? `キャラクター: ${merged.character_name || "CLI の既定"}（従来の指示）\n` : "";
-    dialogPreviewEl.textContent = `${character}${dialogCommandEl.value.trim()} ${joinArgs(merged.args)}`;
+    const command = dialogCommandEl.value.trim() || "codex";
+    // An app-server seat runs two lines: the server, then the terminal attached to it (#299).
+    dialogPreviewEl.textContent = merged.server_args
+      ? `${character}方式: app-server（キャラクターは developerInstructions、Li+ の output style hook はこの席で停止）
+` +
+        `app-server: ${command} ${joinArgs(merged.server_args)}
+画面: ${command} ${joinArgs(merged.args)}`
+      : `${character}${dialogCommandEl.value.trim()} ${joinArgs(merged.args)}`;
   } catch (error) {
     if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
     dialogPreviewEl.textContent = dialogKindEl.value === "codex_cli" ? String(error) : "";
@@ -5342,6 +5357,7 @@ async function refreshDialogNotice(): Promise<void> {
       // Only where the field is the answer. On a kind that holds its own way
       // back, a line stored here is not the one that runs (#156, 決定6).
       resume: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
+      codexAppServer: kind === "codex_cli" && dialogCodexAppServerEl.checked,
     });
     if (draft?.id !== id) return;
     const said: string[] = [];
@@ -5457,6 +5473,7 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
   drawDialogAvatar();
   dialogCwdEl.value = draft.cwd ?? "";
   dialogCharacterEl.value = draft.character ?? "";
+  dialogCodexAppServerEl.checked = draft.codex_app_server === true;
   dialogCommandEl.value = draft.command;
   dialogOptionsEl.value = joinArgs(draft.args);
   dialogResumeEl.value = draft.resume_command ?? "";
@@ -5788,6 +5805,8 @@ async function commitAccountDialog(): Promise<boolean> {
     // reopened topic as a new session and reads back what it needs through the
     // room's own pull instead (#115, decision 4C).
     resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
+    // Kept only where it is read (#299).
+    codex_app_server: kind === "codex_cli" && dialogCodexAppServerEl.checked,
     args,
     env,
   };
@@ -6650,6 +6669,7 @@ async function main(): Promise<void> {
   // The character ends up in the line that runs, so it redraws the preview for
   // the same reason the options do: the line shown has to be the line spawned.
   dialogCharacterEl.addEventListener("input", () => refreshDialogLine());
+  dialogCodexAppServerEl.addEventListener("change", () => refreshDialogLine());
   // So does the working directory: which registrations the line stops is read
   // out of the directory it is pointed at (#103).
   dialogCwdEl.addEventListener("input", () => refreshDialogLine());

@@ -2052,6 +2052,12 @@ button svg.icon {
   padding: 0.3rem 0.45rem;
 }
 
+/* The one switch on the form (#299): a box, not a field-wide input. */
+#account-dialog input[type="checkbox"] {
+  width: auto;
+  justify-self: start;
+}
+
 #account-dialog #dialog-cwd,
 #account-dialog #dialog-options,
 #account-dialog #dialog-env,

@@ -13,6 +13,22 @@
 **未確認:** Codex アカウント作成から停止・再開までの Pullcept 実 GUI／実 listener 操作、Claude と Codex の実アプリ内同時往復、人間の打ちかけ時の保留／解放を Codex の実 GUI で通す操作。打ちかけの判定と改行・送信キーの分離は既存 terminal-input テスト、保留列は共通 PTY 実装に依存する。fixture の結果を実 GUI の確認へ読み替えない。
 
 
+## Codex の app-server 方式の検証範囲（#299、2026-10-06）
+
+アカウントごとの切り替え「app-server 方式」を実装した（「[Codex の席を app-server 経由で起動する](3-accounts.md#codex-の席を-app-server-経由で起動する299)」）。既定は切（hook 方式）のままである。起動オプションの振り分け、hook を止める `-c` の組み立てと拒否、`hooks/list` の照合、`thread/start`・`thread/resume`・`thread/inject_items` の引数、答えの照合、端末の行は `crates/mcp-config`（`codex::app_server`）のテスト、本文の取り出しと照合は sidecar のテストが持つ。
+
+**モデルを呼ばずに確かめた範囲（2026-10-06、Codex CLI 0.160.1、隔離 CODEX_HOME）:** Li+ の `codex-output-style.py` の写しと、Li+ の hook 三つ（cold-start・output style・Trigger Check Gate に見立てた物）を信頼した試しの project で、次を実測した。
+
+- `codex-style.mjs` の `body` が、helper の `hook` から選んだキャラの本文と、止める hook の鍵一つを返した。
+- Pullcept が組み立てた server の行（`--yolo -c model_reasoning_effort=low -m gpt-5.2` を含む）で server が立ち、`listening on:` から港を読めた。トークンの無い接続と違うトークンの接続は HTTP 401 で拒まれ、正しいトークンで繋がった。行にトークンの値は無かった。
+- その server の `hooks/list` で、output style の hook だけが `enabled: false`、他の二つは `enabled: true` のまま、三つとも信頼済みのままだった。
+- `thread/start` の答えが model `gpt-5.2`・承認 `never`・sandbox `dangerFullAccess`・effort `low` だった。
+- `thread/inject_items` の後、rollout の先頭の developer の発言がキャラの本文であり、既定のキャラの本文は rollout のどこにも無かった。
+- 端末の行（`resume <id> --remote … --remote-auth-token-env PULLCEPT_CODEX_REMOTE_TOKEN --no-alt-screen`）で本物の TUI が server に繋がった。隔離 CODEX_HOME には認証が無いため、TUI はログインの画面で止まった。会話の画面まで進むことは、認証のある環境での確認に残る。環境変数が無ければ TUI は起動せず、違うトークンでは 401 で繋がらなかった。
+- 作った会話は `thread/delete` で消し、server の木を止めた後にプロセスが残っていないことを確かめた。
+
+**未確認（2026-10-10 の週次の利用枠の回復後に確かめる）:** 実モデルの一往復。app-server 方式の Codex の席に部屋から一言送り、キャラどおりの名前と口調で `say_to_room` から答えること、同じトピックで席を閉じて再開しても同じキャラで答えることを、Pullcept の実 GUI で確かめる。これを確かめるまで既定は hook 方式のままにする。あわせて、五欄（#283）が最初の会話の前から読み始めること、利用上限で止まったときの預かり（#294）、`--no-alt-screen`（#295）の画面、起動の行の部屋の MCP（#298）を、切り替えた席で実 GUI から通す。
+
 ## 実装済み
 
 - Tauri 2 による Windows デスクトップアプリの基盤
@@ -227,6 +243,7 @@
 
 ## 未実装
 
+- Codex の app-server 方式（#299）の実モデルでの一往復と、切り替えた席での五欄・利用上限・画面・部屋の MCP の実 GUI 確認（上の「Codex の app-server 方式の検証範囲」）。週次の利用枠が戻る 2026-10-10 以降に行う。
 - 順番の付与（弾くだけでなく「あなたは N 人め」を返す形）。戻り値の形は段差を残していないが、二重計算が痛むと測れてから判断する。
 - アカウント面の実機確認。作成・改名・削除、オフライン表示、二重起動の拒否、改名後の `.mcp.json` 登録の追随はいずれも実装済みで、CI の型検査とテストは通っているが、実機での操作は未確認である。
 - 頼んだ終了の言い方の実機確認のうち、行の `❌` による終了を除く分（#121、「[診断面](2-screen.md#診断面)」）。トピックの削除とアプリの終了で状況行が「◯◯ を終了しました。」になりエラーにならないこと、端末ペインが開いていれば閉じないこと、CLI が自分で終わった場合は従来のエラーの文面と面の表示が残ることは、実装済みで CI の型検査と Rust のコンパイルは通っているが、実機での操作は未確認である。行の `❌` で終了させたとき、畳まれた端末ペインが開かずエラーにならないことは、上記 2026-09-28 に Master が画面で確かめている。

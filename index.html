@@ -566,6 +566,15 @@
             </label>
             <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
             <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。キャラクター欄には project の .codex/output-styles にあるファイル名を、拡張子なしで入力します。空欄は project の既定に任せます。ファイル方式が未設定なら、従来の「# character_Codex_Lin」等の見出し名で選べます。下のプレビューで方式と選択名を確認できます。初回は診断端末でフォルダーと専用 SessionStart hook を信頼してください。本文が読めない、又は hook を信頼していない場合は起動を止めます。ID は最初の会話で保存されます。状態の五欄は最初の会話のあとに表示されます。</p>
+            <!-- Codex の席を、席ごとの app-server 経由で立てる（#299）。入れると
+                 キャラクターは thread/start の developerInstructions で渡り、
+                 Li+ の output style の SessionStart hook はその席の server でだけ
+                 止まる。会話 id は起動の時点で決まる。既定は切（hook 方式）：
+                 モデルの一往復でキャラどおりに答えることを確かめるまで。 -->
+            <label id="dialog-codex-app-server-field" class="field" hidden>
+              app-server 方式
+              <input id="dialog-codex-app-server" type="checkbox" />
+            </label>
             <!-- 起動オプション。**その人が足したいものだけを書く欄である**
                  （#156、決定3）。セッション id の渡し方は種別が持つため、
                  `Claude Code` では `--session-id {session_id}` をここへ書かな
