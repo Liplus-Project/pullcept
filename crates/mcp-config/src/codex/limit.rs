@@ -20,6 +20,11 @@
 //!
 //! [`Limit`] is one seat: free, or stopped with the posts the room held for it
 //! and when to ask next. Times are Unix seconds, passed in.
+//!
+//! What the seat is handed at the recovery is counted again from the room's
+//! record ([`recount`], #310), from the oldest stop notice of the episode: the
+//! posts held in memory go when the session ends, and a restarted seat would
+//! otherwise be told only of what was said after its restart.
 use serde_json::Value;
 
 /// How a turn ended, as its `task_complete` line says.
@@ -199,8 +204,9 @@ impl Limit {
         self.stopped.as_ref().and_then(|s| s.resets_at)
     }
 
-    pub fn held_count(&self) -> usize {
-        self.held.len()
+    /// What has been held so far, oldest first.
+    pub fn held(&self) -> &[Held] {
+        &self.held
     }
 
     /// The rollout said a turn ended on the limit. Whether that stopped a seat
@@ -306,6 +312,146 @@ pub fn digest(held: &[Held]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+/// One post of the topic's record, as [`recount`] reads it. `at` is the
+/// post's time already read the way a label carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    pub message_id: String,
+    pub speaker: String,
+    pub account: Option<String>,
+    pub content: String,
+    pub to: Vec<String>,
+    pub at: Option<String>,
+}
+
+/// The seat a recount is for.
+#[derive(Debug, Clone, Copy)]
+pub struct Seat<'a> {
+    /// Its name now: what its notices of this launch carry.
+    pub name: &'a str,
+    pub account_id: &'a str,
+    /// Who the app's own notices are said as.
+    pub app_speaker: &'a str,
+}
+
+/// The names the seat is known by in the record: its name now, and every name
+/// its account has spoken under there — what a renamed seat's earlier notices
+/// and addressees carry. A name some other account has spoken under is not
+/// taken from the record: it would read that seat's notices as this one's.
+fn names_of(record: &[Recorded], seat: &Seat) -> Vec<String> {
+    let mut names = vec![seat.name.to_string()];
+    for post in record {
+        if post.account.as_deref() == Some(seat.account_id) && !names.contains(&post.speaker) {
+            names.push(post.speaker.clone());
+        }
+    }
+    let others: Vec<&str> = record
+        .iter()
+        .filter(|post| post.account.as_deref().is_some_and(|id| id != seat.account_id))
+        .map(|post| post.speaker.as_str())
+        .collect();
+    names.retain(|name| name == seat.name || !others.contains(&name.as_str()));
+    names
+}
+
+/// What one of the app's notices about the seat is.
+enum Notice<'a> {
+    /// A stop, with its reset sentence as written (`解除予定は … です。`).
+    Stop(&'a str),
+    Recovery,
+}
+
+fn notice_of<'a>(post: &'a Recorded, seat: &Seat, names: &[String]) -> Option<Notice<'a>> {
+    if post.speaker != seat.app_speaker || post.account.is_some() {
+        return None;
+    }
+    names.iter().find_map(|name| {
+        let stopped = post
+            .content
+            .strip_prefix(&format!("{name} は利用上限で止まりました。"))
+            .and_then(|rest| {
+                rest.strip_suffix(&format!(
+                    "解除を確かめるまで、{name} への部屋の発言は Pullcept が預かります。"
+                ))
+            });
+        match stopped {
+            Some(when) => Some(Notice::Stop(when)),
+            None if post
+                .content
+                .starts_with(&format!("{name} の利用上限の解除を確かめました。")) =>
+            {
+                Some(Notice::Recovery)
+            }
+            None => None,
+        }
+    })
+}
+
+/// Where the current stop episode starts in the record: the index of the
+/// oldest stop notice for the seat that carries the same reset as the newest
+/// one, counted back over the seat's stop notices since its last recovery
+/// notice and no further than the first one carrying another reset. `None`
+/// when the record holds no stop notice for the seat since its last recovery.
+fn episode_start(record: &[Recorded], seat: &Seat, names: &[String]) -> Option<usize> {
+    let mut stops: Vec<(usize, &str)> = Vec::new();
+    for (index, post) in record.iter().enumerate() {
+        match notice_of(post, seat, names) {
+            Some(Notice::Stop(when)) => stops.push((index, when)),
+            Some(Notice::Recovery) => stops.clear(),
+            None => {}
+        }
+    }
+    let &(mut start, newest) = stops.last()?;
+    for &(index, when) in stops.iter().rev() {
+        if when != newest {
+            break;
+        }
+        start = index;
+    }
+    Some(start)
+}
+
+/// What the seat is handed at its recovery, oldest first (#310): every post
+/// the record holds after the start of the current stop episode
+/// ([`episode_start`]) but the seat's own and the app's notices about the seat,
+/// with `addressed` read against every name the seat is known by. The record
+/// decides the start, so a seat restarted while stopped is still told of what
+/// was said before its restart.
+///
+/// `held` is what the seat's memory held. Those posts the record does not show
+/// after the start — said between the stop and its notice, or written after
+/// the record was read — are kept in their place, so nothing held is lost.
+/// With no stop notice for the seat in the record, `held` is the answer as it
+/// stands.
+pub fn recount(record: &[Recorded], seat: &Seat, held: Vec<Held>) -> Vec<Held> {
+    let names = names_of(record, seat);
+    let Some(start) = episode_start(record, seat, &names) else {
+        return held;
+    };
+    let mut posts: Vec<Held> = Vec::new();
+    for (index, post) in record.iter().enumerate() {
+        let after = index > start
+            && post.account.as_deref() != Some(seat.account_id)
+            && notice_of(post, seat, &names).is_none();
+        let kept = held.iter().any(|h| h.message_id == post.message_id);
+        if after || kept {
+            posts.push(Held {
+                message_id: post.message_id.clone(),
+                speaker: post.speaker.clone(),
+                at: post.at.clone(),
+                content: post.content.clone(),
+                addressed: post.to.iter().any(|to| names.contains(to)),
+            });
+        }
+    }
+    for post in held {
+        if !posts.iter().any(|p| p.message_id == post.message_id) {
+            posts.push(post);
+        }
+    }
+    posts
 }
 
 /// What the room is told when a seat stops. `reset` is the reset already
@@ -517,7 +663,7 @@ mod tests {
         limit.stop(0, Some(100));
         assert!(limit.hold(|| post("a", false)));
         assert!(limit.hold(|| post("b", true)));
-        assert_eq!(limit.held_count(), 2);
+        assert_eq!(limit.held().len(), 2);
         assert!(limit.answer(200, Answer::Allowed));
         // Confirmed, but still holding until released.
         assert!(limit.is_limited());
@@ -556,5 +702,152 @@ mod tests {
         assert!(stop_notice("L", None).contains("解除予定は分かっていません。"));
         assert!(recovery_notice("L", 3).contains("3 件"));
         assert!(!recovery_notice("L", 0).contains("件"));
+    }
+    const SEAT: Seat = Seat {
+        name: "Codex Luna",
+        account_id: "luna",
+        app_speaker: "Pullcept",
+    };
+
+    fn said(id: &str, speaker: &str, account: Option<&str>, to: &[&str], content: &str) -> Recorded {
+        Recorded {
+            message_id: id.into(),
+            speaker: speaker.into(),
+            account: account.map(str::to_string),
+            content: content.into(),
+            to: to.iter().map(|t| t.to_string()).collect(),
+            at: Some(format!("at {id}")),
+        }
+    }
+
+    fn by_master(id: &str, to: &[&str]) -> Recorded {
+        said(id, "Master", None, to, &format!("body {id}"))
+    }
+
+    fn app(id: &str, content: String) -> Recorded {
+        said(id, "Pullcept", None, &[], &content)
+    }
+
+    fn ids(posts: &[Held]) -> Vec<&str> {
+        posts.iter().map(|p| p.message_id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_restart_while_stopped_counts_from_the_first_stop() {
+        // 20:56 the seat stops; posts; the session ends and its memory goes;
+        // 21:54 the restarted seat stops again on the same reset and holds
+        // only what comes after.
+        let record = vec![
+            by_master("before", &["Codex Luna"]),
+            app("stop1", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("m1", &["Codex Luna"]),
+            said("lin", "Claude Lin", Some("lin"), &[], "body lin"),
+            by_master("m2", &[]),
+            app("stop2", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("m3", &["Codex Luna", "Claude Lin"]),
+        ];
+        let held = vec![Held {
+            message_id: "m3".into(),
+            speaker: "Master".into(),
+            at: None,
+            content: "body m3".into(),
+            addressed: true,
+        }];
+        let posts = recount(&record, &SEAT, held);
+        assert_eq!(ids(&posts), ["m1", "lin", "m2", "m3"]);
+        assert_eq!(
+            posts.iter().filter(|p| p.addressed).map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
+            ["m1", "m3"]
+        );
+        let text = digest(&posts).unwrap();
+        assert!(text.starts_with("制限中に部屋で 4 件の発言がありました。"));
+        assert!(text.contains("body m1"));
+        assert!(!text.contains("body before"));
+        // The restart's own memory is empty: the record alone carries it.
+        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["m1", "lin", "m2", "m3"]);
+    }
+
+    #[test]
+    fn only_the_current_episode_is_counted() {
+        let record = vec![
+            app("stop0", stop_notice("Codex Luna", Some("10月5日 22:45"))),
+            by_master("old", &["Codex Luna"]),
+            app("rec0", recovery_notice("Codex Luna", 1)),
+            by_master("between", &[]),
+            // A stop whose session ended before any recovery, on another reset.
+            app("stopA", stop_notice("Codex Luna", None)),
+            by_master("a", &[]),
+            app("stopB", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("b", &[]),
+            app("stopC", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("c", &[]),
+        ];
+        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["b", "c"]);
+    }
+
+    #[test]
+    fn other_seats_notices_are_counted_and_the_seats_own_posts_are_not() {
+        let record = vec![
+            app("stop", stop_notice("Codex Luna", None)),
+            app("other", stop_notice("Codex Sol", None)),
+            said("own", "Codex Luna", Some("luna"), &[], "typed by hand"),
+            said("mcp", "github", Some("gh"), &[], "a notice"),
+        ];
+        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["other", "mcp"]);
+    }
+
+    #[test]
+    fn with_no_stop_notice_on_record_the_memory_stands() {
+        let held = vec![post("a", false), post("b", true)];
+        let record = vec![by_master("x", &[]), app("rec", recovery_notice("Codex Luna", 0))];
+        assert_eq!(recount(&record, &SEAT, held.clone()), held);
+        assert_eq!(recount(&[], &SEAT, held.clone()), held);
+        // A stop notice before the last recovery is a past episode.
+        let record = vec![
+            app("stop", stop_notice("Codex Luna", None)),
+            by_master("x", &[]),
+            app("rec", recovery_notice("Codex Luna", 1)),
+        ];
+        assert_eq!(recount(&record, &SEAT, held.clone()), held);
+    }
+
+    #[test]
+    fn what_memory_held_outside_the_record_is_kept_in_place() {
+        // "early" was said between the stop and its notice; "late" reached
+        // the record after it was read.
+        let record = vec![
+            by_master("early", &[]),
+            app("stop", stop_notice("Codex Luna", None)),
+            by_master("m", &[]),
+        ];
+        let held = vec![post("early", false), post("m", false), post("late", true)];
+        let posts = recount(&record, &SEAT, held);
+        assert_eq!(ids(&posts), ["early", "m", "late"]);
+        assert!(posts[2].addressed);
+    }
+
+    #[test]
+    fn a_renamed_seat_is_followed_by_its_account() {
+        // Stopped as "Luna", restarted as "Codex Luna".
+        let record = vec![
+            said("hi", "Luna", Some("luna"), &[], "hello"),
+            app("stop1", stop_notice("Luna", Some("10月6日 22:45"))),
+            by_master("m1", &["Luna"]),
+            app("stop2", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("m2", &["Codex Luna"]),
+        ];
+        let posts = recount(&record, &SEAT, Vec::new());
+        assert_eq!(ids(&posts), ["m1", "m2"]);
+        assert!(posts.iter().all(|p| p.addressed));
+        // A name another account has spoken under is not taken as the seat's.
+        let record = vec![
+            said("hi", "Luna", Some("luna"), &[], "hello"),
+            said("sol", "Luna", Some("sol"), &[], "I am Luna now"),
+            app("stop1", stop_notice("Luna", None)),
+            by_master("m1", &["Luna"]),
+            app("stop2", stop_notice("Codex Luna", None)),
+            by_master("m2", &[]),
+        ];
+        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["m2"]);
     }
 }

@@ -153,8 +153,22 @@ impl Limiter {
     /// with the seat still holding, so the notice is not typed into it; then
     /// the seat is freed and handed its one line under the same lock, so a
     /// post arriving after is typed after it.
+    ///
+    /// What the notice counts and the line carries is read again from the
+    /// topic's record (`limit::recount`, #310), from the oldest stop notice of
+    /// this episode: memory holds only what this launch held, and a seat
+    /// restarted while stopped would otherwise be told only of what came after
+    /// its restart. The record is read once, before the notice goes in, so the
+    /// notice is not among what it counts.
     fn recover(&self) {
-        let count = self.limits().with(&self.pty_id, |limit| limit.held_count());
+        let record = self.record();
+        let seat = limit::Seat {
+            name: &self.name,
+            account_id: &self.account_id,
+            app_speaker: crate::room::APP_SPEAKER,
+        };
+        let held = self.limits().with(&self.pty_id, |limit| limit.held().to_vec());
+        let count = limit::recount(&record, &seat, held).len();
         let room = self.app.state::<RoomState>();
         let notice = crate::room::post_app_notice(
             &self.app,
@@ -165,7 +179,9 @@ impl Limiter {
         );
         let ptys = self.app.state::<crate::pty::PtyState>();
         self.limits().with(&self.pty_id, |limit| {
-            let held = limit.release();
+            // Counted again with what was held up to the release, so a post
+            // held after the record was read is not lost.
+            let held = limit::recount(&record, &seat, limit.release());
             let Some(text) = limit::digest(&held) else {
                 return;
             };
@@ -187,7 +203,29 @@ impl Limiter {
         });
     }
 
-    /// The session has ended: whatever was held goes with it.
+    /// The topic's record, as `limit::recount` reads it. Unreadable is no
+    /// record, which leaves the count to what memory held.
+    fn record(&self) -> Vec<limit::Recorded> {
+        crate::room_log::topic_posts(&self.app, &self.topic_id)
+            .unwrap_or_else(|err| {
+                eprintln!("[codex-limit] the record could not be read: {err}");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|post| limit::Recorded {
+                at: terminal_input::at(&post.ts),
+                message_id: post.message_id,
+                speaker: post.speaker,
+                account: post.account,
+                content: post.content,
+                to: post.to,
+            })
+            .collect()
+    }
+
+    /// The session has ended: whatever was held in memory goes with it. The
+    /// record keeps what was said, and a restarted seat's recovery counts from
+    /// it (`recover`).
     pub fn forget(&self) {
         self.limits().seats.lock().remove(&self.pty_id);
     }
