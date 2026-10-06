@@ -1,0 +1,15 @@
+[package]
+name = "character-file"
+version = "0.1.0"
+description = "The character file an account wears: where it is, whether its name may be one, and reading and writing it"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Free of tauri for the reason docs/5-development.md gives: a test binary that
+# links the tauri dependency tree does not load on the GNU target. This writes a
+# file a person wrote by hand, at a path built from what they typed (#100) — the
+# containment and the no-overwrite-of-what-changed are run here, not read.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

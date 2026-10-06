@@ -495,6 +495,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
+name = "character-file"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2918,6 +2925,7 @@ name = "pullcept"
 version = "0.1.0"
 dependencies = [
  "account-env",
+ "character-file",
  "futures-util",
  "mcp-config",
  "mcp-servers",

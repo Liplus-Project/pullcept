@@ -580,6 +580,31 @@
                     placeholder="例: character_Lay（output style の name）"
                   />
                 </label>
+                <!-- キャラクターの本文（#100）。Claude Code と Codex CLI だけが持つ。
+                     ファイルの場所はアカウントの三つの欄で一つに決まる：
+                     `<作業ディレクトリ>/<.claude|.codex>/output-styles/<キャラクター>.md`。
+                     開いたときに読み、無ければ空で開く。種別・作業ディレクトリ・
+                     キャラクターが変われば読み直す。決定で、本文が変わっていれば
+                     そこへ書く（無ければフォルダーとファイルを作る）。取消は何も
+                     書かない。 -->
+                <div id="dialog-character-file" class="character-file" hidden>
+                  <label class="field body">
+                    本文
+                    <textarea
+                      id="dialog-character-body"
+                      rows="14"
+                      spellcheck="false"
+                      placeholder="キャラクターの本文（output style の Markdown）"
+                    ></textarea>
+                  </label>
+                  <div class="field">
+                    ファイル
+                    <code id="dialog-character-path" class="character-path"></code>
+                  </div>
+                  <p id="dialog-character-notice" class="notice" role="status"></p>
+                  <button id="dialog-character-reload" type="button" hidden>読み直す（本文の変更を捨てる）</button>
+                  <p class="character-hint">保存した本文が効くのは、このアカウントの席の次の起動からです。決定で、本文を変えたときだけ書き込みます。</p>
+                </div>
               </section>
 
               <!-- How to start a session. Shown for a launched kind only: a person

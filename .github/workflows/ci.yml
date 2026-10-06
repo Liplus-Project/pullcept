@@ -39,6 +39,7 @@ jobs:
             crates/webhook-bridge/target
             crates/mcp-servers/target
             crates/terminal-input/target
+            crates/character-file/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -101,6 +102,12 @@ jobs:
       # the person's own input (#183, #195).
       - name: Test the terminal-input crate
         working-directory: crates/terminal-input
+        run: cargo test
+
+      # The character file an account wears (#100): where it is, what a name may
+      # be, staying inside the working directory, and not overwriting a change.
+      - name: Test the character-file crate
+        working-directory: crates/character-file
         run: cargo test
 
   # Gate job: single Required status check for branch protection.
