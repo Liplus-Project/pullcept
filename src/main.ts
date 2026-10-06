@@ -5686,7 +5686,9 @@ async function refreshCharacterFile(force = false): Promise<void> {
   const key = characterKey(place);
   if (!force && key === characterOpenedKey) {
     dialogCharacterReloadEl.hidden = true;
-    drawCharacterNotice(place);
+    // Back on the file shown, after a warning about leaving it. A refusal or
+    // the empty name's hint on screen stays as it is.
+    if (characterOpened !== null) drawCharacterNotice(place);
     return;
   }
   if (!force && characterDirty()) {
