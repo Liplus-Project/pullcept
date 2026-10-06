@@ -779,7 +779,6 @@ const dialogAvatarEl = document.getElementById("dialog-avatar") as HTMLElement;
 const dialogAvatarPickEl = document.getElementById("dialog-avatar-pick") as HTMLButtonElement;
 const dialogAvatarClearEl = document.getElementById("dialog-avatar-clear") as HTMLButtonElement;
 const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HTMLInputElement;
-const dialogLaunchEl = document.getElementById("dialog-launch") as HTMLElement;
 const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
 const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
@@ -825,7 +824,10 @@ const settingsUiScaleEl = document.getElementById("settings-ui-scale") as HTMLSe
 const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
 const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
 const mcpFileErrorEl = document.getElementById("mcp-file-error") as HTMLElement;
-const dialogMcpEl = document.getElementById("dialog-mcp") as HTMLElement;
+const dialogSectionTabEls = Array.from(
+  dialogEl.querySelectorAll<HTMLButtonElement>("[data-section-tab]"),
+);
+const dialogSectionPaneEls = Array.from(dialogEl.querySelectorAll<HTMLElement>("[data-section]"));
 const dialogKindMcpEl = dialogKindEl.querySelector('option[value="mcp"]') as HTMLOptionElement;
 const mcpStateEl = document.getElementById("mcp-state") as HTMLElement;
 const mcpRestartEl = document.getElementById("mcp-restart") as HTMLButtonElement;
@@ -5188,6 +5190,77 @@ function dialogError(text: string): void {
   dialogErrorEl.textContent = text;
 }
 
+/**
+ * The sections of the account form (#304). Faces of one form: a section that
+ * is not on screen keeps what was typed into it, and 決定 reads them all.
+ */
+type DialogSection = "basic" | "character" | "launch" | "env" | "server";
+
+/** The section on screen. Every form opens on 基本. */
+let dialogSection: DialogSection = "basic";
+
+/**
+ * The sections a kind has, in the order the side menu lists them.
+ *
+ * The same judgment `showDialogKind` makes field by field, one level up: a
+ * person is not launched, so a character, a launch line and an environment
+ * would be sections of fields that never do anything; a server is started from
+ * its entry in the file, which is its own section (#193).
+ */
+function dialogSectionsFor(kind: AccountKind): DialogSection[] {
+  if (kind === "mcp") return ["basic", "server"];
+  if (launchesKind(kind)) return ["basic", "character", "launch", "env"];
+  return ["basic"];
+}
+
+/** Put one section on screen and mark its entry in the side menu. */
+function showDialogSection(section: DialogSection): void {
+  dialogSection = section;
+  for (const pane of dialogSectionPaneEls) pane.hidden = pane.dataset.section !== section;
+  for (const tab of dialogSectionTabEls) {
+    const on = tab.dataset.sectionTab === section;
+    tab.setAttribute("aria-selected", String(on));
+    // One stop in the tab order for the whole menu; the arrows move within it.
+    tab.tabIndex = on ? 0 : -1;
+  }
+}
+
+/**
+ * Bring the section holding `field` on screen, and focus the field when asked.
+ *
+ * For a refusal that names a field: the reason is said below every section,
+ * but the field it is about may be in one that is not shown, and a field that
+ * is not shown cannot take focus.
+ */
+function revealDialogField(field: HTMLElement, focus = true): void {
+  const section = field.closest<HTMLElement>("[data-section]")?.dataset.section;
+  if (section) showDialogSection(section as DialogSection);
+  if (focus) field.focus();
+}
+
+/** Move along the side menu by arrow key, over the sections this kind has. */
+function stepDialogSection(event: KeyboardEvent): void {
+  const step =
+    event.key === "ArrowDown" || event.key === "ArrowRight"
+      ? 1
+      : event.key === "ArrowUp" || event.key === "ArrowLeft"
+        ? -1
+        : 0;
+  if (step === 0 && event.key !== "Home" && event.key !== "End") return;
+  const shown = dialogSectionTabEls.filter((tab) => !tab.hidden);
+  if (shown.length === 0) return;
+  event.preventDefault();
+  const at = shown.findIndex((tab) => tab.dataset.sectionTab === dialogSection);
+  const next =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? shown.length - 1
+        : (at + step + shown.length) % shown.length;
+  showDialogSection(shown[next].dataset.sectionTab as DialogSection);
+  shown[next].focus();
+}
+
 /** Put 削除 back to resting. */
 function disarmDelete(): void {
   deleteArmed = false;
@@ -5208,10 +5281,15 @@ function disarmDelete(): void {
  */
 function showDialogKind(): void {
   const kind = dialogKindEl.value as AccountKind;
-  // A server launches nothing either; what it is started with is its entry in
-  // the file, and that is the section below rather than these fields (#193).
-  dialogLaunchEl.hidden = !launchesKind(kind);
-  dialogMcpEl.hidden = kind !== "mcp";
+  // The groups of fields are sections of their own (#304), so the kind decides
+  // which sections the side menu offers. A server launches nothing either; what
+  // it is started with is its entry in the file, its own section (#193). A
+  // section the kind no longer offers is left for 基本, where the kind is.
+  const sections = dialogSectionsFor(kind);
+  for (const tab of dialogSectionTabEls) {
+    tab.hidden = !sections.includes(tab.dataset.sectionTab as DialogSection);
+  }
+  showDialogSection(sections.includes(dialogSection) ? dialogSection : "basic");
   dialogResumeFieldEl.hidden = kind !== "cli";
   const codex = kind === "codex_cli";
   dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
@@ -5487,6 +5565,7 @@ function openAccountDialog(account: Account | null, field: "name" | "hue" = "nam
   // Cleared before the round trip that refills it, so the account being opened
   // is never read against the last one's notice.
   dialogNoticeEl.textContent = "";
+  dialogSection = "basic";
   showDialogKind();
   dialogEl.showModal();
   // On the colour when the form was opened to change it (色を変える, #224);
@@ -5671,6 +5750,7 @@ async function settleDialogAvatar(
     }
   } catch (err) {
     dialogError(String(err));
+    revealDialogField(dialogAvatarEl, false);
     return null;
   }
   return had;
@@ -5694,7 +5774,7 @@ async function commitAccountDialog(): Promise<boolean> {
   const name = dialogNameEl.value.trim();
   if (!name) {
     dialogError("名前を入力してください。部屋での名乗りになります。");
-    dialogNameEl.focus();
+    revealDialogField(dialogNameEl);
     return false;
   }
 
@@ -5709,6 +5789,7 @@ async function commitAccountDialog(): Promise<boolean> {
   if (kind === "mcp" || target?.kind === "mcp") {
     if (!target || target.kind !== "mcp" || kind !== "mcp") {
       dialogError("MCP サーバのアカウントの種別は変えられません。");
+      revealDialogField(dialogKindEl);
       return false;
     }
     // An edit to the server not yet saved is saved with the rest, rather than
@@ -5716,6 +5797,7 @@ async function commitAccountDialog(): Promise<boolean> {
     // form open on its reason.
     if (mcpFieldsEdited() && !(await saveMcpServer())) {
       dialogError("サーバの設定を保存できませんでした。");
+      revealDialogField(mcpCommandEl, false);
       return false;
     }
     const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
@@ -5733,6 +5815,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // options that session was launched from while it is still running.
   if (target && kind !== target.kind && seatedAnywhere(target.id)) {
     dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
+    revealDialogField(dialogKindEl);
     return false;
   }
   // The person at this screen is a person. Turning their account into one that
@@ -5740,6 +5823,7 @@ async function commitAccountDialog(): Promise<boolean> {
   // under their name, which is not a thing there is one of.
   if (target && target.id === localAccountId && kind !== "admin") {
     dialogError("この画面の本人のアカウントは種別 admin のままです。");
+    revealDialogField(dialogKindEl);
     return false;
   }
   const cwd = dialogCwdEl.value.trim();
@@ -5762,6 +5846,7 @@ async function commitAccountDialog(): Promise<boolean> {
     dialogError(
       "起動オプションの --settings とキャラクターは同じ設定を指します。どちらか一方にしてください。",
     );
+    revealDialogField(dialogOptionsEl);
     return false;
   }
 
@@ -5779,7 +5864,7 @@ async function commitAccountDialog(): Promise<boolean> {
       });
     } catch (err) {
       dialogError(String(err));
-      dialogEnvEl.focus();
+      revealDialogField(dialogEnvEl);
       return false;
     }
   }
@@ -5866,6 +5951,7 @@ async function createMcpAccount(
   } catch (err) {
     mcpErrorEl.textContent = String(err);
     dialogError("サーバを設定ファイルに書けませんでした。");
+    revealDialogField(mcpCommandEl, false);
     return false;
   }
   const settled: Account = {
@@ -6696,6 +6782,10 @@ async function main(): Promise<void> {
     field.addEventListener("input", () => disarmDelete());
   }
   dialogDeleteEl.addEventListener("click", () => void deleteFromDialog());
+  for (const tab of dialogSectionTabEls) {
+    tab.addEventListener("click", () => showDialogSection(tab.dataset.sectionTab as DialogSection));
+    tab.addEventListener("keydown", stepDialogSection);
+  }
   dialogCancelEl.addEventListener("click", () => closeAccountDialog());
   // Escape closes the dialog itself, and it means 取消: the draft is dropped by
   // the close handler below, so there is no path out of this form that leaves
