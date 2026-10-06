@@ -26,7 +26,8 @@
 //! the turn end and the reset each read leaves behind are handed to the
 //! seat's `Limiter`, which stops the seat, asks the app-server when a question
 //! is due, and hands the seat back. The limit is the launch's, like this
-//! thread: when the thread ends, what was held for the seat goes with it.
+//! thread: when the thread ends, what was held in memory goes with it. What a
+//! later recovery counts is read from the room's record (#310).
 
 use crate::codex_limit::Limiter;
 use crate::pty::PtyState;
