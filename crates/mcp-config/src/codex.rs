@@ -1,6 +1,6 @@
-//! Codex CLI 0.160: project MCP registration, guarded root hook, native history.
+//! Codex CLI 0.160: room MCP on the launch line, guarded root hook, native history.
 use super::*;
-use toml_edit::{value, Array, Document as DocumentMut, Item, Table};
+use toml_edit::{Document as DocumentMut, Item};
 mod character;
 pub mod limit;
 pub mod status;
@@ -40,8 +40,8 @@ pub fn runtime_args(
         .map(|key| format!("'{key}'"))
         .collect::<Vec<_>>()
         .join(",");
-    // Replace the whole table, including any persisted env. Works before project trust,
-    // and a trusted project's previous registration cannot override the current launch.
+    // The only registration (#297). The whole table, so it works before project trust
+    // and an entry left in a trusted project's config cannot override this launch.
     args.extend(["-c".into(), format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}}}}}}", instruction_value(&paths[0]), instruction_value(&paths[1]))]);
     Ok(args)
 }
@@ -343,105 +343,52 @@ fn document(dir: &Path) -> Result<DocumentMut, String> {
     }
 }
 
-pub fn other_servers(dir: &Path, own: &str) -> Result<Vec<String>, String> {
-    let doc = document(dir)?;
-    Ok(doc
-        .get("mcp_servers")
-        .and_then(Item::as_table_like)
-        .map(|table| {
-            table
-                .iter()
-                .filter_map(|(name, entry)| {
-                    (name != own
-                        && entry
-                            .get("env")
-                            .and_then(|env| env.get("PULLCEPT_ACCOUNT_ID"))
-                            .is_some())
-                    .then(|| name.to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-pub fn register(
-    dir: &Path,
-    room: &RoomRegistration<'_>,
-) -> Result<PathBuf, String> {
-    let mut doc = document(dir)?;
-    let name = server_name_for(room.account_id, room.room_id);
-    if doc.get("mcp_servers").is_none() {
-        doc["mcp_servers"] = Item::Table(Table::new());
-    }
-    let servers = doc["mcp_servers"]
-        .as_table_like_mut()
-        .ok_or("mcp_servers must be a table")?;
-    if let Some(existing) = servers.get(&name) {
-        if existing
-            .get("env")
-            .and_then(|env| env.get("PULLCEPT_ACCOUNT_ID"))
-            .and_then(Item::as_str)
-            != Some(room.account_id)
-        {
-            return Err(format!(
-                "MCP name {name} belongs to an existing non-Pullcept entry"
-            ));
-        }
-    }
-    // Sweep only app-owned registrations from previous runs. Foreign entries stay.
-    let stale: Vec<String> = servers
-        .iter()
-        .filter_map(|(key, entry)| {
-            let owned = entry
-                .get("env")
-                .and_then(|env| env.get("PULLCEPT_ACCOUNT_ID"))
-                .is_some();
-            let url = entry
-                .get("env")
-                .and_then(|env| env.get("PULLCEPT_ROOM_URL"))
-                .and_then(Item::as_str);
-            (owned && key.starts_with(SERVER_PREFIX) && url != Some(room.room_url))
-                .then(|| key.to_string())
-        })
-        .collect();
-    for key in stale {
-        servers.remove(&key);
-    }
-    let mut entry = Table::new();
-    entry["command"] = value("node");
-    let mut args = Array::new();
-    args.push(room.sidecar_runner.to_string_lossy().as_ref());
-    args.push(room.sidecar_entry.to_string_lossy().as_ref());
-    entry["args"] = value(args);
-    // Ordinary Codex launches leave every app-owned seat disabled.
-    entry["enabled"] = value(false);
-    let mut vars = Array::new();
-    for key in [ROOM_TOKEN_ENV, LAUNCHED_AS_ENV, LAUNCH_ROOM_ENV] {
-        vars.push(key);
-    }
-    entry["env_vars"] = value(vars);
-    let mut env = Table::new();
-    for (key, val) in [
-        ("PULLCEPT_ROOM_URL", room.room_url),
-        ("PULLCEPT_AGENT_NAME", room.agent_name),
-        ("PULLCEPT_ACCOUNT_ID", room.account_id),
-        (ROOM_ID_ENV, room.room_id),
-    ] {
-        env[key] = value(val);
-    }
-    if let Some(hue) = room.agent_hue {
-        env["PULLCEPT_AGENT_HUE"] = value(format!("{hue:.1}"));
-    }
-    if room.unseen_history {
-        env["PULLCEPT_UNSEEN_HISTORY"] = value("1");
-    }
-    entry["env"] = Item::Table(env);
-    servers.insert(&name, Item::Table(entry));
-    let path = dir.join(".codex/config.toml");
-    std::fs::create_dir_all(dir.join(".codex")).map_err(|e| e.to_string())?;
+/// Readies the effective cwd for a seat. Nothing about the room is written (#297).
+///
+/// The room server reaches Codex on the launch line alone (`runtime_args`): the
+/// whole table, its approvals and the names of the variables it reads, before
+/// project trust as well as after. What the launch needs on disk is the `.codex`
+/// folder: native discovery lists a project layer for that folder whether or not
+/// it holds a config.toml, and the seat's hook is placed through that layer.
+///
+/// Registrations an earlier build wrote into this folder's config.toml are
+/// removed: they were disabled there and never started a server, and every build
+/// that wrote them also carried the whole definition on its launch line. Only
+/// app-owned entries go (the room prefix and an account id in their env); other
+/// keys, entries and comments stay, and a file with none is not rewritten.
+pub fn prepare_project(dir: &Path) -> Result<(), String> {
     check_write_path(dir, "config.toml")?;
-    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
-    Ok(path)
+    std::fs::create_dir_all(dir.join(".codex")).map_err(|e| e.to_string())?;
+    let mut doc = document(dir)?;
+    let Some(servers) = doc
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return Ok(());
+    };
+    let owned: Vec<String> = servers
+        .iter()
+        .filter(|(key, entry)| {
+            key.starts_with(SERVER_PREFIX)
+                && entry
+                    .get("env")
+                    .and_then(|env| env.get("PULLCEPT_ACCOUNT_ID"))
+                    .is_some()
+        })
+        .map(|(key, _)| key.to_string())
+        .collect();
+    if owned.is_empty() {
+        return Ok(());
+    }
+    for key in &owned {
+        servers.remove(key);
+    }
+    // The table was the app's when nothing else is left in it.
+    if servers.is_empty() {
+        doc.remove("mcp_servers");
+    }
+    check_write_path(dir, "config.toml")?;
+    std::fs::write(dir.join(".codex/config.toml"), doc.to_string()).map_err(|e| e.to_string())
 }
 
 pub fn register_hook(dir: &Path, script: &Path) -> Result<(), String> {
@@ -683,46 +630,106 @@ mod tests {
             sidecar_runner: entry,
         }
     }
+    /// A config.toml as builds before #297 left it: two seats' disabled entries.
+    const OLD_BUILD: &str = "# retained comment
+model = 'gpt-6'
+developer_instructions = 'existing identity'
+
+[mcp_servers]
+
+[mcp_servers.foreign]
+command='custom'
+
+[mcp_servers.pullcept-room-a-0000000a]
+command = \"node\"
+args = [\"C:/r/cli.mjs\", \"C:/r/sidecar.ts\"]
+enabled = false
+env_vars = [\"PULLCEPT_ROOM_TOKEN\", \"PULLCEPT_LAUNCHED_AS\", \"PULLCEPT_LAUNCHED_ROOM\"]
+
+[mcp_servers.pullcept-room-a-0000000a.env]
+PULLCEPT_ROOM_URL = \"ws://127.0.0.1:1\"
+PULLCEPT_AGENT_NAME = \"Codex Luna\"
+PULLCEPT_ACCOUNT_ID = \"a\"
+PULLCEPT_ROOM_ID = \"t\"
+
+[mcp_servers.pullcept-room-b-0000000b]
+command = \"node\"
+enabled = false
+
+[mcp_servers.pullcept-room-b-0000000b.env]
+PULLCEPT_ROOM_URL = \"ws://127.0.0.1:12345\"
+PULLCEPT_ACCOUNT_ID = \"b\"
+
+[mcp_servers.pullcept-room-hand]
+command='hand-written'
+
+[mcp_servers.other-tool.env]
+PULLCEPT_ACCOUNT_ID = \"not-ours\"
+";
     #[test]
-    fn codex_registration_preserves_foreign_config_and_is_disabled_by_default() {
+    fn launch_writes_no_room_registration_and_removes_what_old_builds_left() {
         let dir = scratch();
         let script = dir.join("sidecar.ts");
-        std::fs::write(dir.join(".codex/config.toml"), "# retained comment\nmodel = 'gpt-6'\ndeveloper_instructions = 'existing identity'\n[mcp_servers.foreign]\ncommand='custom'\n").unwrap();
-        register(&dir, &room(&script, "a", "t")).unwrap();
-        register(&dir, &room(&script, "b", "t")).unwrap();
-        register(&dir, &room(&script, "a", "u")).unwrap();
+        let path = dir.join(".codex/config.toml");
+        std::fs::write(&path, OLD_BUILD).unwrap();
+        prepare_project(&dir).unwrap();
         let doc = document(&dir).unwrap();
-        assert!(doc.to_string().contains("# retained comment"));
-        assert_eq!(
-            doc["developer_instructions"].as_str(),
-            Some("existing identity")
-        );
-        assert_eq!(
-            doc["mcp_servers"]["foreign"]["command"].as_str(),
-            Some("custom")
-        );
+        let text = doc.to_string();
+        assert!(text.contains("# retained comment"));
+        assert_eq!(doc["developer_instructions"].as_str(), Some("existing identity"));
+        assert_eq!(doc["mcp_servers"]["foreign"]["command"].as_str(), Some("custom"));
+        // Prefix without an account id, or an account id without the prefix: not ours.
+        assert_eq!(doc["mcp_servers"]["pullcept-room-hand"]["command"].as_str(), Some("hand-written"));
+        assert!(doc["mcp_servers"].get("other-tool").is_some());
+        // Every app-owned entry goes, whatever room address it carries.
+        assert!(!text.contains("pullcept-room-a-") && !text.contains("pullcept-room-b-"));
+        // Nothing left to remove: the file is not rewritten.
+        prepare_project(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+        // A table the app made and emptied goes with its entries.
+        std::fs::write(&path, "model = 'kept'
+
+[mcp_servers]
+
+[mcp_servers.pullcept-room-a-0000000a.env]
+PULLCEPT_ACCOUNT_ID = \"a\"
+").unwrap();
+        prepare_project(&dir).unwrap();
+        let doc = document(&dir).unwrap();
+        assert!(doc.get("mcp_servers").is_none());
+        assert_eq!(doc["model"].as_str(), Some("kept"));
+
+        // A folder without one gets the .codex folder discovery needs, and no file.
+        let fresh = std::env::temp_dir().join(format!("pullcept-codex-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&fresh).unwrap();
+        prepare_project(&fresh).unwrap();
+        assert!(fresh.join(".codex").is_dir());
+        assert!(!fresh.join(".codex/config.toml").exists());
+        std::fs::remove_dir_all(fresh).unwrap();
+
+        // The seat's line carries only its own server; no sibling is named.
         let own = server_name_for("a", "t");
-        assert_eq!(doc["mcp_servers"][&own]["enabled"].as_bool(), Some(false));
-        assert!(doc["mcp_servers"][&own]["env"].get("PULLCEPT_CHARACTER").is_none());
-        assert!(!doc.to_string().contains("secret-never-in-argv"));
-        let others = other_servers(&dir, &own).unwrap();
-        assert_eq!(others.len(), 2);
         let args = super::super::launch_args(
             &["--model".into(), "gpt-6".into()],
             Some(Cli::CodexCli),
             &own,
             Some("character"),
-            &others,
+            &[],
             Some("claude-status"),
         );
         assert!(args.contains(&format!("mcp_servers.{own}.enabled=true")));
+        assert_eq!(args.iter().filter(|arg| arg.starts_with("mcp_servers.")).count(), 1);
         assert!(!args.iter().any(|arg| arg.contains("secret")
             || arg.contains("--settings")
             || arg.contains("--session-id")
             || arg.contains("character")));
+        // A Claude seat in the same folder still writes .mcp.json and leaves Codex's file alone.
+        let before = std::fs::read_to_string(&path).unwrap();
         let claude = register_sidecar(&dir, &room(&script, "claude", "t")).unwrap();
         assert!(claude.is_file());
-        assert_eq!(document(&dir).unwrap().to_string(), doc.to_string());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(!before.contains("secret-never-in-argv"));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -750,7 +757,7 @@ mod tests {
             "[mcp_servers.foreign.env]\nTOKEN='private-value-do-not-display\n",
         )
         .unwrap();
-        let err = other_servers(&dir, "own").unwrap_err();
+        let err = prepare_project(&dir).unwrap_err();
         assert!(!err.contains("private-value-do-not-display"));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -775,7 +782,7 @@ mod tests {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, &link).unwrap();
-        assert!(register(&dir, &room(Path::new("script"), "a", "t")).is_err());
+        assert!(prepare_project(&dir).is_err());
         assert!(register_hook(&dir, Path::new("script")).is_err());
         assert!(!outside.join("config.toml").exists());
         assert!(!outside.join("hooks.json").exists());

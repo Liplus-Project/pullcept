@@ -779,10 +779,9 @@ pub async fn preview_launch_args(
         .port()
         .zip(cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()))
         .and_then(|(port, dir)| {
+            // A Codex seat's line names only its own server (#297).
             if kind == AccountKind::CodexCli {
-                return mcp_config::codex::effective_cwd(Path::new(dir), &args)
-                    .ok()
-                    .and_then(|cwd| mcp_config::codex::other_servers(&cwd, &server_name).ok());
+                return None;
             }
             other_room_servers(
                 Path::new(dir),
@@ -1086,7 +1085,8 @@ pub struct StartedSession {
     #[serde(skip)]
     launch_id: Option<String>,
     pub pty_id: String,
-    /// Absolute path of the `.mcp.json` this touched, so the UI can say where.
+    /// Absolute path of the file this launch registered into, so the UI can say
+    /// where: `.mcp.json` for Claude, the seat hook's `.codex/hooks.json` for Codex.
     pub mcp_config: String,
     /// When the PTY was spawned, RFC 3339.
     ///
@@ -1302,8 +1302,10 @@ pub fn start_session(
     } else {
         cwd.clone()
     };
+    // Codex holds no sibling registration to keep from starting: a seat's room
+    // server is on its own launch line only (#297).
     let others = if account.kind == AccountKind::CodexCli {
-        mcp_config::codex::other_servers(&project_cwd, &server_name)?
+        Vec::new()
     } else {
         other_room_servers(&cwd, &room_url, &server_name)?
     };
@@ -1547,7 +1549,9 @@ fn launch(
     };
     let mcp_config = if account.kind == AccountKind::CodexCli {
         let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
-        let path = mcp_config::codex::register(&project_cwd, &registration)?;
+        // Before discovery: the project layer the hook is placed through is the
+        // `.codex` folder this makes sure of. The room server is not written (#297).
+        mcp_config::codex::prepare_project(&project_cwd)?;
         let hook_dir = codex_hook_dir(
             &app,
             &account.command,
@@ -1561,6 +1565,7 @@ fn launch(
             &hook_dir,
             &sidecar_entry.parent().unwrap().join("codex-session.mjs"),
         )?;
+        let path = hook_dir.join(".codex/hooks.json");
         codex_hook_dir(
             &app,
             &account.command,

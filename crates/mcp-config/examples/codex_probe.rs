@@ -1,5 +1,5 @@
-//! Prepares a disposable workspace with the same registration and argv as the app.
-use mcp_config::{codex, runtime_launch_args, server_name_for, Cli, RoomRegistration};
+//! Prepares a disposable workspace with the same project folder, hook and argv as the app.
+use mcp_config::{codex, runtime_launch_args, server_name_for, Cli};
 use std::path::PathBuf;
 fn main() {
     let dir = PathBuf::from(std::env::var("PULLCEPT_PROBE_WORKSPACE").expect("workspace"));
@@ -11,19 +11,9 @@ fn main() {
         .to_path_buf();
     let entry = repo.join("sidecar/src/index.ts");
     let runner = repo.join("node_modules/tsx/dist/cli.mjs");
-    let url = std::env::var("PULLCEPT_ROOM_URL").expect("room URL");
-    let room = RoomRegistration {
-        room_url: &url,
-        token: "not-persisted",
-        account_id: "codex-test",
-        room_id: "codex-topic",
-        agent_name: "Codex Test",
-        agent_hue: None,
-        unseen_history: true,
-        sidecar_entry: &entry,
-        sidecar_runner: &runner,
-    };
-    codex::register(&dir, &room).unwrap();
+    // The room server rides on the launch line; the room's variables come from the
+    // caller's environment, as the app sets them for a seat (#297).
+    codex::prepare_project(&dir).unwrap();
     let hook_dir = codex::native_hook_dir(&dir, &dir).unwrap();
     codex::register_hook(&hook_dir, &repo.join("sidecar/src/codex-session.mjs")).unwrap();
     let mut base = vec![
@@ -39,7 +29,7 @@ fn main() {
     let args = runtime_launch_args(
         &base,
         Some(Cli::CodexCli),
-        &server_name_for(room.account_id, room.room_id),
+        &server_name_for("codex-test", "codex-topic"),
         None,
         &[],
         None,
