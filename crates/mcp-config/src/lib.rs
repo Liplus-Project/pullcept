@@ -817,7 +817,7 @@ pub fn runtime_launch_args(
     server: &str,
     character: Option<&str>,
     disabled: &[String],
-    status: Option<&str>,
+    status: Option<&SeatReport>,
     runner: &Path,
     entry: &Path,
 ) -> Result<Vec<String>, String> {
@@ -867,7 +867,8 @@ pub const STATUS_HOOK_PATH: &str = "/hooks/status";
 /// One address rather than two. A second path stood here for the usage-limit
 /// hook (#149) and was taken out with it (#161): the limit is read off the
 /// percentages this report already carries, so the launch has one place to
-/// post to and everything above is said once.
+/// post to and everything above is said once. The activity probe's path
+/// (`activity_hook_url`, #325) borrows this shape rather than restating it.
 pub fn status_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
     format!(
         "http://127.0.0.1:{port}{STATUS_HOOK_PATH}/{}/{}",
@@ -898,6 +899,114 @@ pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
     let room = percent_decode(room).filter(|id| !id.is_empty())?;
     let account = percent_decode(account).filter(|id| !id.is_empty())?;
     Some((room, account))
+}
+
+/// The path the app answers the activity probe's hooks on (#325).
+pub const ACTIVITY_HOOK_PATH: &str = "/hooks/activity";
+
+/// The hook events the probe puts on a Claude Code seat's line (#325).
+///
+/// Two and no more: the probe asks one question — whether an HTTP hook
+/// declared through the launch's `--settings` reaches this app at all — and
+/// these are the two events a person can make fire on purpose (use a tool, run
+/// a subagent). #151's `StopFailure` hook was taken out without ever being
+/// seen to fire (#161), so nothing is built on the answer before it is known.
+pub const ACTIVITY_HOOK_EVENTS: &[&str] = &["PreToolUse", "SubagentStart"];
+
+/// Where one seat's hook for one event posts to (#325).
+///
+/// `status_hook_url`'s shape with the event as one more segment ahead of the
+/// seat: the event is told apart by the address rather than by the body, and
+/// the seat is named by the launch for the reason given there. Everything
+/// `status_hook_url` says about `cmd.exe` holds here unchanged — the event
+/// names are ASCII letters, and the two ids go through `percent_encode`.
+pub fn activity_hook_url(port: u16, event: &str, room_id: &str, account_id: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}{ACTIVITY_HOOK_PATH}/{}/{}/{}",
+        percent_encode(event),
+        percent_encode(room_id),
+        percent_encode(account_id)
+    )
+}
+
+/// The event and seat an activity request names, as `(event, room id, account
+/// id)`, or `None` when it is not under `ACTIVITY_HOOK_PATH`, names an event
+/// outside `ACTIVITY_HOOK_EVENTS`, or does not name both halves of a seat.
+///
+/// The inverse of `activity_hook_url`, kept beside it for the reason
+/// `parse_status_hook_target` gives.
+pub fn parse_activity_hook_target(target: &str) -> Option<(&'static str, String, String)> {
+    let target = target.split_once('?').map_or(target, |(path, _)| path);
+    let rest = target.strip_prefix(ACTIVITY_HOOK_PATH)?.strip_prefix('/')?;
+    let (event, seat) = rest.split_once('/')?;
+    let event = ACTIVITY_HOOK_EVENTS
+        .iter()
+        .copied()
+        .find(|known| *known == event)?;
+    let (room, account) = parse_status_hook_target(&format!("{STATUS_HOOK_PATH}/{seat}"))?;
+    Some((event, room, account))
+}
+
+/// The `hooks` value that has the CLI post each probed event to this seat's
+/// address (#325).
+///
+/// An HTTP hook, Bearer `ROOM_TOKEN_ENV` resolved by the CLI through
+/// `allowedEnvVars` — the shape #151 used, so the line carries the variable's
+/// name and not its value. No matcher: every tool and every agent type.
+///
+/// **The CLI waits for the answer.** An HTTP hook cannot run in the background
+/// (Claude Code docs, `hooks`, read 2026-10-07: `async` is for command hooks
+/// only), so every tool call on the seat waits on this app; the timeout is
+/// held to 5 seconds, and the app answers `{}` — which decides nothing — as
+/// soon as the request is read.
+///
+/// Added to the person's own hooks rather than in place of them: `hooks`
+/// merge across settings levels (same docs), unlike `statusLine`.
+pub fn activity_hook_settings(port: u16, room_id: &str, account_id: &str) -> Value {
+    let mut hooks = Map::new();
+    for event in ACTIVITY_HOOK_EVENTS {
+        hooks.insert(
+            (*event).to_string(),
+            json!([{
+                "hooks": [{
+                    "type": "http",
+                    "url": activity_hook_url(port, event, room_id, account_id),
+                    "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}") },
+                    "allowedEnvVars": [ROOM_TOKEN_ENV],
+                    "timeout": 5,
+                }],
+            }]),
+        );
+    }
+    Value::Object(hooks)
+}
+
+/// What a Claude Code seat reports about itself through its launch settings:
+/// the status line (#155) and the activity probe's hooks (#325).
+///
+/// One value rather than two, so the hooks ride on exactly the lines the status
+/// line rides on and on no other: the same kind gate (`reports_through_settings`),
+/// the same exception for a line carrying its own `--settings`, and the same
+/// `None` when there is no port or the script cannot be written onto the line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeatReport {
+    /// The status-line command (`status_line_command`).
+    pub status_command: String,
+    /// The `hooks` value (`activity_hook_settings`).
+    pub hooks: Value,
+}
+
+impl SeatReport {
+    /// This seat's report, or `None` when its status-line command cannot be
+    /// written (`status_line_command`).
+    pub fn for_seat(script: &Path, port: u16, room_id: &str, account_id: &str) -> Option<Self> {
+        let status_command =
+            status_line_command(script, &status_hook_url(port, room_id, account_id))?;
+        Some(Self {
+            status_command,
+            hooks: activity_hook_settings(port, room_id, account_id),
+        })
+    }
 }
 
 /// A window's reset time as Unix seconds, or `None` when the value is not one
@@ -1194,19 +1303,20 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// before it. Such a line approves through its own settings, or answers the
 /// prompt.
 ///
-/// `status_command` is this seat's status-line command (`status_line_command`),
+/// `report` is this seat's status-line command and probe hooks (`SeatReport`),
 /// or `None` when there is no port to address, or when the script's own path
 /// cannot be written onto the line (`line_safe_word`). It rides the same way
 /// the approval does, and under the same exception: a line left untouched above
-/// carries no status line, and its row's five values read `—` while its note
-/// never says 制限中 — the limit is read off those same percentages (#161).
-/// Widening the refusal for it would stop a line that ran before.
+/// carries no status line and no hooks, and its row's five values read `—`
+/// while its note never says 制限中 — the limit is read off those same
+/// percentages (#161). Widening the refusal for it would stop a line that ran
+/// before.
 pub fn settings_launch_args(
     base: &[String],
     character: Option<&str>,
     own_server: &str,
     disabled: &[String],
-    status_command: Option<&str>,
+    report: Option<&SeatReport>,
 ) -> Vec<String> {
     let mut args = base.to_vec();
     let character = declared_character(character);
@@ -1221,8 +1331,12 @@ pub fn settings_launch_args(
     if !disabled.is_empty() {
         settings.insert("disabledMcpjsonServers".into(), json!(disabled));
     }
-    if let Some(command) = status_command {
-        settings.insert("statusLine".into(), status_line_settings(command));
+    if let Some(report) = report {
+        settings.insert(
+            "statusLine".into(),
+            status_line_settings(&report.status_command),
+        );
+        settings.insert("hooks".into(), report.hooks.clone());
     }
     args.push(SETTINGS_FLAG.to_string());
     args.push(Value::Object(settings).to_string());
@@ -1266,7 +1380,7 @@ pub fn launch_args(
     server_name: &str,
     character: Option<&str>,
     disabled: &[String],
-    status_command: Option<&str>,
+    report: Option<&SeatReport>,
 ) -> Vec<String> {
     if cli == Some(Cli::CodexCli) {
         return codex::launch_args(carried_launch_options(base), server_name, disabled);
@@ -1278,7 +1392,7 @@ pub fn launch_args(
         character,
         server_name,
         disabled,
-        status_command.filter(|_| reports),
+        report.filter(|_| reports),
     )
 }
 
@@ -1936,6 +2050,17 @@ mod tests {
     }
 
     /// This launch's own registration, as the settings tests name it.
+    /// A Claude Code seat's report with a script path that passes the line.
+    fn report() -> SeatReport {
+        SeatReport::for_seat(
+            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
+            1234,
+            ROOM,
+            LIN,
+        )
+        .expect("safe path")
+    }
+
     fn own() -> String {
         server_name_for(LIN, ROOM)
     }
@@ -2288,28 +2413,97 @@ mod tests {
     }
 
     #[test]
-    fn no_line_declares_a_hook_of_any_kind() {
-        // The `StopFailure` entry #149 put on the line is gone (#161): the
-        // limit is read off the percentages the status line already reports,
-        // so nothing of the person's own `hooks` is named here at all.
-        let status = status_line_command(
-            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
-            &status_hook_url(1234, ROOM, LIN),
-        )
-        .expect("safe path");
+    fn a_claude_code_line_declares_only_the_probes_two_http_hooks() {
+        // The `StopFailure` entry #149 put on the line stays gone (#161). What
+        // rides now is the probe of #325: `PreToolUse` and `SubagentStart`,
+        // HTTP, to this seat's own activity address, 5 seconds, the token
+        // resolved by the CLI from the environment.
         let line = launch_args(
             &[],
             Some(Cli::ClaudeCode),
             &own(),
             Some("character_Lin"),
             &[],
-            Some(&status),
+            Some(&report()),
         );
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
-        assert!(settled.get("hooks").is_none(), "{settled}");
+        let hooks = settled["hooks"].as_object().expect("hooks");
+        assert_eq!(
+            hooks.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["PreToolUse", "SubagentStart"]
+        );
+        for event in ACTIVITY_HOOK_EVENTS {
+            let groups = hooks[*event].as_array().expect("matcher groups");
+            assert_eq!(groups.len(), 1, "{event}");
+            // No matcher: every tool, every agent type.
+            assert!(groups[0].get("matcher").is_none(), "{event}");
+            assert_eq!(
+                groups[0]["hooks"],
+                json!([{
+                    "type": "http",
+                    "url": activity_hook_url(1234, event, ROOM, LIN),
+                    "headers": { "Authorization": "Bearer ${PULLCEPT_ROOM_TOKEN}" },
+                    "allowedEnvVars": ["PULLCEPT_ROOM_TOKEN"],
+                    "timeout": 5,
+                }]),
+                "{event}"
+            );
+        }
         assert!(!line.iter().any(|arg| arg.contains("StopFailure")), "{line:?}");
         assert!(!line.iter().any(|arg| arg.contains("rate_limit")), "{line:?}");
+    }
+
+    #[test]
+    fn the_activity_address_names_the_event_and_the_seat() {
+        let url = activity_hook_url(1234, "PreToolUse", ROOM, LIN);
+        let target = url
+            .strip_prefix("http://127.0.0.1:1234")
+            .expect("the address is the room's own port on loopback");
+        assert_eq!(target, format!("{ACTIVITY_HOOK_PATH}/PreToolUse/{ROOM}/{LIN}"));
+        assert_eq!(
+            parse_activity_hook_target(target),
+            Some(("PreToolUse", ROOM.to_string(), LIN.to_string()))
+        );
+        let odd = "a&b|c<d>e^f(g)h/i";
+        let url = activity_hook_url(1, "SubagentStart", "部屋 1", odd);
+        for ch in ['&', '|', '<', '>', '^', '(', ')', '?'] {
+            assert!(!url.contains(ch), "{ch:?} in {url}");
+        }
+        let target = url.strip_prefix("http://127.0.0.1:1").expect("prefix");
+        assert_eq!(
+            parse_activity_hook_target(target),
+            Some(("SubagentStart", "部屋 1".to_string(), odd.to_string()))
+        );
+    }
+
+    #[test]
+    fn a_target_that_is_not_a_probed_event_names_nothing() {
+        let seat = format!("{ROOM}/{LIN}");
+        // An event the probe does not declare is not taken off the path.
+        assert_eq!(parse_activity_hook_target(&format!("/hooks/activity/Stop/{seat}")), None);
+        assert_eq!(
+            parse_activity_hook_target(&format!("/hooks/activity/pretooluse/{seat}")),
+            None
+        );
+        assert_eq!(parse_activity_hook_target("/hooks/activity/PreToolUse"), None);
+        assert_eq!(parse_activity_hook_target("/hooks/activity/PreToolUse/a"), None);
+        assert_eq!(parse_activity_hook_target("/hooks/activity/PreToolUse/a/b/c"), None);
+        assert_eq!(parse_activity_hook_target(&format!("/hooks/status/{seat}")), None);
+        assert_eq!(
+            parse_activity_hook_target(&format!("/hooks/activityX/PreToolUse/{seat}")),
+            None
+        );
+        // And the status path does not read an activity address as a seat.
+        assert_eq!(
+            parse_status_hook_target(&format!("/hooks/activity/PreToolUse/{seat}")),
+            None
+        );
+        // A query is dropped, as on the status path.
+        assert_eq!(
+            parse_activity_hook_target(&format!("/hooks/activity/SubagentStart/{seat}?x=1")),
+            Some(("SubagentStart", ROOM.to_string(), LIN.to_string()))
+        );
     }
 
     #[test]
@@ -2363,7 +2557,9 @@ mod tests {
         // Forward slashes: Git Bash eats an unquoted `\` before the script is
         // ever run (Claude Code docs, `statusline`, read 2026-09-17).
         assert_eq!(command, format!("node C:/pullcept/sidecar/src/status.mjs {url}"));
-        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], Some(&command));
+        let report = SeatReport::for_seat(&script, 1234, ROOM, LIN).expect("safe path");
+        assert_eq!(report.status_command, command);
+        let line = launch_args(&[], Some(Cli::ClaudeCode), &own(), None, &[], Some(&report));
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         assert_eq!(settled["statusLine"]["type"], json!("command"));
@@ -2387,19 +2583,21 @@ mod tests {
         // the first place (`status_hook_url`), which is why the rest of the set
         // is checked here at all (#152).
         let lay = server_name_for(LAY, ROOM);
-        let status = status_hook_url(62361, ROOM, LIN);
-        let command = status_line_command(
+        let report = SeatReport::for_seat(
             &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
-            &status,
+            62361,
+            ROOM,
+            LIN,
         )
         .expect("safe path");
+        let command = report.status_command.clone();
         let line = launch_args(
             &[],
             Some(Cli::ClaudeCode),
             &own(),
             Some("character_Lin"),
             std::slice::from_ref(&lay),
-            Some(&command),
+            Some(&report),
         );
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settings = &line[at + 1];
@@ -2432,12 +2630,11 @@ mod tests {
     fn a_line_left_alone_for_its_own_settings_carries_no_status_line_either() {
         // Same exception as the approval and the hook: a line that ran before
         // this was added runs the same after it (#143 / #149 / #155).
+        // The probe's hooks ride with the status line, so they are left off
+        // with it (#325).
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
-        let url = status_hook_url(1234, ROOM, LIN);
-        let script = PathBuf::from("C:/pullcept/sidecar/src/status.mjs");
-        let command = status_line_command(&script, &url).expect("safe path");
         assert_eq!(
-            settings_launch_args(&base, None, &own(), &[], Some(&command)),
+            settings_launch_args(&base, None, &own(), &[], Some(&report())),
             base
         );
     }
@@ -2633,12 +2830,7 @@ mod tests {
         let base = split_launch_options("--dangerously-skip-permissions");
         assert_eq!(session_id_launch_args(&base, None), base);
 
-        let status = status_line_command(
-            &PathBuf::from("C:/pullcept/sidecar/src/status.mjs"),
-            &status_hook_url(1234, ROOM, LIN),
-        )
-        .expect("safe path");
-        let line = launch_args(&base, None, &own(), None, &[], Some(&status));
+        let line = launch_args(&base, None, &own(), None, &[], Some(&report()));
         let at = line.iter().position(|arg| arg == SETTINGS_FLAG).expect("settings");
         let settled: Value = serde_json::from_str(&line[at + 1]).expect("valid JSON");
         // The room's own approval still rides: that is what every session in

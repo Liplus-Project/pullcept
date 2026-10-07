@@ -1400,6 +1400,9 @@ const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// body is read, because its values are what was asked for (`SessionStats`) —
 /// which is what makes this the one path (#161): the usage limit is two of
 /// those values, so there is nothing left for a second POST to say.
+///
+/// One probe path sits beside it while #325 is open: `/hooks/activity/<event>/…`,
+/// which only logs that the hook arrived (`mcp_config::activity_hook_settings`).
 async fn serve_hook(
     app: AppHandle,
     room: RoomState,
@@ -1477,6 +1480,7 @@ async fn read_hook(
     // (#161).
     let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
     let reported = mcp_config::parse_status_hook_target(&target);
+    let activity = mcp_config::parse_activity_hook_target(&target);
     let native = target == mcp_config::codex::NATIVE_PATH;
     let captured = authorized
         && native
@@ -1486,7 +1490,7 @@ async fn read_hook(
             room,
             &body,
         );
-    let status = match (authorized, reported.is_some() || native) {
+    let status = match (authorized, reported.is_some() || activity.is_some() || native) {
         (false, _) => "401 Unauthorized",
         (true, false) => "404 Not Found",
         (true, true) if native && !captured => "409 Conflict",
@@ -1505,6 +1509,16 @@ async fn read_hook(
             if let Some(stats) = SessionStats::read(room_id, account_id, &body) {
                 stats.emit(app);
             }
+        }
+        // The activity probe (#325): one line saying the hook arrived, and
+        // nothing else. The event is the path's, not the body's — the body is
+        // drained above so the CLI gets a clean answer, and is not read.
+        // Nothing reaches the screen until the probe has said the hooks arrive.
+        if let Some((event, room_id, account_id)) = &activity {
+            eprintln!(
+                "[hook-probe] {event} room={room_id} account={account_id} at={}",
+                now_iso()
+            );
         }
     }
 

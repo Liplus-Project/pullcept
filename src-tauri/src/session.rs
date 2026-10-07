@@ -16,8 +16,8 @@ use mcp_config::{
     carried_launch_options, console_safe, declared_character, declares_session_id,
     declares_settings, other_room_servers, register_sidecar, reject_incompatible_flags,
     resume_launch_args, runtime_launch_args, server_name_for, session_id_launch_args,
-    split_launch_options, status_hook_url, status_line_command, substitute_session_id, Cli,
-    RoomRegistration, LAUNCHED_AS_ENV, ROOM_ID_ENV, ROOM_TOKEN_ENV,
+    split_launch_options, substitute_session_id, Cli, RoomRegistration, SeatReport,
+    LAUNCHED_AS_ENV, ROOM_ID_ENV, ROOM_TOKEN_ENV,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -432,22 +432,21 @@ pub fn webhook_bridge_script() -> Result<PathBuf, String> {
     script.ok_or_else(|| format!("webhook-bridge.mjs is not beside {}", entry.display()))
 }
 
-/// This seat's status-line command, given the sidecar entry it ships beside.
+/// This seat's status-line command and the activity probe's hooks (#325),
+/// given the sidecar entry it ships beside.
 ///
 /// Two ways to have nothing: the script is not where the distribution puts it,
 /// or its own path holds a character a shell on the way acts on
 /// (`mcp_config::line_safe_word`). Both are the same answer here, because both
-/// leave the same rows reading `—`.
+/// leave the same rows reading `—` — and the probe's hooks ride only where the
+/// status line does (`SeatReport`).
 fn status_command_beside(
     entry: &Path,
     port: u16,
     topic_id: &str,
     account_id: &str,
-) -> Option<String> {
-    status_line_command(
-        &status_script(entry)?,
-        &status_hook_url(port, topic_id, account_id),
-    )
+) -> Option<SeatReport> {
+    SeatReport::for_seat(&status_script(entry)?, port, topic_id, account_id)
 }
 
 /// The same command for a caller that is not holding a resolved sidecar — the
@@ -457,7 +456,7 @@ fn status_command_beside(
 /// address, and a tree the sidecar cannot be found in at all. The launch
 /// resolves the sidecar for itself and passes it in, so the line it spawns and
 /// the line the form shows cannot come from two different walks.
-fn status_command(port: Option<u16>, topic_id: &str, account_id: &str) -> Option<String> {
+fn status_command(port: Option<u16>, topic_id: &str, account_id: &str) -> Option<SeatReport> {
     let (entry, _) = resolve_sidecar_paths().ok()?;
     status_command_beside(&entry, port?, topic_id, account_id)
 }
@@ -914,7 +913,7 @@ pub async fn preview_launch_args(
             &server_name,
             character.as_deref(),
             &others,
-            status.as_deref(),
+            status.as_ref(),
         ), character_mode: None, character_name: None, server_args: None, room_prompt: None });
     }
     let (entry, runner) = resolve_sidecar_paths()?;
@@ -948,7 +947,7 @@ pub async fn preview_launch_args(
         &server_name,
         character.as_deref(),
         &others,
-        status.as_deref(),
+        status.as_ref(),
         &runner,
         &entry,
     )?;
@@ -1780,7 +1779,7 @@ fn launch(
         server_name,
         character,
         others,
-        status.as_deref(),
+        status.as_ref(),
         &sidecar_runner,
         &sidecar_entry,
     )?;
