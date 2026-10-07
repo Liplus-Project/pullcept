@@ -8,6 +8,7 @@
 //! |---|---|
 //! | model, effort | `turn_context`: `payload.model`, `payload.effort` |
 //! | 5 h, weekly | `event_msg` / `token_count`: `payload.rate_limits.{primary,secondary}.used_percent`, told apart by `window_minutes` (300 / 10080) |
+//! | their resets (#306) | the same two windows' `resets_at`, Unix seconds |
 //! | context | the same line: `payload.info.last_token_usage.total_tokens` against `payload.info.model_context_window`, by Codex's own formula (`context`) |
 //!
 //! **The shapes are observed, not published** (Codex CLI 0.160.0, 2026-10-05).
@@ -25,6 +26,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// The five values, in the order the panel lists them. Absent until a line names them.
+///
+/// With them, when each of the two windows resets (#306): what the panel
+/// counts down to beside the 5-hour and weekly rows. Read off the same window
+/// as its percentage, and replaced with it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub model: Option<String>,
@@ -32,6 +37,8 @@ pub struct Status {
     pub five_hour: Option<f64>,
     pub seven_day: Option<f64>,
     pub context: Option<f64>,
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day_resets_at: Option<i64>,
 }
 
 /// The two windows by length, not by position: a plan whose `primary` is not
@@ -79,6 +86,8 @@ impl Status {
                 {
                     self.five_hour = window(limits, FIVE_HOUR_MINUTES);
                     self.seven_day = window(limits, SEVEN_DAY_MINUTES);
+                    self.five_hour_resets_at = window_reset(limits, FIVE_HOUR_MINUTES);
+                    self.seven_day_resets_at = window_reset(limits, SEVEN_DAY_MINUTES);
                 }
             }
             _ => {}
@@ -95,12 +104,19 @@ fn finite(value: &Value) -> Option<f64> {
     value.as_f64().filter(|n| n.is_finite())
 }
 
-fn window(limits: &Value, minutes: u64) -> Option<f64> {
+fn window_of(limits: &Value, minutes: u64) -> Option<&Value> {
     ["primary", "secondary"]
         .iter()
         .map(|key| &limits[key])
         .find(|w| w["window_minutes"].as_u64() == Some(minutes))
-        .and_then(|w| finite(&w["used_percent"]))
+}
+
+fn window(limits: &Value, minutes: u64) -> Option<f64> {
+    window_of(limits, minutes).and_then(|w| finite(&w["used_percent"]))
+}
+
+fn window_reset(limits: &Value, minutes: u64) -> Option<i64> {
+    window_of(limits, minutes).and_then(|w| crate::epoch_seconds(&w["resets_at"]))
 }
 
 /// Tokens Codex counts as always taken (system prompt, tools) and removes from
@@ -258,6 +274,8 @@ mod tests {
         assert_eq!(s.effort.as_deref(), Some("high"));
         assert_eq!(s.five_hour, Some(85.0));
         assert_eq!(s.seven_day, Some(93.0));
+        assert_eq!(s.five_hour_resets_at, Some(1791207909));
+        assert_eq!(s.seven_day_resets_at, Some(1791613577));
         // (258400 - 12000 - (31834 - 12000)) / (258400 - 12000) = 91.95% left -> 92 -> 8 used.
         assert_eq!(s.context, Some(8.0));
     }
@@ -337,6 +355,30 @@ mod tests {
         assert_eq!(tail.status.five_hour, None);
         assert_eq!(tail.status.seven_day, None);
         assert_eq!(tail.status.context, None);
+        assert_eq!(tail.status.five_hour_resets_at, None);
+        assert_eq!(tail.status.seven_day_resets_at, None);
+    }
+
+    #[test]
+    fn each_reset_goes_with_its_own_window() {
+        let mut tail = Tail::new(0);
+        tail.feed(lines(&[TOKENS]).as_bytes());
+        // Told apart by length, as the percentages are: the weekly window in
+        // `primary` puts its reset on the weekly row.
+        assert!(tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":40,"window_minutes":10080,"resets_at":1791700000},"secondary":{"used_percent":7,"window_minutes":300,"resets_at":1791210000}}}}"#]).as_bytes()));
+        assert_eq!(tail.status.five_hour_resets_at, Some(1791210000));
+        assert_eq!(tail.status.seven_day_resets_at, Some(1791700000));
+        // A new reset alone is a change the panel is told of.
+        assert!(tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":40,"window_minutes":10080,"resets_at":1791700000},"secondary":{"used_percent":7,"window_minutes":300,"resets_at":1791228000}}}}"#]).as_bytes()));
+        assert_eq!(tail.status.five_hour_resets_at, Some(1791228000));
+        // Another bucket's reset is not this seat's.
+        assert!(!tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"other","primary":{"used_percent":1,"window_minutes":300,"resets_at":1}}}}"#]).as_bytes()));
+        assert_eq!(tail.status.five_hour_resets_at, Some(1791228000));
+        // A window that stops naming its reset leaves none standing.
+        tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":41,"window_minutes":10080,"resets_at":"soon"},"secondary":{"used_percent":8,"window_minutes":300}}}}"#]).as_bytes());
+        assert_eq!(tail.status.five_hour_resets_at, None);
+        assert_eq!(tail.status.seven_day_resets_at, None);
+        assert_eq!(tail.status.five_hour, Some(8.0));
     }
 
     #[test]

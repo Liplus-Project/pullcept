@@ -1315,6 +1315,14 @@ pub struct SessionStats {
     /// for a seat that had stopped. `None` for every other seat, whose screen
     /// still reads the word off `five_hour` and `seven_day` (#161).
     pub limited: Option<bool>,
+    /// When the 5-hour and weekly windows reset, as Unix seconds (#306): what
+    /// the panel counts down to beside those two rows. Read off the same
+    /// window as its percentage (`mcp_config::epoch_seconds`). The screen stops
+    /// showing one once it has passed; Claude Code drops a window at its reset
+    /// and runs the status line again (Claude Code docs, `statusline`, read
+    /// 2026-10-07), so a passed reset is not waited on here.
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day_resets_at: Option<i64>,
 }
 
 impl SessionStats {
@@ -1338,6 +1346,12 @@ impl SessionStats {
             seven_day: data["rate_limits"]["seven_day"]["used_percentage"].as_f64(),
             context: data["context_window"]["used_percentage"].as_f64(),
             limited: None,
+            five_hour_resets_at: mcp_config::epoch_seconds(
+                &data["rate_limits"]["five_hour"]["resets_at"],
+            ),
+            seven_day_resets_at: mcp_config::epoch_seconds(
+                &data["rate_limits"]["seven_day"]["resets_at"],
+            ),
         })
     }
 
@@ -1357,6 +1371,8 @@ impl SessionStats {
             seven_day: status.seven_day,
             context: status.context,
             limited: Some(limited),
+            five_hour_resets_at: status.five_hour_resets_at,
+            seven_day_resets_at: status.seven_day_resets_at,
         }
     }
 

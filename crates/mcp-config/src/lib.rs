@@ -900,6 +900,29 @@ pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
     Some((room, account))
 }
 
+/// A window's reset time as Unix seconds, or `None` when the value is not one
+/// (#306): what the panel counts down to beside the 5-hour and weekly rows.
+///
+/// Both CLIs say it in the same unit. Claude Code's status line carries it as
+/// `rate_limits.five_hour.resets_at` / `seven_day.resets_at` (Claude Code docs,
+/// `statusline`, read 2026-10-07: "Unix epoch seconds"), and Codex's rollout as
+/// each window's `resets_at` (`codex::status`, observed 0.160.0). The docs'
+/// example is a whole number; a fraction is taken down to the second rather
+/// than refused. Zero, a negative, a string or a non-finite number is no time.
+pub fn epoch_seconds(value: &Value) -> Option<i64> {
+    let seconds = match value.as_i64() {
+        Some(whole) => whole,
+        None => {
+            let fraction = value.as_f64().filter(|n| n.is_finite())?;
+            if fraction < 1.0 || fraction >= i64::MAX as f64 {
+                return None;
+            }
+            fraction.floor() as i64
+        }
+    };
+    (seconds > 0).then_some(seconds)
+}
+
 /// Every byte outside the unreserved set as `%XX`.
 fn percent_encode(text: &str) -> String {
     let mut out = String::new();
@@ -2188,6 +2211,37 @@ mod tests {
             json!(room),
             "the server this line approves must not be disabled"
         );
+    }
+
+    #[test]
+    fn a_reset_time_is_read_as_unix_seconds() {
+        // The status line's own example (Claude Code docs, `statusline`, 2026-10-07).
+        let line = json!({
+            "rate_limits": {
+                "five_hour": {"used_percentage": 23.5, "resets_at": 1738425600},
+                "seven_day": {"used_percentage": 41.2, "resets_at": 1738857600}
+            }
+        });
+        let limits = &line["rate_limits"];
+        assert_eq!(epoch_seconds(&limits["five_hour"]["resets_at"]), Some(1738425600));
+        assert_eq!(epoch_seconds(&limits["seven_day"]["resets_at"]), Some(1738857600));
+        // A window the CLI did not send, or dropped once its reset passed.
+        assert_eq!(epoch_seconds(&limits["spend_limit"]["resets_at"]), None);
+        assert_eq!(epoch_seconds(&json!({})["rate_limits"]["five_hour"]["resets_at"]), None);
+        // A fraction is taken down to its second.
+        assert_eq!(epoch_seconds(&json!(1738425600.9)), Some(1738425600));
+        // Nothing that is not a time.
+        for value in [
+            json!(null),
+            json!("1738425600"),
+            json!(0),
+            json!(-5),
+            json!(0.5),
+            json!(true),
+            json!(1e300),
+        ] {
+            assert_eq!(epoch_seconds(&value), None, "{value}");
+        }
     }
 
     #[test]
