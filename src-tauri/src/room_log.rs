@@ -192,6 +192,31 @@ fn legacy_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("logs").join(format!("{ROOM_NAME}.jsonl")))
 }
 
+/// Append one line to the activity probe's file, `logs/hook-probe.log` beside
+/// the room's directory (#325).
+///
+/// A file because the app's stderr is not where Master can look: a release
+/// build has none. One line per arrival, appended and never rewritten. A
+/// failure to resolve, open or write is dropped — the probe observes, and a
+/// missing line is itself what it reports.
+pub fn append_hook_probe(app: &AppHandle, line: &str) {
+    use std::io::Write;
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let dir = dir.join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("hook-probe.log"))
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 /// Carry the pre-topic single flow in as one topic.
 ///
 /// Moved rather than copied. Two files holding one conversation is a second

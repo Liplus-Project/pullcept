@@ -732,7 +732,10 @@ PULLCEPT_ACCOUNT_ID = \"a\"
             &own,
             Some("character"),
             &[],
-            Some("claude-status"),
+            Some(&crate::SeatReport {
+                status_command: "claude-status".into(),
+                hooks: serde_json::json!({ "PreToolUse": [] }),
+            }),
         );
         assert!(args.contains(&format!("mcp_servers.{own}.enabled=true")));
         assert_eq!(args.iter().filter(|arg| arg.starts_with("mcp_servers.")).count(), 1);
