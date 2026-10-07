@@ -459,6 +459,51 @@ button svg.icon {
   height: 1rem;
 }
 
+/* Who is 考え中… or 出力中 now, under the room (#307): 「Claude Lin が考え中…」.
+   It keeps its row when it says nothing, so the room above does not grow and
+   shrink with every burst of output, and a line at the room's foot is not
+   pushed out of sight by it. The name is in the participant's colour, as in
+   the room and the panel; the dots are the colour the panel's busy badge is.
+   A status rather than the sentence, so on the whole-UI axis (#66). One line:
+   what does not fit is cut at the end, never wrapped into a second row. */
+#room-busy {
+  flex: none;
+  margin: 0;
+  min-height: 1.6rem;
+  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#room-busy .busy-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#room-busy .who {
+  font-weight: 600;
+  color: var(--speaker, var(--fg));
+}
+
+#room-busy .busy-dots {
+  flex: none;
+  display: inline-flex;
+  gap: 0.2rem;
+}
+
+#room-busy .busy-dots i {
+  width: 0.32rem;
+  height: 0.32rem;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
 /* Speaker attribution is the load-bearing distinction in this room, so one
    participant is separated from another by colour as well as by name. The axis
    is the participant: `--speaker` is set per line from that participant, so the
@@ -2722,4 +2767,99 @@ button svg.icon {
   color: var(--muted);
   font-size: 0.74rem;
   line-height: 1.6;
+}
+
+/* ── motion (#307) ───────────────────────────────────────────────────────── */
+
+/* Movement so what is going on can be seen happening: the busy words pulse,
+   the room glides down to a new line and back to its foot, a new line fades
+   in, and the account window's sections cross-fade. All of it is here, and all
+   of it only where the system has not been asked to reduce motion — with
+   `prefers-reduced-motion: reduce` none of these rules applies, so the words
+   stand still, the room jumps and the sections switch at once, as before.
+
+   No word, colour or condition changes with it: the busy badge says what it
+   said and when, and only how it is drawn moves.
+
+   `--pulse-phase` is set by src/main.ts to the page's clock at the moment the
+   element is drawn, so one redrawn mid-pulse carries on where the one it
+   replaced was, rather than every redraw of the panel restarting the pulse. */
+@media (prefers-reduced-motion: no-preference) {
+  /* The glide is the room's own; src/main.ts asks for "auto" and gets this,
+     and asks for "instant" when a topic is opened. */
+  #room {
+    scroll-behavior: smooth;
+  }
+
+  /* Opacity only: a line moved by a transform would add to the room's
+     scrollable height while it moves, and the glide down to it would land
+     short or overshoot. */
+  #room .message.arriving {
+    animation: line-arrive 260ms ease-out;
+  }
+
+  #participants .note[data-kind="active"] {
+    animation: busy-pulse 1.6s ease-in-out infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
+  /* Dots flowing left to right, each a third of the period behind the last. */
+  #room-busy .busy-dots i {
+    animation: busy-dot 1.2s ease-in-out infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
+  #room-busy .busy-dots i:nth-child(2) {
+    animation-delay: calc(var(--pulse-phase, 0ms) + 0.2s);
+  }
+
+  #room-busy .busy-dots i:nth-child(3) {
+    animation-delay: calc(var(--pulse-phase, 0ms) + 0.4s);
+  }
+
+  /* A new say under the room fades in rather than appearing at once. */
+  #room-busy > * {
+    animation: line-arrive 200ms ease-out;
+  }
+
+  /* The account window's side menu: the mark moves softly to the section
+     picked, and the section fades in. A section going from `hidden` to drawn
+     starts the animation afresh, so it runs on every switch. */
+  #account-dialog .account-tabs [role="tab"] {
+    transition: background-color 160ms ease;
+  }
+
+  #account-dialog .pane {
+    animation: line-arrive 180ms ease-out;
+  }
+}
+
+@keyframes line-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes busy-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes busy-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
 }

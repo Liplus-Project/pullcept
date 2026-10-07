@@ -729,6 +729,19 @@ function fillIcons(): void {
 
 const roomEl = document.getElementById("room") as HTMLElement;
 const scrollLatestEl = document.getElementById("scroll-latest") as HTMLButtonElement;
+const roomBusyEl = document.getElementById("room-busy") as HTMLElement;
+
+/**
+ * Whether the room is on its way down to its foot by a glide it was sent on
+ * (#307). The glide is the stylesheet's (`scroll-behavior` on `#room`), so for
+ * as long as it runs the room is between its last place and its foot, and the
+ * distance alone would read it as read back: a second line arriving mid-glide
+ * would not follow it, and 最新の発言へ would blink up under it. Counted as at
+ * the foot until the glide lands there or is taken over by the person's own
+ * scroll (`settleGlide`).
+ */
+let roomGliding = false;
+
 const historyEl = document.getElementById("history") as HTMLElement;
 const participantsEl = document.getElementById("participants") as HTMLElement;
 const toggleHistoryEl = document.getElementById("toggle-history") as HTMLButtonElement;
@@ -2132,7 +2145,29 @@ function placeLine(line: HTMLElement, fold: Fold | null): void {
  * button back to the newest line is shown only away from here (#243).
  */
 function roomAtBottom(): boolean {
-  return roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
+  return roomGliding || roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
+}
+
+/** Send the room to its foot: gliding, or at once for a topic just opened. */
+function glideRoomToFoot(behavior: "smooth" | "instant"): void {
+  const distance = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight;
+  // Already there: no scroll happens, so nothing would ever end the glide.
+  if (distance < 2) return;
+  // `smooth` here is "whatever `#room` says": the stylesheet glides only where
+  // motion is not reduced, and moves at once where it is.
+  roomGliding = behavior === "smooth";
+  roomEl.scrollTo({ top: roomEl.scrollHeight, behavior: behavior === "smooth" ? "auto" : "instant" });
+}
+
+/**
+ * End the glide once it has landed, or once the person took the scroll over —
+ * a wheel or a drag during a glide cancels it, and its `scrollend` comes where
+ * they stopped.
+ */
+function settleGlide(event: Event): void {
+  if (!roomGliding) return;
+  const distance = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight;
+  if (event.type === "scrollend" || distance < 2) roomGliding = false;
 }
 
 /**
@@ -2144,9 +2179,12 @@ function syncScrollLatest(): void {
   scrollLatestEl.hidden = roomAtBottom();
 }
 
-/** To the room's foot, where the conversation continues (#243). */
-function scrollRoomToLatest(): void {
-  roomEl.scrollTop = roomEl.scrollHeight;
+/**
+ * To the room's foot, where the conversation continues (#243). Gliding when
+ * 最新の発言へ is pressed, at once when a topic is opened (#307).
+ */
+function scrollRoomToLatest(behavior: "smooth" | "instant"): void {
+  glideRoomToFoot(behavior);
   syncScrollLatest();
 }
 
@@ -2157,30 +2195,33 @@ function appendMessage(message: RoomMessage): void {
 
   const fold = foldOf(message.speaker, message.account);
   placeDay(message.ts);
-  placeLine(
-    roomLine({
-      speaker: message.speaker,
-      account: message.account,
-      // `own` rather than a name test: the room decides self on the connection
-      // a post arrived on, which a rename cannot blur (#40). A folded line takes
-      // its account's colour, so it is the colour it has when read back (#193).
-      colour: fold?.colour ?? speakerColor(message.speaker, message.hue, message.own),
-      to: message.to,
-      ts: message.ts,
-      stamp: shortTime(message.ts),
-      content: message.content,
-      past: false,
-      mine: isMine(message.speaker, fold),
-    }),
-    fold,
-  );
+  const line = roomLine({
+    speaker: message.speaker,
+    account: message.account,
+    // `own` rather than a name test: the room decides self on the connection
+    // a post arrived on, which a rename cannot blur (#40). A folded line takes
+    // its account's colour, so it is the colour it has when read back (#193).
+    colour: fold?.colour ?? speakerColor(message.speaker, message.hue, message.own),
+    to: message.to,
+    ts: message.ts,
+    stamp: shortTime(message.ts),
+    content: message.content,
+    past: false,
+    mine: isMine(message.speaker, fold),
+  });
+  // A line that has just been said fades in (#307). Only here: a topic opened
+  // draws what was already said, and that is not arriving.
+  line.classList.add("arriving");
+  placeLine(line, fold);
   // On the glass, so it is what this screen can declare having seen. Own posts
   // included: the room does not hold a speaker's own posts against them, and
   // carrying the newest id either way keeps this one value rather than two.
   lastSeenId = message.message_id;
   drawnIds.add(message.message_id);
 
-  if (atBottom) roomEl.scrollTop = roomEl.scrollHeight;
+  // Gliding down, and only from the foot (#307): a person reading further up
+  // is left where they are, as before (#243).
+  if (atBottom) glideRoomToFoot("smooth");
   syncScrollLatest();
 }
 
@@ -2237,8 +2278,10 @@ function drawTopic(posts: LoggedPost[]): void {
     drawnIds.add(post.message_id);
   }
 
-  // Opened at the end, which is where the conversation continues.
-  scrollRoomToLatest();
+  // Opened at the end, which is where the conversation continues. At once: a
+  // topic opened is a place arrived at, not a line arriving (#307).
+  roomGliding = false;
+  scrollRoomToLatest("instant");
 }
 
 /**
@@ -3017,6 +3060,84 @@ function activityNote(name: string, view: SessionView | undefined): string {
   return view.silent ? "待機" : "";
 }
 
+/** 考え中… and 出力中: the two words saying an utterance is still under way. */
+function isBusyWord(word: string): boolean {
+  return word === "考え中…" || word === "出力中";
+}
+
+/**
+ * The word a row in the room says about what its session is doing, or "" when
+ * the row says something else or nothing (#82).
+ *
+ * The branches `memberRow` takes before this one are taken here first, in its
+ * order: a row that is oneself, a server, or a launch not back yet does not say
+ * this. The
+ * row's badge and the line under the room (`renderRoomBusy`, #307) both read it
+ * here, so the line cannot name a seat the badge does not.
+ */
+function rowActivity(row: Member): string {
+  if (!row.participant || row.participant.own) return "";
+  if (row.account?.kind === "mcp" && mcpServerOf(row.account)) return "";
+  const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
+  if (view != null && view.ended === null && view.ptyId === "") return "";
+  return activityNote(memberName(row), view);
+}
+
+/**
+ * A pulse's start set back to the page's own clock, so a badge or a line drawn
+ * anew mid-pulse carries on in the phase the one it replaced was in, rather than
+ * every redraw of the panel restarting the pulse (#307).
+ */
+function pulsePhase(): string {
+  return `${-Math.round(performance.now())}ms`;
+}
+
+/** What the line under the room says now, so an unchanged one is not redrawn. */
+let roomBusyKey = "";
+
+/**
+ * The line under the room naming who is 考え中… or 出力中 now (#307):
+ * 「Claude Lin が考え中…」, and the next one after 、.
+ *
+ * The same word, from the same reading, as each row's badge (`rowActivity`) —
+ * this line adds no signal of its own and no word the badge does not say. It
+ * keeps its row whether or not it says anything, so the room above it does not
+ * grow and shrink with every burst of output. Redrawn only when what it says
+ * changes, so its dots keep moving through the panel's redraws.
+ */
+function renderRoomBusy(rows: Member[]): void {
+  const busy = rows.flatMap((row) => {
+    const word = rowActivity(row);
+    if (!isBusyWord(word)) return [];
+    const name = memberName(row);
+    return [{ name, word, colour: speakerColor(name, row.participant!.hue, false) }];
+  });
+  const key = busy.map((one) => `${one.name}\u0000${one.word}\u0000${one.colour}`).join("\u0001");
+  if (key === roomBusyKey) return;
+  roomBusyKey = key;
+  roomBusyEl.replaceChildren();
+  if (!busy.length) return;
+
+  const dots = document.createElement("span");
+  dots.className = "busy-dots";
+  dots.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("i"));
+  dots.style.setProperty("--pulse-phase", pulsePhase());
+  roomBusyEl.appendChild(dots);
+
+  const text = document.createElement("span");
+  text.className = "busy-text";
+  busy.forEach((one, index) => {
+    if (index > 0) text.append("、");
+    const who = document.createElement("span");
+    who.className = "who";
+    who.style.setProperty("--speaker", one.colour);
+    who.textContent = one.name;
+    text.append(who, `が${one.word}`);
+  });
+  roomBusyEl.appendChild(text);
+}
+
 /**
  * Draw one line of the participant list.
  *
@@ -3088,11 +3209,11 @@ function memberRow(row: Member): HTMLLIElement {
     ({ text: noteText, kind: noteKind, title: noteTitle } = mcpNote(server.view));
   } else if (launching) noteText = "起動中";
   else if (row.participant) {
-    noteText = activityNote(name, view);
+    noteText = rowActivity(row);
     // 待機 and 制限中 both stand where an utterance has ended, so both stay the
     // ground colour; the coloured words are the ones saying one is still under
     // way (#148 / #149).
-    if (noteText && noteText !== "待機" && noteText !== "制限中") noteKind = "active";
+    if (isBusyWord(noteText)) noteKind = "active";
   } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
@@ -3162,6 +3283,8 @@ function memberRow(row: Member): HTMLLIElement {
     // but who the row is, and stays plain beside the name.
     if (!own) note.classList.add("badge");
     if (noteKind) note.dataset.kind = noteKind;
+    // The two busy words pulse (#307), in one phase across redraws.
+    if (noteKind === "active") note.style.setProperty("--pulse-phase", pulsePhase());
     // The app's own reason, on the row carrying the word. The status line has
     // it in full; this is so a row saying 起動失敗 is not a dead end. A server's
     // is the detail its run ended on; the whole log is in its window.
@@ -3657,6 +3780,8 @@ function renderPanel(): void {
   renderTerminalTabs();
   rosterEl.replaceChildren();
   const rows = members();
+  // The line under the room reads the same rows, at the same moments (#307).
+  renderRoomBusy(rows);
 
   if (!rows.length) {
     const empty = document.createElement("li");
@@ -6748,7 +6873,18 @@ async function main(): Promise<void> {
   // 最新の発言へ (#243): shown only while the room is read back from its foot.
   // `toggle` does not bubble, so a fold opened in the room is caught on the way
   // down.
-  roomEl.addEventListener("scroll", syncScrollLatest, { passive: true });
+  roomEl.addEventListener(
+    "scroll",
+    (event) => {
+      settleGlide(event);
+      syncScrollLatest();
+    },
+    { passive: true },
+  );
+  roomEl.addEventListener("scrollend", (event) => {
+    settleGlide(event);
+    syncScrollLatest();
+  });
   roomEl.addEventListener("toggle", syncScrollLatest, true);
   new ResizeObserver(() => syncScrollLatest()).observe(roomEl);
   // Pressed without taking the focus, as the composer's buttons are: what is
@@ -6757,7 +6893,7 @@ async function main(): Promise<void> {
   scrollLatestEl.addEventListener("mousedown", (event) => event.preventDefault());
   scrollLatestEl.addEventListener("click", () => {
     const hadFocus = document.activeElement === scrollLatestEl;
-    scrollRoomToLatest();
+    scrollRoomToLatest("smooth");
     if (hadFocus) inputEl.focus();
   });
   renderSessionFacts();

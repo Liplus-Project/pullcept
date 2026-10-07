@@ -222,6 +222,12 @@
               hidden
             ></button>
           </div>
+          <!-- Who is 考え中… or 出力中 now, in one line under the room (#307).
+               The same word as each row's badge in the participant panel, so
+               it adds no signal and no word of its own. It keeps its row when
+               it says nothing, so the room does not grow and shrink with every
+               burst of output. Drawn by src/main.ts (`renderRoomBusy`). -->
+          <p id="room-busy"></p>
 
           <!-- Diagnostics, not the conversation surface. The room shows what
                was said; this shows the CLI that was launched, as it actually
