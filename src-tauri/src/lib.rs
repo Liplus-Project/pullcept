@@ -81,6 +81,8 @@ pub fn run() {
             room_log::room_forget_session,
             room_log::room_attach_path,
             room_log::room_attach_bytes,
+            room_log::room_attachments_dir,
+            room_log::room_attachment,
             session::seated_accounts,
             session::parse_launch_options,
             session::launch_field_report,

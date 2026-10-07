@@ -729,3 +729,44 @@ pub async fn room_attach_bytes(
     .await
     .map_err(|e| format!("Failed to save the attachment: {e}"))?
 }
+
+/// Where this room's attachments are saved, spelled the way the paths the
+/// posts carry begin (#318). The screen reads a post's `添付:` block as
+/// attachments only when every path in it starts here; any other path is left
+/// as the text it is. That is a reading of the text, not the guard: what the
+/// screen may load is decided by `room_attachment`.
+#[tauri::command]
+pub fn room_attachments_dir(app: AppHandle) -> Result<String, String> {
+    Ok(room_dir(&app)?
+        .join(topic_index::ATTACHMENTS_DIR)
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// The bytes of one attachment a post names, for the screen to draw (#318).
+///
+/// The only door through which the screen reads a file a post names, and it
+/// opens onto the room's attachments folder alone: the path is resolved here,
+/// links and `..` followed, and refused unless it lands on a file inside
+/// `logs/main/attachments/` (`topic_index::resolve_attachment`). A post is
+/// written by anyone in the room, so a path in it is not taken at its word.
+/// A command rather than the asset protocol, so the check is this code,
+/// covered by the crate's tests, and no scope of the protocol's has to be
+/// trusted to follow a junction.
+///
+/// Raw bytes, as `account_avatar` answers. Off the main thread: a picture can
+/// be large. A refusal is not said on screen; the screen shows the file's
+/// chip instead of the picture.
+#[tauri::command]
+pub async fn room_attachment(
+    app: AppHandle,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = room_dir(&app)?;
+        let bytes = topic_index::read_attachment(&dir, std::path::Path::new(&path))?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| format!("Failed to read the attachment: {e}"))?
+}

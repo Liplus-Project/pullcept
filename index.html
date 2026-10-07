@@ -801,6 +801,14 @@
         </form>
       </dialog>
 
+      <!-- An attached picture, larger (#318): opened from its thumbnail in the
+           conversation or in the composer, over a dimmed window. Closed by its
+           ✕, a press on the dim around it, or Esc. Drawn by src/main.ts. -->
+      <dialog id="viewer" aria-label="添付の画像">
+        <button id="viewer-close" type="button" data-icon="close" aria-label="閉じる" title="閉じる (Esc)"></button>
+        <img id="viewer-image" alt="" />
+      </dialog>
+
       <!-- The app's settings (#172). In this webview, for the reason the account
            dialog is: a step inside the app, not a window to find behind it.
 

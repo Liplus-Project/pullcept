@@ -763,6 +763,8 @@ const composerBoxEl = document.getElementById("composer-box") as HTMLElement;
 const attachEl = document.getElementById("attach") as HTMLButtonElement;
 const attachInputEl = document.getElementById("attach-input") as HTMLInputElement;
 const attachmentsEl = document.getElementById("attachments") as HTMLUListElement;
+const viewerEl = document.getElementById("viewer") as HTMLDialogElement;
+const viewerImageEl = document.getElementById("viewer-image") as HTMLImageElement;
 const mentionListEl = document.getElementById("mention-list") as HTMLUListElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
@@ -1857,18 +1859,27 @@ function roomLine(line: {
   time.textContent = line.stamp;
   time.title = fullDateTime(line.ts);
 
-  const body = document.createElement("div");
-  body.className = "body";
-  body.textContent = line.content;
+  // What was attached is drawn rather than written out (#318): the paths under
+  // `添付:` become pictures and chips below the words, and the words are what
+  // is left. Only the screen reads it so; the post itself is unchanged.
+  const { text, paths } = splitAttachments(line.content);
+  const said: HTMLElement[] = [];
+  if (text || !paths.length) {
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = text;
+    said.push(body);
+  }
+  if (paths.length) said.push(postAttachments(paths));
 
   if (line.mine) {
     // The clock goes to the bubble's foot, so a run of them can keep only the
     // last one's. A head is drawn only when it has an addressee to carry.
     if (head.childElementCount) article.appendChild(head);
-    article.append(body, time);
+    article.append(...said, time);
   } else {
     head.appendChild(time);
-    article.append(head, body);
+    article.append(head, ...said);
   }
   return article;
 }
@@ -2252,6 +2263,7 @@ function appendMessage(message: RoomMessage): void {
  */
 function drawTopic(posts: LoggedPost[]): void {
   roomEl.replaceChildren();
+  forgetAttachmentUrls();
   roomDay = "";
   lastSeenId = posts[posts.length - 1]?.message_id ?? null;
   drawnIds.clear();
@@ -4201,9 +4213,22 @@ type Attachment = {
   /** Where it was saved, and for which topic. Kept so a post the floor
    *  refused, sent again, does not save the same file a second time. */
   saved: { topicId: string; path: string } | null;
+  /** The picture its chip shows, as an object URL over the bytes the webview
+   *  already holds (#318). Only for an image picked or pasted: a dropped file
+   *  is a path outside the attachments folder, and the screen does not read
+   *  one of those. Revoked when the chip goes. */
+  preview: string | null;
 };
 
 let attachments: Attachment[] = [];
+
+/** Let go of the pictures the chips that are gone were showing. */
+function dropPreviews(gone: Attachment[]): void {
+  for (const one of gone) {
+    if (one.preview) URL.revokeObjectURL(one.preview);
+    one.preview = null;
+  }
+}
 
 /** The last part of a path, either separator: what a dropped file is called. */
 function baseName(path: string): string {
@@ -4223,21 +4248,45 @@ function attachFiles(files: Iterable<File>): void {
       name: file.name || "image.png",
       source: { file },
       saved: null,
+      preview: imageType(file.name || "image.png") ? URL.createObjectURL(file) : null,
     })),
   );
 }
 
 function attachPaths(paths: string[]): void {
-  attach(paths.map((path) => ({ name: baseName(path), source: { path }, saved: null })));
+  attach(
+    paths.map((path) => ({ name: baseName(path), source: { path }, saved: null, preview: null })),
+  );
 }
 
 function renderAttachments(): void {
   attachmentsEl.replaceChildren();
   attachments.forEach((one, at) => {
     const chip = document.createElement("li");
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = one.name;
+    let name: HTMLElement;
+    if (one.preview) {
+      // A picture in place of the name (#318), opened larger by a press. The
+      // name is still its label and its tooltip.
+      const url = one.preview;
+      chip.classList.add("image");
+      const thumb = document.createElement("button");
+      thumb.type = "button";
+      thumb.className = "thumb";
+      thumb.setAttribute("aria-label", `${one.name} を大きく見る`);
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = url;
+      thumb.appendChild(image);
+      // The textarea keeps its focus through the press, so closing the larger
+      // picture hands the focus back to it.
+      thumb.addEventListener("mousedown", (event) => event.preventDefault());
+      thumb.addEventListener("click", () => openViewer(url, one.name));
+      name = thumb;
+    } else {
+      name = document.createElement("span");
+      name.className = "name";
+      name.textContent = one.name;
+    }
     name.title = one.name;
     const remove = document.createElement("button");
     remove.type = "button";
@@ -4248,6 +4297,7 @@ function renderAttachments(): void {
     // for 宛先.
     remove.addEventListener("mousedown", (event) => event.preventDefault());
     remove.addEventListener("click", () => {
+      dropPreviews([one]);
       attachments = attachments.filter((_, other) => other !== at);
       renderAttachments();
     });
@@ -4291,8 +4341,171 @@ async function saveAttachment(one: Attachment, topicId: string): Promise<string>
  */
 function withAttachments(text: string, paths: string[]): string {
   if (!paths.length) return text;
-  const block = ["添付:", ...paths].join("\n");
+  const block = [ATTACHMENT_HEAD, ...paths].join("\n");
   return text ? `${text}\n\n${block}` : block;
+}
+
+/** The line a post's attachments are listed under (`withAttachments`). */
+const ATTACHMENT_HEAD = "添付:";
+
+/**
+ * Where this room's attachments are saved, as the paths in the posts spell it
+ * (`room_attachments_dir`, #318). Null until it is read, and when it could not
+ * be: then every post is drawn as its text.
+ */
+let attachmentsRoot: string | null = null;
+
+/**
+ * A post's words and the attachments it lists, read back out of its text
+ * (#318): the `添付:` block `withAttachments` put at its end.
+ *
+ * Read as attachments only when every line of the block is a path inside this
+ * room's attachments folder. A block naming anything else — an AI writing out
+ * a path of its own, a post quoting one — is left as the text it is, so a path
+ * the screen will not draw is not hidden either. This decides how the text is
+ * drawn and nothing more: what may be loaded is decided again by the app, on
+ * the resolved path (`room_attachment`).
+ */
+function splitAttachments(content: string): { text: string; paths: string[] } {
+  const asText = { text: content, paths: [] };
+  const root = attachmentsRoot;
+  if (!root) return asText;
+  const marker = `\n\n${ATTACHMENT_HEAD}\n`;
+  const at = content.lastIndexOf(marker);
+  let text: string;
+  let block: string;
+  if (at >= 0) {
+    text = content.slice(0, at);
+    block = content.slice(at + marker.length);
+  } else if (content.startsWith(`${ATTACHMENT_HEAD}\n`)) {
+    text = "";
+    block = content.slice(ATTACHMENT_HEAD.length + 1);
+  } else {
+    return asText;
+  }
+  const paths = block.split("\n");
+  const inside = (path: string) =>
+    path.length > root.length + 1 &&
+    path.startsWith(root) &&
+    (path[root.length] === "\\" || path[root.length] === "/");
+  if (!paths.every(inside)) return asText;
+  return { text, paths };
+}
+
+/** What a file is called after its last dot, lower-cased; empty without one. */
+function extensionOf(name: string): string {
+  const at = name.lastIndexOf(".");
+  return at > 0 ? name.slice(at + 1).toLowerCase() : "";
+}
+
+/** The pictures drawn as pictures (#318), by extension, with their types. */
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/** The type a file is drawn as a picture under, or undefined for any other. */
+function imageType(name: string): string | undefined {
+  return IMAGE_TYPES[extensionOf(name)];
+}
+
+/**
+ * The pictures of the attachments on the glass, as object URLs by path (#318).
+ * Read once per path rather than once per line: a post drawn again draws the
+ * same picture. A path that would not read is kept as null, and its line shows
+ * the file's chip. Emptied when a topic is drawn afresh (`drawTopic`), which
+ * takes every line that was showing one.
+ */
+const attachmentUrls = new Map<string, Promise<string | null>>();
+
+function attachmentUrl(path: string, type: string): Promise<string | null> {
+  let url = attachmentUrls.get(path);
+  if (!url) {
+    url = invoke<ArrayBuffer>("room_attachment", { path }).then(
+      (bytes) => URL.createObjectURL(new Blob([bytes], { type })),
+      () => null,
+    );
+    attachmentUrls.set(path, url);
+  }
+  return url;
+}
+
+function forgetAttachmentUrls(): void {
+  for (const url of attachmentUrls.values()) {
+    void url.then((one) => {
+      if (one) URL.revokeObjectURL(one);
+    });
+  }
+  attachmentUrls.clear();
+}
+
+/** A post's attachments, in the order its block lists them (#318). */
+function postAttachments(paths: string[]): HTMLElement {
+  const list = document.createElement("div");
+  list.className = "attachments";
+  for (const path of paths) {
+    const name = baseName(path);
+    const type = imageType(name);
+    list.appendChild(type ? postImage(path, name, type) : fileChip(name));
+  }
+  return list;
+}
+
+/** A file that is not drawn as a picture: its name, and its type beside it. */
+function fileChip(name: string): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "file";
+  chip.title = name;
+  const label = document.createElement("span");
+  label.className = "name";
+  label.textContent = name;
+  const kind = document.createElement("span");
+  kind.className = "kind";
+  const ext = extensionOf(name);
+  kind.textContent = ext ? ext.toUpperCase() : "ファイル";
+  chip.append(label, kind);
+  return chip;
+}
+
+/**
+ * An attached picture, small, opened larger by a press (#318). The tile has
+ * its full size before the picture arrives, so a line does not grow under the
+ * reader when it does. A picture that will not read or will not decode gives
+ * way to the file's chip, without a word.
+ */
+function postImage(path: string, name: string, type: string): HTMLElement {
+  const thumb = document.createElement("button");
+  thumb.type = "button";
+  thumb.className = "thumb";
+  thumb.title = name;
+  thumb.setAttribute("aria-label", `${name} を大きく見る`);
+  const image = document.createElement("img");
+  image.alt = "";
+  thumb.appendChild(image);
+  const giveWay = () => thumb.replaceWith(fileChip(name));
+  void attachmentUrl(path, type).then((url) => {
+    if (!url) {
+      giveWay();
+      return;
+    }
+    image.addEventListener("error", giveWay, { once: true });
+    image.src = url;
+  });
+  thumb.addEventListener("click", () => {
+    if (image.src) openViewer(image.src, name);
+  });
+  return thumb;
+}
+
+/** Open a picture larger, over the dimmed window (#318). */
+function openViewer(url: string, name: string): void {
+  viewerImageEl.src = url;
+  viewerImageEl.alt = name;
+  viewerEl.setAttribute("aria-label", name);
+  if (!viewerEl.open) viewerEl.showModal();
 }
 
 /**
@@ -4387,6 +4600,8 @@ async function send(): Promise<void> {
       );
       return;
     }
+    // Delivered: the chips are gone for good, and their pictures with them.
+    dropPreviews(pending);
     status("");
   } catch (err) {
     // Put the text back rather than losing what was typed.
@@ -7103,6 +7318,13 @@ async function main(): Promise<void> {
 
   // ── attachments (#223) ──────────────────────────────────────────────────────
   //
+  // The larger picture (#318) closes on its ✕ and on a press anywhere around
+  // the picture, which is the dim; Esc closes it as it closes any modal dialog.
+  viewerEl.addEventListener("click", (event) => {
+    if (event.target !== viewerImageEl) viewerEl.close();
+  });
+  viewerEl.addEventListener("close", () => viewerImageEl.removeAttribute("src"));
+  //
   // 添付 opens the system's file dialog through the hidden picker. The picker
   // is emptied after each choice, so picking the same file again is a change.
   attachEl.addEventListener("mousedown", (event) => event.preventDefault());
@@ -7324,6 +7546,13 @@ async function main(): Promise<void> {
   // would be a conversation the screen had forgotten while its speakers had
   // not (#141). A topic nothing was said in reads back as nothing. Apart from
   // the list's try, because a log that fails to read is not a list that did.
+  // Where the attachments are, before any line is drawn: a post's `添付:` block
+  // is read against it (#318). Without it the posts are drawn as their text.
+  try {
+    attachmentsRoot = await invoke<string>("room_attachments_dir");
+  } catch {
+    attachmentsRoot = null;
+  }
   if (currentTopic) {
     try {
       drawTopic(await invoke<LoggedPost[]>("room_topic_log", { topicId: currentTopic.topic_id }));
