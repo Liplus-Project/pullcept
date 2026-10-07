@@ -1592,6 +1592,29 @@ pub fn start_session(
             if let Err(err) = recorded {
                 room_log::report(&app, err);
             }
+            // The Codex seat's usage limit (#294) is put in the table before the
+            // seat is held, since holding it is what lets the room type into
+            // it: a seat whose mailbox was left from a launch that ended
+            // stopped (#312) has its first post held, not typed. It asks the
+            // app-server with the seat's own command, environment and
+            // `CODEX_HOME`, so the account asked about is the seat's.
+            let watched = rollout.map(|(home, resumed)| {
+                let limiter = crate::codex_limit::Limiter {
+                    app: app.clone(),
+                    topic_id: topic.topic_id.clone(),
+                    account_id: account.id.clone(),
+                    pty_id: started.pty_id.clone(),
+                    name: name.clone(),
+                    asker: crate::codex_limit::Asker {
+                        command: account.command.clone(),
+                        env: account_env.clone(),
+                        cwd: cwd.clone(),
+                        home: home.clone(),
+                    },
+                };
+                limiter.open();
+                (limiter, home, resumed)
+            });
             // The launch's own values, not the account's. The account may be
             // edited while this runs, and what is running would then be
             // reported as whatever was typed into the form afterwards.
@@ -1617,25 +1640,9 @@ pub fn start_session(
                 },
             );
             // After the seat is held, since the seat is what the watcher reads
-            // the native id off and what tells it the session has ended.
-            //
-            // The same watcher drives the seat's usage limit (#294), asking
-            // the app-server with the seat's own command, environment and
-            // `CODEX_HOME`, so the account asked about is the seat's.
-            if let Some((home, resumed)) = rollout {
-                let limiter = crate::codex_limit::Limiter {
-                    app: app.clone(),
-                    topic_id: topic.topic_id.clone(),
-                    account_id: account.id.clone(),
-                    pty_id: started.pty_id.clone(),
-                    name: name.clone(),
-                    asker: crate::codex_limit::Asker {
-                        command: account.command.clone(),
-                        env: account_env.clone(),
-                        cwd: cwd.clone(),
-                        home: home.clone(),
-                    },
-                };
+            // the native id off and what tells it the session has ended. The
+            // same watcher drives the seat's usage limit.
+            if let Some((limiter, home, resumed)) = watched {
                 crate::codex_status::watch(limiter, home, resumed);
             }
             Ok(started)

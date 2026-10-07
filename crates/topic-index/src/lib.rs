@@ -48,6 +48,11 @@ pub const TOPIC_EXTENSION: &str = "jsonl";
 /// further down keeps that scan reading `.jsonl` files and nothing else.
 pub const ATTACHMENTS_DIR: &str = "attachments";
 
+/// The directory, inside the room's, that the stopped Codex seats' mailboxes
+/// are kept under: one file per topic below it (#312). One level down for the
+/// reason the attachments are.
+pub const MAILBOXES_DIR: &str = "mailboxes";
+
 /// How long an attachment's name may be, in characters.
 ///
 /// The path the name ends is typed into a session as text and read back by a
@@ -253,6 +258,13 @@ fn names_one_file(topic_id: &str) -> bool {
 /// Where one topic's attachments live (#223).
 pub fn attachments_path(dir: &Path, topic_id: &str) -> PathBuf {
     dir.join(ATTACHMENTS_DIR).join(topic_id)
+}
+
+/// Where one topic's mailboxes live (#312). What is in the file is
+/// `mcp_config::codex::limit::Mailboxes`; here is only where it is, so that
+/// [`delete`] takes it with the topic.
+pub fn mailboxes_path(dir: &Path, topic_id: &str) -> PathBuf {
+    dir.join(MAILBOXES_DIR).join(format!("{topic_id}.json"))
 }
 
 /// The name an attachment is saved under, from the name it arrived with.
@@ -584,6 +596,12 @@ pub fn delete(dir: &Path, index: &mut TopicIndex, topic_id: &str) -> Result<(), 
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Failed to delete the topic's attachments: {e}")),
+    }
+    // The mailboxes of its stopped seats (#312): ids of posts that are gone.
+    match std::fs::remove_file(mailboxes_path(dir, topic_id)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to delete the topic's mailboxes: {e}")),
     }
     index.forget(topic_id);
     Ok(())
@@ -1001,6 +1019,26 @@ mod tests {
         assert!(!attachments_path(scratch.path(), &gone).exists());
         assert!(other.exists());
         assert!(index.find(&gone).is_none());
+    }
+
+    /// Deleting a topic takes its mailboxes, and leaves another topic's.
+    #[test]
+    fn deleting_a_topic_takes_its_mailboxes_and_only_its_own() {
+        let scratch = Scratch::new();
+        let gone = Uuid::new_v4().to_string();
+        let kept = Uuid::new_v4().to_string();
+        put_topic(scratch.path(), &gone, "hello", NOW);
+        put_topic(scratch.path(), &kept, "hello", NOW);
+        std::fs::create_dir_all(scratch.path().join(MAILBOXES_DIR)).expect("dir");
+        std::fs::write(mailboxes_path(scratch.path(), &gone), r#"{"luna":["a"]}"#).expect("write");
+        std::fs::write(mailboxes_path(scratch.path(), &kept), r#"{"luna":["b"]}"#).expect("write");
+
+        let (mut index, _) = read(scratch.path(), NOW).expect("read");
+        assert_eq!(index.topics.len(), 2, "a mailbox is not adopted as a topic");
+        delete(scratch.path(), &mut index, &gone).expect("delete");
+
+        assert!(!mailboxes_path(scratch.path(), &gone).exists());
+        assert!(mailboxes_path(scratch.path(), &kept).exists());
     }
 
     /// A topic nothing was attached to has no folder, and deleting it is not a
