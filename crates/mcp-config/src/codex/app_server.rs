@@ -231,12 +231,8 @@ fn overrides(settings: &ThreadSettings, params: &mut Map<String, Value>) {
     }
 }
 
-/// What an app-server seat is handed as `developerInstructions` (#301): the
-/// character text as delivered (unchanged, first), then the room's text
-/// (`Cli::room_system_prompt`, the same one Claude seats get), a blank line
-/// between. `developerInstructions` replaces the CLI's own
-/// `developer_instructions`, so a seat with no character passes in `base` the
-/// effective text it would otherwise have run with, and keeps it.
+/// Append one instruction part after another, preserving nonempty bytes.
+/// The seat's mode decides the base via `seat_instructions` (#303).
 pub fn developer_instructions(base: Option<&str>, room: Option<&str>) -> Option<String> {
     match (base.filter(|b| !b.is_empty()), room) {
         (Some(base), Some(room)) => Some(format!("{base}\n\n{room}")),
@@ -244,6 +240,26 @@ pub fn developer_instructions(base: Option<&str>, room: Option<&str>) -> Option<
         (None, Some(room)) => Some(room.to_string()),
         (None, None) => None,
     }
+}
+
+/// Compose the seat's developer instructions after loader validation (#303).
+/// File mode preserves native common instructions before the character. Legacy
+/// selection already contains them; characterless seats retain the old fallback.
+pub fn seat_instructions(
+    mode: &str,
+    character: Option<&str>,
+    room: Option<&str>,
+    effective: impl FnOnce() -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    let base = if mode == "file" {
+        let common = effective()?;
+        developer_instructions(common.as_deref(), character)
+    } else if character.is_none() && room.is_some() {
+        effective()?
+    } else {
+        character.map(str::to_string)
+    };
+    Ok(developer_instructions(base.as_deref(), room))
 }
 
 /// `thread/start`: the character as developer instructions, the person's
@@ -492,6 +508,37 @@ mod tests {
         let resume = resume_params(ID, "C:/w", Some(&both), &ThreadSettings::default());
         assert_eq!(start["developerInstructions"], resume["developerInstructions"]);
         assert!(resume["developerInstructions"].as_str().unwrap().ends_with(&room));
+    }
+
+    #[test]
+    fn file_seats_keep_common_character_and_room_on_start_and_resume() {
+        let common = "共通指示\r\n引用 \" & %PATH% 😀";
+        let character = "# ルナ\r\n本文\r\n";
+        let room = crate::Cli::CodexCli.room_system_prompt("pullcept-room-luna-r1").unwrap();
+        let text = seat_instructions("file", Some(character), Some(&room), || Ok(Some(common.into()))).unwrap().unwrap();
+        assert_eq!(text, format!("{common}\n\n{character}\n\n{room}"));
+        let start = start_params("C:/w", Some(&text), &ThreadSettings::default());
+        let resume = resume_params(ID, "C:/w", Some(&text), &ThreadSettings::default());
+        assert_eq!(start["developerInstructions"], text);
+        assert_eq!(resume["developerInstructions"], text);
+        for common in [None, Some(String::new())] {
+            assert_eq!(seat_instructions("file", Some(character), Some(&room), || Ok(common)).unwrap(),
+                Some(format!("{character}\n\n{room}")));
+        }
+        assert_eq!(seat_instructions("file", Some(character), None, || Err("discovery failed".into())), Err("discovery failed".into()));
+    }
+
+    #[test]
+    fn legacy_selection_and_characterless_fallback_do_not_duplicate_common_text() {
+        let selected = "COMMON\n# Selected\nBODY\n";
+        assert_eq!(seat_instructions("legacy", Some(selected), Some("ROOM"), || panic!("selection already contains common instructions")).unwrap(),
+            Some(format!("{selected}\n\nROOM")));
+        for mode in ["legacy", "disabled"] {
+            assert_eq!(seat_instructions(mode, None, Some("ROOM"), || Ok(Some("COMMON".into()))).unwrap(), Some("COMMON\n\nROOM".into()));
+            assert_eq!(seat_instructions(mode, None, Some("ROOM"), || Ok(None)).unwrap(), Some("ROOM".into()));
+            assert!(seat_instructions(mode, None, Some("ROOM"), || Err("discovery failed".into())).is_err());
+            assert_eq!(seat_instructions(mode, None, None, || panic!("no override needed")).unwrap(), None);
+        }
     }
 
     #[test]

@@ -264,8 +264,9 @@ fn codex_legacy_instructions(
 /// to the thread as `developerInstructions`, and the Li+ output style hook
 /// turned off on the seat's server so the text is not delivered twice.
 ///
-/// `instructions` is the character followed by the room's text (#301,
-/// `app_server::developer_instructions`). The character part is the loader's
+/// In file mode `instructions` is the effective common instructions, the
+/// character, then the room's text (#303, `app_server::seat_instructions`).
+/// The character part is the loader's
 /// bytes as checked against its length and sha256 (`codex-style.mjs`); the
 /// room's text is appended after that check, never folded into it.
 struct CodexDelivery {
@@ -310,14 +311,10 @@ fn codex_delivery(
         _ => None,
     };
     let room_prompt = mcp_config::Cli::CodexCli.room_system_prompt(server_name);
-    // `developerInstructions` replaces the CLI's own developer instructions.
-    // A seat with no character text keeps the ones it would have run with,
-    // and the room's text follows them.
-    let base = match (&instructions, &room_prompt) {
-        (None, Some(_)) => codex_effective_instructions(command, &options, cwd, env, entry)?,
-        _ => instructions,
-    };
-    let instructions = mcp_config::codex::app_server::developer_instructions(base.as_deref(), room_prompt.as_deref());
+    let instructions = mcp_config::codex::app_server::seat_instructions(
+        &mode, instructions.as_deref(), room_prompt.as_deref(),
+        || codex_effective_instructions(command, &options, cwd, env, entry),
+    )?;
     Ok(CodexDelivery { mode, name, instructions, hook_keys, room_prompt })
 }
 

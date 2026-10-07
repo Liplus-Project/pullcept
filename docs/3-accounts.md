@@ -84,7 +84,7 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 
 **再開でも毎回 `developerInstructions` を送り直す。** `thread/resume` にも同じ本文を載せる。アカウントのキャラクターを変えた後の再開は、新しい本文で始まる。
 
-**`developerInstructions` には、キャラの本文の後に部屋の一文を足す（#301）。** 一文は Claude の席が `--append-system-prompt` で受け取るものと同じ本文であり、同じ関数（`crates/mcp-config` の `room_system_prompt`）から作る（下記「[席は部屋の道具の名を起動時に受け取る](#席は部屋の道具の名を起動時に受け取る)」）。並びは「キャラの本文」「空行」「部屋の一文」で、キャラの本文は一文字も変えない。本文の長さと sha256 の照合（上の 1.）はキャラの本文だけに対して行い、部屋の一文はその照合の後で足す。`thread/start` にも、毎回の `thread/resume` にも同じ合成を載せる。
+**file mode の `developerInstructions` は、利用者の共通指示、検証済みキャラ本文、部屋の一文の順に合成する（#303）。** 共通指示は #276 と同じモデル不要の native discovery（`codex-character.mjs`）で、その席のコマンド・cwd・起動オプション・環境から解決した有効な `developer_instructions` 一文字列である。空または未設定なら追加せず、取得失敗は起動・再開を止める。各本文の間に空行を置き、キャラ本文の改行・UTF-8 のバイトは変えない。本文の長さと sha256 の照合（上の 1.）はキャラ本文だけに行い、共通指示と部屋の一文は照合後に合成する。部屋の一文は Claude の席が `--append-system-prompt` で受け取るものと同じ関数（`crates/mcp-config` の `room_system_prompt`）で作る（下記「[席は部屋の道具の名を起動時に受け取る](#席は部屋の道具の名を起動時に受け取る)」）。起動と毎回の再開は同じ合成を `thread/start` と `thread/resume` に載せる。inline 選択では選択済み本文が共通指示を既に含むので、再追加せず、その後に部屋の一文だけを足す。
 
 **キャラの本文が無い席は、CLI 自身の有効な developer instructions を先頭に置く。** `developerInstructions` は CLI の `developer_instructions` を置き換える（`codex-rs/core/src/config/mod.rs`、`developer_instructions.or(cfg.developer_instructions)`）。persona が無効（false）の席や、inline 方式で名前を選んでいない席では、部屋の一文だけを送るとその人の指示が消える。そこでその席では #276 と同じモデル不要の読み取り（`codex-character.mjs`）で有効な本文を読み、その後に部屋の一文を足す。有効な本文が無ければ部屋の一文だけを送る。読み取りに失敗すれば起動を止める。
 
