@@ -4675,9 +4675,9 @@ function usedPercent(value: number | null): string {
  * (decision 4); a row blanked on silence would say the session stopped using a
  * context window it is still holding.
  *
- * The one exception is the time left until a window resets (#306): it is
- * counted down against the clock, not against reports, and is taken off once
- * the reset passes (`resetIn`, `scheduleResetTick`).
+ * The one exception is the reset text of the 5-hour and weekly windows (#306,
+ * #320): it is kept against the clock, not against reports, and is taken off
+ * once the reset passes (`resetIn`, `resetAt`, `scheduleResetTick`).
  */
 function renderSessionStats(): void {
   const stats = shownView()?.stats ?? null;
@@ -4692,15 +4692,15 @@ function renderSessionStats(): void {
   renderUsage(
     statsEls.seven_day,
     stats?.seven_day ?? null,
-    resetIn(stats?.seven_day_resets_at ?? null, now),
+    resetAt(stats?.seven_day_resets_at ?? null, now),
   );
   renderUsage(statsEls.context, stats?.context ?? null);
   scheduleResetTick(stats, now);
 }
 
 /**
- * The time left until a window resets, as the line under its row says it
- * (#306): `4時間10分後にリセット`, the form Claude Desktop shows.
+ * The time left until the 5-hour window resets, as its row says it beside the
+ * number (#306, #320): `4時間10分後にリセット`, the form Claude Desktop shows.
  *
  * Counted in whole minutes, rounded up, so the line never says 0分 while the
  * window is still running. A day or more drops the minutes, which nobody reads
@@ -4725,7 +4725,27 @@ function resetIn(resetsAt: number | null, now: number): string | null {
   return `${text}後にリセット`;
 }
 
-/** The timer that redraws the rows when a reset line next changes (#306). */
+/** The one-character weekday `resetAt` names, Sunday first as `getDay` counts. */
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+/**
+ * When the weekly window resets, as its row says it beside the number (#320):
+ * `2:00 (月) にリセット`, local time with the weekday, the form Claude Desktop
+ * shows for its weekly row. The hour carries no leading zero; the minutes do.
+ *
+ * A time and not a countdown: a week away is read as a day and an hour, not as
+ * a number of hours. The text only changes when it goes — `null`, no text, when
+ * no reset was reported and once the reset has passed, as `resetIn`.
+ */
+function resetAt(resetsAt: number | null, now: number): string | null {
+  if (resetsAt === null) return null;
+  if (!(resetsAt * 1000 - now > 0)) return null;
+  const at = new Date(resetsAt * 1000);
+  const minutes = String(at.getMinutes()).padStart(2, "0");
+  return `${at.getHours()}:${minutes} (${WEEKDAYS[at.getDay()]}) にリセット`;
+}
+
+/** The timer that redraws the rows when a reset text next changes (#306). */
 let resetTick: number | null = null;
 
 /**
@@ -4761,17 +4781,33 @@ function scheduleResetTick(stats: SessionStats | null, now: number): void {
  * how much. At 100% or over the bar takes the danger colour, the line 制限中
  * stands on (#161).
  *
- * `reset`, when given, is a third line under the two: the time left until the
- * window resets (#306, `resetIn`). Not shown on a row reading `—`.
+ * Laid out as Claude Desktop lays it out (#320): the reset text, when there is
+ * one, and the number make one line at the right of the label; the bar is a
+ * line of its own under them, across the panel (`.usage-row` in the styles).
+ * `reset` is given for the 5-hour and weekly rows (`resetIn`, `resetAt`) and is
+ * left out on a row reading `—`. Where the line is too narrow the reset text
+ * gives way with an ellipsis, the whole of it kept in its title; the number
+ * never does.
  */
 function renderUsage(cell: HTMLElement, value: number | null, reset: string | null = null): void {
+  const line = document.createElement("span");
+  line.className = "line";
   const text = document.createElement("span");
   text.className = "value";
   text.textContent = usedPercent(value);
   if (value === null) {
-    cell.replaceChildren(text);
+    line.appendChild(text);
+    cell.replaceChildren(line);
     return;
   }
+  if (reset !== null) {
+    const until = document.createElement("span");
+    until.className = "reset";
+    until.textContent = reset;
+    until.title = reset;
+    line.appendChild(until);
+  }
+  line.appendChild(text);
   const meter = document.createElement("span");
   meter.className = "meter";
   const fill = document.createElement("span");
@@ -4779,16 +4815,7 @@ function renderUsage(cell: HTMLElement, value: number | null, reset: string | nu
   fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
   if (value >= 100) fill.dataset.kind = "error";
   meter.appendChild(fill);
-  if (reset === null) {
-    cell.replaceChildren(meter, text);
-    return;
-  }
-  // The time left until the window resets, on a line of its own under the bar
-  // (#306): the row keeps the width its bar and number had.
-  const until = document.createElement("span");
-  until.className = "reset";
-  until.textContent = reset;
-  cell.replaceChildren(meter, text, until);
+  cell.replaceChildren(line, meter);
 }
 
 /**

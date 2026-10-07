@@ -2007,18 +2007,36 @@ button svg.icon {
   padding-top: 0;
 }
 
-/* A usage row (#225): a bar, and the number after it. The bar takes what the
-   row has left; the number keeps the width of its three digits and the sign. */
+/* A usage row (#225), laid out as Claude Desktop lays it out (#320): the
+   row takes the whole width of the panel, both columns. Line 1 is the label
+   on the left and the reset text and the number on the right; line 2 is the
+   bar across the whole width. The label column's width goes to the text. */
+#participants .facts > .usage-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+}
+
+/* The value cell lends its children to the row's grid: the line beside the
+   label, the bar under both. */
 #participants dd.usage {
+  display: contents;
+}
+
+#participants dd.usage .line {
+  grid-column: 2;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.15rem 0.45rem;
+  align-items: baseline;
   justify-content: flex-end;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
 #participants dd.usage .meter {
-  flex: 1;
+  grid-column: 1 / -1;
+  display: block;
   height: 0.35rem;
   border-radius: 999px;
   background: var(--selected);
@@ -2037,18 +2055,23 @@ button svg.icon {
   background: var(--danger);
 }
 
+/* The number keeps its width of three digits and the sign, and never gives
+   way. */
 #participants dd.usage .value {
   flex: none;
   min-width: 2.6em;
 }
 
-/* The time left until the 5-hour or weekly window resets (#306), as Claude
-   Desktop says it: a quiet line of its own under the bar and the number. */
+/* The reset text (#306, #320) is the part that gives way on a line too narrow
+   for it: it shrinks to an ellipsis, the whole of it in its title. */
 #participants dd.usage .reset {
-  flex: 0 0 100%;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 0.7rem;
-  text-align: right;
 }
 
 #participants dt {
