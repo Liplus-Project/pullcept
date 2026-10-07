@@ -1801,8 +1801,9 @@ button svg.icon {
    row has left; the number keeps the width of its three digits and the sign. */
 #participants dd.usage {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.15rem 0.45rem;
   justify-content: flex-end;
 }
 
@@ -1829,6 +1830,15 @@ button svg.icon {
 #participants dd.usage .value {
   flex: none;
   min-width: 2.6em;
+}
+
+/* The time left until the 5-hour or weekly window resets (#306), as Claude
+   Desktop says it: a quiet line of its own under the bar and the number. */
+#participants dd.usage .reset {
+  flex: 0 0 100%;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-align: right;
 }
 
 #participants dt {
