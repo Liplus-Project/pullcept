@@ -1,6 +1,7 @@
 //! Codex CLI 0.160: room MCP on the launch line, guarded root hook, native history.
 use super::*;
 use toml_edit::{Document as DocumentMut, Item};
+pub mod activity;
 pub mod app_server;
 mod character;
 pub mod limit;
