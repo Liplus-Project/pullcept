@@ -25,14 +25,16 @@
 //! **The same round drives the seat's usage limit** (#294, `codex_limit`):
 //! the turn end and the reset each read leaves behind are handed to the
 //! seat's `Limiter`, which stops the seat, asks the app-server when a question
-//! is due, and hands the seat back. The limit is the launch's, like this
-//! thread: when the thread ends, what was held in memory goes with it. What a
-//! later recovery counts is read from the room's record (#310).
+//! is due, and hands the seat back. The question does not wait for the rollout:
+//! a seat that starts stopped (#312) is asked on the first round, before its
+//! CLI has written anything. The limit in memory is the launch's, like this
+//! thread: when the thread ends, what was held in memory goes with it, and the
+//! seat's mailbox keeps the ids of what was held (#312).
 
 use crate::codex_limit::Limiter;
 use crate::pty::PtyState;
 use crate::session::RoomSeats;
-use mcp_config::codex::status::Tail;
+use mcp_config::codex::status::{Status, Tail};
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::Manager;
@@ -64,16 +66,25 @@ const SEARCH_SLOW: u32 = 10;
 /// resume went back into and its length at launch: reading starts there, so
 /// the last run's values are not shown as this one's. Any other file this
 /// launch ends up writing is read from its start.
+///
+/// The limiter is already in the table (`Limiter::open`). A seat it started
+/// stopped is shown 制限中 once, here, since nothing turns over to send it.
 pub fn watch(limiter: Limiter, home: PathBuf, resumed: Option<(PathBuf, u64)>) {
+    let (app, pty_id) = (limiter.app.clone(), limiter.pty_id.clone());
     let spawned = std::thread::Builder::new()
         .name("codex-status".into())
         .spawn(move || {
+            if limiter.is_limited() {
+                limiter.stats(&Status::default()).emit(&limiter.app);
+            }
             follow(&limiter, &home, resumed);
             limiter.forget();
         });
     if let Err(err) = spawned {
         // The session runs without its five values, which read `—`, and
-        // without its limit being watched: the room types into it as before.
+        // without its limit being watched: the room types into it as before,
+        // whatever its mailbox says.
+        app.state::<crate::codex_limit::CodexLimits>().forget(&pty_id);
         eprintln!("[codex-status] watcher could not start: {err}");
     }
 }
@@ -98,65 +109,82 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
         else {
             return;
         };
-        let Some(id) = native else {
-            continue;
-        };
-        if followed.as_ref().is_none_or(|f| f.id != id) {
-            followed = Some(Followed {
-                id,
-                path: None,
-                tail: None,
-                misses: 0,
-            });
-        }
-        let Some(Followed {
-            id,
-            path,
-            tail,
-            misses,
-        }) = followed.as_mut()
-        else {
-            continue;
-        };
-        if path.is_none() {
-            *misses = misses.saturating_add(1);
-            if *misses > SEARCH_EVERY_AFTER && *misses % SEARCH_SLOW != 0 {
-                continue;
-            }
-            let Some(found) = mcp_config::codex::transcript(home, id) else {
-                continue;
-            };
-            *misses = 0;
-            // Placed once, at the first finding: a file found again
-            // after a failed read keeps the offset it had reached.
-            if tail.is_none() {
-                let start = match &resumed {
-                    Some((file, length)) if *file == found => *length,
-                    _ => 0,
-                };
-                *tail = Some(Tail::new(start));
-            }
-            *path = Some(found);
-        }
-        let Some(tail) = tail.as_mut() else {
-            continue;
-        };
-        let changed = match path.as_deref().map(|file| tail.read(file)) {
-            Some(Ok(changed)) => changed,
-            // Gone or unreadable for now: find it again next round. The
-            // reading so far is kept; a file replaced under the same
-            // name is read from its start (`Tail::read`).
-            Some(Err(_)) => {
-                *path = None;
-                false
-            }
+        let changed = match native {
+            Some(id) => read(&mut followed, id, home, &resumed),
             None => false,
         };
-        // Every round, read or not: a stopped seat's due question does
-        // not wait for the file to move.
-        let turned = limiter.round(tail.take_turn_end(), tail.resets_at);
+        let mut tail = followed.as_mut().and_then(|f| f.tail.as_mut());
+        // Every round, read or not, and with no rollout yet: a stopped seat's
+        // due question does not wait for the file to move, or to exist.
+        let turned = match tail.as_deref_mut() {
+            Some(tail) => limiter.round(tail.take_turn_end(), tail.resets_at),
+            None => limiter.round(None, None),
+        };
         if changed || turned {
-            limiter.stats(&tail.status).emit(app);
+            let none = Status::default();
+            let status = tail.as_deref().map_or(&none, |tail| &tail.status);
+            limiter.stats(status).emit(app);
         }
+    }
+}
+
+/// One round's reading of the rollout of `id`: found if it was not, then read
+/// forward. Whether any of the five changed.
+fn read(
+    followed: &mut Option<Followed>,
+    id: String,
+    home: &std::path::Path,
+    resumed: &Option<(PathBuf, u64)>,
+) -> bool {
+    if followed.as_ref().is_none_or(|f| f.id != id) {
+        *followed = Some(Followed {
+            id,
+            path: None,
+            tail: None,
+            misses: 0,
+        });
+    }
+    let Some(Followed {
+        id,
+        path,
+        tail,
+        misses,
+    }) = followed.as_mut()
+    else {
+        return false;
+    };
+    if path.is_none() {
+        *misses = misses.saturating_add(1);
+        if *misses > SEARCH_EVERY_AFTER && *misses % SEARCH_SLOW != 0 {
+            return false;
+        }
+        let Some(found) = mcp_config::codex::transcript(home, id) else {
+            return false;
+        };
+        *misses = 0;
+        // Placed once, at the first finding: a file found again
+        // after a failed read keeps the offset it had reached.
+        if tail.is_none() {
+            let start = match resumed {
+                Some((file, length)) if *file == found => *length,
+                _ => 0,
+            };
+            *tail = Some(Tail::new(start));
+        }
+        *path = Some(found);
+    }
+    let Some(tail) = tail.as_mut() else {
+        return false;
+    };
+    match path.as_deref().map(|file| tail.read(file)) {
+        Some(Ok(changed)) => changed,
+        // Gone or unreadable for now: find it again next round. The
+        // reading so far is kept; a file replaced under the same
+        // name is read from its start (`Tail::read`).
+        Some(Err(_)) => {
+            *path = None;
+            false
+        }
+        None => false,
     }
 }

@@ -21,11 +21,15 @@
 //! [`Limit`] is one seat: free, or stopped with the posts the room held for it
 //! and when to ask next. Times are Unix seconds, passed in.
 //!
-//! What the seat is handed at the recovery is counted again from the room's
-//! record ([`recount`], #310), from the oldest stop notice of the episode: the
-//! posts held in memory go when the session ends, and a restarted seat would
-//! otherwise be told only of what was said after its restart.
+//! A stopped seat has a mailbox ([`Mailboxes`], #312): the ids of the posts
+//! held for it, kept in a small file beside its topic's record so that they
+//! outlive the session and the app. What the seat is handed at the recovery is
+//! those posts, read again from the room's record ([`mailbox`]). A seat
+//! launched while its mailbox is still there starts stopped
+//! ([`Limit::resumed`]).
 use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// How a turn ended, as its `task_complete` line says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +200,20 @@ fn first_query(now: i64, resets_at: Option<i64>) -> i64 {
 }
 
 impl Limit {
+    /// A seat launched while its mailbox is still there (#312): stopped from
+    /// the start, with its first question due now. Not at a reset: none is
+    /// known, and the one the stop was told may long have passed.
+    pub fn resumed(now: i64) -> Self {
+        Limit {
+            stopped: Some(Stopped {
+                resets_at: None,
+                next_query: now,
+                misses: 0,
+            }),
+            held: Vec::new(),
+        }
+    }
+
     pub fn is_limited(&self) -> bool {
         self.stopped.is_some()
     }
@@ -314,7 +332,7 @@ pub fn digest(held: &[Held]) -> Option<String> {
     Some(text)
 }
 
-/// One post of the topic's record, as [`recount`] reads it. `at` is the
+/// One post of the topic's record, as [`mailbox`] reads it. `at` is the
 /// post's time already read the way a label carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
@@ -326,20 +344,18 @@ pub struct Recorded {
     pub at: Option<String>,
 }
 
-/// The seat a recount is for.
+/// The seat a mailbox is read for.
 #[derive(Debug, Clone, Copy)]
 pub struct Seat<'a> {
-    /// Its name now: what its notices of this launch carry.
+    /// Its name now.
     pub name: &'a str,
     pub account_id: &'a str,
-    /// Who the app's own notices are said as.
-    pub app_speaker: &'a str,
 }
 
 /// The names the seat is known by in the record: its name now, and every name
-/// its account has spoken under there — what a renamed seat's earlier notices
-/// and addressees carry. A name some other account has spoken under is not
-/// taken from the record: it would read that seat's notices as this one's.
+/// its account has spoken under there — what a post addressed to the seat
+/// before a rename carries. A name some other account has spoken under is not
+/// taken from the record: it would read posts to that seat as to this one.
 fn names_of(record: &[Recorded], seat: &Seat) -> Vec<String> {
     let mut names = vec![seat.name.to_string()];
     for post in record {
@@ -356,102 +372,133 @@ fn names_of(record: &[Recorded], seat: &Seat) -> Vec<String> {
     names
 }
 
-/// What one of the app's notices about the seat is.
-enum Notice<'a> {
-    /// A stop, with its reset sentence as written (`解除予定は … です。`).
-    Stop(&'a str),
-    Recovery,
-}
-
-fn notice_of<'a>(post: &'a Recorded, seat: &Seat, names: &[String]) -> Option<Notice<'a>> {
-    if post.speaker != seat.app_speaker || post.account.is_some() {
-        return None;
-    }
-    names.iter().find_map(|name| {
-        let stopped = post
-            .content
-            .strip_prefix(&format!("{name} は利用上限で止まりました。"))
-            .and_then(|rest| {
-                rest.strip_suffix(&format!(
-                    "解除を確かめるまで、{name} への部屋の発言は Pullcept が預かります。"
-                ))
-            });
-        match stopped {
-            Some(when) => Some(Notice::Stop(when)),
-            None if post
-                .content
-                .starts_with(&format!("{name} の利用上限の解除を確かめました。")) =>
-            {
-                Some(Notice::Recovery)
-            }
-            None => None,
-        }
-    })
-}
-
-/// Where the current stop episode starts in the record: the index of the
-/// oldest stop notice for the seat that carries the same reset as the newest
-/// one, counted back over the seat's stop notices since its last recovery
-/// notice and no further than the first one carrying another reset. `None`
-/// when the record holds no stop notice for the seat since its last recovery.
-fn episode_start(record: &[Recorded], seat: &Seat, names: &[String]) -> Option<usize> {
-    let mut stops: Vec<(usize, &str)> = Vec::new();
-    for (index, post) in record.iter().enumerate() {
-        match notice_of(post, seat, names) {
-            Some(Notice::Stop(when)) => stops.push((index, when)),
-            Some(Notice::Recovery) => stops.clear(),
-            None => {}
-        }
-    }
-    let &(mut start, newest) = stops.last()?;
-    for &(index, when) in stops.iter().rev() {
-        if when != newest {
-            break;
-        }
-        start = index;
-    }
-    Some(start)
-}
-
-/// What the seat is handed at its recovery, oldest first (#310): every post
-/// the record holds after the start of the current stop episode
-/// ([`episode_start`]) but the seat's own and the app's notices about the seat,
-/// with `addressed` read against every name the seat is known by. The record
-/// decides the start, so a seat restarted while stopped is still told of what
-/// was said before its restart.
+/// What the seat is handed at its recovery, in the order held (#312): the
+/// posts whose ids its mailbox holds, and nothing else. `ids` is the mailbox as
+/// its file keeps it; `held` is what this launch's memory held, whose ids the
+/// file normally holds too, and any it does not are kept after them.
 ///
-/// `held` is what the seat's memory held. Those posts the record does not show
-/// after the start — said between the stop and its notice, or written after
-/// the record was read — are kept in their place, so nothing held is lost.
-/// With no stop notice for the seat in the record, `held` is the answer as it
-/// stands.
-pub fn recount(record: &[Recorded], seat: &Seat, held: Vec<Held>) -> Vec<Held> {
+/// Each post is read from the record, with `addressed` read against every name
+/// the seat is known by there. A post the record does not show is taken as
+/// memory held it, and one neither shows is left out: there is nothing of it
+/// to hand over. Nothing else in the record is looked at — no notice, no range
+/// between two ids: a post said while the seat was closed, or while the app was
+/// down, was never held, and is not the seat's to be handed.
+pub fn mailbox(record: &[Recorded], seat: &Seat, ids: &[String], held: Vec<Held>) -> Vec<Held> {
     let names = names_of(record, seat);
-    let Some(start) = episode_start(record, seat, &names) else {
-        return held;
-    };
-    let mut posts: Vec<Held> = Vec::new();
-    for (index, post) in record.iter().enumerate() {
-        let after = index > start
-            && post.account.as_deref() != Some(seat.account_id)
-            && notice_of(post, seat, &names).is_none();
-        let kept = held.iter().any(|h| h.message_id == post.message_id);
-        if after || kept {
-            posts.push(Held {
-                message_id: post.message_id.clone(),
-                speaker: post.speaker.clone(),
-                at: post.at.clone(),
-                content: post.content.clone(),
-                addressed: post.to.iter().any(|to| names.contains(to)),
-            });
+    let by_id: HashMap<&str, &Recorded> = record
+        .iter()
+        .map(|post| (post.message_id.as_str(), post))
+        .collect();
+    let mut order: Vec<String> = Vec::new();
+    for id in ids.iter().chain(held.iter().map(|post| &post.message_id)) {
+        if !order.contains(id) {
+            order.push(id.clone());
         }
     }
-    for post in held {
-        if !posts.iter().any(|p| p.message_id == post.message_id) {
-            posts.push(post);
+    order
+        .into_iter()
+        .filter_map(|id| {
+            let memory = held.iter().find(|post| post.message_id == id);
+            match by_id.get(id.as_str()) {
+                Some(post) => Some(Held {
+                    message_id: post.message_id.clone(),
+                    speaker: post.speaker.clone(),
+                    at: post.at.clone(),
+                    content: post.content.clone(),
+                    addressed: memory.is_some_and(|m| m.addressed)
+                        || post.to.iter().any(|to| names.contains(to)),
+                }),
+                None => memory.cloned(),
+            }
+        })
+        .collect()
+}
+
+/// The mailboxes of one topic's stopped seats, as the small file beside the
+/// topic's record keeps them across a session's end and the app's (#312): by
+/// account, the ids of the posts held for that seat, oldest first. Ids only —
+/// what was said is the record's. A seat has a mailbox from its stop until its
+/// recovery has been handed over, empty while nothing has been held. The file
+/// goes with its topic (`topic_index::delete`).
+///
+/// A file that is missing, cannot be read, or is not what this writes is no
+/// mailbox at all.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Mailboxes {
+    seats: serde_json::Map<String, Value>,
+}
+
+impl Mailboxes {
+    pub fn read(path: &Path) -> Self {
+        let seats = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| match value {
+                Value::Object(seats) => Some(seats),
+                _ => None,
+            })
+            .unwrap_or_default();
+        Mailboxes { seats }
+    }
+
+    /// Written whole, through a file beside it renamed over it, so a write cut
+    /// short leaves the last one standing. No mailbox left is no file.
+    pub fn write(&self, path: &Path) -> std::io::Result<()> {
+        if self.seats.is_empty() {
+            return match std::fs::remove_file(path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let next = path.with_extension("next");
+        std::fs::write(&next, Value::Object(self.seats.clone()).to_string())?;
+        std::fs::rename(&next, path)
+    }
+
+    /// The seat's mailbox, or `None` when it has none.
+    pub fn get(&self, account_id: &str) -> Option<Vec<String>> {
+        let ids = self.seats.get(account_id)?.as_array()?;
+        Some(
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect(),
+        )
+    }
+
+    fn ids_mut(&mut self, account_id: &str) -> &mut Vec<Value> {
+        let ids = self
+            .seats
+            .entry(account_id.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !ids.is_array() {
+            *ids = Value::Array(Vec::new());
+        }
+        match ids {
+            Value::Array(ids) => ids,
+            _ => unreachable!("made an array above"),
         }
     }
-    posts
+
+    /// The seat has stopped: it has a mailbox from now, empty if it had none.
+    pub fn open(&mut self, account_id: &str) {
+        self.ids_mut(account_id);
+    }
+
+    /// One more post held for the seat.
+    pub fn push(&mut self, account_id: &str, message_id: &str) {
+        let ids = self.ids_mut(account_id);
+        if !ids.iter().any(|id| id == message_id) {
+            ids.push(Value::String(message_id.to_string()));
+        }
+    }
+
+    /// The seat's recovery is being handed over: its mailbox goes.
+    pub fn close(&mut self, account_id: &str) {
+        self.seats.remove(account_id);
+    }
 }
 
 /// What the room is told when a seat stops. `reset` is the reset already
@@ -706,7 +753,6 @@ mod tests {
     const SEAT: Seat = Seat {
         name: "Codex Luna",
         account_id: "luna",
-        app_speaker: "Pullcept",
     };
 
     fn said(id: &str, speaker: &str, account: Option<&str>, to: &[&str], content: &str) -> Recorded {
@@ -724,26 +770,40 @@ mod tests {
         said(id, "Master", None, to, &format!("body {id}"))
     }
 
-    fn app(id: &str, content: String) -> Recorded {
-        said(id, "Pullcept", None, &[], &content)
-    }
-
     fn ids(posts: &[Held]) -> Vec<&str> {
         posts.iter().map(|p| p.message_id.as_str()).collect()
     }
 
+    fn strings(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
     #[test]
-    fn a_restart_while_stopped_counts_from_the_first_stop() {
-        // 20:56 the seat stops; posts; the session ends and its memory goes;
-        // 21:54 the restarted seat stops again on the same reset and holds
-        // only what comes after.
+    fn a_resumed_seat_is_stopped_and_asks_at_once() {
+        let mut limit = Limit::resumed(1000);
+        assert!(limit.is_limited());
+        assert_eq!(limit.resets_at(), None);
+        assert!(limit.due(1000));
+        assert!(limit.hold(|| post("a", false)));
+        assert!(!limit.stop(1001, Some(9000)), "already stopped: no second notice");
+        // Still no: held, and asked again on the backoff.
+        assert!(!limit.answer(1000, Answer::Unavailable));
+        assert!(limit.is_limited());
+        assert!(!limit.due(1000 + BACKOFF[0] - 1));
+        assert!(limit.due(1000 + BACKOFF[0]));
+        assert!(limit.answer(1000 + BACKOFF[0], Answer::Allowed));
+        assert_eq!(ids(&limit.release()), ["a"]);
+    }
+
+    #[test]
+    fn the_mailbox_is_its_ids_and_nothing_between_them() {
+        // The seat stopped and held m1; the app went down; m2 was said while
+        // it was down; the relaunched seat, still stopped, held m3.
         let record = vec![
             by_master("before", &["Codex Luna"]),
-            app("stop1", stop_notice("Codex Luna", Some("10月6日 22:45"))),
             by_master("m1", &["Codex Luna"]),
             said("lin", "Claude Lin", Some("lin"), &[], "body lin"),
-            by_master("m2", &[]),
-            app("stop2", stop_notice("Codex Luna", Some("10月6日 22:45"))),
+            by_master("m2", &["Codex Luna"]),
             by_master("m3", &["Codex Luna", "Claude Lin"]),
         ];
         let held = vec![Held {
@@ -753,101 +813,106 @@ mod tests {
             content: "body m3".into(),
             addressed: true,
         }];
-        let posts = recount(&record, &SEAT, held);
-        assert_eq!(ids(&posts), ["m1", "lin", "m2", "m3"]);
+        let posts = mailbox(&record, &SEAT, &strings(&["m1", "lin", "m3"]), held);
+        assert_eq!(ids(&posts), ["m1", "lin", "m3"]);
         assert_eq!(
             posts.iter().filter(|p| p.addressed).map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
             ["m1", "m3"]
         );
+        // Read from the record: its time, not memory's missing one.
+        assert_eq!(posts[2].at.as_deref(), Some("at m3"));
         let text = digest(&posts).unwrap();
-        assert!(text.starts_with("制限中に部屋で 4 件の発言がありました。"));
+        assert!(text.starts_with("制限中に部屋で 3 件の発言がありました。"));
         assert!(text.contains("body m1"));
+        assert!(!text.contains("body m2"));
         assert!(!text.contains("body before"));
-        // The restart's own memory is empty: the record alone carries it.
-        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["m1", "lin", "m2", "m3"]);
+        // The restart's memory is empty: the file alone carries it.
+        assert_eq!(ids(&mailbox(&record, &SEAT, &strings(&["m1", "lin"]), Vec::new())), ["m1", "lin"]);
     }
 
     #[test]
-    fn only_the_current_episode_is_counted() {
-        let record = vec![
-            app("stop0", stop_notice("Codex Luna", Some("10月5日 22:45"))),
-            by_master("old", &["Codex Luna"]),
-            app("rec0", recovery_notice("Codex Luna", 1)),
-            by_master("between", &[]),
-            // A stop whose session ended before any recovery, on another reset.
-            app("stopA", stop_notice("Codex Luna", None)),
-            by_master("a", &[]),
-            app("stopB", stop_notice("Codex Luna", Some("10月6日 22:45"))),
-            by_master("b", &[]),
-            app("stopC", stop_notice("Codex Luna", Some("10月6日 22:45"))),
-            by_master("c", &[]),
-        ];
-        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["b", "c"]);
-    }
-
-    #[test]
-    fn other_seats_notices_are_counted_and_the_seats_own_posts_are_not() {
-        let record = vec![
-            app("stop", stop_notice("Codex Luna", None)),
-            app("other", stop_notice("Codex Sol", None)),
-            said("own", "Codex Luna", Some("luna"), &[], "typed by hand"),
-            said("mcp", "github", Some("gh"), &[], "a notice"),
-        ];
-        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["other", "mcp"]);
-    }
-
-    #[test]
-    fn with_no_stop_notice_on_record_the_memory_stands() {
-        let held = vec![post("a", false), post("b", true)];
-        let record = vec![by_master("x", &[]), app("rec", recovery_notice("Codex Luna", 0))];
-        assert_eq!(recount(&record, &SEAT, held.clone()), held);
-        assert_eq!(recount(&[], &SEAT, held.clone()), held);
-        // A stop notice before the last recovery is a past episode.
-        let record = vec![
-            app("stop", stop_notice("Codex Luna", None)),
-            by_master("x", &[]),
-            app("rec", recovery_notice("Codex Luna", 1)),
-        ];
-        assert_eq!(recount(&record, &SEAT, held.clone()), held);
-    }
-
-    #[test]
-    fn what_memory_held_outside_the_record_is_kept_in_place() {
-        // "early" was said between the stop and its notice; "late" reached
-        // the record after it was read.
-        let record = vec![
-            by_master("early", &[]),
-            app("stop", stop_notice("Codex Luna", None)),
-            by_master("m", &[]),
-        ];
-        let held = vec![post("early", false), post("m", false), post("late", true)];
-        let posts = recount(&record, &SEAT, held);
-        assert_eq!(ids(&posts), ["early", "m", "late"]);
+    fn what_memory_held_outside_the_file_or_the_record_is_kept() {
+        let record = vec![by_master("m", &[]), by_master("n", &[])];
+        // "n" was held but its id did not reach the file; "late" reached the
+        // record after it was read; "gone" is in neither and is left out.
+        let held = vec![post("m", false), post("n", false), post("late", true)];
+        let posts = mailbox(&record, &SEAT, &strings(&["m", "gone"]), held);
+        assert_eq!(ids(&posts), ["m", "n", "late"]);
         assert!(posts[2].addressed);
+        assert_eq!(mailbox(&record, &SEAT, &[], Vec::new()), Vec::new());
     }
 
     #[test]
     fn a_renamed_seat_is_followed_by_its_account() {
-        // Stopped as "Luna", restarted as "Codex Luna".
+        // Held as "Luna", handed over as "Codex Luna".
         let record = vec![
             said("hi", "Luna", Some("luna"), &[], "hello"),
-            app("stop1", stop_notice("Luna", Some("10月6日 22:45"))),
             by_master("m1", &["Luna"]),
-            app("stop2", stop_notice("Codex Luna", Some("10月6日 22:45"))),
             by_master("m2", &["Codex Luna"]),
         ];
-        let posts = recount(&record, &SEAT, Vec::new());
-        assert_eq!(ids(&posts), ["m1", "m2"]);
+        let posts = mailbox(&record, &SEAT, &strings(&["m1", "m2"]), Vec::new());
         assert!(posts.iter().all(|p| p.addressed));
         // A name another account has spoken under is not taken as the seat's.
         let record = vec![
             said("hi", "Luna", Some("luna"), &[], "hello"),
             said("sol", "Luna", Some("sol"), &[], "I am Luna now"),
-            app("stop1", stop_notice("Luna", None)),
             by_master("m1", &["Luna"]),
-            app("stop2", stop_notice("Codex Luna", None)),
-            by_master("m2", &[]),
         ];
-        assert_eq!(ids(&recount(&record, &SEAT, Vec::new())), ["m2"]);
+        let posts = mailbox(&record, &SEAT, &strings(&["m1"]), Vec::new());
+        assert!(!posts[0].addressed);
+    }
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("pullcept-mailbox-test-{}", uuid::Uuid::new_v4()));
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[test]
+    fn the_mailboxes_outlive_a_restart_and_go_at_the_recovery() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("mailboxes").join("topic.json");
+        assert_eq!(Mailboxes::read(&path), Mailboxes::default());
+        let mut boxes = Mailboxes::default();
+        boxes.open("luna");
+        boxes.write(&path).unwrap();
+        // Stopped with nothing held is still a mailbox.
+        assert_eq!(Mailboxes::read(&path).get("luna"), Some(Vec::new()));
+        boxes.push("luna", "a");
+        boxes.push("luna", "b");
+        boxes.push("luna", "a");
+        boxes.push("sol", "c");
+        boxes.write(&path).unwrap();
+        let mut read = Mailboxes::read(&path);
+        assert_eq!(read.get("luna"), Some(strings(&["a", "b"])));
+        assert_eq!(read.get("sol"), Some(strings(&["c"])));
+        assert_eq!(read.get("other"), None);
+        // Opening again keeps what is there.
+        read.open("luna");
+        assert_eq!(read.get("luna"), Some(strings(&["a", "b"])));
+        read.close("luna");
+        read.write(&path).unwrap();
+        assert_eq!(Mailboxes::read(&path).get("luna"), None);
+        read.close("sol");
+        read.write(&path).unwrap();
+        assert!(!path.exists(), "no mailbox left is no file");
+        read.write(&path).unwrap();
+        // A file that is not what this writes is no mailbox.
+        std::fs::write(&path, "[1,2]").unwrap();
+        assert_eq!(Mailboxes::read(&path), Mailboxes::default());
+        std::fs::write(&path, r#"{"luna":"x"}"#).unwrap();
+        let mut odd = Mailboxes::read(&path);
+        assert_eq!(odd.get("luna"), None);
+        odd.push("luna", "a");
+        assert_eq!(odd.get("luna"), Some(strings(&["a"])));
     }
 }

@@ -1027,8 +1027,9 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// (`terminal_input::targets`).
 ///
 /// **A Codex seat stopped on its usage limit is not typed into** (#294): the
-/// post is kept for it (`codex_limit::CodexLimits`) and handed over as one
-/// line when the recovery is confirmed. Every other seat, every Claude Code
+/// post is kept for it (`codex_limit::CodexLimits`), its id written to the
+/// seat's mailbox (#312), and handed over as one line when the recovery is
+/// confirmed. Every other seat, every Claude Code
 /// seat among them, is typed into as before.
 fn type_into_sessions(
     app: &AppHandle,
