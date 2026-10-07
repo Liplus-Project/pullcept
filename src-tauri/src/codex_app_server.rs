@@ -25,7 +25,7 @@
 //! screen is told whenever what it says changes (`seat-activity`). Requests
 //! the server sends are not answered: approvals stay the terminal's.
 
-use mcp_config::codex::activity::Activity;
+use mcp_config::codex::activity::{Activity, Reporter};
 use mcp_config::codex::app_server as plan;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -135,47 +135,20 @@ pub struct Started {
     activity: Activity,
 }
 
-/// What a Codex app-server seat is doing, for its row and the line under the
-/// room (#326). `word` is `None` when the seat says nothing beyond the screen's
-/// own words: no work under way, or the connection to its server gone.
-#[derive(Debug, Clone, serde::Serialize)]
-struct SeatActivity<'a> {
-    topic_id: &'a str,
-    account_id: &'a str,
-    /// The launch's terminal: a relaunch in the same seat is told apart from
-    /// the run before it, whose server may still be going down.
-    pty_id: &'a str,
-    word: Option<&'static str>,
-    line: Option<String>,
-    waiting: bool,
-}
-
-/// The seat a reader tells the screen about, and what it last told it.
+/// The seat a reader tells the screen about (#326). What is sent and when —
+/// what the seat is doing, and whether its server can still be heard — is
+/// `Reporter`'s, which is tested; this only carries it as `seat-activity`.
 struct Seat {
     app: AppHandle,
-    topic_id: String,
-    account_id: String,
-    pty_id: String,
-    shown: Option<mcp_config::codex::activity::Display>,
+    reporter: Reporter,
 }
 
 impl Seat {
-    /// Tell the screen, if what the seat says has changed.
+    /// Tell the screen, if what the seat says or its connection has changed.
     fn tell(&mut self, activity: &Activity) {
-        let now = activity.display();
-        if now == self.shown {
-            return;
+        if let Some(event) = self.reporter.next(activity) {
+            let _ = self.app.emit("seat-activity", event);
         }
-        let payload = SeatActivity {
-            topic_id: &self.topic_id,
-            account_id: &self.account_id,
-            pty_id: &self.pty_id,
-            word: now.as_ref().map(|d| d.word),
-            line: now.as_ref().map(|d| d.line.clone()),
-            waiting: now.as_ref().is_some_and(|d| d.waiting),
-        };
-        let _ = self.app.emit("seat-activity", payload);
-        self.shown = now;
     }
 }
 
@@ -347,7 +320,8 @@ impl Started {
     ///
     /// What it reads is what the seat is doing (#326): the state gathered while
     /// the thread was made is told at once, then each change as it comes. A
-    /// connection that ends tells the screen nothing is known any more.
+    /// connection that ends is told as its own state (`connected: false`), so
+    /// the screen says 様子不明 rather than falling back to 待機.
     pub fn adopt(self, app: &AppHandle, pty_id: &str, topic_id: &str, account_id: &str) {
         let Started {
             server,
@@ -360,10 +334,7 @@ impl Started {
         }
         let mut seat = Seat {
             app: app.clone(),
-            topic_id: topic_id.to_string(),
-            account_id: account_id.to_string(),
-            pty_id: pty_id.to_string(),
-            shown: None,
+            reporter: Reporter::new(topic_id, account_id, pty_id),
         };
         std::thread::spawn(move || {
             seat.tell(&activity);

@@ -628,12 +628,12 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 ### Codex の席は自分の様子を app-server の知らせで知らせる（#326）
 
-**app-server 方式の席では、アプリが席の server のクライアントであり続け、その接続に届く知らせを読む。** 新しい接続も設定も足していない。#299 の接続は、席が生きている間ずっと届くものを読んで捨てていた。#326 からは、それを席ごとの `Activity`（`crates/mcp-config/src/codex/activity.rs`、tauri を持たずテストされる）へ渡し、画面に出す語が変わったときだけ `seat-activity` の事象（`topic_id`・`account_id`・`pty_id`・`word`・`line`・`waiting`）で画面へ送る（`src-tauri/src/codex_app_server.rs`）。何を出すかは「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」。
+**app-server 方式の席では、アプリが席の server のクライアントであり続け、その接続に届く知らせを読む。** 新しい接続も設定も足していない。#299 の接続は、席が生きている間ずっと届くものを読んで捨てていた。#326 からは、それを席ごとの `Activity`（`crates/mcp-config/src/codex/activity.rs`、tauri を持たずテストされる）へ渡し、画面に出す語か接続の有無が変わったときだけ `seat-activity` の事象（`topic_id`・`account_id`・`pty_id`・`connected`・`word`・`line`・`waiting`）で画面へ送る（`src-tauri/src/codex_app_server.rs`）。何を出すかは「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」。
 
 - **読む知らせは、対応 CLI の生成スキーマの名前である**（Codex CLI 0.160.1 の `codex app-server generate-json-schema`、通常版と `--experimental` 版。公式 docs の名前とは違う箇所がある、#324）：`thread/status/changed`、`turn/started`、`turn/completed`、`item/started`、`item/completed`、`thread/closed`。`thread/start` / `thread/resume` の答えの `thread.status` も初めの様子として一度読む。
 - **起動・再開中の知らせも捨てない。** `thread/start` などの答えを待つ間（`Started::call`）に届いた答え以外の知らせも同じ `Activity` へ渡し、端末を繋いだ後の読み手（`adopt`）がそれを引き継ぐ。新しいスレッドの id は `thread/start` の答えで分かるため、それより前に届いたスレッドの知らせは持っておき（256 件まで）、id が決まってから読む。再開では id が先に分かっている。
 - **席のスレッドの知らせだけを読む。** `threadId` が違うもの（サブエージェントのスレッドなど）は読まない。
 - **server からの要求には答えない。** 承認や問いの要求（`id` を持つもの）は読まず、答えもしない。承認は今どおり端末（TUI）が行う。
-- **接続が切れたら何も言わない。** 読み手は切れた時点で「知らない」を一度送って終わる。「待機」は送らない。
+- **接続が切れたことを一つの状態として送る。** 事象は語とは別に `connected` を持つ。読み手は切れた時点で `connected: false` を一度送って終わり、画面は「様子不明」を出す（待機中の切断でも送る。何を送るかは `Reporter` が決め、テストされる）。「待機」は送らない。
 - **席の取り違えを防ぐ。** 事象は起動の端末の id を持ち、画面は同じ席の次の起動の端末へ前の起動の知らせを当てない。
 - **hook 方式の Codex の席と Claude Code の席には無い。** 前者にはこの接続が無く、rollout からの推測は同じ確かさにならない（#324）。どちらも今の語のままである。

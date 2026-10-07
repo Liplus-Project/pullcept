@@ -33,7 +33,7 @@
 
 app-server 方式の Codex の席について、席の server がアプリへ送る知らせから「許可待ち」「答え待ち」と、いま動いている仕事の種類（実行中・編集中・ツール・検索中・要約中・画像生成・画像参照）を参加者パネルの札と会話面の下の一行に出すようにした（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」、「[Codex の席は自分の様子を app-server の知らせで知らせる](3-accounts.md#codex-の席は自分の様子を-app-server-の知らせで知らせる326)」）。hook 方式の Codex の席と Claude Code の席は今の語のままである。
 
-**確かめた範囲:** 知らせの名前と形は、インストール済みの Codex CLI 0.160.1 が生成したスキーマ（`codex app-server generate-json-schema` の通常版と `--experimental` 版）で照合した（`thread/status/changed` の `activeFlags`、`item/started` / `item/completed` の `item.type`、`turn/started` / `turn/completed`、`thread/closed`、`thread/start` / `thread/resume` の答えの `thread.status`）。読み方は `crates/mcp-config/src/codex/activity.rs` のテストが、知らせの JSON を与えて出る語を確かめる——許可の flag が先に始まった item に勝つこと、並列の item、ターン終了と idle での消去、切断の後は何も言わないこと、スレッドが決まる前に届いた知らせを失わないこと、別のスレッドの知らせを読まないこと、コマンドの本文や引数を出さないこと。
+**確かめた範囲:** 知らせの名前と形は、インストール済みの Codex CLI 0.160.1 が生成したスキーマ（`codex app-server generate-json-schema` の通常版と `--experimental` 版）で照合した（`thread/status/changed` の `activeFlags`、`item/started` / `item/completed` の `item.type`、`turn/started` / `turn/completed`、`thread/closed`、`thread/start` / `thread/resume` の答えの `thread.status`）。読み方は `crates/mcp-config/src/codex/activity.rs` のテストが、知らせの JSON を与えて出る語を確かめる——許可の flag が先に始まった item に勝つこと、並列の item、ターン終了と idle での消去、待機中の切断と仕事の途中の切断の両方で `connected: false` の事象が送られること（画面はそれを「様子不明」と出し、「待機」に戻さない）、スレッドが決まる前に届いた知らせを失わないこと、別のスレッドの知らせを読まないこと、コマンドの本文や引数を出さないこと。
 
 **未確認（実際の席では確かめていない）:** 実際の席で知らせが届く順序と間合い。特に、`item/started` から許可の flag が立つまでの間に「実行中」が一瞬出るかどうか、端末（`--remote` の TUI）が始めたターンの知らせが、別のクライアントであるアプリに実際に届くこと（仕様とスキーマでは届く形だが、配信は実測していない）、サブエージェントのスレッドの知らせがアプリに届くかどうか。モデルを呼ばず、稼働中の席へ RPC もしていない。
 

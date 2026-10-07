@@ -236,13 +236,20 @@ interface SessionStats {
  * notifications rather than the terminal: an item's kind and, for a tool, its
  * name — never a command, an argument or a body. `word` is null when the seat
  * says nothing beyond the screen's own words: no work under way, or the
- * connection to its server gone, which is not knowing and not 待機.
+ * connection to its server gone — and `connected` tells those two apart,
+ * since not knowing is not 待機.
  */
 interface SeatActivity {
   topic_id: string;
   account_id: string;
   /** The launch's terminal, so a run that ended cannot speak for the next. */
   pty_id: string;
+  /**
+   * False once the app can no longer hear the seat's server. Not the same as
+   * no word: an idle seat falls back to the screen's own words, 待機 among
+   * them, and a seat that cannot be heard says 様子不明 instead.
+   */
+  connected: boolean;
   /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール… */
   word: string | null;
   /** The longer form, for the line under the room and the badge's title. */
@@ -1221,8 +1228,9 @@ interface SessionView {
    */
   stats: SessionStats | null;
   /**
-   * What the seat's app-server last said it is doing, or null when it said
-   * nothing or this seat has no app-server (#326). Like `stats`, not replayed
+   * What the seat's app-server last said — what it is doing and whether it
+   * can still be heard — or null when this seat has no app-server or has not
+   * reported yet (#326). Like `stats`, not replayed
    * after a reload: what this screen did not see, it does not say.
    */
   activity: SeatActivity | null;
@@ -3121,6 +3129,13 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
   // above for the same reason 待機 does — output arriving is this screen's own
   // observation of a session that is going again.
   if (limitedByUsage(view.stats)) return { word: "制限中", line: "制限中", kind: "" };
+  // The seat's server can no longer be heard (#326). Not 待機: the silence
+  // of the terminal says nothing about whether the seat is waiting on a
+  // prompt or running a command, and the report that would have said so is
+  // gone. Below the words above, which are observed by other means.
+  if (reported && !reported.connected) {
+    return { word: "様子不明", line: "様子不明（app-server との接続が切れた）", kind: "" };
+  }
   return view.silent ? { word: "待機", line: "待機", kind: "" } : NO_WORD;
 }
 
@@ -7349,16 +7364,22 @@ async function main(): Promise<void> {
   });
   // A Codex app-server seat said what it is doing (#326). Keyed on the seat
   // like the report above, dropped for a seat this screen has no terminal for,
-  // and drawn only when the word or its longer form changed — the server sends
-  // one of these on each change, not on every notification.
+  // and drawn only when the word, its longer form or the connection changed —
+  // the server sends one of these on each change, not on every notification.
   await listen<SeatActivity>("seat-activity", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
     if (!view) return;
     // The last run's server going down after this seat was launched again.
     if (view.ptyId !== "" && view.ptyId !== event.payload.pty_id) return;
     const was = view.activity;
-    view.activity = event.payload.word ? event.payload : null;
-    if (was?.word !== view.activity?.word || was?.line !== view.activity?.line || was?.waiting !== view.activity?.waiting) {
+    const now = event.payload;
+    view.activity = now;
+    if (
+      was?.connected !== now.connected ||
+      was?.word !== now.word ||
+      was?.line !== now.line ||
+      was?.waiting !== now.waiting
+    ) {
       renderPanel();
     }
   });

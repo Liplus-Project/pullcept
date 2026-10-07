@@ -31,14 +31,19 @@
 //!
 //! **Nothing outlives what it describes.** A turn's start and end, and a thread
 //! that is no longer active, clear the items and the flags. A connection that
-//! ends clears everything and says nothing more: the app no longer knows, and
-//! not knowing is not 待機.
+//! ends clears everything, and the screen is told so as its own state
+//! (`connected: false`), not as nothing: an idle seat and one whose server can
+//! no longer be heard are different, and only the first may fall back to 待機.
+//!
+//! **What reaches the screen is decided here too** (`Reporter`), so the event
+//! itself is tested: one `seat-activity` per change of what is shown or of the
+//! connection, the first one at once.
 //!
 //! **Nothing sent before the thread is known is lost.** A fresh thread's id is
 //! in the answer to `thread/start`, and its first notifications may come
 //! before that answer. They are held (up to `EARLY_MAX`) and read once the id
 //! is set.
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Notifications held while the thread's id is not yet known. A start sends a
 /// handful; the cap only keeps a server that floods before answering from
@@ -241,8 +246,14 @@ impl Activity {
         self.items.clear();
     }
 
+    /// Whether the server can still be heard. False for good once the
+    /// connection has ended.
+    pub fn connected(&self) -> bool {
+        !self.disconnected
+    }
+
     /// What the seat is doing, or `None` when this says nothing: no work under
-    /// way, or the connection gone.
+    /// way, or the connection gone (`connected` tells the two apart).
     pub fn display(&self) -> Option<Display> {
         if self.disconnected {
             return None;
@@ -259,6 +270,51 @@ impl Activity {
             line.push_str(&format!("ほか {} 件", self.items.len() - 1));
         }
         Some(Display { word: kind.word(), line, waiting: false })
+    }
+}
+
+/// The `seat-activity` events one launch sends the screen: its seat, and what
+/// it last sent.
+#[derive(Debug)]
+pub struct Reporter {
+    topic_id: String,
+    account_id: String,
+    pty_id: String,
+    sent: Option<(bool, Option<Display>)>,
+}
+
+impl Reporter {
+    /// `pty_id` is the launch's terminal, so a relaunch in the same seat is
+    /// told apart from the run before it, whose server may still be going down.
+    pub fn new(topic_id: &str, account_id: &str, pty_id: &str) -> Self {
+        Reporter {
+            topic_id: topic_id.into(),
+            account_id: account_id.into(),
+            pty_id: pty_id.into(),
+            sent: None,
+        }
+    }
+
+    /// The event to send now, or `None` when neither what is shown nor the
+    /// connection changed since the last one. The first call always sends,
+    /// so the screen learns the seat is connected before anything happens.
+    pub fn next(&mut self, activity: &Activity) -> Option<Value> {
+        let now = (activity.connected(), activity.display());
+        if self.sent.as_ref() == Some(&now) {
+            return None;
+        }
+        let (connected, display) = &now;
+        let event = json!({
+            "topic_id": self.topic_id,
+            "account_id": self.account_id,
+            "pty_id": self.pty_id,
+            "connected": connected,
+            "word": display.as_ref().map(|d| d.word),
+            "line": display.as_ref().map(|d| d.line.clone()),
+            "waiting": display.as_ref().is_some_and(|d| d.waiting),
+        });
+        self.sent = Some(now);
+        Some(event)
     }
 }
 
@@ -460,6 +516,64 @@ mod tests {
         assert_eq!(words(&a).unwrap().0, "答え待ち");
         a.snapshot(&json!({"type": "idle"}));
         assert_eq!(a.display(), None);
+    }
+
+    fn reporter() -> Reporter {
+        Reporter::new("topic", "acct", "pty-1")
+    }
+
+    #[test]
+    fn the_first_event_says_connected_and_quiet() {
+        let a = seat();
+        let mut r = reporter();
+        assert_eq!(
+            r.next(&a),
+            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": true, "word": null, "line": null, "waiting": false}))
+        );
+        assert_eq!(r.next(&a), None);
+    }
+
+    #[test]
+    fn idle_then_disconnect_still_sends_the_disconnect() {
+        let mut a = seat();
+        let mut r = reporter();
+        r.next(&a);
+        a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(r.next(&a), None);
+        a.disconnect();
+        assert_eq!(
+            r.next(&a),
+            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": false, "word": null, "line": null, "waiting": false}))
+        );
+        assert_eq!(r.next(&a), None);
+    }
+
+    #[test]
+    fn running_then_disconnect_drops_the_word_and_says_disconnected() {
+        let mut a = seat();
+        let mut r = reporter();
+        r.next(&a);
+        a.feed(&started("c1", command()));
+        assert_eq!(
+            r.next(&a),
+            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": true, "word": "実行中", "line": "コマンド実行中", "waiting": false}))
+        );
+        a.disconnect();
+        assert_eq!(
+            r.next(&a),
+            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": false, "word": null, "line": null, "waiting": false}))
+        );
+    }
+
+    #[test]
+    fn an_unchanged_display_sends_nothing() {
+        let mut a = seat();
+        let mut r = reporter();
+        r.next(&a);
+        a.feed(&started("c1", command()));
+        assert!(r.next(&a).is_some());
+        a.feed(&note("item/commandExecution/outputDelta", json!({"threadId": T, "itemId": "c1", "delta": "x"})));
+        assert_eq!(r.next(&a), None);
     }
 
     #[test]
