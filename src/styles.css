@@ -1772,10 +1772,16 @@ button svg.icon {
    still not the accent, which is what says "oneself" on this surface and would
    be the one colour on this row that already means something else. The name
    keeps the participant's own colour beside it either way. */
-#participants .note[data-kind="active"] {
+#participants .note[data-kind="active"],
+#participants .note[data-kind="waiting"] {
   color: var(--ok);
   background: var(--ok-ground);
 }
+
+/* 許可待ち and 答え待ち, from a Codex app-server seat (#326): stopped on the
+   person, so not an ended utterance and coloured with the busy words, but
+   nothing is moving, so it is the one coloured badge that does not pulse
+   (the pulse below names `active` only). */
 
 /* An account that exists but is not in the room. Dimmed rather than dropped: it
    is still someone, and this list is where the person reads who they have

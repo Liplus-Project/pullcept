@@ -228,6 +228,30 @@ interface SessionStats {
 }
 
 /**
+ * What a Codex app-server seat is doing, as its server told the app (#326).
+ *
+ * Only a seat launched through its own app-server sends this; a Claude Code
+ * seat and a hook-launched Codex seat never do, and keep the four words. The
+ * words are the app's (`mcp_config::codex::activity`), read off structured
+ * notifications rather than the terminal: an item's kind and, for a tool, its
+ * name — never a command, an argument or a body. `word` is null when the seat
+ * says nothing beyond the screen's own words: no work under way, or the
+ * connection to its server gone, which is not knowing and not 待機.
+ */
+interface SeatActivity {
+  topic_id: string;
+  account_id: string;
+  /** The launch's terminal, so a run that ended cannot speak for the next. */
+  pty_id: string;
+  /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール… */
+  word: string | null;
+  /** The longer form, for the line under the room and the badge's title. */
+  line: string | null;
+  /** A wait on the person (許可待ち / 答え待ち) rather than work under way. */
+  waiting: boolean;
+}
+
+/**
  * What kind of participant an account is, declared when it is made.
  *
  * Never inferred from the connection: the room sees only what kind of
@@ -1196,6 +1220,12 @@ interface SessionView {
    * word is read off two of these values (#161).
    */
   stats: SessionStats | null;
+  /**
+   * What the seat's app-server last said it is doing, or null when it said
+   * nothing or this seat has no app-server (#326). Like `stats`, not replayed
+   * after a reload: what this screen did not see, it does not say.
+   */
+  activity: SeatActivity | null;
   /** The pending fall back to silence, or undefined when none is armed. */
   quiet: number | undefined;
 }
@@ -3060,26 +3090,62 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  * measured on the device (an `Enter to confirm` prompt). Both words are three
  * characters or so, inside the width 起動失敗 already costs the name beside it,
  * so neither buys anything back at the panel's 16.5rem (#71).
+ *
+ * A Codex seat launched through its own app-server reports more, and that
+ * report comes first (#326): 許可待ち and 答え待ち, and the kind of work under
+ * way (実行中, 編集中, ツール…). It does not reopen #82 — nothing is read off
+ * the terminal; the server sends the state as data, the way 制限中 arrives. Its
+ * badge words stay within 起動失敗's four characters; the longer form, with a
+ * tool's name, is the badge's title and what the line under the room says.
  */
-function activityNote(name: string, view: SessionView | undefined): string {
-  if (!view || view.ended !== null) return "";
-  if (view.outputting) return awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
+function activityNote(name: string, view: SessionView | undefined): RowWord {
+  if (!view || view.ended !== null) return NO_WORD;
+  // A Codex app-server seat's own report outranks the screen's (#326). It is
+  // structured, not read off the terminal, and it says more: 許可待ち where the
+  // terminal repainting its prompt would say 出力中 and its silence 待機, and
+  // which work is under way where the bytes would say only that they arrived.
+  const reported = view.activity;
+  if (reported?.word) {
+    return {
+      word: reported.word,
+      line: reported.line ?? reported.word,
+      kind: reported.waiting ? "waiting" : "active",
+    };
+  }
+  if (view.outputting) {
+    const word = awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
+    return { word, line: word, kind: "active" };
+  }
   // 制限中 over 待機, because it says what 待機 cannot: which of the silences
   // this is (#161, 決定6, carried over from #149). It loses to the two words
   // above for the same reason 待機 does — output arriving is this screen's own
   // observation of a session that is going again.
-  if (limitedByUsage(view.stats)) return "制限中";
-  return view.silent ? "待機" : "";
-}
-
-/** 考え中… and 出力中: the two words saying an utterance is still under way. */
-function isBusyWord(word: string): boolean {
-  return word === "考え中…" || word === "出力中";
+  if (limitedByUsage(view.stats)) return { word: "制限中", line: "制限中", kind: "" };
+  return view.silent ? { word: "待機", line: "待機", kind: "" } : NO_WORD;
 }
 
 /**
- * The word a row in the room says about what its session is doing, or "" when
- * the row says something else or nothing (#82).
+ * What a row says about its session: the badge's word, the longer form the
+ * line under the room says and the badge's title carries, and the kind its
+ * badge is drawn as.
+ *
+ * `active` is an utterance still under way — 考え中…, 出力中, and the work a
+ * Codex app-server seat reports (#326) — and is what pulses (#307). `waiting`
+ * is a seat stopped on the person, 許可待ち or 答え待ち: not ended either, so it
+ * is coloured and named under the room like the busy words, but it does not
+ * pulse, because nothing is moving. "" is where an utterance has ended.
+ */
+interface RowWord {
+  word: string;
+  line: string;
+  kind: "" | "active" | "waiting";
+}
+
+const NO_WORD: RowWord = { word: "", line: "", kind: "" };
+
+/**
+ * The word a row in the room says about what its session is doing, or no word
+ * when the row says something else or nothing (#82).
  *
  * The branches `memberRow` takes before this one are taken here first, in its
  * order: a row that is oneself, a server, or a launch not back yet does not say
@@ -3087,11 +3153,11 @@ function isBusyWord(word: string): boolean {
  * row's badge and the line under the room (`renderRoomBusy`, #307) both read it
  * here, so the line cannot name a seat the badge does not.
  */
-function rowActivity(row: Member): string {
-  if (!row.participant || row.participant.own) return "";
-  if (row.account?.kind === "mcp" && mcpServerOf(row.account)) return "";
+function rowActivity(row: Member): RowWord {
+  if (!row.participant || row.participant.own) return NO_WORD;
+  if (row.account?.kind === "mcp" && mcpServerOf(row.account)) return NO_WORD;
   const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
-  if (view != null && view.ended === null && view.ptyId === "") return "";
+  if (view != null && view.ended === null && view.ptyId === "") return NO_WORD;
   return activityNote(memberName(row), view);
 }
 
@@ -3119,10 +3185,10 @@ let roomBusyKey = "";
  */
 function renderRoomBusy(rows: Member[]): void {
   const busy = rows.flatMap((row) => {
-    const word = rowActivity(row);
-    if (!isBusyWord(word)) return [];
+    const said = rowActivity(row);
+    if (!said.kind) return [];
     const name = memberName(row);
-    return [{ name, word, colour: speakerColor(name, row.participant!.hue, false) }];
+    return [{ name, word: said.line, colour: speakerColor(name, row.participant!.hue, false) }];
   });
   const key = busy.map((one) => `${one.name}\u0000${one.word}\u0000${one.colour}`).join("\u0001");
   if (key === roomBusyKey) return;
@@ -3221,11 +3287,15 @@ function memberRow(row: Member): HTMLLIElement {
     ({ text: noteText, kind: noteKind, title: noteTitle } = mcpNote(server.view));
   } else if (launching) noteText = "起動中";
   else if (row.participant) {
-    noteText = rowActivity(row);
+    const said = rowActivity(row);
+    noteText = said.word;
     // 待機 and 制限中 both stand where an utterance has ended, so both stay the
     // ground colour; the coloured words are the ones saying one is still under
-    // way (#148 / #149).
-    if (isBusyWord(noteText)) noteKind = "active";
+    // way (#148 / #149), or stopped on the person (#326).
+    noteKind = said.kind;
+    // A Codex app-server seat's longer form, when the badge had to be shorter
+    // than it (#326): ツール on the badge, the tool's name here.
+    if (said.line !== said.word) noteTitle = said.line;
   } else if (failure) {
     noteText = "起動失敗";
     noteKind = "error";
@@ -5198,6 +5268,7 @@ function openView(account: Account, topicId: string, running?: RunningSession): 
     // message, so the values arrive on their own (#155) — and 制限中 arrives
     // with them, since the word is read off two of these values (#161).
     stats: null,
+    activity: null,
     quiet: undefined,
   };
 
@@ -7275,6 +7346,21 @@ async function main(): Promise<void> {
     view.stats = event.payload;
     if (view === shownView()) renderSessionStats();
     if (limitedByUsage(view.stats) !== was) renderPanel();
+  });
+  // A Codex app-server seat said what it is doing (#326). Keyed on the seat
+  // like the report above, dropped for a seat this screen has no terminal for,
+  // and drawn only when the word or its longer form changed — the server sends
+  // one of these on each change, not on every notification.
+  await listen<SeatActivity>("seat-activity", (event) => {
+    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
+    if (!view) return;
+    // The last run's server going down after this seat was launched again.
+    if (view.ptyId !== "" && view.ptyId !== event.payload.pty_id) return;
+    const was = view.activity;
+    view.activity = event.payload.word ? event.payload : null;
+    if (was?.word !== view.activity?.word || was?.line !== view.activity?.line || was?.waiting !== view.activity?.waiting) {
+      renderPanel();
+    }
   });
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and

@@ -1987,7 +1987,7 @@ fn launch_codex_app_server(
     };
     let thread_id = started.thread_id.clone();
     let url = started.url.clone();
-    started.adopt(&app, &pty_id);
+    started.adopt(&app, &pty_id, topic_id, &account.id);
     Ok(StartedSession {
         launch_id: None,
         native_id: Some(thread_id),

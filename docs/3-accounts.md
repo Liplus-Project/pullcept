@@ -625,3 +625,15 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 **app-server へは、問い合わせのたびに `codex app-server` を一つ起動し、stdio で聞く。** 送るのは一行一つの JSON で、`initialize`・`initialized`・`account/rateLimits/read` の三つだけである。会話（thread）は始めず、モデルは呼ばない。標準入力を閉じればプロセスは終わる（2026-10-05、0.160.0 で実測。全体で 0.5 秒未満）。20 秒で答えが無ければプロセスの木ごと止め、「応答なし」とする。起動の行は席のアカウントの起動コマンドに `app-server` を付けたもの（`.exe` 以外は `cmd.exe /C` 経由）で、席の環境変数・作業ディレクトリ・`CODEX_HOME` をそのまま渡す——聞かれるのはその席のアカウントである。共有 daemon の AF_UNIX ソケット（`~/.codex/app-server-control/app-server-control.sock`）でも聞ける（#290 で実測）が、採らない：Rust の標準ライブラリは Windows で AF_UNIX を持たず、ソケットは WebSocket の枠付けを要し、daemon は起動時の環境を全クライアントで共有するため席ごとのアカウントを区別できない。daemon を起動させる副作用も持たない。
 
 **読み方とその判断はアプリから切り離して置く。** rollout の行から止まりと解除時刻を読むこと、app-server の答えの読み方、止まり・問い合わせの予定・預かり・解除の状態、受け箱のファイルと受け箱からのまとめ（`Mailboxes`・`mailbox`）、一通の文面は `crates/mcp-config`（`codex::limit`）にあり、テストで確かめる。受け箱の置き場所とトピックと一緒に消すことは `crates/topic-index`（`mailboxes_path`・`delete`）にある。端末への打ち込みで預かるかどうかを決めるのは `room::type_into_sessions`、問い合わせ・知らせ・受け箱の読み書き・起動のときの確認（`Limiter::open`）は `src-tauri/src/codex_limit.rs`、見張りは五欄と同じ `codex_status.rs` の一本である。
+
+### Codex の席は自分の様子を app-server の知らせで知らせる（#326）
+
+**app-server 方式の席では、アプリが席の server のクライアントであり続け、その接続に届く知らせを読む。** 新しい接続も設定も足していない。#299 の接続は、席が生きている間ずっと届くものを読んで捨てていた。#326 からは、それを席ごとの `Activity`（`crates/mcp-config/src/codex/activity.rs`、tauri を持たずテストされる）へ渡し、画面に出す語が変わったときだけ `seat-activity` の事象（`topic_id`・`account_id`・`pty_id`・`word`・`line`・`waiting`）で画面へ送る（`src-tauri/src/codex_app_server.rs`）。何を出すかは「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」。
+
+- **読む知らせは、対応 CLI の生成スキーマの名前である**（Codex CLI 0.160.1 の `codex app-server generate-json-schema`、通常版と `--experimental` 版。公式 docs の名前とは違う箇所がある、#324）：`thread/status/changed`、`turn/started`、`turn/completed`、`item/started`、`item/completed`、`thread/closed`。`thread/start` / `thread/resume` の答えの `thread.status` も初めの様子として一度読む。
+- **起動・再開中の知らせも捨てない。** `thread/start` などの答えを待つ間（`Started::call`）に届いた答え以外の知らせも同じ `Activity` へ渡し、端末を繋いだ後の読み手（`adopt`）がそれを引き継ぐ。新しいスレッドの id は `thread/start` の答えで分かるため、それより前に届いたスレッドの知らせは持っておき（256 件まで）、id が決まってから読む。再開では id が先に分かっている。
+- **席のスレッドの知らせだけを読む。** `threadId` が違うもの（サブエージェントのスレッドなど）は読まない。
+- **server からの要求には答えない。** 承認や問いの要求（`id` を持つもの）は読まず、答えもしない。承認は今どおり端末（TUI）が行う。
+- **接続が切れたら何も言わない。** 読み手は切れた時点で「知らない」を一度送って終わる。「待機」は送らない。
+- **席の取り違えを防ぐ。** 事象は起動の端末の id を持ち、画面は同じ席の次の起動の端末へ前の起動の知らせを当てない。
+- **hook 方式の Codex の席と Claude Code の席には無い。** 前者にはこの接続が無く、rollout からの推測は同じ確かさにならない（#324）。どちらも今の語のままである。

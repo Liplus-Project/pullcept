@@ -17,7 +17,15 @@
 //! terminal and taken down when the terminal is no longer running; the app's
 //! close sweeps every one (`stop_all`); and on Windows each server is placed in
 //! a job object that ends its whole tree if the app itself goes away first.
+//!
+//! **What the seat is doing is read off the same connection** (#326). Every
+//! notification the server sends the app — while the thread is being started
+//! or resumed (`Started::call`) and for the life of the seat after (`adopt`) —
+//! is fed to the seat's `Activity` (`mcp_config::codex::activity`), and the
+//! screen is told whenever what it says changes (`seat-activity`). Requests
+//! the server sends are not answered: approvals stay the terminal's.
 
+use mcp_config::codex::activity::Activity;
 use mcp_config::codex::app_server as plan;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -28,7 +36,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream, Message, WebSocket,
 };
@@ -123,6 +131,52 @@ pub struct Started {
     /// The thread was made by this launch, not resumed.
     pub created: bool,
     next_id: u64,
+    /// What the seat is doing, fed from the first message on (#326).
+    activity: Activity,
+}
+
+/// What a Codex app-server seat is doing, for its row and the line under the
+/// room (#326). `word` is `None` when the seat says nothing beyond the screen's
+/// own words: no work under way, or the connection to its server gone.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SeatActivity<'a> {
+    topic_id: &'a str,
+    account_id: &'a str,
+    /// The launch's terminal: a relaunch in the same seat is told apart from
+    /// the run before it, whose server may still be going down.
+    pty_id: &'a str,
+    word: Option<&'static str>,
+    line: Option<String>,
+    waiting: bool,
+}
+
+/// The seat a reader tells the screen about, and what it last told it.
+struct Seat {
+    app: AppHandle,
+    topic_id: String,
+    account_id: String,
+    pty_id: String,
+    shown: Option<mcp_config::codex::activity::Display>,
+}
+
+impl Seat {
+    /// Tell the screen, if what the seat says has changed.
+    fn tell(&mut self, activity: &Activity) {
+        let now = activity.display();
+        if now == self.shown {
+            return;
+        }
+        let payload = SeatActivity {
+            topic_id: &self.topic_id,
+            account_id: &self.account_id,
+            pty_id: &self.pty_id,
+            word: now.as_ref().map(|d| d.word),
+            line: now.as_ref().map(|d| d.line.clone()),
+            waiting: now.as_ref().is_some_and(|d| d.waiting),
+        };
+        let _ = self.app.emit("seat-activity", payload);
+        self.shown = now;
+    }
 }
 
 /// A fresh token: two v4 UUIDs (244 random bits), held only in memory and the
@@ -261,6 +315,9 @@ impl Started {
                 continue;
             };
             if value["id"].as_u64() != Some(id) || value.get("method").is_some() {
+                // Not this answer: a notification sent while the thread was
+                // being made is the seat's first state, not noise (#326).
+                self.activity.feed(&value);
                 continue;
             }
             if let Some(error) = value.get("error") {
@@ -287,12 +344,44 @@ impl Started {
     /// for the life of the seat, reading what the server sends so it never
     /// waits on this connection, and the server is stopped once the terminal
     /// has ended.
-    pub fn adopt(self, app: &AppHandle, pty_id: &str) {
-        let Started { server, mut socket, .. } = self;
+    ///
+    /// What it reads is what the seat is doing (#326): the state gathered while
+    /// the thread was made is told at once, then each change as it comes. A
+    /// connection that ends tells the screen nothing is known any more.
+    pub fn adopt(self, app: &AppHandle, pty_id: &str, topic_id: &str, account_id: &str) {
+        let Started {
+            server,
+            mut socket,
+            mut activity,
+            ..
+        } = self;
         if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
             let _ = stream.set_read_timeout(None);
         }
-        std::thread::spawn(move || while socket.read().is_ok() {});
+        let mut seat = Seat {
+            app: app.clone(),
+            topic_id: topic_id.to_string(),
+            account_id: account_id.to_string(),
+            pty_id: pty_id.to_string(),
+            shown: None,
+        };
+        std::thread::spawn(move || {
+            seat.tell(&activity);
+            loop {
+                match socket.read() {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            activity.feed(&value);
+                            seat.tell(&activity);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            activity.disconnect();
+            seat.tell(&activity);
+        });
         app.state::<CodexServers>()
             .servers
             .lock()
@@ -337,6 +426,7 @@ pub fn start(request: Request) -> Result<Started, String> {
         thread_id: String::new(),
         created: false,
         next_id: 0,
+        activity: Activity::new(),
     };
     match prepare(&mut started, &request) {
         Ok(()) => Ok(started),
@@ -364,6 +454,7 @@ fn prepare(started: &mut Started, request: &Request) -> Result<(), String> {
     let result = match request.resume {
         Some(id) => {
             started.thread_id = id.to_string();
+            started.activity.set_thread(id);
             started.call(
                 "thread/resume",
                 plan::resume_params(id, &cwd, request.instructions, request.settings),
@@ -380,6 +471,10 @@ fn prepare(started: &mut Started, request: &Request) -> Result<(), String> {
     }
     started.created = request.resume.is_none();
     started.thread_id = id.clone();
+    // What was held for a thread not yet named is read now, then the answer's
+    // own status, which is later than any of it (#326).
+    started.activity.set_thread(&id);
+    started.activity.snapshot(&result["thread"]["status"]);
     plan::check_settings(&result, request.settings)?;
     if started.created {
         // A new thread has no rollout until something is recorded, and the
