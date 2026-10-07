@@ -406,6 +406,77 @@ pub fn save_attachment(
     Err(format!("Too many attachments named {name} in this topic"))
 }
 
+/// How large an attachment the screen is handed to draw, in bytes (#318).
+/// Larger than this and the post shows the file's chip instead of the
+/// picture: a thumbnail is not worth carrying that much across.
+pub const ATTACHMENT_VIEW_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The file a post's path names, if it is an attachment of this room: a file
+/// at `{dir}/attachments/{topic}/{name}` once every link on the way is followed
+/// (#318).
+///
+/// The screen draws what a post's `添付:` block names, and a post can be
+/// written by anyone in the room. So the path is not trusted for what it says:
+/// both it and the attachments folder are resolved to what they really are
+/// (`canonicalize`, which follows symlinks and junctions and folds `..`), and
+/// the path is taken only when what it resolves to lies inside the folder,
+/// exactly one topic folder down, and is a file. A link inside the folder that
+/// leads out of it resolves outside and is refused.
+///
+/// The resolved path is what is answered, so whoever opens it next opens what
+/// was checked and not the spelling that was handed in.
+pub fn resolve_attachment(dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("Not an attachment: the path is not absolute".to_string());
+    }
+    let root = std::fs::canonicalize(dir.join(ATTACHMENTS_DIR))
+        .map_err(|e| format!("Failed to resolve the attachments dir: {e}"))?;
+    let target =
+        std::fs::canonicalize(path).map_err(|e| format!("Failed to resolve the attachment: {e}"))?;
+    let inside = target
+        .strip_prefix(&root)
+        .map_err(|_| "Not an attachment: the path is outside the attachments dir".to_string())?;
+    let depth = inside
+        .components()
+        .filter(|part| matches!(part, std::path::Component::Normal(_)))
+        .count();
+    if depth != 2 || inside.components().count() != 2 {
+        return Err("Not an attachment: the path is not one topic's file".to_string());
+    }
+    let meta = std::fs::metadata(&target)
+        .map_err(|e| format!("Failed to read the attachment: {e}"))?;
+    if !meta.is_file() {
+        return Err("Not an attachment: the path is not a file".to_string());
+    }
+    Ok(target)
+}
+
+/// The bytes of the attachment a post's path names (#318), for the screen to
+/// draw. Only what [`resolve_attachment`] takes is read, and nothing over
+/// [`ATTACHMENT_VIEW_MAX_BYTES`].
+pub fn read_attachment(dir: &Path, path: &Path) -> Result<Vec<u8>, String> {
+    let target = resolve_attachment(dir, path)?;
+    let mut file =
+        std::fs::File::open(&target).map_err(|e| format!("Failed to open the attachment: {e}"))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("Failed to read the attachment: {e}"))?
+        .len();
+    if len > ATTACHMENT_VIEW_MAX_BYTES {
+        return Err("The attachment is too large to draw".to_string());
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(&mut file, ATTACHMENT_VIEW_MAX_BYTES + 1),
+        &mut bytes,
+    )
+    .map_err(|e| format!("Failed to read the attachment: {e}"))?;
+    if bytes.len() as u64 > ATTACHMENT_VIEW_MAX_BYTES {
+        return Err("The attachment is too large to draw".to_string());
+    }
+    Ok(bytes)
+}
+
 /// A title from the opening of the first thing said in the topic.
 ///
 /// The first line, whitespace collapsed, cut at `TITLE_CHARS`. A list of
@@ -1039,6 +1110,104 @@ mod tests {
 
         assert!(!mailboxes_path(scratch.path(), &gone).exists());
         assert!(mailboxes_path(scratch.path(), &kept).exists());
+    }
+
+    /// What was saved under a topic is read back for the screen, and through
+    /// the path the post carries (#318).
+    #[test]
+    fn a_saved_attachment_reads_back() {
+        let scratch = Scratch::new();
+        let topic = Uuid::new_v4().to_string();
+        let saved = save_attachment(scratch.path(), &topic, "image.png", &mut &b"png"[..])
+            .expect("save");
+        assert_eq!(read_attachment(scratch.path(), &saved).expect("read"), b"png");
+    }
+
+    /// A path a post names that is not under the attachments folder is not
+    /// read, however it is spelled: outright elsewhere, climbing out with `..`,
+    /// the folder itself, a topic's folder, or relative.
+    #[test]
+    fn a_path_outside_the_attachments_is_refused() {
+        let scratch = Scratch::new();
+        let topic = Uuid::new_v4().to_string();
+        let saved = save_attachment(scratch.path(), &topic, "a.txt", &mut &b"a"[..]).expect("save");
+        let secret = scratch.path().join("secret.txt");
+        std::fs::write(&secret, b"secret").expect("write");
+        let climbing = attachments_path(scratch.path(), &topic).join("..").join("..").join("secret.txt");
+        let folder = attachments_path(scratch.path(), &topic);
+
+        for path in [
+            secret.clone(),
+            climbing,
+            scratch.path().join(ATTACHMENTS_DIR),
+            folder,
+            PathBuf::from("a.txt"),
+        ] {
+            assert!(read_attachment(scratch.path(), &path).is_err(), "{path:?} was read");
+        }
+        assert!(read_attachment(scratch.path(), &saved).is_ok());
+    }
+
+    /// A file one folder further down than a topic's is not one of its
+    /// attachments; nothing the app saves sits there.
+    #[test]
+    fn a_file_deeper_than_a_topic_folder_is_refused() {
+        let scratch = Scratch::new();
+        let deeper = attachments_path(scratch.path(), "t").join("inner");
+        std::fs::create_dir_all(&deeper).expect("dir");
+        std::fs::write(deeper.join("a.txt"), b"a").expect("write");
+        assert!(read_attachment(scratch.path(), &deeper.join("a.txt")).is_err());
+    }
+
+    /// A junction inside the attachments folder that leads out of it is not a
+    /// way out: the path resolves to where the junction goes, and that is
+    /// outside. Made with `mklink /J`, which needs no privilege; skipped where
+    /// it cannot be made.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_out_of_the_attachments_is_refused() {
+        let scratch = Scratch::new();
+        let outside = scratch.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("dir");
+        std::fs::write(outside.join("secret.png"), b"secret").expect("write");
+        std::fs::create_dir_all(scratch.path().join(ATTACHMENTS_DIR)).expect("dir");
+        let junction = attachments_path(scratch.path(), "t");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("skipped: mklink /J was not available");
+            return;
+        }
+        let result = read_attachment(scratch.path(), &junction.join("secret.png"));
+        std::fs::remove_dir(&junction).ok();
+        assert!(result.is_err());
+    }
+
+    /// A symlink inside a topic's folder that names a file outside resolves
+    /// to that file, and is refused. Skipped where a symlink cannot be made
+    /// (Windows without the privilege).
+    #[test]
+    fn a_symlink_out_of_the_attachments_is_refused() {
+        let scratch = Scratch::new();
+        let secret = scratch.path().join("secret.png");
+        std::fs::write(&secret, b"secret").expect("write");
+        let folder = attachments_path(scratch.path(), "t");
+        std::fs::create_dir_all(&folder).expect("dir");
+        let link = folder.join("link.png");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&secret, &link).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&secret, &link).is_ok();
+        if !made {
+            eprintln!("skipped: a symlink could not be made");
+            return;
+        }
+        assert!(read_attachment(scratch.path(), &link).is_err());
     }
 
     /// A topic nothing was attached to has no folder, and deleting it is not a
