@@ -4781,43 +4781,26 @@ function scheduleResetTick(stats: SessionStats | null, now: number): void {
  * how much. At 100% or over the bar takes the danger colour, the line 制限中
  * stands on (#161).
  *
- * The 5-hour and weekly rows (`reset` given, a text or `null`) are laid out as
- * Claude Desktop lays them out (#320): the reset text and the number on one
- * line at the right, the bar under them across the whole width. The reset text
- * (`resetIn`, `resetAt`) is left out when there is none, and on a row reading
- * `—`. Where the line is too narrow the reset text gives way with an ellipsis,
- * the whole of it kept in its title; the number never does.
- *
- * The context row (`reset` not given) keeps the bar and the number on one line.
+ * Laid out as Claude Desktop lays it out (#320): the reset text, when there is
+ * one, and the number make one line at the right of the label; the bar is a
+ * line of its own under them, across the panel (`.usage-row` in the styles).
+ * `reset` is given for the 5-hour and weekly rows (`resetIn`, `resetAt`) and is
+ * left out on a row reading `—`. Where the line is too narrow the reset text
+ * gives way with an ellipsis, the whole of it kept in its title; the number
+ * never does.
  */
-function renderUsage(
-  cell: HTMLElement,
-  value: number | null,
-  reset?: string | null,
-): void {
-  const stacked = reset !== undefined;
-  cell.classList.toggle("stacked", stacked);
+function renderUsage(cell: HTMLElement, value: number | null, reset: string | null = null): void {
+  const line = document.createElement("span");
+  line.className = "line";
   const text = document.createElement("span");
   text.className = "value";
   text.textContent = usedPercent(value);
   if (value === null) {
-    cell.replaceChildren(text);
+    line.appendChild(text);
+    cell.replaceChildren(line);
     return;
   }
-  const meter = document.createElement("span");
-  meter.className = "meter";
-  const fill = document.createElement("span");
-  fill.className = "fill";
-  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
-  if (value >= 100) fill.dataset.kind = "error";
-  meter.appendChild(fill);
-  if (!stacked) {
-    cell.replaceChildren(meter, text);
-    return;
-  }
-  const line = document.createElement("span");
-  line.className = "line";
-  if (reset) {
+  if (reset !== null) {
     const until = document.createElement("span");
     until.className = "reset";
     until.textContent = reset;
@@ -4825,6 +4808,13 @@ function renderUsage(
     line.appendChild(until);
   }
   line.appendChild(text);
+  const meter = document.createElement("span");
+  meter.className = "meter";
+  const fill = document.createElement("span");
+  fill.className = "fill";
+  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
+  if (value >= 100) fill.dataset.kind = "error";
+  meter.appendChild(fill);
   cell.replaceChildren(line, meter);
 }
 

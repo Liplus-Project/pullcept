@@ -418,17 +418,24 @@
                  動いたときにだけ届く——止まっている間は最後の値のままであ
                  り、届いていない席は「—」である。空欄にはしない。0% と、
                  まだ知らないことは別である。三つの使用率は数と棒で出す
-                 (#225)。 -->
+                 (#225)。使用率の行は Claude デスクトップと同じく、名前と数
+                 を 1 行目に、棒を 2 行目にパネルの全幅で並べる (#320)。 -->
             <dt>モデル</dt>
             <dd id="session-model">—</dd>
             <dt>エフォート</dt>
             <dd id="session-effort">—</dd>
-            <dt>5 時間</dt>
-            <dd id="session-five-hour" class="usage">—</dd>
-            <dt>週次</dt>
-            <dd id="session-seven-day" class="usage">—</dd>
-            <dt>コンテキスト</dt>
-            <dd id="session-context" class="usage">—</dd>
+            <div class="usage-row">
+              <dt>5 時間</dt>
+              <dd id="session-five-hour" class="usage">—</dd>
+            </div>
+            <div class="usage-row">
+              <dt>週次</dt>
+              <dd id="session-seven-day" class="usage">—</dd>
+            </div>
+            <div class="usage-row">
+              <dt>コンテキスト</dt>
+              <dd id="session-context" class="usage">—</dd>
+            </div>
           </dl>
           <details class="facts-more">
             <summary>詳細</summary>
