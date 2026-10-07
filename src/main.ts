@@ -218,6 +218,13 @@ interface SessionStats {
    * percentages as before (#161).
    */
   limited: boolean | null;
+  /**
+   * When the 5-hour and weekly windows reset, as Unix seconds (#306), read off
+   * the same window as the percentage. Shown under those two rows as the time
+   * left (`resetIn`); null when the CLI did not say.
+   */
+  five_hour_resets_at: number | null;
+  seven_day_resets_at: number | null;
 }
 
 /**
@@ -4327,14 +4334,82 @@ function usedPercent(value: number | null): string {
  * the session runs, so these rows stand at the last thing that was reported
  * (decision 4); a row blanked on silence would say the session stopped using a
  * context window it is still holding.
+ *
+ * The one exception is the time left until a window resets (#306): it is
+ * counted down against the clock, not against reports, and is taken off once
+ * the reset passes (`resetIn`, `scheduleResetTick`).
  */
 function renderSessionStats(): void {
   const stats = shownView()?.stats ?? null;
+  const now = Date.now();
   statsEls.model.textContent = stats?.model ?? "—";
   statsEls.effort.textContent = stats?.effort ?? "—";
-  renderUsage(statsEls.five_hour, stats?.five_hour ?? null);
-  renderUsage(statsEls.seven_day, stats?.seven_day ?? null);
+  renderUsage(
+    statsEls.five_hour,
+    stats?.five_hour ?? null,
+    resetIn(stats?.five_hour_resets_at ?? null, now),
+  );
+  renderUsage(
+    statsEls.seven_day,
+    stats?.seven_day ?? null,
+    resetIn(stats?.seven_day_resets_at ?? null, now),
+  );
   renderUsage(statsEls.context, stats?.context ?? null);
+  scheduleResetTick(stats, now);
+}
+
+/**
+ * The time left until a window resets, as the line under its row says it
+ * (#306): `4時間10分後にリセット`, the form Claude Desktop shows.
+ *
+ * Counted in whole minutes, rounded up, so the line never says 0分 while the
+ * window is still running. A day or more drops the minutes, which nobody reads
+ * a weekly window that closely for.
+ *
+ * `null` — no line — when no reset was reported, and once the reset has
+ * passed. The value is not shown stale: the window has started over, and what
+ * the next report says about it is the CLI's to tell.
+ */
+function resetIn(resetsAt: number | null, now: number): string | null {
+  if (resetsAt === null) return null;
+  const left = resetsAt * 1000 - now;
+  if (!(left > 0)) return null;
+  const minutes = Math.ceil(left / 60_000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  let text: string;
+  if (days > 0) text = hours > 0 ? `${days}日${hours}時間` : `${days}日`;
+  else if (hours > 0) text = rest > 0 ? `${hours}時間${rest}分` : `${hours}時間`;
+  else text = `${rest}分`;
+  return `${text}後にリセット`;
+}
+
+/** The timer that redraws the rows when a reset line next changes (#306). */
+let resetTick: number | null = null;
+
+/**
+ * Redraw the rows at the next moment one of their reset lines changes: when
+ * the time left of either window next crosses a whole minute, which is also
+ * the moment a passed reset leaves the screen. One timer, for the pane on the
+ * glass; nothing is scheduled while no reset is counting down.
+ */
+function scheduleResetTick(stats: SessionStats | null, now: number): void {
+  if (resetTick !== null) {
+    window.clearTimeout(resetTick);
+    resetTick = null;
+  }
+  const lefts = [stats?.five_hour_resets_at, stats?.seven_day_resets_at]
+    .filter((at): at is number => typeof at === "number")
+    .map((at) => at * 1000 - now)
+    .filter((left) => left > 0);
+  if (lefts.length === 0) return;
+  const next = Math.min(...lefts.map((left) => left % 60_000 || 60_000));
+  // A little past the crossing, so the redraw lands on the far side of it.
+  resetTick = window.setTimeout(() => {
+    resetTick = null;
+    renderSessionStats();
+  }, next + 50);
 }
 
 /**
@@ -4345,8 +4420,11 @@ function renderSessionStats(): void {
  * is not, because a spend limit can go past 100% and the number is what says by
  * how much. At 100% or over the bar takes the danger colour, the line 制限中
  * stands on (#161).
+ *
+ * `reset`, when given, is a third line under the two: the time left until the
+ * window resets (#306, `resetIn`). Not shown on a row reading `—`.
  */
-function renderUsage(cell: HTMLElement, value: number | null): void {
+function renderUsage(cell: HTMLElement, value: number | null, reset: string | null = null): void {
   const text = document.createElement("span");
   text.className = "value";
   text.textContent = usedPercent(value);
@@ -4361,7 +4439,16 @@ function renderUsage(cell: HTMLElement, value: number | null): void {
   fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
   if (value >= 100) fill.dataset.kind = "error";
   meter.appendChild(fill);
-  cell.replaceChildren(meter, text);
+  if (reset === null) {
+    cell.replaceChildren(meter, text);
+    return;
+  }
+  // The time left until the window resets, on a line of its own under the bar
+  // (#306): the row keeps the width its bar and number had.
+  const until = document.createElement("span");
+  until.className = "reset";
+  until.textContent = reset;
+  cell.replaceChildren(meter, text, until);
 }
 
 /**
