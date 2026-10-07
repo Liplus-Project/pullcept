@@ -1514,11 +1514,15 @@ async fn read_hook(
         // nothing else. The event is the path's, not the body's — the body is
         // drained above so the CLI gets a clean answer, and is not read.
         // Nothing reaches the screen until the probe has said the hooks arrive.
+        // The same line goes to stderr and to `logs/hook-probe.log`, because a
+        // release build has no stderr to read (`room_log::append_hook_probe`).
         if let Some((event, room_id, account_id)) = &activity {
-            eprintln!(
+            let line = format!(
                 "[hook-probe] {event} room={room_id} account={account_id} at={}",
                 now_iso()
             );
+            eprintln!("{line}");
+            room_log::append_hook_probe(app, &line);
         }
     }
 
