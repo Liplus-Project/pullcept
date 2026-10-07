@@ -2042,13 +2042,38 @@ button svg.icon {
   min-width: 2.6em;
 }
 
-/* The time left until the 5-hour or weekly window resets (#306), as Claude
-   Desktop says it: a quiet line of its own under the bar and the number. */
+/* The 5-hour and weekly rows, as Claude Desktop lays them out (#320): the
+   reset text and the number on one line at the right, the bar under them
+   across the whole width. */
+#participants dd.usage.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.2rem;
+}
+
+#participants dd.usage.stacked .line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+#participants dd.usage.stacked .meter {
+  flex: none;
+}
+
+/* The reset text (#306, #320) is the part that gives way on a narrow line: it
+   shrinks to an ellipsis, the whole of it in its title, and the number keeps
+   its width. */
 #participants dd.usage .reset {
-  flex: 0 0 100%;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 0.7rem;
-  text-align: right;
 }
 
 #participants dt {
