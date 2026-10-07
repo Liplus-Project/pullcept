@@ -707,16 +707,22 @@
                      （`GH_TOKEN=github_pat...Nx4h`）。
 
                      出たままの行は、保存しても元の値を保つ。値を入れ直す必要が
-                     あるのは、変えたい行だけである。行を消せば変数も消える。 -->
+                     あるのは、変えたい行だけである。行を消せば変数も消える。
+
+                     見出しを上、欄を下に置き、欄は項目の幅と高さを使い切る
+                     （#322、見本は Claude デスクトップの「ローカル環境を編集」）。
+                     この項目の欄はこれ一つであり、横に見出しを置けば、読む行の
+                     幅をその分だけ削るだけになる。 -->
                 <label class="field env">
                   環境変数
                   <textarea
                     id="dialog-env"
-                    rows="3"
+                    rows="10"
                     spellcheck="false"
                     placeholder="例: GH_CONFIG_DIR=C:\Users\me\.config\gh-lin"
                   ></textarea>
                 </label>
+                <p class="env-hint">1 行に 1 つ、名前=値 の形で書きます。</p>
               </section>
 
               <!-- The local MCP server an `mcp` account is (#193). What the settings

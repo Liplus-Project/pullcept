@@ -2440,10 +2440,21 @@ button svg.icon {
   font-size: 0.78rem;
 }
 
-/* One variable per line, so the label sits at the top of the lines rather than
-   in the middle of them, and the box grows downward only (#163). */
-#account-dialog .field.env {
-  align-items: start;
+/* 環境変数 (#322): the one field of its section, so its name sits above the box
+   at every width rather than beside it, and the box takes the section's width
+   and the height left under the name and the line below — never fewer than ten
+   lines. The section is stretched to the body's height for the box to grow
+   into; past that the body scrolls, as for any other section. Through `.pane`
+   so it outranks the narrow window's field rule, which it would otherwise tie. */
+#account-dialog #dialog-section-env {
+  min-height: 100%;
+}
+
+#account-dialog .pane .field.env {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+  gap: 0.35rem;
 }
 
 #account-dialog #dialog-env,
@@ -2451,6 +2462,20 @@ button svg.icon {
   resize: vertical;
   white-space: pre;
   overflow-x: auto;
+}
+
+/* Grows from its ten rows into the section; a drag still makes it taller. */
+#account-dialog #dialog-env {
+  flex: 1 0 auto;
+  line-height: 1.5;
+  min-height: calc(15em + 0.6rem + 2px);
+}
+
+#account-dialog .env-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.6;
 }
 
 /* The image field (#236): the circle as the room will draw it, then 選ぶ and
