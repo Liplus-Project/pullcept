@@ -97,6 +97,7 @@ impl ClaudeLimits {
             } else {
                 Some("claude-parent".into())
             },
+            pty_id: None,
             five_hour_resets_at: None,
             seven_day_resets_at: None,
         };
@@ -175,6 +176,7 @@ impl ClaudeLimits {
             } else {
                 Some("claude-parent".into())
             };
+            stats.pty_id = e.pty.clone();
             e.stats = stats;
         }
         if e.pty.is_some() {
@@ -227,6 +229,7 @@ impl ClaudeLimits {
             .filter(|e| e.nonce == nonce)
         {
             e.pty = Some(pty.into());
+            e.stats.pty_id = Some(pty.into());
             e.stats.clone().emit(app);
         }
     }

@@ -6,8 +6,8 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-const functions = source.statements.filter(s => ts.isFunctionDeclaration(s) && ["activityNote", "limitedByUsage"].includes(s.name?.text));
-assert.equal(functions.length, 2);
+const functions = source.statements.filter(s => ts.isFunctionDeclaration(s) && ["activityNote", "limitedByUsage", "statsForView"].includes(s.name?.text));
+assert.equal(functions.length, 3);
 const compiled = ts.transpileModule(functions.map(s => s.getText(source)).join("\n"), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const context = vm.createContext({NO_WORD:{word:"",line:"",kind:""},awaiting:new Map()});
 vm.runInContext(compiled, context);
@@ -34,4 +34,13 @@ test("Codex reported work, permission waiting and output keep their existing pri
   assert.equal(context.activityNote("name", seat).word, "出力中");
   seat.outputting = false;
   assert.equal(context.activityNote("name", seat).word, "制限中");
+});
+
+test("reloaded views accept the current PTY snapshot and reject delayed old-launch stats", () => {
+  const seat = {ptyId:"new-pty",ended:null};
+  assert.equal(context.statsForView({pty_id:"old-pty"}, seat), false);
+  assert.equal(context.statsForView({pty_id:"new-pty"}, seat), true);
+  assert.equal(context.statsForView({pty_id:null}, seat), true);
+  seat.ended = 1;
+  assert.equal(context.statsForView({pty_id:"new-pty"}, seat), false);
 });

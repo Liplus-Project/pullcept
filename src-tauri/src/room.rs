@@ -1327,6 +1327,7 @@ pub struct SessionStats {
     /// and reset clocks cannot clear a structured parent rejection (#342).
     pub limited: Option<bool>,
     pub limited_source: Option<String>,
+    pub pty_id: Option<String>,
     /// When the 5-hour and weekly windows reset, as Unix seconds (#306): what
     /// the panel counts down to beside those two rows. Read off the same
     /// window as its percentage (`mcp_config::epoch_seconds`). The screen stops
@@ -1359,6 +1360,7 @@ impl SessionStats {
             context: data["context_window"]["used_percentage"].as_f64(),
             limited: None,
             limited_source: None,
+            pty_id: None,
             five_hour_resets_at: mcp_config::epoch_seconds(
                 &data["rate_limits"]["five_hour"]["resets_at"],
             ),
@@ -1385,6 +1387,7 @@ impl SessionStats {
             context: status.context,
             limited: Some(limited),
             limited_source: Some("codex".into()),
+            pty_id: None,
             five_hour_resets_at: status.five_hour_resets_at,
             seven_day_resets_at: status.seven_day_resets_at,
         }

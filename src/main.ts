@@ -228,6 +228,7 @@ interface SessionStats {
    */
   limited: boolean | null;
   limited_source?: "claude-parent" | "codex" | null;
+  pty_id?: string | null;
   /**
    * When the 5-hour and weekly windows reset, as Unix seconds (#306), read off
    * the same window as the percentage. Shown under those two rows as the time
@@ -3418,6 +3419,10 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
     return { word: "様子不明", line: "様子不明（app-server との接続が切れた）", kind: "" };
   }
   return view.silent ? { word: "待機", line: "待機", kind: "" } : NO_WORD;
+}
+
+function statsForView(stats: SessionStats, view: SessionView): boolean {
+  return stats.pty_id == null || (stats.pty_id === view.ptyId && view.ended === null);
 }
 
 /**
@@ -7641,7 +7646,7 @@ async function main(): Promise<void> {
   // rest move the facts column alone.
   await listen<SessionStats>("session-stats", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
-    if (!view) return;
+    if (!view || !statsForView(event.payload, view)) return;
     const was = limitedByUsage(view.stats);
     view.stats = event.payload;
     if (view === shownView()) renderSessionStats();
