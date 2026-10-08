@@ -228,13 +228,17 @@ interface SessionStats {
 }
 
 /**
- * What a Codex app-server seat is doing, as its server told the app (#326).
+ * What a seat is doing, as structured reports told the app: a Codex
+ * app-server seat's server notifications (#326), or a Claude Code seat's
+ * hooks (#331).
  *
- * Only a seat launched through its own app-server sends this; a Claude Code
- * seat and a hook-launched Codex seat never do, and keep the four words. The
- * words are the app's (`mcp_config::codex::activity`), read off structured
- * notifications rather than the terminal: an item's kind and, for a tool, its
- * name — never a command, an argument or a body. `word` is null when the seat
+ * A hook-launched Codex seat never sends this, and keeps the four words. The
+ * words are the app's (`mcp_config::codex::activity`,
+ * `mcp_config::hook_activity`), read off structured reports rather than the
+ * terminal: an item's kind and, for a tool, its name — never a command, an
+ * argument or a body. A Claude Code seat says 許可待ち, ツール and 委任中 (a
+ * subagent), is always `connected` and never has a `thread_status`, so with
+ * no word it falls back to the screen's own words. `word` is null when the seat
  * says nothing beyond the screen's own words: no work under way, or the
  * connection to its server gone — and `connected` tells those two apart,
  * since not knowing is not 待機.
@@ -259,7 +263,7 @@ interface SeatActivity {
    * over a terminal that keeps repainting.
    */
   thread_status: "idle" | "active" | null;
-  /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール… */
+  /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール, 委任中… */
   word: string | null;
   /** The longer form, for the line under the room and the badge's title. */
   line: string | null;
@@ -3115,6 +3119,10 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  * badge words stay within 起動失敗's four characters; the longer form, with a
  * tool's name, is the badge's title and what the line under the room says.
  *
+ * A Claude Code seat reports through its hooks the same way (#331): 許可待ち,
+ * ツール with the tool's name, and 委任中 for a running subagent, in that order.
+ * It has no thread status, so with no word the terminal's words stand.
+ *
  * The same seat's thread status settles 待機 (#329). A connected seat whose
  * thread its server says is idle is 待機 (制限中 when limited) whatever the
  * terminal does: a TUI that keeps repainting kept the row at 出力中 with
@@ -3126,7 +3134,8 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  */
 function activityNote(name: string, view: SessionView | undefined): RowWord {
   if (!view || view.ended !== null) return NO_WORD;
-  // A Codex app-server seat's own report outranks the screen's (#326). It is
+  // A seat's own report — a Codex app-server seat's (#326), a Claude Code
+  // seat's hooks (#331) — outranks the screen's. It is
   // structured, not read off the terminal, and it says more: 許可待ち where the
   // terminal repainting its prompt would say 出力中 and its silence 待機, and
   // which work is under way where the bytes would say only that they arrived.
@@ -3169,7 +3178,7 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
  * badge is drawn as.
  *
  * `active` is an utterance still under way — 考え中…, 出力中, and the work a
- * Codex app-server seat reports (#326) — and is what pulses (#307). `waiting`
+ * seat reports (#326, #331) — and is what pulses (#307). `waiting`
  * is a seat stopped on the person, 許可待ち or 答え待ち: not ended either, so it
  * is coloured and named under the room like the busy words, but it does not
  * pulse, because nothing is moving. "" is where an utterance has ended.
@@ -7386,7 +7395,8 @@ async function main(): Promise<void> {
     if (view === shownView()) renderSessionStats();
     if (limitedByUsage(view.stats) !== was) renderPanel();
   });
-  // A Codex app-server seat said what it is doing (#326). Keyed on the seat
+  // A Codex app-server seat (#326) or a Claude Code seat's hooks (#331) said
+  // what it is doing. Keyed on the seat
   // like the report above, dropped for a seat this screen has no terminal for,
   // and drawn only when the word, its longer form, the thread's status (#329)
   // or the connection changed —

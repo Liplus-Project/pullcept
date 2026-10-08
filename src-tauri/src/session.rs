@@ -661,6 +661,16 @@ impl RoomSeats {
         }
     }
 
+    /// The terminal of the session running in one seat, or `None` when no
+    /// session runs there (a launch still in flight included). What a Claude
+    /// Code seat's hooks say is kept per launch by this (#331).
+    pub fn running_pty(&self, topic_id: &str, account_id: &str) -> Option<String> {
+        match self.seats.lock().get(&seat_key(topic_id, account_id)) {
+            Some(Seat::Running(session)) => Some(session.pty_id.clone()),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         RoomSeats {
             seats: Arc::new(Mutex::new(BTreeMap::new())),

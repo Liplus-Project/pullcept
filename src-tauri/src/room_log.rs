@@ -192,22 +192,11 @@ fn legacy_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("logs").join(format!("{ROOM_NAME}.jsonl")))
 }
 
-/// Append one line to the activity probe's file, `logs/hook-probe.log` beside
-/// the room's directory (#325).
-///
-/// A file because the app's stderr is not where Master can look: a release
-/// build has none. One line per arrival, appended and never rewritten. A
-/// failure to resolve, open or write is dropped — the probe observes, and a
-/// missing line is itself what it reports.
-pub fn append_hook_probe(app: &AppHandle, line: &str) {
-    if let Some(mut file) = open_probe(app, "hook-probe.log") {
-        let _ = file.write_all(format!("{line}\n").as_bytes());
-    }
-}
-
 /// A probe's file, `logs/<name>` beside the room's directory, opened to append
-/// (#325, and `codex-activity-probe.log` for #329), or `None` when it cannot be
-/// — the same silence as `append_hook_probe`'s. A writer that appends many
+/// (`codex-activity-probe.log`, #329), or `None` when it cannot be. A file
+/// because the app's stderr is not where Master can look: a release build has
+/// none. A failure to resolve, open or write is dropped — the probe observes,
+/// and a missing line is itself what it reports. A writer that appends many
 /// lines (one seat's connection) holds it open and writes each line whole, in
 /// one call, so lines from two seats do not interleave.
 pub fn open_probe(app: &AppHandle, name: &str) -> Option<std::fs::File> {

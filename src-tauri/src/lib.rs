@@ -4,6 +4,7 @@ mod codex_app_server;
 mod codex_limit;
 mod codex_status;
 mod config;
+mod hook_activity;
 mod pty;
 mod room;
 mod room_log;
@@ -33,6 +34,8 @@ pub fn run() {
         .manage(codex_limit::CodexLimits::new())
         // Each Codex seat's own app-server, by its terminal (#299).
         .manage(codex_app_server::CodexServers::new())
+        // What each Claude Code seat is doing, as its hooks tell it (#331).
+        .manage(hook_activity::HookSeats::new())
         .setup(|app| {
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
