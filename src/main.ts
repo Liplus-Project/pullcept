@@ -250,6 +250,14 @@ interface SeatActivity {
    * them, and a seat that cannot be heard says 様子不明 instead.
    */
   connected: boolean;
+  /**
+   * What the seat's thread is doing, as far as its server has said (#329):
+   * "idle" or "active", null while nothing has said either (and after the
+   * connection ends). Not the same as no word: a turn reasoning or writing its
+   * answer is active with no word. Only "idle" on a connected seat says 待機
+   * over a terminal that keeps repainting.
+   */
+  thread_status: "idle" | "active" | null;
   /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール… */
   word: string | null;
   /** The longer form, for the line under the room and the badge's title. */
@@ -3105,6 +3113,15 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  * the terminal; the server sends the state as data, the way 制限中 arrives. Its
  * badge words stay within 起動失敗's four characters; the longer form, with a
  * tool's name, is the badge's title and what the line under the room says.
+ *
+ * The same seat's thread status settles 待機 (#329). A connected seat whose
+ * thread its server says is idle is 待機 (制限中 when limited) whatever the
+ * terminal does: a TUI that keeps repainting kept the row at 出力中 with
+ * nothing running. An active thread with no word — reasoning, writing the
+ * answer — and a seat whose status has not been heard yet keep the terminal's
+ * words, as before. The order, top first: the report's word (許可待ち / 答え待ち,
+ * then the kind of work), idle → 制限中 / 待機, 考え中… / 出力中, 制限中,
+ * 様子不明, 待機 from the terminal's silence.
  */
 function activityNote(name: string, view: SessionView | undefined): RowWord {
   if (!view || view.ended !== null) return NO_WORD;
@@ -3119,6 +3136,12 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
       line: reported.line ?? reported.word,
       kind: reported.waiting ? "waiting" : "active",
     };
+  }
+  // The server says the thread is idle (#329): the terminal's bytes are a
+  // repaint, not work, so they are not read. 制限中 still says which idle.
+  if (reported?.connected && reported.thread_status === "idle") {
+    if (limitedByUsage(view.stats)) return { word: "制限中", line: "制限中", kind: "" };
+    return { word: "待機", line: "待機", kind: "" };
   }
   if (view.outputting) {
     const word = awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
@@ -7364,7 +7387,8 @@ async function main(): Promise<void> {
   });
   // A Codex app-server seat said what it is doing (#326). Keyed on the seat
   // like the report above, dropped for a seat this screen has no terminal for,
-  // and drawn only when the word, its longer form or the connection changed —
+  // and drawn only when the word, its longer form, the thread's status (#329)
+  // or the connection changed —
   // the server sends one of these on each change, not on every notification.
   await listen<SeatActivity>("seat-activity", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
@@ -7376,6 +7400,7 @@ async function main(): Promise<void> {
     view.activity = now;
     if (
       was?.connected !== now.connected ||
+      was?.thread_status !== now.thread_status ||
       was?.word !== now.word ||
       was?.line !== now.line ||
       was?.waiting !== now.waiting

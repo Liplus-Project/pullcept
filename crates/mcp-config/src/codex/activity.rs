@@ -35,9 +35,26 @@
 //! (`connected: false`), not as nothing: an idle seat and one whose server can
 //! no longer be heard are different, and only the first may fall back to 待機.
 //!
+//! **Whether the thread is idle is its own state** (#329), apart from the
+//! word. No word is not idle: a turn reasoning or writing its answer is active
+//! and has no word either (those are 考え中… / 出力中, the terminal's). So the
+//! thread's status is kept as idle, active or not known, and sent beside the
+//! word; only a connected seat whose thread is known to be idle lets the
+//! screen say 待機 over a terminal that keeps repainting. It is set by
+//! `thread/status/changed` and the start or resume answer's `thread.status`
+//! (`idle` / `active`; `systemError` and `notLoaded` are not known), by
+//! `turn/started` (active) and `turn/completed` (idle), and is not known again
+//! once the thread closes or the connection ends.
+//!
 //! **What reaches the screen is decided here too** (`Reporter`), so the event
-//! itself is tested: one `seat-activity` per change of what is shown or of the
-//! connection, the first one at once.
+//! itself is tested: one `seat-activity` per change of what is shown, of the
+//! thread's status or of the connection, the first one at once.
+//!
+//! **What arrives is also written down, without what it says** (#329,
+//! `probe_of` / `probe_line`): one line per notification with its method and,
+//! when it carries one, the thread status' type. Whether a turn the terminal
+//! started reaches the app's connection at all is not yet measured, and the
+//! screen's 待機 rests on it.
 //!
 //! **Nothing sent before the thread is known is lost.** A fresh thread's id is
 //! in the answer to `thread/start`, and its first notifications may come
@@ -145,10 +162,33 @@ pub struct Display {
     pub waiting: bool,
 }
 
+/// What the seat's thread is doing, as far as its server has said (#329).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ThreadState {
+    /// Nothing said yet, a status this does not read as either, a thread
+    /// closed, or the connection gone.
+    #[default]
+    Unknown,
+    Idle,
+    Active,
+}
+
+impl ThreadState {
+    /// The event's `thread_status`: `"idle"`, `"active"` or null.
+    fn name(self) -> Option<&'static str> {
+        match self {
+            ThreadState::Unknown => None,
+            ThreadState::Idle => Some("idle"),
+            ThreadState::Active => Some("active"),
+        }
+    }
+}
+
 /// One seat's state, fed every message its server sends the app.
 #[derive(Debug, Default)]
 pub struct Activity {
     thread: Option<String>,
+    state: ThreadState,
     early: Vec<Value>,
     approval: bool,
     input: bool,
@@ -202,7 +242,18 @@ impl Activity {
         }
         match method {
             "thread/status/changed" => self.status(&params["status"]),
-            "turn/started" | "turn/completed" | "thread/closed" => self.clear(),
+            "turn/started" => {
+                self.clear();
+                self.state = ThreadState::Active;
+            }
+            "turn/completed" => {
+                self.clear();
+                self.state = ThreadState::Idle;
+            }
+            "thread/closed" => {
+                self.clear();
+                self.state = ThreadState::Unknown;
+            }
             "item/started" => {
                 let item = &params["item"];
                 let (Some(id), Some(kind)) = (item["id"].as_str(), Kind::of(item)) else {
@@ -225,18 +276,27 @@ impl Activity {
     pub fn disconnect(&mut self) {
         self.clear();
         self.early.clear();
+        self.state = ThreadState::Unknown;
         self.disconnected = true;
     }
 
     fn status(&mut self, status: &Value) {
-        if status["type"].as_str() == Some("active") {
-            let flags = status["activeFlags"].as_array();
-            let has = |flag: &str| flags.is_some_and(|f| f.iter().any(|v| v.as_str() == Some(flag)));
-            self.approval = has("waitingOnApproval");
-            self.input = has("waitingOnUserInput");
-        } else if status["type"].is_string() {
-            // idle, systemError, notLoaded: no turn is running.
-            self.clear();
+        match status["type"].as_str() {
+            Some("active") => {
+                let flags = status["activeFlags"].as_array();
+                let has = |flag: &str| flags.is_some_and(|f| f.iter().any(|v| v.as_str() == Some(flag)));
+                self.approval = has("waitingOnApproval");
+                self.input = has("waitingOnUserInput");
+                self.state = ThreadState::Active;
+            }
+            Some(kind) => {
+                // idle, systemError, notLoaded: no turn is running. Only idle
+                // is a thread waiting for its next turn; the other two are not
+                // read as either (#329).
+                self.clear();
+                self.state = if kind == "idle" { ThreadState::Idle } else { ThreadState::Unknown };
+            }
+            None => {}
         }
     }
 
@@ -250,6 +310,11 @@ impl Activity {
     /// connection has ended.
     pub fn connected(&self) -> bool {
         !self.disconnected
+    }
+
+    /// What the thread is doing, as far as its server has said (#329).
+    pub fn thread_state(&self) -> ThreadState {
+        self.state
     }
 
     /// What the seat is doing, or `None` when this says nothing: no work under
@@ -280,7 +345,7 @@ pub struct Reporter {
     topic_id: String,
     account_id: String,
     pty_id: String,
-    sent: Option<(bool, Option<Display>)>,
+    sent: Option<(bool, ThreadState, Option<Display>)>,
 }
 
 impl Reporter {
@@ -295,20 +360,22 @@ impl Reporter {
         }
     }
 
-    /// The event to send now, or `None` when neither what is shown nor the
-    /// connection changed since the last one. The first call always sends,
-    /// so the screen learns the seat is connected before anything happens.
+    /// The event to send now, or `None` when neither what is shown, the
+    /// thread's status nor the connection changed since the last one. The
+    /// first call always sends, so the screen learns the seat is connected
+    /// before anything happens.
     pub fn next(&mut self, activity: &Activity) -> Option<Value> {
-        let now = (activity.connected(), activity.display());
+        let now = (activity.connected(), activity.thread_state(), activity.display());
         if self.sent.as_ref() == Some(&now) {
             return None;
         }
-        let (connected, display) = &now;
+        let (connected, state, display) = &now;
         let event = json!({
             "topic_id": self.topic_id,
             "account_id": self.account_id,
             "pty_id": self.pty_id,
             "connected": connected,
+            "thread_status": state.name(),
             "word": display.as_ref().map(|d| d.word),
             "line": display.as_ref().map(|d| d.line.clone()),
             "waiting": display.as_ref().is_some_and(|d| d.waiting),
@@ -316,6 +383,43 @@ impl Reporter {
         self.sent = Some(now);
         Some(event)
     }
+}
+
+/// The most characters of a method or a status kept on a probe line. Both are
+/// the server's identifiers; the cut only keeps a malformed one from running on.
+const PROBE_MAX: usize = 80;
+
+/// What the probe writes down of one message from the server (#329): the
+/// notification's method and, when its params carry one, the thread status'
+/// type (`params.status.type`). `None` for anything with an `id` — an answer,
+/// or a request, which this does not read (`Activity::feed`). Nothing else of
+/// the message is kept: no body, command, argument or text.
+pub fn probe_of(message: &Value) -> Option<(String, Option<String>)> {
+    if message.get("id").is_some() {
+        return None;
+    }
+    let clean = |value: &Value| -> Option<String> {
+        let cleaned: String = value
+            .as_str()?
+            .chars()
+            .filter(|c| !c.is_control() && !c.is_whitespace())
+            .take(PROBE_MAX)
+            .collect();
+        (!cleaned.is_empty()).then_some(cleaned)
+    };
+    let method = clean(&message["method"])?;
+    let status = clean(&message["params"]["status"]["type"]);
+    Some((method, status))
+}
+
+/// One line of `logs/codex-activity-probe.log`, in the shape of the hook
+/// probe's (#325): `[codex-activity-probe] <method> room=<topic id>
+/// account=<account id> thread=<status or -> at=<UTC time>`.
+pub fn probe_line(method: &str, status: Option<&str>, topic_id: &str, account_id: &str, at: &str) -> String {
+    format!(
+        "[codex-activity-probe] {method} room={topic_id} account={account_id} thread={} at={at}",
+        status.unwrap_or("-")
+    )
 }
 
 #[cfg(test)]
@@ -528,9 +632,18 @@ mod tests {
         let mut r = reporter();
         assert_eq!(
             r.next(&a),
-            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": true, "word": null, "line": null, "waiting": false}))
+            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": true, "thread_status": null, "word": null, "line": null, "waiting": false}))
         );
         assert_eq!(r.next(&a), None);
+    }
+
+    /// The whole event for this seat, so a test reads every field it sends.
+    fn event(connected: bool, thread: Option<&str>, word: Option<&str>, line: Option<&str>, waiting: bool) -> Option<Value> {
+        Some(json!({
+            "topic_id": "topic", "account_id": "acct", "pty_id": "pty-1",
+            "connected": connected, "thread_status": thread,
+            "word": word, "line": line, "waiting": waiting,
+        }))
     }
 
     #[test]
@@ -539,12 +652,10 @@ mod tests {
         let mut r = reporter();
         r.next(&a);
         a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
         assert_eq!(r.next(&a), None);
         a.disconnect();
-        assert_eq!(
-            r.next(&a),
-            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": false, "word": null, "line": null, "waiting": false}))
-        );
+        assert_eq!(r.next(&a), event(false, None, None, None, false));
         assert_eq!(r.next(&a), None);
     }
 
@@ -553,15 +664,127 @@ mod tests {
         let mut a = seat();
         let mut r = reporter();
         r.next(&a);
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
         a.feed(&started("c1", command()));
-        assert_eq!(
-            r.next(&a),
-            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": true, "word": "実行中", "line": "コマンド実行中", "waiting": false}))
-        );
+        assert_eq!(r.next(&a), event(true, Some("active"), Some("実行中"), Some("コマンド実行中"), false));
         a.disconnect();
+        assert_eq!(r.next(&a), event(false, None, None, None, false));
+    }
+
+    #[test]
+    fn idle_from_a_status_says_idle() {
+        let mut a = seat();
+        let mut r = reporter();
+        r.next(&a);
+        a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(a.thread_state(), ThreadState::Idle);
+        assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
+    }
+
+    #[test]
+    fn the_start_answers_idle_is_idle() {
+        let mut a = seat();
+        a.snapshot(&json!({"type": "idle"}));
+        let mut r = reporter();
+        assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
+    }
+
+    #[test]
+    fn active_with_no_word_says_active_and_nothing_else() {
+        // Reasoning or writing the answer: active, and no word of this one's.
+        let mut a = seat();
+        let mut r = reporter();
+        r.next(&a);
+        a.feed(&note("turn/started", json!({"threadId": T, "turn": {"id": "turn-2", "items": [], "status": "inProgress"}})));
+        a.feed(&started("r1", json!({"type": "reasoning"})));
+        a.feed(&started("m1", json!({"type": "agentMessage", "text": "hi"})));
+        assert_eq!(a.thread_state(), ThreadState::Active);
+        assert_eq!(r.next(&a), event(true, Some("active"), None, None, false));
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
+        assert_eq!(r.next(&a), None);
+    }
+
+    #[test]
+    fn a_status_never_seen_stays_unknown() {
+        let mut a = seat();
+        a.feed(&started("c1", command()));
+        a.feed(&completed("c1"));
+        a.feed(&note("item/agentMessage/delta", json!({"threadId": T, "itemId": "m1", "delta": "x"})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        // Before the thread is known, nothing is read at all.
+        let mut early = Activity::new();
+        early.feed(&status(json!({"type": "idle"})));
+        assert_eq!(early.thread_state(), ThreadState::Unknown);
+        let mut r = reporter();
+        assert_eq!(r.next(&a), event(true, None, None, None, false));
+    }
+
+    #[test]
+    fn a_completed_turn_is_idle() {
+        let mut a = seat();
+        let mut r = reporter();
+        a.feed(&note("turn/started", json!({"threadId": T, "turn": {"id": "turn-2", "items": [], "status": "inProgress"}})));
+        a.feed(&started("c1", command()));
+        assert_eq!(r.next(&a), event(true, Some("active"), Some("実行中"), Some("コマンド実行中"), false));
+        a.feed(&note("turn/completed", json!({"threadId": T, "turn": {"id": "turn-2", "items": [], "status": "completed"}})));
+        assert_eq!(a.thread_state(), ThreadState::Idle);
+        assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
+    }
+
+    #[test]
+    fn errors_unloaded_and_closed_threads_are_not_idle() {
+        let mut a = seat();
+        a.feed(&status(json!({"type": "idle"})));
+        a.feed(&status(json!({"type": "systemError"})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        a.feed(&status(json!({"type": "idle"})));
+        a.feed(&status(json!({"type": "notLoaded"})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        a.feed(&status(json!({"type": "idle"})));
+        a.feed(&note("thread/closed", json!({"threadId": T})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+    }
+
+    #[test]
+    fn a_disconnect_forgets_the_thread_status() {
+        let mut a = seat();
+        a.feed(&status(json!({"type": "idle"})));
+        a.disconnect();
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        assert!(!a.connected());
+        // Nothing read after the end is believed.
+        a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        let mut r = reporter();
+        assert_eq!(r.next(&a), event(false, None, None, None, false));
+    }
+
+    #[test]
+    fn another_threads_turns_do_not_move_this_ones_status() {
+        let mut a = seat();
+        a.feed(&status(json!({"type": "idle"})));
+        a.feed(&note("turn/started", json!({"threadId": "sub", "turn": {"id": "x", "items": [], "status": "inProgress"}})));
+        assert_eq!(a.thread_state(), ThreadState::Idle);
+    }
+
+    #[test]
+    fn the_probe_keeps_the_method_and_status_only() {
+        let changed = status(json!({"type": "active", "activeFlags": ["waitingOnApproval"]}));
+        assert_eq!(probe_of(&changed), Some(("thread/status/changed".into(), Some("active".into()))));
+        let item = started("c1", command());
+        assert_eq!(probe_of(&item), Some(("item/started".into(), None)));
+        // Answers and requests are not notifications.
+        assert_eq!(probe_of(&json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {"threadId": T}})), None);
+        assert_eq!(probe_of(&json!({"id": 3, "result": {}})), None);
+        // A method that is not a plain name cannot carry anything onto the line.
+        let odd = json!({"method": "x\n[codex-activity-probe] forged y", "params": {}});
+        assert_eq!(probe_of(&odd).unwrap().0, "x[codex-activity-probe]forgedy");
+        let line = probe_line("item/started", None, "topic", "acct", "2026-10-08T00:00:00.000Z");
+        assert_eq!(line, "[codex-activity-probe] item/started room=topic account=acct thread=- at=2026-10-08T00:00:00.000Z");
+        assert!(!line.contains("rm -rf"));
         assert_eq!(
-            r.next(&a),
-            Some(json!({"topic_id": "topic", "account_id": "acct", "pty_id": "pty-1", "connected": false, "word": null, "line": null, "waiting": false}))
+            probe_line("thread/status/changed", Some("idle"), "topic", "acct", "t"),
+            "[codex-activity-probe] thread/status/changed room=topic account=acct thread=idle at=t"
         );
     }
 
