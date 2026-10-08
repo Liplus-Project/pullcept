@@ -35,6 +35,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 pub mod codex;
 pub mod hook_activity;
+pub mod claude_limit;
 pub mod permission_prompt;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
@@ -799,6 +800,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     ROOM_TOKEN_ENV,
     LAUNCHED_AS_ENV,
     ROOM_ID_ENV,
+    claude_limit::LAUNCH_ENV,
     codex::LAUNCH_ID_ENV,
     codex::admission::REQUIRED_ENV,
     codex::LAUNCH_ROOM_ENV,
@@ -1004,8 +1006,9 @@ pub fn activity_hook_settings(port: u16, room_id: &str, account_id: &str) -> Val
                 "hooks": [{
                     "type": "http",
                     "url": activity_hook_url(port, event, room_id, account_id),
-                    "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}") },
-                    "allowedEnvVars": [ROOM_TOKEN_ENV],
+                    "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}"),
+                        "X-Pullcept-Claude-Launch": format!("${{{}}}", claude_limit::LAUNCH_ENV) },
+                    "allowedEnvVars": [ROOM_TOKEN_ENV, claude_limit::LAUNCH_ENV],
                     "timeout": activity_hook_timeout(event),
                 }],
             }]),
@@ -2487,8 +2490,8 @@ mod tests {
                 json!([{
                     "type": "http",
                     "url": activity_hook_url(1234, event, ROOM, LIN),
-                    "headers": { "Authorization": "Bearer ${PULLCEPT_ROOM_TOKEN}" },
-                    "allowedEnvVars": ["PULLCEPT_ROOM_TOKEN"],
+                    "headers": { "Authorization": "Bearer ${PULLCEPT_ROOM_TOKEN}", "X-Pullcept-Claude-Launch": "${PULLCEPT_CLAUDE_LAUNCH}" },
+                    "allowedEnvVars": ["PULLCEPT_ROOM_TOKEN", "PULLCEPT_CLAUDE_LAUNCH"],
                     "timeout": if *event == "PermissionRequest" { 190 } else { 5 },
                 }]),
                 "{event}"

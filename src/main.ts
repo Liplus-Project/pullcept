@@ -223,12 +223,12 @@ interface SessionStats {
   seven_day: number | null;
   context: number | null;
   /**
-   * 制限中 as the app says it, for a Codex seat (#294): set on the stop the
-   * rollout reports and cleared only when Codex's app-server confirms the
-   * recovery. Null for every other seat, which reads the word off the two
-   * percentages as before (#161).
+   * Backend stop/recovery: Codex uses its app-server (#294); Claude uses
+   * current parent rejection and normal response (#342). Null is unknown.
    */
   limited: boolean | null;
+  limited_source?: "claude-parent" | "codex" | null;
+  pty_id?: string | null;
   /**
    * When the 5-hour and weekly windows reset, as Unix seconds (#306), read off
    * the same window as the percentage. Shown under those two rows as the time
@@ -3374,7 +3374,8 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  * terminal does: a TUI that keeps repainting kept the row at 出力中 with
  * nothing running. An active thread with no word — reasoning, writing the
  * answer — and a seat whose connection has not yet carried a turn keep the terminal's
- * words, as before. The order, top first: the report's word (許可待ち / 答え待ち,
+ * words, as before. A confirmed Claude parent rejection comes first (#342).
+ * Otherwise the order, top first: the report's word (許可待ち / 答え待ち,
  * then the kind of work), idle → 制限中 / 待機, 考え中… / 出力中, 制限中,
  * 様子不明, 待機 from the terminal's silence.
  */
@@ -3385,6 +3386,8 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
   // structured, not read off the terminal, and it says more: 許可待ち where the
   // terminal repainting its prompt would say 出力中 and its silence 待機, and
   // which work is under way where the bytes would say only that they arrived.
+  // Confirmed parent rejection outranks leftover delegation and PTY repaint (#342).
+  if (view.stats?.limited_source === "claude-parent" && view.stats.limited === true) return { word: "制限中", line: "制限中", kind: "" };
   const reported = view.activity;
   if (reported?.word) {
     return {
@@ -3416,6 +3419,10 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
     return { word: "様子不明", line: "様子不明（app-server との接続が切れた）", kind: "" };
   }
   return view.silent ? { word: "待機", line: "待機", kind: "" } : NO_WORD;
+}
+
+function statsForView(stats: SessionStats, view: SessionView): boolean {
+  return stats.pty_id == null || (stats.pty_id === view.ptyId && view.ended === null);
 }
 
 /**
@@ -7639,7 +7646,7 @@ async function main(): Promise<void> {
   // rest move the facts column alone.
   await listen<SessionStats>("session-stats", (event) => {
     const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
-    if (!view) return;
+    if (!view || !statsForView(event.payload, view)) return;
     const was = limitedByUsage(view.stats);
     view.stats = event.payload;
     if (view === shownView()) renderSessionStats();

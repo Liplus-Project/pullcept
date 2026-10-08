@@ -1140,6 +1140,12 @@ fn transcript_found(
             .map(|p| p.is_some())
             .unwrap_or(true);
     }
+    if cli == Cli::ClaudeCode {
+        let Ok(env) = account_env::open_all(&account.env) else { return true; };
+        let root = mcp_config::claude_limit::projects(&home, cwd, &env);
+        // Ambiguous or unreadable scopes are not proof of a missing session.
+        return !matches!(mcp_config::claude_limit::search(&root, session_id), mcp_config::claude_limit::Search::Missing);
+    }
     match cli.transcript_path(&home, cwd, session_id) {
         Some(path) => path.is_file(),
         None => true,
@@ -1630,6 +1636,18 @@ pub fn start_session(
         None
     };
 
+    // Register before spawn: reporters can arrive while the seat is Starting.
+    let claude_nonce = if account.kind == AccountKind::ClaudeCode {
+        app.path().home_dir().ok().map(|home| {
+            let parent = launch_line.session_id.as_deref().or(launch_line.resumed_from.as_deref()).unwrap_or_default();
+            let root = mcp_config::claude_limit::projects(&home, &cwd, &account_env);
+            let floor = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64).unwrap_or_default();
+            app.state::<crate::claude_limit::ClaudeLimits>().configure(&app,
+                &topic.topic_id, &account.id, parent, &name, root, floor)
+        })
+    } else { None };
+
     match launch(
         app.clone(),
         &room,
@@ -1646,6 +1664,7 @@ pub fn start_session(
         &topic.topic_id,
         unseen_history,
         &account_env,
+        claude_nonce.as_deref(),
         cols,
         rows,
     ) {
@@ -1703,12 +1722,17 @@ pub fn start_session(
             // The launch's own values, not the account's. The account may be
             // edited while this runs, and what is running would then be
             // reported as whatever was typed into the form afterwards.
+            if let Some(nonce) = &claude_nonce {
+                app.state::<crate::claude_limit::ClaudeLimits>().bind(&app,
+                    &topic.topic_id, &account.id, nonce, &started.pty_id);
+            }
             seats.hold(
                 &account.id,
                 RunningSession {
                     launch_id: started.launch_id.clone(),
                     sidecar: Default::default(),
-                    native_id: started.native_id.clone().or_else(|| launch_line.resumed_from.clone()),
+                    native_id: started.native_id.clone().or_else(|| launch_line.resumed_from.clone())
+                        .or_else(|| if account.kind == AccountKind::ClaudeCode { launch_line.session_id.clone() } else { None }),
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
                     // The line that ran, which on a resume is not the account's
@@ -1731,11 +1755,18 @@ pub fn start_session(
             if let Some((limiter, home, resumed)) = watched {
                 crate::codex_status::watch(limiter, home, resumed);
             }
+            if let Some(nonce) = &claude_nonce {
+                crate::claude_limit::watch(app.clone(), topic.topic_id.clone(),
+                    account.id.clone(), nonce.clone(), started.pty_id.clone());
+            }
             Ok(started)
         }
         Err(err) => {
             // Nothing is running, so nothing holds the seat. Without this the
             // account would stay locked out by a launch that never happened.
+            if let Some(nonce) = &claude_nonce {
+                app.state::<crate::claude_limit::ClaudeLimits>().forget(&topic.topic_id, &account.id, nonce);
+            }
             seats.release(&topic.topic_id, &account.id);
             Err(err)
         }
@@ -1781,6 +1812,7 @@ fn launch(
     unseen_history: bool,
     // The account's environment, already opened by the caller (#163).
     account_env: &[(String, String)],
+    claude_nonce: Option<&str>,
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
@@ -1904,6 +1936,7 @@ fn launch(
     // than on the line: the line is drawn on screen, and the token is what
     // makes the room this room (#155).
     env.push((ROOM_TOKEN_ENV, room.token()));
+    env.push((mcp_config::claude_limit::LAUNCH_ENV, claude_nonce.unwrap_or_default().to_string()));
     // The account this CLI is launched as, on the process and not in the
     // registration (#208). The sidecar holds it against its own entry's
     // account and stays out of the room when they differ: a CLI that read a

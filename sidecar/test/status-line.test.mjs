@@ -26,6 +26,7 @@ const TIMEOUT = 20_000;
 const ROOM = "5d41402a-bc4b-4a76-b971-9d911017c592";
 const ACCOUNT = "8f14e45f-ceea-467a-b160-6f14e45fceea";
 const TOKEN = "test-room-token";
+const LAUNCH = "synthetic-claude-launch";
 
 /** One session's JSON, in the shape the CLI hands a status line. */
 const SESSION = {
@@ -50,6 +51,7 @@ async function fakeRoom() {
         target: request.url,
         authorization: request.headers.authorization,
         contentType: request.headers["content-type"],
+        launch: request.headers["x-pullcept-claude-launch"],
         body: Buffer.concat(chunks).toString("utf8"),
       });
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -65,7 +67,7 @@ async function fakeRoom() {
 function run(url, input) {
   const child = spawn(process.execPath, url ? [SCRIPT, url] : [SCRIPT], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, PULLCEPT_ROOM_TOKEN: TOKEN },
+    env: { ...process.env, PULLCEPT_ROOM_TOKEN: TOKEN, PULLCEPT_CLAUDE_LAUNCH: LAUNCH },
   });
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -92,6 +94,7 @@ test("the session's own JSON reaches the seat's address, and one line reaches th
     // set — it is not on the line the person can see.
     assert.equal(post.authorization, `Bearer ${TOKEN}`);
     assert.equal(post.contentType, "application/json");
+    assert.equal(post.launch, LAUNCH);
     // As it arrived. Nothing is picked out on this side: the app reads the
     // fields, so a second reader here would be a second thing to keep in step
     // with the CLI.

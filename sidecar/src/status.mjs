@@ -111,6 +111,7 @@ async function send(url, body) {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.PULLCEPT_ROOM_TOKEN ?? ""}`,
+      "X-Pullcept-Claude-Launch": process.env.PULLCEPT_CLAUDE_LAUNCH ?? "",
     },
     body,
     signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
