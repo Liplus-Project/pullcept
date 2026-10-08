@@ -124,7 +124,7 @@ const TOPICS_EVENT: &str = "room-topics";
 /// failed to resume.
 static INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// The six fields of a post, taken off the post itself.
+/// The seven fields of a post, taken off the post itself.
 ///
 /// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as well,
 /// and a derive would put it in the file. What is dropped here is dropped on
@@ -132,11 +132,16 @@ static INDEX_LOCK: Mutex<()> = Mutex::new(());
 /// inherent method, because the type it builds belongs to the `topic-index`
 /// crate now — and this is the half that could not go with it, since `Post` is
 /// the room's own shape.
+///
+/// `from_app` is kept, unlike `hue`: whether the app itself said it is who
+/// said it, which stays true after the fact, and a line read back draws the
+/// app's icon only if the file says so (#340).
 fn logged(post: &Post) -> LoggedPost {
     LoggedPost {
         message_id: post.message_id.clone(),
         speaker: post.speaker.clone(),
         account: post.account.clone(),
+        from_app: post.from_app,
         content: post.content.clone(),
         to: post.to.clone(),
         ts: post.ts.clone(),

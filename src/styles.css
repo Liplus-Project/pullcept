@@ -592,6 +592,17 @@ button svg.icon {
   border-radius: inherit;
 }
 
+/* The app's icon on the app's own lines (#340). Whole, inside the circle,
+   rather than cut to it: the drawing reaches its own edges, and cutting it
+   would take the bubble's corners. The inset is what lets a square fit a
+   circle of this diameter. */
+.avatar.app > img {
+  box-sizing: border-box;
+  padding: 0.3em;
+  object-fit: contain;
+  border-radius: 0;
+}
+
 .message .meta {
   display: flex;
   align-items: baseline;
@@ -638,6 +649,93 @@ button svg.icon {
 
 .message.mine > .attachments {
   justify-content: flex-end;
+}
+
+/* A Claude Code seat's permission prompt, held for the room's answer (#336):
+   a card under the seat's name, modelled on Claude Desktop's — the tool, what
+   its input says, and 拒否 / 常に許可 / 一度だけ許可. Framed, so it does not read
+   as something the seat said. Ended, it keeps its words and loses its buttons. */
+.message.permission > .permission-body {
+  grid-column: 2;
+  margin-top: 0.3rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid color-mix(in oklch, var(--speaker, var(--line)) 45%, var(--line));
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.message.permission .permission-kind {
+  color: var(--muted);
+}
+
+.message.permission .permission-tool {
+  overflow-wrap: anywhere;
+}
+
+.message.permission .permission-server {
+  color: var(--muted);
+}
+
+.message.permission .permission-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.75rem;
+  margin: 0.45rem 0 0;
+  max-height: 18em;
+  overflow: auto;
+}
+
+.message.permission .permission-input dt {
+  color: var(--muted);
+}
+
+.message.permission .permission-input dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.message.permission .permission-note,
+.message.permission .permission-state {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.message.permission .permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.message.permission .permission-actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+}
+
+.message.permission .permission-actions button.permission-allow {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.message.permission .permission-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.message.permission.ended > .permission-body {
+  opacity: 0.7;
 }
 
 .message .attachments .thumb {

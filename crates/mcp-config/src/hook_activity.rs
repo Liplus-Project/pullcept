@@ -351,6 +351,20 @@ impl Activity {
         }
     }
 
+    /// Whether the agent a `PermissionRequest` came from — the main one for
+    /// `None`, a counted subagent otherwise — is still stopped on a prompt.
+    /// The app holds the request open for the room's answer only while this
+    /// holds (#336); an agent this does not count is never waiting.
+    pub fn waiting(&self, agent_id: Option<&str>) -> bool {
+        match agent_id {
+            None => self.main.wait.is_some(),
+            Some(id) => self
+                .subagents
+                .iter()
+                .any(|sub| sub.id == id && sub.agent.wait.is_some()),
+        }
+    }
+
     /// The agent a hook is about: the main one when it carries no `agent_id`,
     /// a counted subagent when it does, and none for any other — an internal
     /// agent's, or one whose start was not heard.
@@ -784,5 +798,36 @@ mod tests {
         post(&mut a, "t1", "Bash");
         assert_eq!(r.next(&a), event(None, None, false));
         assert_eq!(r.next(&a), None);
+    }
+
+    #[test]
+    fn waiting_follows_each_agents_own_prompt() {
+        // What the app holds a permission hook open on (#336): the agent the
+        // request came from, until any of the wait's ends arrives.
+        let mut a = Activity::new();
+        assert!(!a.waiting(None));
+        ask(&mut a, "Bash");
+        assert!(a.waiting(None));
+        assert!(!a.waiting(Some("ag1")));
+        a.typed("\r");
+        assert!(!a.waiting(None));
+
+        start(&mut a, "ag1", "Explore");
+        a.hear("PermissionRequest", &body("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {}, "agent_id": "ag1", "agent_type": "Explore"})));
+        assert!(a.waiting(Some("ag1")));
+        assert!(!a.waiting(None));
+        // A key closes the main agent's wait only.
+        a.typed("\r");
+        assert!(a.waiting(Some("ag1")));
+        sub_pre(&mut a, "ag1", "t9", "Read");
+        assert!(!a.waiting(Some("ag1")));
+
+        // An agent whose start was not heard is never waiting.
+        a.hear("PermissionRequest", &body("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {}, "agent_id": "unheard"})));
+        assert!(!a.waiting(Some("unheard")));
+
+        ask(&mut a, "Bash");
+        a.hear("Stop", &body("Stop", json!({})));
+        assert!(!a.waiting(None));
     }
 }
