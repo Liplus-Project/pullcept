@@ -200,21 +200,24 @@ fn legacy_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// failure to resolve, open or write is dropped — the probe observes, and a
 /// missing line is itself what it reports.
 pub fn append_hook_probe(app: &AppHandle, line: &str) {
-    use std::io::Write;
-    let Ok(dir) = app.path().app_data_dir() else {
-        return;
-    };
-    let dir = dir.join("logs");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
+    if let Some(mut file) = open_probe(app, "hook-probe.log") {
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+}
+
+/// A probe's file, `logs/<name>` beside the room's directory, opened to append
+/// (#325, and `codex-activity-probe.log` for #329), or `None` when it cannot be
+/// — the same silence as `append_hook_probe`'s. A writer that appends many
+/// lines (one seat's connection) holds it open and writes each line whole, in
+/// one call, so lines from two seats do not interleave.
+pub fn open_probe(app: &AppHandle, name: &str) -> Option<std::fs::File> {
+    let dir = app.path().app_data_dir().ok()?.join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("hook-probe.log"))
-    {
-        let _ = writeln!(file, "{line}");
-    }
+        .open(dir.join(name))
+        .ok()
 }
 
 /// Carry the pre-topic single flow in as one topic.

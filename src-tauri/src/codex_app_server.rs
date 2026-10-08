@@ -24,13 +24,18 @@
 //! is fed to the seat's `Activity` (`mcp_config::codex::activity`), and the
 //! screen is told whenever what it says changes (`seat-activity`). Requests
 //! the server sends are not answered: approvals stay the terminal's.
+//!
+//! **Every notification is also written down, without what it says** (#329):
+//! one line each in `logs/codex-activity-probe.log` with the seat, the method,
+//! the thread status if it carries one and the UTC time (`Probe`). The lines of
+//! the start or resume are held until the seat is known and written first.
 
-use mcp_config::codex::activity::{Activity, Reporter};
+use mcp_config::codex::activity::{probe_line, probe_of, Activity, Reporter};
 use mcp_config::codex::app_server as plan;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -49,6 +54,11 @@ const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a running server's terminal is looked at.
 const WATCH: Duration = Duration::from_millis(500);
+/// Probe lines held while the thread is started, before the seat is known
+/// (#329). A start sends a handful; the cap only bounds a server that floods.
+const PROBE_EARLY_MAX: usize = 1024;
+/// The probe's file, beside `hook-probe.log` (#325).
+const PROBE_FILE: &str = "codex-activity-probe.log";
 
 /// Every running seat server, by its terminal.
 #[derive(Default)]
@@ -133,6 +143,37 @@ pub struct Started {
     next_id: u64,
     /// What the seat is doing, fed from the first message on (#326).
     activity: Activity,
+    /// Notifications that arrived before the seat was known, as the probe
+    /// keeps them: method, thread status, arrival time (#329).
+    probe: Vec<(String, Option<String>, String)>,
+}
+
+/// One seat's probe lines (#329): the file held open for the life of the
+/// connection, each line written whole. A file that cannot be opened or
+/// written is dropped silently, as the hook probe's is — a missing line is
+/// what the probe reports.
+struct Probe {
+    file: Option<std::fs::File>,
+    topic_id: String,
+    account_id: String,
+}
+
+impl Probe {
+    fn write(&mut self, method: &str, status: Option<&str>, at: &str) {
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let line = probe_line(method, status, &self.topic_id, &self.account_id, at);
+        if file.write_all(format!("{line}\n").as_bytes()).is_err() {
+            self.file = None;
+        }
+    }
+
+    fn note(&mut self, message: &Value) {
+        if let Some((method, status)) = probe_of(message) {
+            self.write(&method, status.as_deref(), &crate::room::now_iso());
+        }
+    }
 }
 
 /// The seat a reader tells the screen about (#326). What is sent and when —
@@ -291,6 +332,11 @@ impl Started {
                 // Not this answer: a notification sent while the thread was
                 // being made is the seat's first state, not noise (#326).
                 self.activity.feed(&value);
+                if self.probe.len() < PROBE_EARLY_MAX {
+                    if let Some((method, status)) = probe_of(&value) {
+                        self.probe.push((method, status, crate::room::now_iso()));
+                    }
+                }
                 continue;
             }
             if let Some(error) = value.get("error") {
@@ -327,6 +373,7 @@ impl Started {
             server,
             mut socket,
             mut activity,
+            probe: early,
             ..
         } = self;
         if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
@@ -336,12 +383,21 @@ impl Started {
             app: app.clone(),
             reporter: Reporter::new(topic_id, account_id, pty_id),
         };
+        let mut probe = Probe {
+            file: crate::room_log::open_probe(app, PROBE_FILE),
+            topic_id: topic_id.to_string(),
+            account_id: account_id.to_string(),
+        };
         std::thread::spawn(move || {
+            for (method, status, at) in &early {
+                probe.write(method, status.as_deref(), at);
+            }
             seat.tell(&activity);
             loop {
                 match socket.read() {
                     Ok(Message::Text(text)) => {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            probe.note(&value);
                             activity.feed(&value);
                             seat.tell(&activity);
                         }
@@ -398,6 +454,7 @@ pub fn start(request: Request) -> Result<Started, String> {
         created: false,
         next_id: 0,
         activity: Activity::new(),
+        probe: Vec::new(),
     };
     match prepare(&mut started, &request) {
         Ok(()) => Ok(started),
