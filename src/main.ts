@@ -252,8 +252,9 @@ interface SeatActivity {
   connected: boolean;
   /**
    * What the seat's thread is doing, as far as its server has said (#329):
-   * "idle" or "active", null while nothing has said either (and after the
-   * connection ends). Not the same as no word: a turn reasoning or writing its
+   * "idle" or "active", null while nothing has said either, until this
+   * connection has carried a turn (`turn/started`, or a status saying active —
+   * the start answer does not count), and after the connection ends. Not the same as no word: a turn reasoning or writing its
    * answer is active with no word. Only "idle" on a connected seat says 待機
    * over a terminal that keeps repainting.
    */
@@ -3118,7 +3119,7 @@ function limitedByUsage(stats: SessionStats | null): boolean {
  * thread its server says is idle is 待機 (制限中 when limited) whatever the
  * terminal does: a TUI that keeps repainting kept the row at 出力中 with
  * nothing running. An active thread with no word — reasoning, writing the
- * answer — and a seat whose status has not been heard yet keep the terminal's
+ * answer — and a seat whose connection has not yet carried a turn keep the terminal's
  * words, as before. The order, top first: the report's word (許可待ち / 答え待ち,
  * then the kind of work), idle → 制限中 / 待機, 考え中… / 出力中, 制限中,
  * 様子不明, 待機 from the terminal's silence.

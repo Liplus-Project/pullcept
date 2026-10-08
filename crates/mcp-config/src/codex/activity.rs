@@ -46,6 +46,14 @@
 //! `turn/started` (active) and `turn/completed` (idle), and is not known again
 //! once the thread closes or the connection ends.
 //!
+//! **Idle is not told until a turn has been heard.** Whether a turn the
+//! terminal starts reaches the app's connection is not measured; if it does
+//! not, the start answer's idle would stand while the seat works. So nothing
+//! but not-known is told until this connection has carried a notification that
+//! a turn reaches it: `turn/started`, or `thread/status/changed` saying
+//! active. The start or resume answer is not one. Once one has come, idle from
+//! a status or a completed turn is told as it is read.
+//!
 //! **What reaches the screen is decided here too** (`Reporter`), so the event
 //! itself is tested: one `seat-activity` per change of what is shown, of the
 //! thread's status or of the connection, the first one at once.
@@ -189,6 +197,8 @@ impl ThreadState {
 pub struct Activity {
     thread: Option<String>,
     state: ThreadState,
+    /// A notification has shown that turns reach this connection (#329).
+    turns_heard: bool,
     early: Vec<Value>,
     approval: bool,
     input: bool,
@@ -241,10 +251,16 @@ impl Activity {
             Some(_) => {}
         }
         match method {
-            "thread/status/changed" => self.status(&params["status"]),
+            "thread/status/changed" => {
+                if params["status"]["type"].as_str() == Some("active") {
+                    self.turns_heard = true;
+                }
+                self.status(&params["status"]);
+            }
             "turn/started" => {
                 self.clear();
                 self.state = ThreadState::Active;
+                self.turns_heard = true;
             }
             "turn/completed" => {
                 self.clear();
@@ -312,9 +328,15 @@ impl Activity {
         !self.disconnected
     }
 
-    /// What the thread is doing, as far as its server has said (#329).
+    /// What the thread is doing, as far as its server has said (#329), and
+    /// not known until a notification has shown that turns reach this
+    /// connection (see "Idle is not told until a turn has been heard" above).
     pub fn thread_state(&self) -> ThreadState {
-        self.state
+        if self.turns_heard {
+            self.state
+        } else {
+            ThreadState::Unknown
+        }
     }
 
     /// What the seat is doing, or `None` when this says nothing: no work under
@@ -651,6 +673,7 @@ mod tests {
         let mut a = seat();
         let mut r = reporter();
         r.next(&a);
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
         a.feed(&status(json!({"type": "idle"})));
         assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
         assert_eq!(r.next(&a), None);
@@ -672,21 +695,50 @@ mod tests {
     }
 
     #[test]
-    fn idle_from_a_status_says_idle() {
+    fn idle_from_a_status_says_idle_once_a_turn_has_been_heard() {
         let mut a = seat();
         let mut r = reporter();
         r.next(&a);
+        // An idle status alone does not show that turns reach this connection.
+        a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        assert_eq!(r.next(&a), None);
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
+        assert_eq!(r.next(&a), event(true, Some("active"), None, None, false));
         a.feed(&status(json!({"type": "idle"})));
         assert_eq!(a.thread_state(), ThreadState::Idle);
         assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
     }
 
     #[test]
-    fn the_start_answers_idle_is_idle() {
+    fn the_start_answers_idle_alone_is_unknown() {
+        let mut a = seat();
+        a.snapshot(&json!({"type": "idle"}));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        let mut r = reporter();
+        assert_eq!(r.next(&a), event(true, None, None, None, false));
+        // Nor does an active answer: it is the answer, not a turn heard.
+        a.snapshot(&json!({"type": "active", "activeFlags": []}));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+    }
+
+    #[test]
+    fn start_idle_then_a_turn_heard_then_completed_is_idle() {
         let mut a = seat();
         a.snapshot(&json!({"type": "idle"}));
         let mut r = reporter();
+        assert_eq!(r.next(&a), event(true, None, None, None, false));
+        a.feed(&note("turn/started", json!({"threadId": T, "turn": {"id": "turn-2", "items": [], "status": "inProgress"}})));
+        assert_eq!(r.next(&a), event(true, Some("active"), None, None, false));
+        a.feed(&note("turn/completed", json!({"threadId": T, "turn": {"id": "turn-2", "items": [], "status": "completed"}})));
         assert_eq!(r.next(&a), event(true, Some("idle"), None, None, false));
+    }
+
+    #[test]
+    fn a_completed_turn_alone_does_not_prove_turns_arrive() {
+        let mut a = seat();
+        a.feed(&note("turn/completed", json!({"threadId": T, "turn": {"id": "turn-1", "items": [], "status": "completed"}})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
     }
 
     #[test]
@@ -734,7 +786,9 @@ mod tests {
     #[test]
     fn errors_unloaded_and_closed_threads_are_not_idle() {
         let mut a = seat();
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
         a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(a.thread_state(), ThreadState::Idle);
         a.feed(&status(json!({"type": "systemError"})));
         assert_eq!(a.thread_state(), ThreadState::Unknown);
         a.feed(&status(json!({"type": "idle"})));
@@ -748,7 +802,9 @@ mod tests {
     #[test]
     fn a_disconnect_forgets_the_thread_status() {
         let mut a = seat();
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
         a.feed(&status(json!({"type": "idle"})));
+        assert_eq!(a.thread_state(), ThreadState::Idle);
         a.disconnect();
         assert_eq!(a.thread_state(), ThreadState::Unknown);
         assert!(!a.connected());
@@ -762,8 +818,13 @@ mod tests {
     #[test]
     fn another_threads_turns_do_not_move_this_ones_status() {
         let mut a = seat();
-        a.feed(&status(json!({"type": "idle"})));
+        a.snapshot(&json!({"type": "idle"}));
+        // A sub-agent's turn shows nothing about this thread's turns.
         a.feed(&note("turn/started", json!({"threadId": "sub", "turn": {"id": "x", "items": [], "status": "inProgress"}})));
+        assert_eq!(a.thread_state(), ThreadState::Unknown);
+        a.feed(&note("turn/started", json!({"threadId": T, "turn": {"id": "y", "items": [], "status": "inProgress"}})));
+        a.feed(&note("turn/completed", json!({"threadId": T, "turn": {"id": "y", "items": [], "status": "completed"}})));
+        a.feed(&note("turn/started", json!({"threadId": "sub", "turn": {"id": "z", "items": [], "status": "inProgress"}})));
         assert_eq!(a.thread_state(), ThreadState::Idle);
     }
 
