@@ -4,6 +4,10 @@ use serde_json::Value;
 pub const PATH: &str = "/room/sidecar-admission";
 pub const REQUIRED_ENV: &str = "PULLCEPT_ROOM_ADMISSION";
 
+pub fn required_for(cli: Option<crate::Cli>) -> bool {
+    matches!(cli, Some(crate::Cli::CodexCli))
+}
+
 #[derive(Clone)]
 pub struct Claim {
     pub launch_id: String,
@@ -100,6 +104,13 @@ mod tests {
             instance_id: instance.into(),
         }
     }
+    #[test]
+    fn registration_window_is_guarded_only_for_codex() {
+        assert!(required_for(Some(crate::Cli::CodexCli)));
+        assert!(!required_for(Some(crate::Cli::ClaudeCode)));
+        assert!(!required_for(None));
+    }
+
     #[test]
     fn first_instance_only_and_same_instance_reconnect() {
         let mut state = Admission::default();

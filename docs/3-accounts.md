@@ -661,4 +661,4 @@ account と topic は登録先を指すが、CLI 内の子エージェントは�
 
 launcher の台帳が同じ起動の live な PTY を持つときだけ最初の instance を対応付ける。app-server 経路では PTY より前に MCP を準備するため、起動中は launcher が実際に spawn した app-server プロセスの生存を照合する。この対応を Running の台帳へ引き継ぎ、起動失敗で破棄する。別 instance は拒否し、同 instance だけが再接続できる。登録中の台帳は最大 3 秒、50 ms 間隔で待ち、未知・古い・不一致・終了した起動や通信失敗は空 MCP server（instructions 無し、tools 空）になる。待機中に MCP 初期化は行わない。socket でも対応と liveness を再検証し、account や名前の全体的な重複拒否にはしない。参加者 ID は launcher 側が生成して同 instance へ保持する。起動終了・次の起動で対応を継承しない。
 
-Claude と account を持たない外部接続の既存経路は保つ。合成試験では親・別 instance・再接続・古い起動・登録競合・複数 topic を確認し、実際の子起動による参加者数はマージ後の実機観測に残す。
+台帳の Starting は起動した CLI の admission 要否を保持し、Codex だけに登録待ちと socket の必須判定を適用する。Claude の起動途中や account を持たない外部接続の既存経路は保つ。合成試験では親・別 instance・再接続・古い起動・登録競合・複数 topic を確認し、実際の子起動による参加者数はマージ後の実機観測に残す。

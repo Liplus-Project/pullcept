@@ -52,7 +52,7 @@ test('a hung pre-initialize HTTP request is bounded by the abort deadline', asyn
   assert.ok(Date.now() - started < ADMISSION_WAIT_MS + 2_000);
 });
 
-async function sidecar(t, port, launch, account = 'synthetic-account', topic = 'synthetic-topic') {
+async function sidecar(t, port, launch, account = 'synthetic-account', topic = 'synthetic-topic', admission = true) {
   // Whitelist process essentials; do not inherit real room/admission credentials.
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'TEMP', 'TMP'].flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []));
   const child = spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'sidecar/src/index.ts'], {
@@ -60,7 +60,7 @@ async function sidecar(t, port, launch, account = 'synthetic-account', topic = '
     env: { ...env, PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`, PULLCEPT_ROOM_TOKEN: 'synthetic-only',
       PULLCEPT_LAUNCHED_AS: account, PULLCEPT_ACCOUNT_ID: account,
       PULLCEPT_LAUNCHED_ROOM: topic, PULLCEPT_ROOM_ID: topic,
-      PULLCEPT_LAUNCH_ID: launch, PULLCEPT_ROOM_ADMISSION: '1', PULLCEPT_AGENT_NAME: 'synthetic-parent' },
+      PULLCEPT_LAUNCH_ID: admission ? launch : '', PULLCEPT_ROOM_ADMISSION: admission ? '1' : '0', PULLCEPT_AGENT_NAME: 'synthetic-parent' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   t.after(() => { child.stdin.end(); child.kill(); });
@@ -157,4 +157,17 @@ test('stale/dead launches rejected and distinct topics/accounts admitted', async
   }
   await until(() => launcher.connections.length === 2);
   assert.equal(launcher.connections.length, 2);
+});
+
+
+test('legacy Claude and no-account sidecars keep instructions/tools without admission', async (t) => {
+  const launcher = await fakeLauncher(t);
+  for (const account of ['synthetic-account', '']) {
+    const legacy = await sidecar(t, launcher.port, '', account, 'synthetic-topic', false);
+    assert.match(legacy.initialized.result.instructions, /Pullcept room/);
+    assert.equal((await legacy.rpc('tools/list')).result.tools.length, 2);
+  }
+  await until(() => launcher.connections.length === 2);
+  assert.equal(launcher.requests.length, 0);
+  for (const connection of launcher.connections) assert.equal(connection.headers['x-pullcept-launch'], undefined);
 });
