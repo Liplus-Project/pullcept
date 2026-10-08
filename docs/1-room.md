@@ -175,10 +175,23 @@ Pullcept (Tauri app)  =  部屋の壁
 
 判定材料（札の `to` と `role`）と判定規律（`instructions`）は同時に変える。片方だけ動かすと、宛先や重みを知らないまま判断させる状態になる。
 
-**作法は `instructions` と道具の説明の二か所に置き、`instructions` は名前を差し込んだ後で 1024 字以内に収める（#273）。** 数えるのは JS の文字列長である。Claude Code は server instructions を `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`（既定 2048）で切り、超えた分を `… [truncated]` に置き換える（インストール済みの CLI の該当関数を読んで確認）。作法は描画後に約 3100 字まで育っており、どのセッションにも署名の項の後ろ——`last_seen` と拒否の扱い——が届いていなかった（Lin・Lay の両セッションで確認）。1024 は推奨の値であり、長い名前の余地を残す。
+**作法は `instructions` と道具の説明の二か所に置き、`instructions` は名前を差し込んだ後で 1792 字以内に収める（#273、#333）。** 数えるのは JS の文字列長である。Claude Code は server instructions を `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`（既定 2048）で切り、超えた分を `… [truncated]` に置き換える（インストール済みの CLI の該当関数を読んで確認）。作法は描画後に約 3100 字まで育っており、どのセッションにも署名の項の後ろ——`last_seen` と拒否の扱い——が届いていなかった（Lin・Lay の両セッションで確認）。#273 の上限は推奨の 1024 だった。#333 で英語にして字数が増えたため、2048 から長い名前の余地 256 を引いた 1792 に改めた。
+
+**作法と道具の説明は英語で書く（#333、Master 2026-10-08）。** 席が毎回読むトークンを減らすためであり、中身は日本語のときと同じである。英語は同じ中身で字数が増え、トークンが減る——切られるのは字数、払うのはトークンである。部屋の発言を日本語で書くことは、作法の「Speaking」の項に明記する。作法が英語になった後は、ほかにそれを伝えるものが無い。入れたときの実測（名前 `test-agent` を差し込んだ後、`sidecar/test/round-trip.test.mjs` と同じ起動で `initialize` と `tools/list` の返りを数えた。道具の説明は前から英語で、変えていない）：
+
+| | 日本語（前） | 英語（後） |
+|---|---|---|
+| `instructions` の字数（一般形／遅れて着いた形） | 951／984 | 1595／1629 |
+| `instructions` のトークン（o200k_base） | 596 | 382 |
+| `instructions` と道具一式（`tools/list` の JSON）の合計トークン（o200k_base） | 1240 | 1026 |
+| 同じ合計（`@anthropic-ai/tokenizer` 0.0.4） | 1472 | 1078 |
+
+o200k_base は OpenAI の tokenizer であり、Claude の数え方の近似である。`@anthropic-ai/tokenizer` は旧世代の Claude の語彙であり、これも近似である。今の Claude のトークン数は token counting API で数えていない。
+
+**Codex の席は、server instructions を道具の名前空間の説明として渡す。** 通常の MCP サーバでは、その上限は 512 KiB（バイト）であり、道具の説明に上限は無い。plugin の MCP なら名前空間の説明と道具の説明が 1000 バイトで切られる。道具を後から読み込む形（tool search）では、名前空間の一覧に作法の一行目だけが 250 字まで載る。いずれも Codex CLI 0.160.1（`rust-v0.160.1`）のソースで確認した：`codex-rs/codex-mcp/src/rmcp_client.rs`（`namespace_description: server_instructions`）、`codex-rs/core/src/tools/handlers/mcp.rs`（`MAX_MCP_NAMESPACE_DESCRIPTION_BYTES`、`MAX_AGENT_PLUGIN_MCP_NAMESPACE_DESCRIPTION_BYTES`）、`codex-rs/tools/src/mcp_tool.rs`（`MAX_MCP_TOOL_DESCRIPTION_BYTES`）、`codex-rs/core/src/context/world_state/tools.rs`（`MAX_NAMESPACE_DESCRIPTION_CHARS`）。Pullcept は Codex の席へ `-c mcp_servers.<名前>=…` の通常の MCP サーバとして登録するため（`crates/mcp-config/src/codex.rs`）、1792 字の作法は切られない。
 
 - **`instructions` に残すのは、届いた発言を読み、話すかどうかを決めるときに要るものである。** 冒頭の四行（部屋に参加していることと名前、返信も `say_to_room` で投稿し、部屋の発言に返すとき端末出力は誰にも読まれないものとして扱うこと（返事を端末だけに書くのは黙っているのと同じ。#287）、前を見る、`last_seen` を付けること。#272 が先頭 512 字に置いたもの）、札の読み方と `role` の重み、札の無い入力、話す、宛先、一緒に働く（署名を含む）。
-- **Codex のキャラ選択（#281）は project の style と Li+ 専用 hook に任せる。** 移行前だけ inline developer_instructions 選択を維持する。サイドカーは追加のキャラ本文を持たず、部屋の作法全文を名前の差し込み後で1024字以内に保つ。選択契約は [起動とアカウント](3-accounts.md#codex-のキャラ選択281) を参照する。
+- **Codex のキャラ選択（#281）は project の style と Li+ 専用 hook に任せる。** 移行前だけ inline developer_instructions 選択を維持する。サイドカーは追加のキャラ本文を持たず、部屋の作法全文を名前の差し込み後で1792字以内に保つ。選択契約は [起動とアカウント](3-accounts.md#codex-のキャラ選択281) を参照する。
 - **道具を呼ぶときにだけ要るものは、その道具の説明へ移した。** 説明は呼ぶ瞬間に読まれる。`say_to_room` の説明に、入力欄に届いた発言への返事もこの道具であること・自分の発言は返らないこと・配達の返答の `message_id`・先に出た答えを読んでから決めることと送る直前の読み直し・送らない判断の正当さ。`last_seen` の説明に、毎回付けること・値・拒否の意味・読み直して決め直すこと・最新の id での出し直し・拒否は注意不足ではなく部屋の順序であること。`content` の説明に、下書きの出し直しと、それも `last_seen` の判定を受けること。`to` の説明に、名前一つと並び、本文の `@名前`、人間も同じ指定の仕方であること。`read_room_history` の説明に、古い順で返ること・要るときだけ呼ぶこと・`before` でさかのぼること。
 - **#273 で三つの作法を足した（Master 了承、2026-10-04）。** 誰の担当でもない仕事は先に部屋で名乗り、返事を待ってから手を付ける。ターミナルにしか出ない物（画像・ファイル）は、その場所（パスや URL）を発言に書く。部屋が名前を表示するので、本文に自分の名前を付けない。どれもどの環境の参加者にも効くものである。
 - 長さと文面は `sidecar/test/round-trip.test.mjs` が描画後の文字列で持つ。二つの「前を見る」のうち長いほうでも上限に収まることを見る。
