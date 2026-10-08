@@ -48,6 +48,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
+import { admitSidecar } from "./admission.mjs";
 
 const ROOM_URL = process.env.PULLCEPT_ROOM_URL ?? "";
 const AGENT_NAME = process.env.PULLCEPT_AGENT_NAME ?? "session";
@@ -131,7 +132,7 @@ const LAUNCHED_ROOM = process.env.PULLCEPT_LAUNCHED_ROOM?.trim() || null;
  * Only when there is a room to go to. With no address the sidecar is offline
  * either way, and says so for that reason instead.
  */
-const SEAT_REFUSAL: string | null =
+let SEAT_REFUSAL: string | null =
   !ROOM_URL || (LAUNCHED_AS === ACCOUNT_ID && (ACCOUNT_ID === null || LAUNCHED_ROOM === ROOM_ID))
     ? null
     : LAUNCHED_AS === null
@@ -139,6 +140,18 @@ const SEAT_REFUSAL: string | null =
         `and this registration is account ${ACCOUNT_ID}'s seat`
       : `this CLI was launched as account ${LAUNCHED_AS}, ` +
         `and this registration is ${ACCOUNT_ID === null ? "no account's" : `account ${ACCOUNT_ID}'s`} seat`;
+
+// A per-process identity, retained across socket reconnects and never inherited.
+const SIDECAR_INSTANCE = randomUUID();
+const LAUNCH_ID = process.env.PULLCEPT_LAUNCH_ID?.trim() || null;
+const ADMISSION_REQUIRED = process.env.PULLCEPT_ROOM_ADMISSION === "1" || LAUNCH_ID !== null;
+const ADMISSION_CLAIM = {
+  launch_id: LAUNCH_ID, account_id: ACCOUNT_ID, room_id: ROOM_ID, instance_id: SIDECAR_INSTANCE,
+};
+if (SEAT_REFUSAL === null && ADMISSION_REQUIRED &&
+    !await admitSidecar({ roomUrl: ROOM_URL, token: ROOM_TOKEN, claim: ADMISSION_CLAIM })) {
+  SEAT_REFUSAL = "this sidecar was not admitted for the live launch";
+}
 
 /**
  * Whether this session was seated in a topic that already holds posts it does
@@ -912,6 +925,12 @@ function scheduleRetry(): void {
 function connectRoom(): void {
   const headers: Record<string, string> = {};
   if (ROOM_TOKEN) headers["Authorization"] = `Bearer ${ROOM_TOKEN}`;
+  if (ADMISSION_REQUIRED && LAUNCH_ID && ACCOUNT_ID && ROOM_ID) {
+    headers["x-pullcept-launch"] = LAUNCH_ID;
+    headers["x-pullcept-instance"] = SIDECAR_INSTANCE;
+    headers["x-pullcept-account"] = ACCOUNT_ID;
+    headers["x-pullcept-room"] = ROOM_ID;
+  }
 
   const socket = new WebSocket(ROOM_URL, { headers });
   ws = socket;

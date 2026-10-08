@@ -1483,6 +1483,13 @@ async fn read_hook(
     let reported = mcp_config::parse_status_hook_target(&target);
     let activity = mcp_config::parse_activity_hook_target(&target);
     let native = target == mcp_config::codex::NATIVE_PATH;
+    let admission = target == mcp_config::codex::admission::PATH;
+    let admission_status = if authorized && admission {
+        mcp_config::codex::admission::Claim::read(&body)
+            .filter(|claim| room.holds(&claim.room_id))
+            .map(|claim| app.state::<RoomSeats>().admit_sidecar(&app.state::<crate::pty::PtyState>(), &claim))
+            .unwrap_or(409)
+    } else { 409 };
     let captured = authorized
         && native
         && app.state::<crate::session::RoomSeats>().capture_native(
@@ -1491,9 +1498,11 @@ async fn read_hook(
             room,
             &body,
         );
-    let status = match (authorized, reported.is_some() || activity.is_some() || native) {
+    let status = match (authorized, reported.is_some() || activity.is_some() || native || admission) {
         (false, _) => "401 Unauthorized",
         (true, false) => "404 Not Found",
+        (true, true) if admission && admission_status == 425 => "425 Too Early",
+        (true, true) if admission && admission_status != 200 => "409 Conflict",
         (true, true) if native && !captured => "409 Conflict",
         (true, true) => "200 OK",
     };
@@ -1548,6 +1557,8 @@ async fn serve_participant(
     let expected = format!("Bearer {}", room.token());
     // The listener is on loopback, but any local process can reach loopback.
     // The token is what makes this room, and not merely this machine.
+    let socket_id = Uuid::new_v4().to_string();
+    let mut admitted: Option<(mcp_config::codex::admission::Claim, String)> = None;
     let check = |req: &Request, res: Response| -> Result<Response, ErrorResponse> {
         let ok = req
             .headers()
@@ -1556,6 +1567,24 @@ async fn serve_participant(
             .map(|v| v == expected)
             .unwrap_or(false);
         if ok {
+            if req.headers().contains_key("x-pullcept-launch") {
+                let header = |key| req.headers().get(key).and_then(|v| v.to_str().ok());
+                let body = serde_json::json!({
+                    "launch_id": header("x-pullcept-launch"), "instance_id": header("x-pullcept-instance"),
+                    "account_id": header("x-pullcept-account"), "room_id": header("x-pullcept-room"),
+                }).to_string();
+                let claim = mcp_config::codex::admission::Claim::read(body.as_bytes());
+                let origin = claim.as_ref().filter(|c| room.holds(&c.room_id)).and_then(|c| {
+                    app.state::<RoomSeats>().connect_sidecar(&app.state::<crate::pty::PtyState>(), c, &socket_id)
+                });
+                if let (Some(claim), Some(origin)) = (claim, origin) {
+                    admitted = Some((claim, origin));
+                } else {
+                    let mut deny = ErrorResponse::new(Some("sidecar not admitted".to_string()));
+                    *deny.status_mut() = StatusCode::FORBIDDEN;
+                    return Err(deny);
+                }
+            }
             Ok(res)
         } else {
             let mut deny = ErrorResponse::new(Some("unauthorized".to_string()));
@@ -1569,10 +1598,10 @@ async fn serve_participant(
         .map_err(|e| format!("handshake failed: {e}"))?;
     let (mut sink, mut source) = ws.split();
 
-    // This connection's identity, minted here. Nothing the far side sends can
-    // set it or read it, so nothing the far side sends can wear another
-    // participant's suppression or shed its own.
-    let origin = Uuid::new_v4().to_string();
+    // An admitted sidecar reuses its launcher-minted participant identity.
+    // Other connections keep their independent connection identity.
+    let origin = admitted.as_ref().map(|(_, id)| id.clone()).unwrap_or_else(|| Uuid::new_v4().to_string());
+    let admitted_claim = admitted.map(|(claim, _)| claim);
 
     // The room this connection is in, once its `hello` has named one. Set once
     // and never moved: a connection is started into one topic, and a second
@@ -1595,6 +1624,9 @@ async fn serve_participant(
     // their seats and floors, and the screen's declaration — no sender lives
     // under it.
     let seats = Arc::clone(&room.inner);
+    let pump_claim = admitted_claim.clone();
+    let pump_app = app.clone();
+    let pump_socket = socket_id.clone();
     let pump = tokio::spawn(async move {
         loop {
             let fanout = match from_room.recv().await {
@@ -1641,6 +1673,8 @@ async fn serve_participant(
             if fanout.target != own_origin {
                 continue;
             }
+            if pump_claim.as_ref().is_some_and(|claim| !pump_app.state::<RoomSeats>().current_sidecar(
+                &pump_app.state::<crate::pty::PtyState>(), claim, &pump_socket)) { break; }
             if sink.send(Message::Text(fanout.frame.into())).await.is_err() {
                 break;
             }
@@ -1667,8 +1701,20 @@ async fn serve_participant(
             continue;
         };
 
+        if admitted_claim.as_ref().is_some_and(|claim| !app.state::<RoomSeats>().current_sidecar(
+            &app.state::<crate::pty::PtyState>(), claim, &socket_id)) { break; }
         match frame.kind.as_str() {
             "hello" => {
+                let declared_room = frame.room.as_deref().map(str::trim);
+                let declared_account = frame.account_id.as_deref().map(str::trim);
+                let valid = match &admitted_claim {
+                    Some(claim) => declared_room == Some(claim.room_id.as_str())
+                        && declared_account == Some(claim.account_id.as_str()),
+                    None => !declared_room.zip(declared_account).is_some_and(|(topic, account)| {
+                        app.state::<RoomSeats>().requires_sidecar_admission(topic, account)
+                    }),
+                };
+                if !valid { break; }
                 let name = frame.name.unwrap_or_else(|| "session".to_string());
                 if frame.protocol != Some(PROTOCOL_VERSION) {
                     // Legible mismatch beats a silent half-working room.
@@ -1707,13 +1753,7 @@ async fn serve_participant(
                         continue;
                     }
                 };
-                // Seated on this connection. A second session answering to the
-                // same name is a second seat, not the same one — and so is a
-                // second session declaring the same account, which this room
-                // does not refuse: refusing a duplicate account belongs to the
-                // launcher's seat ledger, which knows what it started
-                // (`session::RoomSeats`), and a room that enforced it here
-                // would be treating the account as the identity.
+                // Admission is scoped to a launch, not to duplicate names/accounts.
                 room.seat(
                     &room_id,
                     &origin,
@@ -1842,7 +1882,7 @@ async fn serve_participant(
     }
 
     pump.abort();
-    if joined_as.is_some() {
+    if joined_as.is_some() && admitted_claim.as_ref().is_none_or(|claim| app.state::<RoomSeats>().may_unseat_sidecar(claim, &socket_id)) {
         // By connection. Removing by name took every participant answering to
         // that name off the roster, so one session ending emptied the other's
         // seat too (#40).

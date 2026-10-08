@@ -2,6 +2,7 @@
 use super::*;
 use toml_edit::{Document as DocumentMut, Item};
 pub mod activity;
+pub mod admission;
 pub mod app_server;
 mod character;
 pub mod limit;
@@ -14,6 +15,8 @@ pub const NATIVE_URL_ENV: &str = "PULLCEPT_NATIVE_URL";
 pub const OUTPUT_STYLE_ENV: &str = "LI_PLUS_OUTPUT_STYLE";
 pub const NATIVE_PATH: &str = "/hooks/codex-session";
 pub const SIDECAR_ENV: &[&str] = &[
+    LAUNCH_ID_ENV,
+    admission::REQUIRED_ENV,
     ROOM_TOKEN_ENV,
     LAUNCHED_AS_ENV,
     LAUNCH_ROOM_ENV,
