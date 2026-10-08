@@ -37,6 +37,10 @@ interface RoomMessage {
    *  notice, the account of the local MCP server that pushed it (#193): what
    *  the fold is decided on (`foldOf`). */
   account: string | null;
+  /** True when the app itself said it, one of its own notices (#294). Stamped
+   *  by the room from where the post came in, not read off the name: what the
+   *  circle draws the app's icon by (#340). */
+  from_app: boolean;
   content: string;
   /** The names it was addressed to, or empty when it was said to the room
    *  (#204). */
@@ -77,6 +81,9 @@ interface MissedPost {
   hue: number | null;
   /** The account it was said as, for the same reason (#193). */
   account: string | null;
+  /** True when the app itself said it, for the same reason again (#340).
+   *  Absent on every other post. */
+  from_app?: boolean;
   content: string;
   /** Empty when it was said to the room (#204). */
   to: string[];
@@ -86,7 +93,7 @@ interface MissedPost {
 /**
  * One post as the room's log kept it (src-tauri/src/room_log.rs).
  *
- * Six fields, and the two a live post also carries are absent by decision
+ * Seven fields, and the two a live post also carries are absent by decision
  * rather than by loss. `own` is a property of whoever is looking, so a file
  * could only have recorded one viewer's position as if it were part of the
  * utterance. `hue` was a declaration made at a seat that no longer exists by
@@ -103,6 +110,10 @@ interface LoggedPost {
    *  every line written before the log carried it (#193). What lets a line read
    *  back fold the way it did live (`foldOf`). */
   account?: string;
+  /** True when the app itself said it (#340). Absent on every other line and
+   *  on every line written before the log carried it. What lets a line read
+   *  back draw the app's icon the way it did live. */
+  from_app?: boolean;
   content: string;
   /** The names it was addressed to. Absent, not null or empty, when it was
    *  said to the room: the field's presence is what carries the two states, in
@@ -1867,6 +1878,8 @@ function roomLine(line: {
   /** The account it was said as, or null when none was declared — what the
    *  circle's image is looked up by (#236). */
   account: string | null;
+  /** Said by the app itself: the circle carries the app's icon (#340). */
+  app: boolean;
   colour: string;
   /** Empty for a line said to the room. */
   to: string[];
@@ -1890,7 +1903,7 @@ function roomLine(line: {
   head.className = "meta";
 
   if (!line.mine) {
-    article.appendChild(avatar(line.speaker, line.account));
+    article.appendChild(avatar(line.speaker, line.account, line.app));
     const speaker = document.createElement("span");
     speaker.className = "speaker";
     speaker.textContent = line.speaker;
@@ -1946,16 +1959,34 @@ function roomLine(line: {
  * account, and an account with no image, keep the character. The circle
  * remembers which account it is for, so an image that arrives or changes after
  * the line was drawn reaches it (`setAvatarImage`).
+ *
+ * The app's icon instead, when the line is the app's own (#340). Decided by
+ * the mark the room put on the post, never by the name: a participant may
+ * answer to `Pullcept`, and their line keeps its character. The app speaks as
+ * no account, so nothing repaints this circle afterwards.
  */
-function avatar(name: string, accountId: string | null = null): HTMLElement {
+function avatar(name: string, accountId: string | null = null, app = false): HTMLElement {
   const mark = document.createElement("span");
   mark.className = "avatar";
   mark.setAttribute("aria-hidden", "true");
   mark.dataset.initial = initialOf(name);
+  if (app) {
+    mark.classList.add("app");
+    drawAvatar(mark, APP_ICON_URL);
+    return mark;
+  }
   if (accountId) mark.dataset.account = accountId;
   paintAvatar(mark);
   return mark;
 }
+
+/**
+ * The app's icon, as the app's own lines carry it (#340): the same drawing the
+ * title bar shows and every size in src-tauri/icons/ is made from (#246), so
+ * one picture is the app wherever it appears. Resolved here so the build
+ * bundles it the way it bundles the title bar's.
+ */
+const APP_ICON_URL = new URL("../src-tauri/app-icon.svg", import.meta.url).href;
 
 /** The character a circle carries for `name`: its first, upper-cased. */
 function initialOf(name: string): string {
@@ -2260,6 +2291,7 @@ function appendMessage(message: RoomMessage): void {
   const line = roomLine({
     speaker: message.speaker,
     account: message.account,
+    app: message.from_app,
     // `own` rather than a name test: the room decides self on the connection
     // a post arrived on, which a rename cannot blur (#40). A folded line takes
     // its account's colour, so it is the colour it has when read back (#193).
@@ -2326,6 +2358,8 @@ function drawTopic(posts: LoggedPost[]): void {
       roomLine({
         speaker: post.speaker,
         account: post.account ?? null,
+        // Read back as the app's when the log says it was (#340).
+        app: post.from_app ?? false,
         colour: fold?.colour ?? speakerColor(post.speaker, null, false),
         to: post.to ?? [],
         ts: post.ts,
@@ -2840,6 +2874,7 @@ function drawMissed(missed: MissedPost[]): number {
       speaker: one.speaker,
       hue: one.hue,
       account: one.account,
+      from_app: one.from_app ?? false,
       content: one.content,
       to: one.to,
       ts: one.ts,

@@ -65,6 +65,14 @@ pub struct Post {
     /// an account id is not an identity here (#59). What reads it is the
     /// screen, which draws a post from an `mcp` account folded (#193).
     pub account: Option<String>,
+    /// True when the app itself said it rather than anyone in the room: a
+    /// notice of its own, such as a Codex seat stopping on its usage limit
+    /// (#294). Who said it, on the axis of `speaker` and `account`, and stamped
+    /// by the caller off the origin the post came in on, never off the frame —
+    /// a session may answer to the app's name, and that does not make its post
+    /// the app's. What reads it is the screen, which draws the app's icon in
+    /// the circle of such a post (#340).
+    pub from_app: bool,
     pub content: String,
     /// The names it was addressed to, in the order they were named, or empty
     /// when it was said to the room (#204). Always passed through
@@ -274,6 +282,11 @@ pub struct Missed {
     /// The account it was said as, carried straight from the post, so a line
     /// drawn from a refusal is drawn as the line it would have been (#193).
     pub account: Option<String>,
+    /// Whether the app itself said it, carried straight from the post for the
+    /// same reason (#340). Written only when true: a session reads a refusal as
+    /// text, and the field says nothing about the posts it is false on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub from_app: bool,
     pub content: String,
     /// Empty when it was said to the room, as on [`Post`].
     pub to: Vec<String>,
@@ -382,6 +395,7 @@ impl Floor {
                 speaker: entry.post.speaker.clone(),
                 hue: entry.post.hue,
                 account: entry.post.account.clone(),
+                from_app: entry.post.from_app,
                 content: entry.post.content.clone(),
                 to: entry.post.to.clone(),
                 ts: entry.post.ts.clone(),
@@ -430,6 +444,7 @@ mod tests {
             speaker: speaker.to_string(),
             hue: None,
             account: None,
+            from_app: false,
             content: content.to_string(),
             to: Vec::new(),
             ts: "2026-08-23T00:00:00.000Z".to_string(),
@@ -595,6 +610,41 @@ mod tests {
         let admission = floor.admit("lin", 0, None, post("m-2", "Claude Lin", "答えます"));
         let missed = refusal(&admission);
         assert_eq!(missed[0].account.as_deref(), Some("mcp-github-webhook-mcp"));
+    }
+
+    #[test]
+    fn the_refusal_hands_a_post_back_as_the_app_s_own_when_it_was() {
+        let mut floor = Floor::new();
+        let mut notice = post("m-1", "Pullcept", "Codex の席が止まりました");
+        notice.from_app = true;
+        floor.admit("app", 0, None, notice);
+        floor.admit("lay", 0, Some("m-1"), post("m-2", "Claude Lay", "了解"));
+
+        // The screen draws the app's icon on the app's own post, and a line
+        // drawn from a refusal has to carry it the way the live one did; the
+        // posts beside it do not (#340).
+        let admission = floor.admit("lin", 0, None, post("m-3", "Claude Lin", "答えます"));
+        let missed = refusal(&admission);
+        assert!(missed[0].from_app);
+        assert!(!missed[1].from_app);
+    }
+
+    #[test]
+    fn a_refused_post_carries_from_app_on_the_wire_only_when_it_is_true() {
+        let mut floor = Floor::new();
+        let mut notice = post("m-1", "Pullcept", "Codex の席が止まりました");
+        notice.from_app = true;
+        floor.admit("app", 0, None, notice);
+        floor.admit("lay", 0, Some("m-1"), post("m-2", "Claude Lay", "了解"));
+
+        // A refusal reaches a session too, which reads it as text: a field that
+        // is false on every post but the app's own is left off them (#340).
+        let admission = floor.admit("lin", 0, None, post("m-3", "Claude Lin", "答えます"));
+        let missed = refusal(&admission);
+        let app = serde_json::to_value(&missed[0]).expect("serialize");
+        let said = serde_json::to_value(&missed[1]).expect("serialize");
+        assert_eq!(app["from_app"], serde_json::Value::Bool(true));
+        assert!(said.get("from_app").is_none());
     }
 
     #[test]

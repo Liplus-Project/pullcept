@@ -76,7 +76,7 @@ const TITLE_CHARS: usize = 40;
 
 /// One post, as the log holds it.
 ///
-/// The same six fields going in and coming out. `hue` and `own` are not among
+/// The same seven fields going in and coming out. `hue` and `own` are not among
 /// them, and why each is absent — and why `account` is not — is written down
 /// where the mapping from a post is made (`src-tauri/src/room_log.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +88,11 @@ pub struct LoggedPost {
     /// this field existed reads as declaring none (#193).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// True when the app itself said it (#340). Written only when true, as
+    /// `account` is written only when present; a line without it, and every
+    /// line written before it existed, reads as not the app's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_app: bool,
     pub content: String,
     /// The names this was addressed to, or empty when it was said to the room.
     /// Written as a list, and omitted rather than written empty or as null, so
@@ -710,6 +715,7 @@ mod tests {
             message_id: Uuid::new_v4().to_string(),
             speaker: "Lin".to_string(),
             account: None,
+            from_app: false,
             content: content.to_string(),
             to: Vec::new(),
             ts: ts.to_string(),
@@ -954,6 +960,29 @@ mod tests {
 
         let line = serde_json::to_string(&posts[0]).expect("serialize");
         assert!(!line.contains("account"), "{line}");
+    }
+
+    /// The app's own post is read back as the app's, so the screen draws the
+    /// app's icon on it as it did live; every other line, and every line
+    /// written before the field existed, reads as not. False is written
+    /// without the key (#340).
+    #[test]
+    fn the_app_s_own_post_is_read_back_as_the_app_s() {
+        let scratch = Scratch::new();
+        let path = scratch.path().join("t.jsonl");
+        let before = r#"{"message_id":"a","speaker":"Pullcept","content":"x","ts":"2026-10-07T00:00:00Z"}"#;
+        let after = r#"{"message_id":"b","speaker":"Pullcept","from_app":true,"content":"y","ts":"2026-10-08T00:00:00Z"}"#;
+        std::fs::write(&path, format!("{before}\n{after}\n")).expect("write");
+
+        let (posts, skipped) = read_posts(&path);
+        assert_eq!(skipped, 0);
+        assert!(!posts[0].from_app, "a line without the key is not the app's");
+        assert!(posts[1].from_app);
+
+        let line = serde_json::to_string(&posts[0]).expect("serialize");
+        assert!(!line.contains("from_app"), "{line}");
+        let line = serde_json::to_string(&posts[1]).expect("serialize");
+        assert!(line.contains(r#""from_app":true"#), "{line}");
     }
 
     /// A line written while a post had one addressee carries it as a string,
