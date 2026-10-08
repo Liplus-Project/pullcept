@@ -1391,8 +1391,21 @@ impl SessionStats {
 const HOOK_HEAD_MAX: usize = 16 * 1024;
 const HOOK_BODY_MAX: usize = 4 * 1024 * 1024;
 
-/// How long one hook request may take before the connection is dropped.
+/// How long one hook request may take before the connection is dropped. A
+/// permission request held for the room's answer (#336) is past this once it
+/// has been read: its own bound is `permission_prompt::HOLD_SECS`.
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A permission hook read and held for the room's answer (#336): its
+/// connection, and what the card says.
+struct HeldHook {
+    reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+    hold: crate::hook_activity::Hold,
+    request: mcp_config::permission_prompt::Request,
+    topic_id: String,
+    account_id: String,
+}
 
 /// Answer one POST from a session: its status-line report (#155, decision 2).
 ///
@@ -1404,22 +1417,120 @@ const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The activity path sits beside it: `/hooks/activity/<event>/…`, a Claude Code
 /// seat's hooks (`mcp_config::activity_hook_settings`), whose body is read for
 /// a few fields only and handed to that seat's state (`hook_activity`, #331).
+///
+/// A `PermissionRequest` among them is the one hook not answered at once
+/// (#336): when its seat is waiting on the prompt and its body can be read,
+/// the room shows a card and the answer waits on it (`hold_permission`).
 async fn serve_hook(
     app: AppHandle,
     room: RoomState,
     stream: tokio::net::TcpStream,
 ) -> Result<(), String> {
-    match tokio::time::timeout(HOOK_TIMEOUT, read_hook(&app, &room, stream)).await {
-        Ok(result) => result,
-        Err(_) => Err("a hook request did not finish within its window".to_string()),
+    let held = match tokio::time::timeout(HOOK_TIMEOUT, read_hook(&app, &room, stream)).await {
+        Ok(result) => result?,
+        Err(_) => return Err("a hook request did not finish within its window".to_string()),
+    };
+    match held {
+        Some(held) => hold_permission(&app, held).await,
+        None => Ok(()),
     }
+}
+
+/// How a held permission request ended, as the screen is told it.
+fn permission_outcome(answered: Option<mcp_config::permission_prompt::Decision>, how: &str) -> String {
+    match answered {
+        Some(decision) => decision.word().to_string(),
+        None => how.to_string(),
+    }
+}
+
+/// Wait on the room's answer to one permission request (#336), then answer the
+/// hook.
+///
+/// Three things end the wait. The person presses a button on the card
+/// (`hook_activity::permission_answer`), and the hook answers with that
+/// decision. The request is settled elsewhere — the seat's own signs, read in
+/// `HookSeats` — or the CLI closes the connection, and the hook answers `{}`
+/// if it still can. Or the hold runs out (`permission_prompt::HOLD_SECS`),
+/// before the hook's own timeout, and the hook answers `{}`. `{}` decides
+/// nothing: the terminal's prompt, shown all the while, stays the person's.
+///
+/// The screen is told how it ended (`permission-resolved`), so the card stops
+/// being pressable. A decision sent is not a decision taken: the terminal may
+/// have answered first, and the card says only what the room sent.
+async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> {
+    use mcp_config::permission_prompt::HOLD_SECS;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let HeldHook {
+        mut reader,
+        mut writer,
+        hold,
+        request,
+        topic_id,
+        account_id,
+    } = held;
+    let id = hold.id.clone();
+
+    // The CLI sends nothing more on this connection; a read that ends is the
+    // CLI having closed it — its own timeout, the session gone, or (not
+    // observed) the prompt answered in the terminal.
+    let closed = async {
+        let mut probe = [0u8; 512];
+        loop {
+            match reader.read(&mut probe).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    };
+
+    let (decision, how) = tokio::select! {
+        answer = hold.answer => match answer {
+            Ok(decision) => (Some(decision), "answered"),
+            Err(_) => (None, "elsewhere"),
+        },
+        _ = closed => (None, "closed"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(HOLD_SECS)) => (None, "timeout"),
+    };
+    app.state::<crate::hook_activity::HookSeats>().release(&id);
+    let _ = app.emit(
+        "permission-resolved",
+        serde_json::json!({
+            "id": id,
+            "topic_id": topic_id,
+            "account_id": account_id,
+            "outcome": permission_outcome(decision, how),
+        }),
+    );
+    if how == "closed" {
+        return Ok(());
+    }
+
+    let body = decision
+        .and_then(|decision| request.answer(decision))
+        .map(|answer| answer.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+    let answer = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    writer
+        .write_all(answer.as_bytes())
+        .await
+        .map_err(|e| format!("permission answer could not be sent: {e}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("permission answer could not be flushed: {e}"))?;
+    Ok(())
 }
 
 async fn read_hook(
     app: &AppHandle,
     room: &RoomState,
     stream: tokio::net::TcpStream,
-) -> Result<(), String> {
+) -> Result<Option<HeldHook>, String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let (reader, mut writer) = stream.into_split();
@@ -1468,7 +1579,7 @@ async fn read_hook(
     // rather than a reset in the middle of sending one.
     let mut body = Vec::new();
     if length > 0 {
-        reader
+        (&mut reader)
             .take(length.min(HOOK_BODY_MAX) as u64)
             .read_to_end(&mut body)
             .await
@@ -1518,8 +1629,38 @@ async fn read_hook(
         // the CLI sends a tool's end only after its start's answer, so
         // the two are kept in the order they happened.
         if let Some((event, room_id, account_id)) = &activity {
-            app.state::<crate::hook_activity::HookSeats>()
-                .hear(app, event, room_id, account_id, &body);
+            let seats = app.state::<crate::hook_activity::HookSeats>();
+            seats.hear(app, event, room_id, account_id, &body);
+            // A permission prompt the room can show is held for its answer
+            // (#336) rather than answered here. One that cannot be read, or
+            // whose seat is not waiting on it, is answered at once below.
+            if *event == mcp_config::permission_prompt::EVENT {
+                if let Some(request) = mcp_config::permission_prompt::Request::read(&body) {
+                    let hold = seats.hold(room_id, account_id, &request, |id, pty_id| {
+                        let mut card = request.card();
+                        card["id"] = serde_json::json!(id);
+                        card["topic_id"] = serde_json::json!(room_id);
+                        card["account_id"] = serde_json::json!(account_id);
+                        card["pty_id"] = serde_json::json!(pty_id);
+                        card["at"] = serde_json::json!(now_iso());
+                        card
+                    });
+                    if let Some(hold) = hold {
+                        // The card goes to the screen only. It is not a post:
+                        // not on the floor, not in the log, not typed into any
+                        // terminal — the input it shows stays on the glass.
+                        let _ = app.emit("permission-request", hold.card.clone());
+                        return Ok(Some(HeldHook {
+                            reader,
+                            writer,
+                            hold,
+                            request,
+                            topic_id: room_id.clone(),
+                            account_id: account_id.clone(),
+                        }));
+                    }
+                }
+            }
         }
     }
 
@@ -1537,7 +1678,7 @@ async fn read_hook(
         .flush()
         .await
         .map_err(|e| format!("hook answer could not be flushed: {e}"))?;
-    Ok(())
+    Ok(None)
 }
 
 async fn serve_participant(

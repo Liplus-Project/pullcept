@@ -35,6 +35,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 pub mod codex;
 pub mod hook_activity;
+pub mod permission_prompt;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
@@ -924,6 +925,19 @@ pub const ACTIVITY_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
 ];
 
+/// The `timeout` of every activity hook but `PermissionRequest`, in seconds.
+pub const ACTIVITY_HOOK_TIMEOUT_SECS: u64 = 5;
+
+/// The `timeout` one activity hook is declared with (#336): the permission
+/// hook's is long enough for the room's answer, every other is short.
+pub fn activity_hook_timeout(event: &str) -> u64 {
+    if event == permission_prompt::EVENT {
+        permission_prompt::HOOK_TIMEOUT_SECS
+    } else {
+        ACTIVITY_HOOK_TIMEOUT_SECS
+    }
+}
+
 /// Where one seat's hook for one event posts to (#325).
 ///
 /// `status_hook_url`'s shape with the event as one more segment ahead of the
@@ -968,9 +982,15 @@ pub fn parse_activity_hook_target(target: &str) -> Option<(&'static str, String,
 /// **The CLI waits for the answer.** An HTTP hook cannot run in the background
 /// (Claude Code docs, `hooks`, read 2026-10-07: `async` is for command hooks
 /// only), so every tool call on the seat waits on this app; the timeout is
-/// held to 5 seconds, and the app answers `{}` — which decides nothing — as
-/// soon as the request is read. On `PermissionRequest` too, `{}` decides
-/// nothing: the prompt is shown to the person as it would be without the hook.
+/// held to `ACTIVITY_HOOK_TIMEOUT_SECS`, and the app answers `{}` — which
+/// decides nothing — as soon as the request is read.
+///
+/// **`PermissionRequest` is the one exception (#336).** The app holds it open
+/// for the room's answer (`permission_prompt::HOLD_SECS`), so its timeout is
+/// `permission_prompt::HOOK_TIMEOUT_SECS`, just above the hold. The prompt is
+/// shown in the terminal while the hook is held (real device, 2026-10-08), and
+/// a hold nobody answers ends in `{}`, which leaves the prompt to the person
+/// as it would be without the hook.
 ///
 /// Added to the person's own hooks rather than in place of them: `hooks`
 /// merge across settings levels (same docs), unlike `statusLine`.
@@ -985,7 +1005,7 @@ pub fn activity_hook_settings(port: u16, room_id: &str, account_id: &str) -> Val
                     "url": activity_hook_url(port, event, room_id, account_id),
                     "headers": { "Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}") },
                     "allowedEnvVars": [ROOM_TOKEN_ENV],
-                    "timeout": 5,
+                    "timeout": activity_hook_timeout(event),
                 }],
             }]),
         );
@@ -2428,7 +2448,8 @@ mod tests {
     fn a_claude_code_line_declares_only_the_activity_http_hooks() {
         // The `StopFailure` entry #149 put on the line stays gone (#161). What
         // rides now are the activity hooks of #331, each HTTP, to this seat's
-        // own activity address, 5 seconds, the token resolved by the CLI from
+        // own activity address, 5 seconds — `PermissionRequest` alone longer,
+        // for the room's answer (#336) — the token resolved by the CLI from
         // the environment.
         let line = launch_args(
             &[],
@@ -2467,7 +2488,7 @@ mod tests {
                     "url": activity_hook_url(1234, event, ROOM, LIN),
                     "headers": { "Authorization": "Bearer ${PULLCEPT_ROOM_TOKEN}" },
                     "allowedEnvVars": ["PULLCEPT_ROOM_TOKEN"],
-                    "timeout": 5,
+                    "timeout": if *event == "PermissionRequest" { 190 } else { 5 },
                 }]),
                 "{event}"
             );
