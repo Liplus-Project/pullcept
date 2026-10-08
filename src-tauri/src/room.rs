@@ -207,6 +207,11 @@ pub struct RoomMessage {
     /// server that pushed it (#193). The screen folds a line said as an `mcp`
     /// account, and reads the kind off the account this names.
     pub account: Option<String>,
+    /// True when the app itself said it — one of its own notices (#294) — and
+    /// no one in the room did. Stamped from the origin it came in on, never
+    /// read off a name: the screen draws the app's icon in its circle by this
+    /// (#340), and a participant answering to `APP_SPEAKER` gets no icon.
+    pub from_app: bool,
     pub content: String,
     /// The names it was addressed to, or empty when it was said to the room.
     pub to: Vec<String>,
@@ -897,6 +902,9 @@ fn deliver_except(
         // refusal hands that copy back, and the screen draws it (#108).
         post.hue = hue;
         post.account = account;
+        // Whether the app itself is saying it, off the origin and nothing else
+        // (#340): the speaker's name is one a session can answer to.
+        post.from_app = origin == room.app_origin;
         let admission = inner.floor.admit(origin, since, last_seen, post.clone());
         // Written here, inside the acquisition the floor was judged under, so
         // the file's order is the floor's order. Appending after the lock is
@@ -975,6 +983,7 @@ fn deliver_except(
             // floor was judged under.
             hue,
             account: post.account,
+            from_app: post.from_app,
             content: post.content,
             to: post.to,
             ts: post.ts,
@@ -1112,6 +1121,8 @@ pub fn post_app_notice(
             speaker: APP_SPEAKER.to_string(),
             hue: None,
             account: None,
+            // Stamped by `deliver` off `app_origin`, as every post's is (#340).
+            from_app: false,
             content: content.to_string(),
             to: Vec::new(),
             ts: now_iso(),
@@ -1168,6 +1179,7 @@ pub fn post_notice(
                 speaker: speaker.name.clone(),
                 hue: speaker.hue,
                 account: Some(speaker.account_id.clone()),
+                from_app: false,
                 content: content.to_string(),
                 to: Vec::new(),
                 ts: now_iso(),
@@ -1930,6 +1942,9 @@ async fn serve_participant(
                             hue: None,
                             // Stamped by `deliver` too, for the same reason.
                             account: None,
+                            // And this (#340): a session saying it is the app
+                            // does not make its post the app's.
+                            from_app: false,
                             content: frame.content.unwrap_or_default(),
                             to: normalize_to(frame.to),
                             ts: frame.ts.unwrap_or_else(now_iso),
@@ -2275,6 +2290,7 @@ pub fn room_post(
             // declaration.
             hue: None,
             account: None,
+            from_app: false,
             content,
             to: Vec::new(),
             ts: now_iso(),
