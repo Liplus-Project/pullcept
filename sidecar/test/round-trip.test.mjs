@@ -385,6 +385,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
       cwd: REPO,
       env: {
         ...process.env,
+        PULLCEPT_LAUNCH_ID: "",
+        PULLCEPT_ROOM_ADMISSION: "0",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "test-agent",
         PULLCEPT_AGENT_HUE: "145",
@@ -989,6 +991,8 @@ test("a session launched without a hue or an account says so by omission", async
       cwd: REPO,
       env: {
         ...process.env,
+        PULLCEPT_LAUNCH_ID: "",
+        PULLCEPT_ROOM_ADMISSION: "0",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "no-colour",
         PULLCEPT_AGENT_HUE: "",
@@ -1039,6 +1043,8 @@ test("a session seated in a topic that already holds posts is told so", async (t
       cwd: REPO,
       env: {
         ...process.env,
+        PULLCEPT_LAUNCH_ID: "",
+        PULLCEPT_ROOM_ADMISSION: "0",
         // Unset on purpose: no room to connect to, and the sidecar stays
         // offline and serving rather than exiting.
         PULLCEPT_ROOM_URL: "",
@@ -1146,6 +1152,8 @@ for (const [label, launchedAs, launchedRoom] of [
         cwd: REPO,
         env: {
           ...process.env,
+        PULLCEPT_LAUNCH_ID: "",
+        PULLCEPT_ROOM_ADMISSION: "0",
           PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
           PULLCEPT_AGENT_NAME: "test-agent",
           PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,

@@ -39,7 +39,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio_tungstenite::tungstenite::{
@@ -74,12 +74,12 @@ impl CodexServers {
 
 /// The process tree of one seat's server.
 struct Server {
-    child: Child,
+    child: Arc<Mutex<Child>>,
 }
 
 impl Server {
-    fn stop(mut self) {
-        stop_tree(&mut self.child);
+    fn stop(self) {
+        stop_tree(&mut self.child.lock());
     }
 }
 
@@ -118,6 +118,7 @@ pub fn stop_all(app: &AppHandle) {
 /// What the seat's launch is handed: the character, the hooks to turn off,
 /// the person's options split, and the thread to go back into, if any.
 pub struct Request<'a> {
+    pub on_spawn: Option<&'a dyn Fn(Arc<Mutex<Child>>)>,
     pub command: &'a str,
     pub server_args: Vec<String>,
     /// The process's working directory: the account's.
@@ -438,11 +439,12 @@ impl Started {
 pub fn start(request: Request) -> Result<Started, String> {
     let (child, port) = spawn(&request)?;
     let url = format!("ws://127.0.0.1:{port}");
-    let mut server = Server { child };
+    let server = Server { child: Arc::new(Mutex::new(child)) };
+    if let Some(on_spawn) = request.on_spawn { on_spawn(Arc::clone(&server.child)); }
     let socket = match connect(&url, request.token) {
         Ok(socket) => socket,
         Err(err) => {
-            stop_tree(&mut server.child);
+            stop_tree(&mut server.child.lock());
             return Err(err);
         }
     };

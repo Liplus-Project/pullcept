@@ -800,6 +800,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     LAUNCHED_AS_ENV,
     ROOM_ID_ENV,
     codex::LAUNCH_ID_ENV,
+    codex::admission::REQUIRED_ENV,
     codex::LAUNCH_ROOM_ENV,
     codex::NATIVE_URL_ENV,
     codex::OUTPUT_STYLE_ENV,
