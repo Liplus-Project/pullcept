@@ -44,7 +44,8 @@
 //! `SubagentStop`. One whose `agent_type` is empty at the start is not counted:
 //! the CLI's own internal agents report it so (same docs, "SubagentStop").
 //!
-//! **A permission wait** starts at `PermissionRequest` and ends at that
+//! **A permission wait** starts at `PermissionRequest` and ends at a key typed
+//! to answer it (the main agent's wait only, next paragraph), at that
 //! agent's next `PreToolUse`, or at a `PostToolUse` / `PostToolUseFailure` of
 //! the same tool name (the request carries no `tool_use_id`). A wait that ends
 //! at the next `PreToolUse` was denied — a denial fires neither post event
@@ -53,6 +54,20 @@
 //! too: in an interactive session a background subagent's prompt surfaces in
 //! the main session and waits there (Claude Code docs, `sub-agents`, "Run
 //! subagents in foreground or background", read 2026-10-08).
+//!
+//! **An answer typed into the seat's terminal closes the main agent's wait**
+//! (`Agent::answered`, PR #332 review). `PreToolUse` comes before the prompt,
+//! so a tool the person allows sends nothing more until it ends: without this,
+//! an allowed `cargo build` would read 許可待ち for its whole run. Only a key
+//! that can answer the prompt counts (`confirms_prompt`): Enter, Esc, a digit
+//! (the prompt's numbered choices), `y` or `n`. Moving the cursor answers
+//! nothing. A key is not evidence of approval, so the close claims nothing
+//! about the tool: the wait is dropped together with the call it asked about,
+//! and the badge falls back to the screen's own words — 出力中 while the allowed
+//! tool prints, 待機 when the terminal is silent. Saying ツール here would be a
+//! state not observed (#82). Only the person's own keys reach this; what the
+//! room types into the terminal goes another way. A subagent's wait is left to
+//! its own ends.
 //!
 //! **Nothing outlives what it describes.** `Stop` and `UserPromptSubmit` clear
 //! the main agent's tools and wait: an interrupted turn sends no end of its
@@ -196,9 +211,35 @@ impl Agent {
         self.wait = Some(Wait { tool, asked });
     }
 
+    /// The person answered the prompt with a key: the wait goes, and the call
+    /// it asked about with it — whether it now runs is not known.
+    fn answered(&mut self) {
+        if let Some(wait) = self.wait.take() {
+            self.tools.retain(|(id, _)| !wait.asked.contains(id));
+        }
+    }
+
     fn clear(&mut self) {
         self.tools.clear();
         self.wait = None;
+    }
+}
+
+/// Whether one write of the person's keys into a terminal is a key that can
+/// answer a permission prompt: Enter, Esc, a digit, `y` or `n` (either case).
+/// A write is one key as the terminal sends it; an arrow key, any other escape
+/// sequence (focus and cursor reports among them), a paste or other text is
+/// not an answer.
+pub fn confirms_prompt(data: &str) -> bool {
+    match data {
+        "\r" | "\n" | "\r\n" | "\u{1b}" => true,
+        _ => {
+            let mut chars = data.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some(c), None) if c.is_ascii_digit() || matches!(c, 'y' | 'Y' | 'n' | 'N')
+            )
+        }
     }
 }
 
@@ -299,6 +340,14 @@ impl Activity {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The person typed `data` into this seat's terminal. A key that can answer
+    /// a prompt (`confirms_prompt`) closes the main agent's wait.
+    pub fn typed(&mut self, data: &str) {
+        if confirms_prompt(data) {
+            self.main.answered();
         }
     }
 
@@ -474,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_wait_outranks_tools_and_ends_at_its_post() {
+    fn a_permission_wait_outranks_tools_and_its_tools_end_also_ends_it() {
         let mut a = Activity::new();
         pre(&mut a, "t1", "Read");
         pre(&mut a, "t2", "Bash");
@@ -484,9 +533,58 @@ mod tests {
         // Another tool ending does not end the wait.
         post(&mut a, "t1", "Read");
         assert_eq!(words(&a).unwrap().0, "許可待ち");
-        // Allowed: the tool runs and its post ends the wait.
+        // Answered where no key of the pane was seen (another hook decided,
+        // say): the tool runs, and its end ends the wait.
         post(&mut a, "t2", "Bash");
         assert_eq!(a.display(), None);
+    }
+
+    #[test]
+    fn an_answer_typed_into_the_terminal_drops_the_wait_and_claims_nothing() {
+        for key in ["\r", "\n", "\r\n", "\u{1b}", "1", "2", "y", "Y", "n", "N"] {
+            let mut a = Activity::new();
+            pre(&mut a, "t0", "Read");
+            pre(&mut a, "t1", "Bash");
+            ask(&mut a, "Bash");
+            a.typed(key);
+            // The wait and the call it asked about go; the other tool stays.
+            assert_eq!(words(&a), Some(("ツール", "ツール使用中（Read）".into(), false)), "{key:?}");
+            post(&mut a, "t0", "Read");
+            // Nothing is claimed about the allowed call: the screen's words stand.
+            assert_eq!(a.display(), None, "{key:?}");
+            // Its end, when it comes, changes nothing.
+            post(&mut a, "t1", "Bash");
+            assert_eq!(a.display(), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn moving_in_the_prompt_answers_nothing() {
+        let mut a = Activity::new();
+        pre(&mut a, "t1", "Bash");
+        ask(&mut a, "Bash");
+        for key in [
+            "\u{1b}[A", "\u{1b}[B", "\u{1b}OB", "\u{1b}[C", "\t", "\u{1b}[I", "\u{1b}[O",
+            "\u{1b}[12;3R", "a", "q", " ", "yes", "12", "\u{1b}[200~y\u{1b}[201~", "",
+        ] {
+            a.typed(key);
+            assert_eq!(words(&a).unwrap().0, "許可待ち", "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_typed_answer_leaves_a_subagents_wait_alone() {
+        let mut a = Activity::new();
+        start(&mut a, "ag1", "Explore");
+        sub_pre(&mut a, "ag1", "s1", "Bash");
+        a.hear("PermissionRequest", &body("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {}, "agent_id": "ag1", "agent_type": "Explore"})));
+        a.typed("\r");
+        assert_eq!(words(&a).unwrap().0, "許可待ち");
+        // And with no wait at all, a key does nothing.
+        let mut b = Activity::new();
+        pre(&mut b, "t1", "Bash");
+        b.typed("\r");
+        assert_eq!(words(&b).unwrap().0, "ツール");
     }
 
     #[test]

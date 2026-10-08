@@ -63,4 +63,25 @@ impl HookSeats {
             let _ = app.emit("seat-activity", event);
         }
     }
+
+    /// The person typed `data` into the terminal `pty_id` (`pty::write_pty`,
+    /// the pane's keys and pastes — never a post the room types in). Handed to
+    /// the state of the launch that terminal is, if it is a Claude Code seat
+    /// whose hooks have been heard (`Activity::typed`).
+    pub fn typed(&self, app: &AppHandle, pty_id: &str, data: &str) {
+        if !mcp_config::hook_activity::confirms_prompt(data) {
+            return;
+        }
+        let told = {
+            let mut seats = self.seats.lock();
+            let Some(seat) = seats.values_mut().find(|seat| seat.reporter.pty_id() == pty_id) else {
+                return;
+            };
+            seat.activity.typed(data);
+            seat.reporter.next(&seat.activity)
+        };
+        if let Some(event) = told {
+            let _ = app.emit("seat-activity", event);
+        }
+    }
 }

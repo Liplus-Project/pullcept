@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use terminal_input::Unsent;
 use uuid::Uuid;
 
@@ -454,10 +454,21 @@ pub fn spawn_pty_with_env(
 /// (`PtyState::note_input`), which is how the room knows to hold its posts
 /// while the person is writing (#195). Only a write that reached the session
 /// is read: one that did not changed nothing there.
+///
+/// It is also the one place the person's own keys reach a session, apart from
+/// the posts the room types in (`write_to` from the room's side), so it is
+/// where a Claude Code seat learns that its permission prompt was answered
+/// (`hook_activity::HookSeats::typed`, #331).
 #[tauri::command]
-pub fn write_pty(state: tauri::State<PtyState>, id: String, data: String) -> Result<(), String> {
+pub fn write_pty(
+    app: AppHandle,
+    state: tauri::State<PtyState>,
+    id: String,
+    data: String,
+) -> Result<(), String> {
     write_to(&state.procs, &id, data.as_bytes())?;
     state.note_input(&id, &data);
+    app.state::<crate::hook_activity::HookSeats>().typed(&app, &id, &data);
     Ok(())
 }
 
