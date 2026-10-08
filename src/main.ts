@@ -2375,10 +2375,221 @@ function drawTopic(posts: LoggedPost[]): void {
     drawnIds.add(post.message_id);
   }
 
+  // The permission prompts still waiting in this topic (#336). They are not
+  // posts and are in no log, so they are put back after the log's lines.
+  permissionEls.clear();
+  for (const card of permissionCards.values()) {
+    if (card.topic_id === shownTopicId()) roomEl.appendChild(permissionLine(card));
+  }
+
   // Opened at the end, which is where the conversation continues. At once: a
   // topic opened is a place arrived at, not a line arriving (#307).
   roomGliding = false;
   scrollRoomToLatest("instant");
+}
+
+/**
+ * A Claude Code seat's permission prompt, held open for the room's answer
+ * (#336, `hook_activity::HookSeats`). What the tool's input says is on the
+ * card and nowhere else: the card is not a post, so it is not in the topic's
+ * log and is typed into no terminal.
+ */
+interface PermissionCard {
+  id: string;
+  topic_id: string;
+  account_id: string;
+  pty_id: string;
+  at: string;
+  tool_name: string;
+  /** The MCP server, for a tool of one. */
+  server: string | null;
+  tool: string;
+  /** The subagent's type, when a subagent asked. */
+  agent_type: string | null;
+  fields: { name: string; value: string; cut: boolean }[];
+  more_fields: number;
+  /** The rules 常に許可 would add, one line each. */
+  always_rules: string[];
+  can_always: boolean;
+  hold_secs: number;
+}
+
+/** How a held prompt ended: the button the room sent, or how it was let go. */
+interface PermissionResolved {
+  id: string;
+  topic_id: string;
+  account_id: string;
+  outcome: "deny" | "allow" | "always" | "elsewhere" | "closed" | "timeout";
+}
+
+/** The prompts still waiting on the room, by id, in every topic. */
+const permissionCards = new Map<string, PermissionCard>();
+/** The cards drawn in the room on the glass, waiting or ended, by id. */
+const permissionEls = new Map<string, HTMLElement>();
+
+/** What an ended card says, by how it ended. */
+const PERMISSION_OUTCOMES: Record<PermissionResolved["outcome"], string> = {
+  deny: "部屋から「拒否」を返しました",
+  allow: "部屋から「一度だけ許可」を返しました",
+  always: "部屋から「常に許可」を返しました",
+  elsewhere: "端末で答えたか、待ちが終わりました",
+  closed: "セッションが答えを待つのをやめました",
+  timeout: "部屋での受付を終えました。端末から答えてください",
+};
+
+/** The buttons, in the order Claude Desktop's card puts them. */
+const PERMISSION_BUTTONS: { decision: "deny" | "always" | "allow"; label: string }[] = [
+  { decision: "deny", label: "拒否" },
+  { decision: "always", label: "常に許可" },
+  { decision: "allow", label: "一度だけ許可" },
+];
+
+/**
+ * One permission card in the room (#336), modelled on Claude Desktop's: who
+ * asks, for which tool — an MCP tool as its server and its own name — what the
+ * input says, and 拒否 / 常に許可 / 一度だけ許可. 常に許可 is drawn only when the
+ * request carries a rule to add, and the rule is shown beside it.
+ */
+function permissionLine(card: PermissionCard): HTMLElement {
+  const account = accounts.find((one) => one.id === card.account_id);
+  const name = account?.name.trim() || card.account_id;
+  const article = document.createElement("article");
+  article.className = "message permission";
+  article.dataset.permission = card.id;
+  article.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
+  article.appendChild(avatar(name, card.account_id));
+
+  const head = document.createElement("div");
+  head.className = "meta";
+  const speaker = document.createElement("span");
+  speaker.className = "speaker";
+  speaker.textContent = name;
+  const kind = document.createElement("span");
+  kind.className = "permission-kind";
+  kind.textContent = card.agent_type ? `許可の確認・サブエージェント（${card.agent_type}）` : "許可の確認";
+  const time = document.createElement("time");
+  time.className = "ts";
+  time.dateTime = card.at;
+  time.textContent = shortTime(card.at);
+  time.title = fullDateTime(card.at);
+  head.append(speaker, kind, time);
+
+  const body = document.createElement("div");
+  body.className = "permission-body";
+  const title = document.createElement("div");
+  title.className = "permission-tool";
+  title.title = card.tool_name;
+  if (card.server) {
+    const server = document.createElement("span");
+    server.className = "permission-server";
+    server.textContent = card.server;
+    title.append(server, " / ");
+  }
+  const tool = document.createElement("strong");
+  tool.textContent = card.tool;
+  title.append(tool, " を使ってよいですか？");
+  body.appendChild(title);
+
+  if (card.fields.length) {
+    const list = document.createElement("dl");
+    list.className = "permission-input";
+    for (const field of card.fields) {
+      const term = document.createElement("dt");
+      term.textContent = field.name;
+      const value = document.createElement("dd");
+      value.textContent = field.cut ? `${field.value}…（以下略）` : field.value;
+      list.append(term, value);
+    }
+    body.appendChild(list);
+  }
+  if (card.more_fields > 0) {
+    const more = document.createElement("div");
+    more.className = "permission-note";
+    more.textContent = `ほか ${card.more_fields} 項目は省きました`;
+    body.appendChild(more);
+  }
+  if (card.can_always && card.always_rules.length) {
+    const rules = document.createElement("div");
+    rules.className = "permission-note";
+    rules.textContent = `常に許可で足す規則：${card.always_rules.join("、")}`;
+    body.appendChild(rules);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "permission-actions";
+  for (const button of PERMISSION_BUTTONS) {
+    if (button.decision === "always" && !card.can_always) continue;
+    const press = document.createElement("button");
+    press.type = "button";
+    press.className = `permission-${button.decision}`;
+    press.textContent = button.label;
+    press.addEventListener("click", () => void answerPermission(card, button.decision, article));
+    actions.appendChild(press);
+  }
+  const state = document.createElement("div");
+  state.className = "permission-state";
+  state.textContent = "端末からも答えられます";
+  body.append(actions, state);
+
+  article.append(head, body);
+  permissionEls.set(card.id, article);
+  return article;
+}
+
+/** Turn a card into its ended form: no buttons, and how it ended. */
+function closePermissionLine(article: HTMLElement, text: string): void {
+  article.classList.add("ended");
+  article.querySelector(".permission-actions")?.remove();
+  const state = article.querySelector(".permission-state");
+  if (state) state.textContent = text;
+}
+
+/**
+ * Send the person's press to the held hook. Only this screen can: the command
+ * is the webview's, and the room reads no post as an answer (#336). What is
+ * said back is what the room sent, not what the session did — the terminal
+ * may have answered first.
+ */
+async function answerPermission(
+  card: PermissionCard,
+  decision: "deny" | "always" | "allow",
+  article: HTMLElement,
+): Promise<void> {
+  const buttons = article.querySelectorAll<HTMLButtonElement>(".permission-actions button");
+  for (const button of buttons) button.disabled = true;
+  let delivered: boolean;
+  try {
+    delivered = await invoke<boolean>("permission_answer", { id: card.id, decision });
+  } catch (err) {
+    for (const button of buttons) button.disabled = false;
+    status(`許可の答えを送れませんでした: ${err}`, "error");
+    return;
+  }
+  if (!delivered) {
+    permissionCards.delete(card.id);
+    closePermissionLine(article, "もう答えられません。端末で答えたか、待ちが終わりました");
+  }
+}
+
+/** A prompt arrived to be held for the room: draw it if its topic is shown. */
+function showPermission(card: PermissionCard): void {
+  if (permissionCards.has(card.id)) return;
+  permissionCards.set(card.id, card);
+  if (card.topic_id !== shownTopicId()) return;
+  const atBottom = roomAtBottom();
+  const line = permissionLine(card);
+  line.classList.add("arriving");
+  roomEl.appendChild(line);
+  if (atBottom) glideRoomToFoot("smooth");
+  syncScrollLatest();
+}
+
+/** A held prompt ended, however it did: its card stops being pressable. */
+function endPermission(resolved: PermissionResolved): void {
+  permissionCards.delete(resolved.id);
+  const article = permissionEls.get(resolved.id);
+  if (!article) return;
+  closePermissionLine(article, PERMISSION_OUTCOMES[resolved.outcome] ?? "受付を終えました");
 }
 
 /**
@@ -7411,6 +7622,10 @@ async function main(): Promise<void> {
   await listen<Roster>("room-participants", (event) =>
     renderRoster(event.payload.topic_id, event.payload.participants),
   );
+  // A Claude Code seat's permission prompt held for the room's answer, and
+  // its end (#336). Screen-only: neither is a post.
+  await listen<PermissionCard>("permission-request", (event) => showPermission(event.payload));
+  await listen<PermissionResolved>("permission-resolved", (event) => endPermission(event.payload));
   // A session reported what it is running on, through its own status line
   // (#155). Keyed on the seat, so it reaches the terminal of the topic that
   // session is in and not whichever topic is on the glass — the same way a post
@@ -7764,6 +7979,13 @@ async function main(): Promise<void> {
     } catch (err) {
       status(`トピックの発言を読めませんでした: ${err}`, "error");
     }
+  }
+  // Permission prompts already held when this screen loaded — after a reload
+  // (#336). One that ends meanwhile is ended by its event as any other.
+  try {
+    for (const card of await invoke<PermissionCard[]>("permission_requests")) showPermission(card);
+  } catch {
+    // Nothing held is drawn; the terminals still ask.
   }
 
   // Before the room, and outside its try. A session running under a seat this

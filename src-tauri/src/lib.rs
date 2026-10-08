@@ -100,6 +100,8 @@ pub fn run() {
             character_editor::open_character_file,
             character_editor::save_character_file,
             character_editor::character_file_wearers,
+            hook_activity::permission_answer,
+            hook_activity::permission_requests,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

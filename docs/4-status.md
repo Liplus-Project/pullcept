@@ -1,5 +1,13 @@
 # 実装状況
 
+## 部屋から許可に答える（#336、2026-10-09）
+
+Claude Code の席が許可の画面で止まったとき、部屋にカードを出し、画面の人が 拒否 / 常に許可 / 一度だけ許可 を返せるようにした（「[許可の確認に部屋から答える](2-screen.md#許可の確認に部屋から答える336)」）。`PermissionRequest` の hook を最長 180 秒開けたまま待ち、この hook だけ timeout を 190 秒にした。Codex の席の承認は対象外。
+
+**確かめた範囲:** 答えの形（`hookSpecificOutput.decision` の `behavior`・`message`・`updatedPermissions`）、`permission_suggestions` を `updatedPermissions` としてそのまま返せること、`PermissionRequest` に `tool_use_id` が無く `mcp_server` が付くこと、http hook の timeout の既定が 600 秒で、時間切れの出力は捨てられ、接続の失敗は止めないエラーであることは、公式 docs `code.claude.com/docs/en/hooks`（2026-10-08 に読んだ）で照合した。hook を待たせている間も端末の許可の画面が出ることは、2026-10-08 23:01 の実機で確かめた（#336）。`crates/mcp-config/src/permission_prompt.rs` のテストが、Bash の要求の中身と 常に許可 の規則、MCP のツール名の分け方（サーバ名に `__` を含む場合も）、サブエージェントの要求、読めない本文・別の出来事の本文にカードを出さないこと、長い値と多い項目の切り方、制御文字の落とし方、`addRules`・`allow` 以外の提案を 常に許可 にしないこと、三つの答えの形、待つ時間が hook の timeout より短く 600 秒より短いこと、を確かめる。`lib.rs` のテストが `PermissionRequest` だけ timeout 190、ほかは 5 であることを、`hook_activity.rs` のテストが待ちを続ける条件（`Activity::waiting`）を確かめる。
+
+**未確認（実機では確かめていない）:** 実機でカードが出て、三つのボタンがそれぞれ効くこと（常に許可で規則が書き込まれ、次から聞かれないこと）。端末で先に答えたとき、まだ動いている hook を CLI がどう扱うか（打ち切って接続を閉じるのか、待ち続けるのか、後から来た答えを捨てるのか）——アプリは答えのキーを見たらすぐ `{}` を返すので、待ち続ける場合も止まらないはずだが、確かめていない。CLI が要求を送り終えた後に接続の片側を閉じないこと（閉じると、アプリはそれを「CLI が待つのをやめた」と読み、カードがすぐ終わる）。並列のツールの許可で、別のツールの `PreToolUse` が先に来てカードが早く終わることがあるか。背景のサブエージェントの許可でカードが出ること。
+
 ## Claude Code の席の様子（#331、2026-10-08）
 
 Claude Code の席について、起動の `--settings` に載せた http 型の hook（`PreToolUse`・`PostToolUse`・`PostToolUseFailure`・`PermissionRequest`・`SubagentStart`・`SubagentStop`・`Stop`・`UserPromptSubmit`）から、「許可待ち」「ツール」「委任中」（サブエージェント）を参加者パネルの札と会話面の下の一行に出すようにした（「[Claude Code の席は hook で様子を言う](2-screen.md#claude-code-の席は-hook-で様子を言う331)」、「[Claude Code の席は自分の様子を hook で知らせる](3-accounts.md#claude-code-の席は自分の様子を-hook-で知らせる331)」）。#325 の試しの記録（`logs\hook-probe.log`）はこれに置き換えて外した。
