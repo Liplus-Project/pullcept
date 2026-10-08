@@ -555,16 +555,19 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 **種別が `Claude Code` の席にだけ載る**（#156、決定5）。`statusLine` の書き方は Claude Code のものであり、作法を持たない種別の行へ載せる正しい形をアプリは持たない。`CLI（汎用）` の席の五欄は「—」のままになる。`Codex CLI` の席は statusLine を持たず、下記の rollout から同じ五欄を出す。
 
-#### 試験中：`--settings` の http hook が届くか（#325）
+#### Claude Code の席は自分の様子を hook で知らせる（#331）
 
-**起動の `--settings` に載せた http 型の hook が、実際にこのアプリまで届くかを確かめるための試験である。** 結果は実機での確認待ちであり、まだ分かっていない。#151 の `StopFailure` hook は一度も届くところを見られないまま外された（上記「「制限中」もこの五欄から出る」）。状態の表示を作るのは、届くと分かってからにする（#324）。
+**起動の `--settings` に http 型の hook を載せ、ツール・許可待ち・サブエージェントの始まりと終わりをアプリへ送らせる。** アプリはそれを席ごとの様子にまとめ、app-server 方式の Codex の席と同じ `seat-activity` の事象で画面へ送る（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」）。端末の文字は読まないため、#82 の判断は動いていない。#325 の試し（`PreToolUse` と `SubagentStart` を載せて届いたことを `logs\hook-probe.log` に書く）で、`PreToolUse` が実機の席から届くことを確かめた（2026-10-08）。この形に置き換え、試しの記録は外した。
 
-- **載せる hook は `PreToolUse` と `SubagentStart` の二つだけである。** どちらも人が意図して起こせる出来事である（ツールを一度使う、サブエージェントを一度動かす）。matcher は付けず、すべてのツール・すべての種類のエージェントで発火する。
-- **形は #151 と同じである。** `type: "http"`、`timeout: 5`、ヘッダは `Authorization: Bearer ${PULLCEPT_ROOM_TOKEN}` であり、トークンは `allowedEnvVars` で CLI が子プロセスの環境から解決する。行に載るのは変数の名前だけで、値は載らない。
-- **宛先は部屋のポートの `/hooks/activity/<出来事>/<トピック>/<アカウント>` である。** 出来事の種類はパスで分け、本文には頼らない。席の名指し方と、`cmd.exe` が反応する文字を置かないことは、上記のステータスラインのアドレスと同じである。
-- **アプリはトークンを確かめ、ログに一行書いて `200 {}` を返すだけである。** 本文は読み切るが中身は見ず、保存もしない。画面には何も出さない。ログの行は `[hook-probe] <出来事> room=<トピック id> account=<アカウント id> at=<UTC 時刻>` の形であり、`%APPDATA%\org.liplus-project.pullcept\logs\hook-probe.log`（部屋のログ `logs\main` と同じ場所の一段上）に一行ずつ追記する。同じ行はアプリの標準エラーにも出る。ファイルは追記するだけで書き直さず、書けなかったときは黙って捨てる（行が無いこと自体が観測になる）。
-- **載る席はステータスラインと同じである。** 種別が `Claude Code` の席だけで、自前の `--settings` を持つ行・部屋のポートが無い場合・スクリプトのパスが行に載らない場合には、ステータスラインと一緒に載らない（`mcp_config::SeatReport`）。
-- **CLI は返事を待つ。** http 型の hook は裏で走らせられない（公式 docs `code.claude.com/docs/en/hooks`、2026-10-07 に読んだ）。`PreToolUse` ではツールを使うたびにこのアプリの返事を待つことになるため、timeout を 5 秒に絞り、アプリは読み終えたらすぐ `{}` を返す。`{}` は何も決めない返事であり、ツールの実行を止めも許しもしない。
+- **載せる hook は八つである。** `PreToolUse`・`PostToolUse`・`PostToolUseFailure`（ツール）、`PermissionRequest`（許可待ち）、`SubagentStart`・`SubagentStop`（サブエージェント）、`Stop`・`UserPromptSubmit`（ターンの区切り）。matcher は付けず、すべてのツール・すべての種類のエージェントで発火する。
+- **形は #151・#325 と同じである。** `type: "http"`、`timeout: 5`、ヘッダは `Authorization: Bearer ${PULLCEPT_ROOM_TOKEN}` であり、トークンは `allowedEnvVars` で CLI が子プロセスの環境から解決する。行に載るのは変数の名前だけで、値は載らない。
+- **宛先は部屋のポートの `/hooks/activity/<出来事>/<トピック>/<アカウント>` である。** 出来事の種類はパスで分ける。席の名指し方と、`cmd.exe` が反応する文字を置かないことは、上記のステータスラインのアドレスと同じである。宣言していない出来事の名前のパスは 404 である。
+- **CLI は返事を待つ。** http 型の hook は裏で走らせられない（公式 docs `code.claude.com/docs/en/hooks`、2026-10-07 に読んだ）。ツールを使うたびにこのアプリの返事を待つことになるため、timeout を 5 秒に絞り、アプリは本文を読んで様子を変えたらすぐ `200 {}` を返す。`{}` は何も決めない返事であり、ツールの実行も許可の画面も、hook が無いときと同じに進む（同 docs「HTTP response handling」、2xx で JSON の本文は通常の出力として読まれる）。様子を変えてから答えるのは、CLI がツールの終わりを送るのはその始まりの答えを受けた後だからである——始まりと終わりの順が入れ替わらない。
+- **本文から読むのは五つの欄だけである。** `hook_event_name`・`tool_use_id`・`tool_name`・`agent_id`・`agent_type`。`Stop` では加えて `background_tasks` の各要素の `type` だけを読む（下記）。`tool_input`・`tool_response`・`prompt`・`last_assistant_message` などの中身は読まず、保存もしない。`hook_event_name` がパスの出来事と違う本文は、まったく読まない。欄の名前は同 docs（2026-10-08 に読んだ）による：共通の欄（`hook_event_name`、サブエージェントの中でだけ付く `agent_id` と `agent_type`）、`PreToolUse` の `tool_name`・`tool_use_id`、`PostToolUse`・`PostToolUseFailure` の同じ二つ、`tool_use_id` を持たない `PermissionRequest`、`SubagentStart`・`SubagentStop` の `agent_id`・`agent_type`、`Stop` の `background_tasks`。サブエージェントの中のツールの hook にも `agent_id` と `agent_type` が付く（同 docs「Hook locations」）。
+- **アプリは本文を 4 MiB で読み切りをやめる**（`HOOK_BODY_MAX`）。大きなファイルの `Write` の `tool_input` や、大きな結果の `tool_response` はここで切れ、JSON として読めなくなる。読めないときの扱いは「[Claude Code の席の様子の決め方](2-screen.md#claude-code-の席は-hook-で様子を言う331)」。
+- **席ごとの様子は起動ごとに持つ。** 鍵は（トピック, アカウント）で、その起動の端末の id と一緒に持つ。同じ席を起動し直せば、新しい端末の id で空の様子から始まり、前の起動の残りは言わない。走っている端末の無い席への hook は持たない（`src-tauri/src/hook_activity.rs`）。何を言うかは `crates/mcp-config/src/hook_activity.rs`（tauri を持たずテストされる）が決め、画面に出す語が変わったときだけ事象を送る。事象の形は Codex の席と同じで、`connected` は常に true、`thread_status` は常に null である——hook の席には切れる接続も、言えるスレッドの様子も無い。
+- **載る席はステータスラインと同じである。** 種別が `Claude Code` の席だけで、自前の `--settings` を持つ行・部屋のポートが無い場合・スクリプトのパスが行に載らない場合には、ステータスラインと一緒に載らない（`mcp_config::SeatReport`）。`disableAllHooks` が効く環境でも届かない。届かない席は今までどおり四つの語を出す。
+- **利用者の hooks は消さない。** `hooks` は設定の層をまたいで足し合わされる（同 docs）。
 
 ### Codex の席は自分の様子を rollout で知らせる（#283）
 
@@ -647,5 +650,5 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 - **server からの要求には答えない。** 承認や問いの要求（`id` を持つもの）は読まず、答えもしない。承認は今どおり端末（TUI）が行う。
 - **接続が切れたことを一つの状態として送る。** 事象は語とは別に `connected` を持つ。読み手は切れた時点で `connected: false` を一度送って終わり、画面は「様子不明」を出す（待機中の切断でも送る。何を送るかは `Reporter` が決め、テストされる）。「待機」は送らない。
 - **席の取り違えを防ぐ。** 事象は起動の端末の id を持ち、画面は同じ席の次の起動の端末へ前の起動の知らせを当てない。
-- **届いた知らせの種類を記録する（#329）。** 席の接続に届いた知らせ（`id` を持たないもの）ごとに、`[codex-activity-probe] <method> room=<トピック id> account=<アカウント id> thread=<status.type か -> at=<UTC 時刻>` の一行を `%APPDATA%\org.liplus-project.pullcept\logs\codex-activity-probe.log`（`hook-probe.log` と同じ場所）に追記する。書くのは method 名と `params.status.type` だけで、本文・コマンド・引数・文章は書かない。起動・再開中に届いたものは席が決まるまで持っておき（1024 件まで）、最初に書く。ファイルは接続の間開いたままにし、一行を一度に書く。書けなければ黙って捨てる。知らせの数だけ行が増えるため（文章の差分の知らせも一行になる）、確かめが済めば外す前提の観測である。標準エラーには出さない。
+- **届いた知らせの種類を記録する（#329）。** 席の接続に届いた知らせ（`id` を持たないもの）ごとに、`[codex-activity-probe] <method> room=<トピック id> account=<アカウント id> thread=<status.type か -> at=<UTC 時刻>` の一行を `%APPDATA%\org.liplus-project.pullcept\logs\codex-activity-probe.log`に追記する。書くのは method 名と `params.status.type` だけで、本文・コマンド・引数・文章は書かない。起動・再開中に届いたものは席が決まるまで持っておき（1024 件まで）、最初に書く。ファイルは接続の間開いたままにし、一行を一度に書く。書けなければ黙って捨てる。知らせの数だけ行が増えるため（文章の差分の知らせも一行になる）、確かめが済めば外す前提の観測である。標準エラーには出さない。
 - **hook 方式の Codex の席と Claude Code の席には無い。** 前者にはこの接続が無く、rollout からの推測は同じ確かさにならない（#324）。どちらも今の語のままである。

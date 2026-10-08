@@ -57,7 +57,7 @@ const WATCH: Duration = Duration::from_millis(500);
 /// Probe lines held while the thread is started, before the seat is known
 /// (#329). A start sends a handful; the cap only bounds a server that floods.
 const PROBE_EARLY_MAX: usize = 1024;
-/// The probe's file, beside `hook-probe.log` (#325).
+/// The probe's file, under the app's `logs` directory.
 const PROBE_FILE: &str = "codex-activity-probe.log";
 
 /// Every running seat server, by its terminal.

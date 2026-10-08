@@ -34,6 +34,7 @@
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 pub mod codex;
+pub mod hook_activity;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
@@ -867,8 +868,8 @@ pub const STATUS_HOOK_PATH: &str = "/hooks/status";
 /// One address rather than two. A second path stood here for the usage-limit
 /// hook (#149) and was taken out with it (#161): the limit is read off the
 /// percentages this report already carries, so the launch has one place to
-/// post to and everything above is said once. The activity probe's path
-/// (`activity_hook_url`, #325) borrows this shape rather than restating it.
+/// post to and everything above is said once. The activity hooks' path
+/// (`activity_hook_url`, #325 / #331) borrows this shape rather than restating it.
 pub fn status_hook_url(port: u16, room_id: &str, account_id: &str) -> String {
     format!(
         "http://127.0.0.1:{port}{STATUS_HOOK_PATH}/{}/{}",
@@ -901,17 +902,27 @@ pub fn parse_status_hook_target(target: &str) -> Option<(String, String)> {
     Some((room, account))
 }
 
-/// The path the app answers the activity probe's hooks on (#325).
+/// The path the app answers a Claude Code seat's activity hooks on (#325, #331).
 pub const ACTIVITY_HOOK_PATH: &str = "/hooks/activity";
 
-/// The hook events the probe puts on a Claude Code seat's line (#325).
+/// The hook events a Claude Code seat's line declares (#331), which say what
+/// the seat is doing (`hook_activity`).
 ///
-/// Two and no more: the probe asks one question — whether an HTTP hook
-/// declared through the launch's `--settings` reaches this app at all — and
-/// these are the two events a person can make fire on purpose (use a tool, run
-/// a subagent). #151's `StopFailure` hook was taken out without ever being
-/// seen to fire (#161), so nothing is built on the answer before it is known.
-pub const ACTIVITY_HOOK_EVENTS: &[&str] = &["PreToolUse", "SubagentStart"];
+/// The probe of #325 put `PreToolUse` and `SubagentStart` on the line and saw
+/// `PreToolUse` arrive on a real seat (2026-10-08); the rest ride the same
+/// path. Tools start and end with the first three, a permission prompt with
+/// `PermissionRequest`, a subagent with the next two, and the last two end the
+/// main agent's turn — the backstop for the ends an interrupt never sends.
+pub const ACTIVITY_HOOK_EVENTS: &[&str] = &[
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "UserPromptSubmit",
+];
 
 /// Where one seat's hook for one event posts to (#325).
 ///
@@ -947,8 +958,8 @@ pub fn parse_activity_hook_target(target: &str) -> Option<(&'static str, String,
     Some((event, room, account))
 }
 
-/// The `hooks` value that has the CLI post each probed event to this seat's
-/// address (#325).
+/// The `hooks` value that has the CLI post each activity event to this seat's
+/// address (#325, #331).
 ///
 /// An HTTP hook, Bearer `ROOM_TOKEN_ENV` resolved by the CLI through
 /// `allowedEnvVars` — the shape #151 used, so the line carries the variable's
@@ -958,7 +969,8 @@ pub fn parse_activity_hook_target(target: &str) -> Option<(&'static str, String,
 /// (Claude Code docs, `hooks`, read 2026-10-07: `async` is for command hooks
 /// only), so every tool call on the seat waits on this app; the timeout is
 /// held to 5 seconds, and the app answers `{}` — which decides nothing — as
-/// soon as the request is read.
+/// soon as the request is read. On `PermissionRequest` too, `{}` decides
+/// nothing: the prompt is shown to the person as it would be without the hook.
 ///
 /// Added to the person's own hooks rather than in place of them: `hooks`
 /// merge across settings levels (same docs), unlike `statusLine`.
@@ -982,7 +994,7 @@ pub fn activity_hook_settings(port: u16, room_id: &str, account_id: &str) -> Val
 }
 
 /// What a Claude Code seat reports about itself through its launch settings:
-/// the status line (#155) and the activity probe's hooks (#325).
+/// the status line (#155) and the activity hooks (#325, #331).
 ///
 /// One value rather than two, so the hooks ride on exactly the lines the status
 /// line rides on and on no other: the same kind gate (`reports_through_settings`),
@@ -1303,7 +1315,7 @@ pub fn declared_character(character: Option<&str>) -> Option<&str> {
 /// before it. Such a line approves through its own settings, or answers the
 /// prompt.
 ///
-/// `report` is this seat's status-line command and probe hooks (`SeatReport`),
+/// `report` is this seat's status-line command and activity hooks (`SeatReport`),
 /// or `None` when there is no port to address, or when the script's own path
 /// cannot be written onto the line (`line_safe_word`). It rides the same way
 /// the approval does, and under the same exception: a line left untouched above
@@ -2413,11 +2425,11 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_code_line_declares_only_the_probes_two_http_hooks() {
+    fn a_claude_code_line_declares_only_the_activity_http_hooks() {
         // The `StopFailure` entry #149 put on the line stays gone (#161). What
-        // rides now is the probe of #325: `PreToolUse` and `SubagentStart`,
-        // HTTP, to this seat's own activity address, 5 seconds, the token
-        // resolved by the CLI from the environment.
+        // rides now are the activity hooks of #331, each HTTP, to this seat's
+        // own activity address, 5 seconds, the token resolved by the CLI from
+        // the environment.
         let line = launch_args(
             &[],
             Some(Cli::ClaudeCode),
@@ -2431,8 +2443,18 @@ mod tests {
         let hooks = settled["hooks"].as_object().expect("hooks");
         assert_eq!(
             hooks.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["PreToolUse", "SubagentStart"]
+            vec![
+                "PermissionRequest",
+                "PostToolUse",
+                "PostToolUseFailure",
+                "PreToolUse",
+                "Stop",
+                "SubagentStart",
+                "SubagentStop",
+                "UserPromptSubmit",
+            ]
         );
+        assert_eq!(hooks.len(), ACTIVITY_HOOK_EVENTS.len());
         for event in ACTIVITY_HOOK_EVENTS {
             let groups = hooks[*event].as_array().expect("matcher groups");
             assert_eq!(groups.len(), 1, "{event}");
@@ -2478,10 +2500,17 @@ mod tests {
     }
 
     #[test]
-    fn a_target_that_is_not_a_probed_event_names_nothing() {
+    fn a_target_that_is_not_a_declared_event_names_nothing() {
         let seat = format!("{ROOM}/{LIN}");
-        // An event the probe does not declare is not taken off the path.
-        assert_eq!(parse_activity_hook_target(&format!("/hooks/activity/Stop/{seat}")), None);
+        // An event the line does not declare is not taken off the path.
+        assert_eq!(parse_activity_hook_target(&format!("/hooks/activity/StopFailure/{seat}")), None);
+        assert_eq!(parse_activity_hook_target(&format!("/hooks/activity/Notification/{seat}")), None);
+        for event in ACTIVITY_HOOK_EVENTS {
+            assert_eq!(
+                parse_activity_hook_target(&format!("/hooks/activity/{event}/{seat}")),
+                Some((*event, ROOM.to_string(), LIN.to_string()))
+            );
+        }
         assert_eq!(
             parse_activity_hook_target(&format!("/hooks/activity/pretooluse/{seat}")),
             None
@@ -2630,7 +2659,7 @@ mod tests {
     fn a_line_left_alone_for_its_own_settings_carries_no_status_line_either() {
         // Same exception as the approval and the hook: a line that ran before
         // this was added runs the same after it (#143 / #149 / #155).
-        // The probe's hooks ride with the status line, so they are left off
+        // The activity hooks ride with the status line, so they are left off
         // with it (#325).
         let base = vec![SETTINGS_FLAG.to_string(), r#"{"model":"x"}"#.to_string()];
         assert_eq!(

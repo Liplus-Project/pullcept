@@ -1,5 +1,13 @@
 # 実装状況
 
+## Claude Code の席の様子（#331、2026-10-08）
+
+Claude Code の席について、起動の `--settings` に載せた http 型の hook（`PreToolUse`・`PostToolUse`・`PostToolUseFailure`・`PermissionRequest`・`SubagentStart`・`SubagentStop`・`Stop`・`UserPromptSubmit`）から、「許可待ち」「ツール」「委任中」（サブエージェント）を参加者パネルの札と会話面の下の一行に出すようにした（「[Claude Code の席は hook で様子を言う](2-screen.md#claude-code-の席は-hook-で様子を言う331)」、「[Claude Code の席は自分の様子を hook で知らせる](3-accounts.md#claude-code-の席は自分の様子を-hook-で知らせる331)」）。#325 の試しの記録（`logs\hook-probe.log`）はこれに置き換えて外した。
+
+**確かめた範囲:** hook の本文の欄の名前（`hook_event_name`・`tool_use_id`・`tool_name`・`agent_id`・`agent_type`、`PermissionRequest` に `tool_use_id` が無いこと、`Stop` の `background_tasks[].type`）は公式 docs `code.claude.com/docs/en/hooks` と `sub-agents`（2026-10-08 に読んだ）で照合した。`--settings` 経由の http hook が実機の席から届くことは、#325 で `PreToolUse` について確かめた（2026-10-08）。読み方は `crates/mcp-config/src/hook_activity.rs` のテストが、hook の本文を与えて出る語を確かめる——ツールの名前を出し引数を出さないこと、並列のツールの集合、許可待ちがツールに勝ちそのツールの終わりで消えること、拒否されたツールが次の呼び出しで待ちと一緒に消えること、`Stop`・`UserPromptSubmit` での片付け（本文が読めない場合も）、切れた `PostToolUse` / `PostToolUseFailure` で動いているツールと待ちが全部消えること、ほかの出来事の切れた本文を数えないこと、パスと違う出来事の本文を読まないこと、サブエージェントの始まりと終わり・その中のツールが本体のツールにならないこと・`Agent` ツールを数えないこと、内部のエージェントを数えないこと、サブエージェントの許可待ち、`background_tasks` にサブエージェントがある間は `Stop` でも消さないこと、事象の形が Codex の席と同じであること。
+
+**未確認（実機では確かめていない）:** 実機の席で、ツール・許可待ち・サブエージェントの札が出て、終わると消えること（issue の完了の条件）。とくに、`SubagentStart` / `SubagentStop` が届くこと（#325 では `SubagentStart` の到着をまだ見ていない）、背景のサブエージェントが走っている間の `Stop` の `background_tasks` に `type: "subagent"` が載ること、許可を拒否した後の流れ、並列のツールの一つが許可を待つ間に別のツールの `PreToolUse` が来るかどうか（来れば、待ちと待っているツールが早く消える）、hook を八つに増やしたことでツールごとに返事を待つ時間が目に見えるかどうか。
+
 ## Codex CLI の検証範囲（#272、2026-10-04）
 
 `codex_cli` の保存・種別選択・起動／再開・起動の行での MCP 定義（#297 からファイルには書かない）・初回 ID 通知を実装した。Claude の argv 回帰、設定と hook の保持、秘密の非表示、起動／アカウント／トピック照合、履歴消失と I/O 不明の区別、複数登録の排他は crate／sidecar テストが持つ。
@@ -35,7 +43,7 @@ app-server 方式の Codex の席で、スレッドが idle と分かってい�
 
 **確かめた範囲:** `crates/mcp-config/src/codex/activity.rs` のテストが、起動の答えの idle だけでは null のままであること、起動の idle の後に `turn/started` で active、`turn/completed` で idle になること、active を言う知らせの後の idle の知らせで idle になること、語の無い active のターン、様子の知らせを受けていない席が null のままであること、ターンの終わりで idle になること、`systemError`・`notLoaded`・スレッドの終わりで null に戻ること、切断で null と `connected: false` になること、別のスレッドのターンで動かないこと、記録の一行が method 名と状態だけを持つことを確かめる。画面の順は `src/main.ts` の `activityNote` にある。
 
-**記録:** 席の接続に届いた知らせごとに、method 名とスレッドの状態（`params.status.type`、無ければ `-`）、席（トピック id・アカウント id）、UTC 時刻を `logs/codex-activity-probe.log`（`hook-probe.log` と同じ場所、#325）に一行ずつ追記する。本文・コマンド・引数・文章は書かない（形は「[Codex の席は自分の様子を app-server の知らせで知らせる](3-accounts.md#codex-の席は自分の様子を-app-server-の知らせで知らせる326)」）。
+**記録:** 席の接続に届いた知らせごとに、method 名とスレッドの状態（`params.status.type`、無ければ `-`）、席（トピック id・アカウント id）、UTC 時刻を `logs/codex-activity-probe.log` に一行ずつ追記する。本文・コマンド・引数・文章は書かない（形は「[Codex の席は自分の様子を app-server の知らせで知らせる](3-accounts.md#codex-の席は自分の様子を-app-server-の知らせで知らせる326)」）。
 
 **未確認（仮説、#326 から持ち越し）:** 端末（`--remote` の TUI）が始めたターンの知らせが、アプリの接続にも届くこと。届かなければ、`thread_status` は null のままで、その席は今までどおり端末の合図を出す（「出力中」が残る症状はその席では直らない）。起動の答えの idle を信じないのはこのためである。実機で、Luna の席が何もしていないときに「待機」になり、端末から始めたターンで `codex-activity-probe.log` に `turn/started`・`thread/status/changed thread=active` などの行が出ることを確かめる。TUI の描き直しが端末を黙らせない、という見立ても仮説のままである。
 
@@ -280,6 +288,7 @@ app-server 方式の Codex の席について、席の server がアプリへ送
 
 ## 未実装
 
+- Claude Code の席の様子（#331）の実機確認。実際の席で、ツール・許可待ち・サブエージェントで札と会話面の下の一行が変わり、終わると消えること（上の「Claude Code の席の様子」の未確認）。
 - app-server 方式の Codex の席の待機（#329）の実機確認。何もしていない Luna の席が「待機」になること、端末から始めたターンの知らせが `codex-activity-probe.log` に出ること（上の「Codex の app-server の席の待機」の未確認）。
 - app-server 方式の Codex の席の様子（#326）の実機確認。実際の席で、許可を求めるコマンド・ファイル変更・MCP の道具・答えを求める問いで札と会話面の下の一行が変わり、ターンの終わりで消えること（上の「Codex の app-server の席の様子」の未確認）。
 - Codex の app-server 方式（#299）の実モデルでの一往復と、切り替えた席での五欄・利用上限・画面・部屋の MCP の実 GUI 確認（上の「Codex の app-server 方式の検証範囲」）。週次の利用枠が戻る 2026-10-10 以降に行う。

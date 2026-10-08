@@ -1401,8 +1401,9 @@ const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// which is what makes this the one path (#161): the usage limit is two of
 /// those values, so there is nothing left for a second POST to say.
 ///
-/// One probe path sits beside it while #325 is open: `/hooks/activity/<event>/…`,
-/// which only logs that the hook arrived (`mcp_config::activity_hook_settings`).
+/// The activity path sits beside it: `/hooks/activity/<event>/…`, a Claude Code
+/// seat's hooks (`mcp_config::activity_hook_settings`), whose body is read for
+/// a few fields only and handed to that seat's state (`hook_activity`, #331).
 async fn serve_hook(
     app: AppHandle,
     room: RoomState,
@@ -1510,19 +1511,15 @@ async fn read_hook(
                 stats.emit(app);
             }
         }
-        // The activity probe (#325): one line saying the hook arrived, and
-        // nothing else. The event is the path's, not the body's — the body is
-        // drained above so the CLI gets a clean answer, and is not read.
-        // Nothing reaches the screen until the probe has said the hooks arrive.
-        // The same line goes to stderr and to `logs/hook-probe.log`, because a
-        // release build has no stderr to read (`room_log::append_hook_probe`).
+        // A Claude Code seat's activity hook (#331). The event is the path's;
+        // the body — cut at `HOOK_BODY_MAX`, so possibly not whole — is read
+        // for a few fields only (`mcp_config::hook_activity`). Handled before
+        // the answer goes out, which takes no longer than parsing the body:
+        // the CLI sends a tool's end only after its start's answer, so
+        // the two are kept in the order they happened.
         if let Some((event, room_id, account_id)) = &activity {
-            let line = format!(
-                "[hook-probe] {event} room={room_id} account={account_id} at={}",
-                now_iso()
-            );
-            eprintln!("{line}");
-            room_log::append_hook_probe(app, &line);
+            app.state::<crate::hook_activity::HookSeats>()
+                .hear(app, event, room_id, account_id, &body);
         }
     }
 
