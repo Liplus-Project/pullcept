@@ -129,7 +129,7 @@ const SPEAKING = [
 const ADDRESSING = [
   "Addressing:",
   "- Your name in label's to -> answer; else stay silent. No to = whole room.",
-  "- Only label's to addresses; @name in body = plain text.",
+  "- Only label's to addresses. Sending: @name of a participant moves to to. Reading: @name left in body = plain text.",
   "- Room-wide question: not all must answer; not answering is valid.",
 ].join("\n");
 
