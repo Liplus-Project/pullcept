@@ -1073,7 +1073,7 @@ fn type_into_sessions(
         if except_pty == Some(target.pty_id.as_str()) {
             continue;
         }
-        let held = limits.hold(&target.pty_id, || mcp_config::codex::limit::Held {
+        let post_for_hold = || mcp_config::codex::limit::Held {
             message_id: post.message_id.clone(),
             speaker: post.speaker.clone(),
             at: at.clone(),
@@ -1082,10 +1082,10 @@ fn type_into_sessions(
                 .iter()
                 .filter(|(origin, _, _)| target.origins.contains(origin))
                 .any(|(_, _, name)| post.to.contains(name)),
-        });
-        if held {
-            continue;
-        }
+        };
+        let held = limits.hold(&target.pty_id, post_for_hold)
+            || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold);
+        if held { continue; }
         ptys.type_in(&target.pty_id, text.clone());
     }
 }
@@ -1311,11 +1311,10 @@ pub struct SessionStats {
     pub seven_day: Option<f64>,
     pub context: Option<f64>,
     /// 制限中, said by the app rather than read off the percentages (#294).
-    /// A Codex seat carries it: the app watches that seat's stop and recovery
-    /// (`codex_limit`), and the rollout's percentages were seen stuck at 99
-    /// for a seat that had stopped. `None` for every other seat, whose screen
-    /// still reads the word off `five_hour` and `seven_day` (#161).
+    /// Codex and current Claude parent watchers carry it. Claude percentages
+    /// and reset clocks cannot clear a structured parent rejection (#342).
     pub limited: Option<bool>,
+    pub limited_source: Option<String>,
     /// When the 5-hour and weekly windows reset, as Unix seconds (#306): what
     /// the panel counts down to beside those two rows. Read off the same
     /// window as its percentage (`mcp_config::epoch_seconds`). The screen stops
@@ -1347,6 +1346,7 @@ impl SessionStats {
             seven_day: data["rate_limits"]["seven_day"]["used_percentage"].as_f64(),
             context: data["context_window"]["used_percentage"].as_f64(),
             limited: None,
+            limited_source: None,
             five_hour_resets_at: mcp_config::epoch_seconds(
                 &data["rate_limits"]["five_hour"]["resets_at"],
             ),
@@ -1372,6 +1372,7 @@ impl SessionStats {
             seven_day: status.seven_day,
             context: status.context,
             limited: Some(limited),
+            limited_source: Some("codex".into()),
             five_hour_resets_at: status.five_hour_resets_at,
             seven_day_resets_at: status.seven_day_resets_at,
         }
@@ -1451,6 +1452,7 @@ async fn read_hook(
         .unwrap_or("")
         .to_string();
     let mut authorization = None;
+    let mut claude_nonce = None;
     let mut length = 0usize;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -1459,6 +1461,7 @@ async fn read_hook(
         let value = value.trim();
         match name.trim().to_ascii_lowercase().as_str() {
             "authorization" => authorization = Some(value.to_string()),
+            "x-pullcept-claude-launch" => claude_nonce = Some(value.to_string()),
             "content-length" => length = value.parse().unwrap_or(0),
             _ => {}
         }
@@ -1516,9 +1519,9 @@ async fn read_hook(
         // session is quiet, and it is better than five rows going blank
         // because one report arrived malformed.
         if let Some((room_id, account_id)) = reported {
-            if let Some(stats) = SessionStats::read(room_id, account_id, &body) {
-                stats.emit(app);
-            }
+            let stats = SessionStats::read(room_id.clone(), account_id.clone(), &body);
+            app.state::<crate::claude_limit::ClaudeLimits>().report(app, &room_id,
+                &account_id, claude_nonce.as_deref(), &body, stats);
         }
         // A Claude Code seat's activity hook (#331). The event is the path's;
         // the body — cut at `HOOK_BODY_MAX`, so possibly not whole — is read
@@ -1527,8 +1530,11 @@ async fn read_hook(
         // the CLI sends a tool's end only after its start's answer, so
         // the two are kept in the order they happened.
         if let Some((event, room_id, account_id)) = &activity {
-            app.state::<crate::hook_activity::HookSeats>()
-                .hear(app, event, room_id, account_id, &body);
+            if app.state::<crate::claude_limit::ClaudeLimits>().report(app, room_id,
+                account_id, claude_nonce.as_deref(), &body, None) {
+                app.state::<crate::hook_activity::HookSeats>()
+                    .hear(app, event, room_id, account_id, &body);
+            }
         }
     }
 

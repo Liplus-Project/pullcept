@@ -2,6 +2,7 @@ mod app_mcp;
 mod character_editor;
 mod codex_app_server;
 mod codex_limit;
+mod claude_limit;
 mod codex_status;
 mod config;
 mod hook_activity;
@@ -32,6 +33,7 @@ pub fn run() {
         // The Codex seats stopped on their usage limit, and the posts the room
         // keeps back from them (#294).
         .manage(codex_limit::CodexLimits::new())
+        .manage(claude_limit::ClaudeLimits::default())
         // Each Codex seat's own app-server, by its terminal (#299).
         .manage(codex_app_server::CodexServers::new())
         // What each Claude Code seat is doing, as its hooks tell it (#331).

@@ -115,3 +115,10 @@ Claude Desktop の置き換えではない。単独作業は Desktop、並列複
 - `Liplus-Project/liplus-desktop` #90 — 設計母体。
 - `Liplus-Project/github-webhook-mcp` `local-mcp/src/index.ts` — channel 実装の参照元。アプリが webhook の受信に起動するのは公開版のブリッジ（npm `github-webhook-mcp`、リポジトリの `mcp-server/server/index.js`）である（#169）。
 - `Liplus-Project/liplus-language` — 基盤層 Sheepdog 未達の記述（`adapter/claude/CLAUDE.md` 冒頭 Concept framing）。
+
+
+## Claude 親の利用上限と配信保留（#342）
+
+現在の親 ID・Claude 専用 launch nonce・PTY を照合した root transcript の構造化イベントだけで停止／回復を判定する。親の新しい rate_limit 拒否で停止し、最後の拒否より後の実モデルの正常な親 assistant 応答で回復する。子の制限、古い起動、古い履歴、使用率の低下、reset 時刻、statusLine の到着、PTY 表示文字列だけでは状態を変えない。制限は残留した委任・出力表示より優先し、subagent の実状態は削除しない。
+
+停止席への room 投稿だけを順序付き・重複なしで保持し、他席への配信と人間の端末入力は維持する。Claude 専用 mailbox を全 Claude 席の共通排他で保存し、終了・再起動を越えて保持する。手動再開で実応答が成功した後に一度だけ保持のまとめを渡す。予定時刻での自動 resume は行わず、Codex の回復問い合わせは保つ。合成検証とマージ後の実機確認を分ける。

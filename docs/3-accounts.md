@@ -662,3 +662,20 @@ account と topic は登録先を指すが、CLI 内の子エージェントは�
 launcher の台帳が同じ起動の live な PTY を持つときだけ最初の instance を対応付ける。app-server 経路では PTY より前に MCP を準備するため、起動中は launcher が実際に spawn した app-server プロセスの生存を照合する。この対応を Running の台帳へ引き継ぎ、起動失敗で破棄する。別 instance は拒否し、同 instance だけが再接続できる。登録中の台帳は最大 3 秒、50 ms 間隔で待ち、未知・古い・不一致・終了した起動や通信失敗は空 MCP server（instructions 無し、tools 空）になる。待機中に MCP 初期化は行わない。socket でも対応と liveness を再検証し、account や名前の全体的な重複拒否にはしない。参加者 ID は launcher 側が生成して同 instance へ保持する。起動終了・次の起動で対応を継承しない。
 
 台帳の Starting は起動した CLI の admission 要否を保持し、Codex だけに登録待ちと socket の必須判定を適用する。Claude の起動途中や account を持たない外部接続の既存経路は保つ。合成試験では親・別 instance・再接続・古い起動・登録競合・複数 topic を確認し、実際の子起動による参加者数はマージ後の実機観測に残す。
+
+
+### Claude 親の利用上限と手動再開（#342）
+
+親 ID は fresh の `launch_line.session_id` と明示 resume の ID から保持する。`PULLCEPT_CLAUDE_LAUNCH` は Claude 用に起動ごとに生成する nonce で、Codex の sidecar admission 用 `PULLCEPT_LAUNCH_ID` と別物である。既存の statusLine と activity HTTP hook は nonce を header に渡し、親 ID・topic/account・現在の起動に照合する。Starting 中の検証済み transcript_path はその起動へ保持し、PTY が登録された後に一つの watcher が追う。旧起動の callback は同じ親 ID の resume にも採用しない。
+
+保存範囲は launcher の `CLAUDE_CONFIG_DIR`（未指定なら `~/.claude`）配下の `projects/<project>/<親ID>.jsonl` に限定する。報告された path を canonical 化して basename・親 ID・保存範囲を検証し、子の subagents フォルダー、任意ファイル、範囲外 symlink を拒否する。`CLAUDE_CODE_PROJECT_DIR_NAME` による名前変更と長い cwd の派生名にも、reporter の検証済み path で対応する（[Claude Code 公式 sessions](https://code.claude.com/docs/en/sessions#name-the-project-directory-yourself)）。resume の既存ファイルは spawn 前の EOF を採り、未知 path や置換されたファイルは launch 時刻より前のイベントを除く。欠落・部分追記・不正 JSON は回復の証拠にせず、本文を状態・ログへ保存しない。
+
+親の `isSidechain=false` の新しい assistant にある `isApiErrorMessage=true` / `error=rate_limit` の構造化拒否で停止する。回復はその後の requestId と実モデルを持つ正常な親 assistant のみであり、API error フラグの未設定を許容するが `<synthetic>` の応答では解除しない。reset 時刻や usage 値だけで解除しない。人間は制限解除後に端末から通常どおり手動再開でき、その実応答を確認してから room 投稿の保持のまとめを一度渡す。SubagentStop の到着を捏造せず、保持した subagent 一覧は実 hook のまま扱う。
+
+Claude mailbox は Codex と別ファイルであり、全 Claude 席の一つの lock が read/modify/write と release を守る。保持 ID の順序・重複排除を維持し、再開／アプリ再起動でも失わない。放出は mailbox を閉じてから端末入力を enqueue し、enqueue の直前にアプリが終了した場合は再送しない（Codex の mailbox と同じ重複回避の境界）。実機の親制限→手動再開→正常応答後に一度通知する確認は、合成試験の成功だけでは完了としない。
+
+JSONL は一行 4 MiB、読取一巡 1 MiB を上限として一時的に JSON を解析します。本文を保存・ログする用途ではありません。4 MiB 超の行は次の改行まで読み飛ばし、壊れた断片で回復しません。その正常応答が上限を超えた場合は保留を継続し、次の読取可能な正常親応答の確認まで端末から手動で進めてください。
+
+transcript が未作成・未捕捉でも、現在の nonce・親 ID・PTY に合う reporter の既存メトリクスと活動は維持します。監視対象の採用は独立に検証し、後の reporter で有効な親ファイルができた時に開始します。親 ID が未知の場合は停止・回復を判定しません。再開ファイルの探索が曖昧・読取不能な場合は保存 ID を消しません。読取が EOF と行末まで追いつく前の正常応答では保留を放出せず、後続 chunk の新しい拒否を確認します。
+
+保存した制限状態とメトリクスは現在の nonce・親 ID・PTY の生存を照合して一秒ごとに再通知するため、webview の再読込で席を拾い直した場合も backend の保留状態と表示を揃えます。既知の終了席へはまとめを放出せず、入力キューが受付を拒否した場合は mailbox を復元します。受付後の終了やアプリ停止については一度だけ enqueue する既存の境界を使います。
