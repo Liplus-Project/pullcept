@@ -501,10 +501,20 @@ enum Seat {
     /// being spawned. Held so that two launches racing for one account cannot
     /// both find the seat empty — the loser is refused before a second process
     /// exists, rather than after.
-    Starting,
+    Starting { requires_admission: bool, sidecar: Option<StartingSidecar> },
     /// A session is running. The PTY id is what says so, and asking the PTY is
     /// the only liveness question anyone asks here.
     Running(RunningSession),
+}
+
+struct StartingSidecar {
+    launch_id: String,
+    child: Arc<Mutex<std::process::Child>>,
+    sidecar: mcp_config::codex::admission::Admission,
+}
+
+impl StartingSidecar {
+    fn is_live(&self) -> bool { matches!(self.child.lock().try_wait(), Ok(None)) }
 }
 
 /// What is running under a held seat.
@@ -526,6 +536,8 @@ enum Seat {
 pub struct RunningSession {
     #[serde(skip)]
     launch_id: Option<String>,
+    #[serde(skip)]
+    sidecar: mcp_config::codex::admission::Admission,
     #[serde(skip)]
     native_id: Option<String>,
     pub pty_id: String,
@@ -583,6 +595,68 @@ pub struct SeatedAccount {
 }
 
 impl RoomSeats {
+    // App-server prepares MCP before it has a PTY. Bind only after its process
+    // exists, and carry this owner into Running rather than reopening admission.
+    fn starting_sidecar(&self, topic: &str, account: &str, launch: &str, child: Arc<Mutex<std::process::Child>>) {
+        if let Some(Seat::Starting { requires_admission: true, sidecar: slot }) = self.seats.lock().get_mut(&seat_key(topic, account)) {
+            *slot = Some(StartingSidecar { launch_id: launch.into(), child, sidecar: Default::default() });
+        }
+    }
+
+    pub fn admit_sidecar(&self, ptys: &PtyState, claim: &mcp_config::codex::admission::Claim) -> u16 {
+        let mut seats = self.seats.lock();
+        let (launch, live, sidecar) = match seats.get_mut(&seat_key(&claim.room_id, &claim.account_id)) {
+            Some(Seat::Starting { requires_admission: true, sidecar: None }) => return 425,
+            Some(Seat::Starting { requires_admission: false, .. }) => return 409,
+            Some(Seat::Starting { sidecar: Some(starting), .. }) => {
+                (starting.launch_id.clone(), starting.is_live(), &mut starting.sidecar)
+            }
+            Some(Seat::Running(session)) => {
+                let Some(launch) = &session.launch_id else { return 409; };
+                (launch.clone(), ptys.is_running(&session.pty_id), &mut session.sidecar)
+            }
+            None => return 409,
+        };
+        if sidecar.admit(claim, &launch, &claim.account_id, &claim.room_id, live, &uuid::Uuid::new_v4().to_string()) { 200 } else { 409 }
+    }
+
+    pub fn connect_sidecar(&self, ptys: &PtyState, claim: &mcp_config::codex::admission::Claim, socket: &str) -> Option<String> {
+        let mut seats = self.seats.lock();
+        match seats.get_mut(&seat_key(&claim.room_id, &claim.account_id)) {
+            Some(Seat::Running(session)) if session.launch_id.as_deref() == Some(claim.launch_id.as_str()) && ptys.is_running(&session.pty_id) => session.sidecar.connect(claim, socket),
+            Some(Seat::Starting { sidecar: Some(starting), .. }) if starting.launch_id == claim.launch_id && starting.is_live() => starting.sidecar.connect(claim, socket),
+            _ => None,
+        }
+    }
+
+    pub fn current_sidecar(&self, ptys: &PtyState, claim: &mcp_config::codex::admission::Claim, socket: &str) -> bool {
+        match self.seats.lock().get(&seat_key(&claim.room_id, &claim.account_id)) {
+            Some(Seat::Running(session)) => session.launch_id.as_deref() == Some(claim.launch_id.as_str())
+                && ptys.is_running(&session.pty_id) && session.sidecar.current(claim, socket),
+            Some(Seat::Starting { sidecar: Some(starting), .. }) => starting.launch_id == claim.launch_id
+                && starting.is_live() && starting.sidecar.current(claim, socket),
+            _ => false,
+        }
+    }
+
+    // Old sockets cannot unseat a newer socket of the same instance. When the
+    // launch itself has gone away its unique old origin may still be removed.
+    pub fn may_unseat_sidecar(&self, claim: &mcp_config::codex::admission::Claim, socket: &str) -> bool {
+        match self.seats.lock().get(&seat_key(&claim.room_id, &claim.account_id)) {
+            Some(Seat::Running(session)) if session.launch_id.as_deref() == Some(claim.launch_id.as_str()) => session.sidecar.current(claim, socket),
+            Some(Seat::Starting { sidecar: Some(starting), .. }) if starting.launch_id == claim.launch_id => starting.sidecar.current(claim, socket),
+            _ => true,
+        }
+    }
+
+    pub fn requires_sidecar_admission(&self, topic: &str, account: &str) -> bool {
+        match self.seats.lock().get(&seat_key(topic, account)) {
+            Some(Seat::Running(session)) => session.launch_id.is_some(),
+            Some(Seat::Starting { requires_admission, .. }) => *requires_admission,
+            None => false,
+        }
+    }
+
     pub fn capture_native(
         &self,
         app: &AppHandle,
@@ -686,7 +760,7 @@ impl RoomSeats {
     pub fn seated(&self, ptys: &PtyState) -> Vec<SeatedAccount> {
         let mut seats = self.seats.lock();
         seats.retain(|_, seat| match seat {
-            Seat::Starting => true,
+            Seat::Starting { .. } => true,
             Seat::Running(session) => ptys.is_running(&session.pty_id),
         });
         seats
@@ -695,7 +769,7 @@ impl RoomSeats {
                 account_id: account_id.clone(),
                 topic_id: topic_id.clone(),
                 session: match seat {
-                    Seat::Starting => None,
+                    Seat::Starting { .. } => None,
                     Seat::Running(session) => Some(session.clone()),
                 },
             })
@@ -707,18 +781,18 @@ impl RoomSeats {
     ///
     /// The sweep and the claim are one acquisition of the lock: checking first
     /// and claiming after would let two launches pass the same empty seat.
-    fn claim(&self, topic_id: &str, account_id: &str, ptys: &PtyState) -> Result<(), ()> {
+    fn claim(&self, topic_id: &str, account_id: &str, ptys: &PtyState, cli: Option<Cli>) -> Result<(), ()> {
         let key = seat_key(topic_id, account_id);
         let mut seats = self.seats.lock();
         let taken = match seats.get(&key) {
-            Some(Seat::Starting) => true,
+            Some(Seat::Starting { .. }) => true,
             Some(Seat::Running(session)) => ptys.is_running(&session.pty_id),
             None => false,
         };
         if taken {
             return Err(());
         }
-        seats.insert(key, Seat::Starting);
+        seats.insert(key, Seat::Starting { requires_admission: mcp_config::codex::admission::required_for(cli), sidecar: None });
         Ok(())
     }
 
@@ -735,23 +809,28 @@ impl RoomSeats {
     pub fn running_in_topic(&self, topic_id: &str, ptys: &PtyState) -> Vec<String> {
         let mut seats = self.seats.lock();
         seats.retain(|_, seat| match seat {
-            Seat::Starting => true,
+            Seat::Starting { .. } => true,
             Seat::Running(session) => ptys.is_running(&session.pty_id),
         });
         seats
             .iter()
             .filter(|((seat_topic, _), _)| seat_topic == topic_id)
             .filter_map(|(_, seat)| match seat {
-                Seat::Starting => None,
+                Seat::Starting { .. } => None,
                 Seat::Running(session) => Some(session.pty_id.clone()),
             })
             .collect()
     }
 
     /// The launch got a session up; the seat is now held by that session.
-    fn hold(&self, account_id: &str, session: RunningSession) {
+    fn hold(&self, account_id: &str, mut session: RunningSession) {
         let key = seat_key(&session.topic_id, account_id);
-        self.seats.lock().insert(key, Seat::Running(session));
+        let mut seats = self.seats.lock();
+        if let Some(Seat::Starting { sidecar: Some(starting), .. }) = seats.remove(&key) {
+            session.sidecar = mcp_config::codex::admission::Admission::inherit(
+                starting.sidecar, &starting.launch_id, session.launch_id.as_deref());
+        }
+        seats.insert(key, Seat::Running(session));
     }
 
     /// The launch failed. Nothing is running, so nothing holds the seat.
@@ -1522,7 +1601,7 @@ pub fn start_session(
     // One account, one seat per room (`RoomSeats`). Claimed before anything is
     // written or spawned, so a refusal costs nothing and leaves nothing behind.
     seats
-        .claim(&topic.topic_id, &account.id, &pty_state)
+        .claim(&topic.topic_id, &account.id, &pty_state, account.kind.cli())
         .map_err(|()| {
             format!(
             "Account \"{name}\" already holds a seat in this topic. One account holds one seat \
@@ -1628,6 +1707,7 @@ pub fn start_session(
                 &account.id,
                 RunningSession {
                     launch_id: started.launch_id.clone(),
+                    sidecar: Default::default(),
                     native_id: started.native_id.clone().or_else(|| launch_line.resumed_from.clone()),
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
@@ -1842,6 +1922,7 @@ fn launch(
         (account.kind == AccountKind::CodexCli).then(|| uuid::Uuid::new_v4().to_string());
     if let Some(id) = &launch_id {
         env.push((mcp_config::codex::LAUNCH_ID_ENV, id.clone()));
+        env.push((mcp_config::codex::admission::REQUIRED_ENV, "1".into()));
         env.push((
             mcp_config::codex::NATIVE_URL_ENV,
             format!(
@@ -1860,6 +1941,11 @@ fn launch(
             "PULLCEPT_UNSEEN_HISTORY",
             if unseen_history { "1" } else { "0" }.into(),
         ));
+    }
+    if launch_id.is_none() {
+        // A Claude launch must not inherit a host shell's Codex admission.
+        env.push((mcp_config::codex::LAUNCH_ID_ENV, String::new()));
+        env.push((mcp_config::codex::admission::REQUIRED_ENV, "0".into()));
     }
     let pty_id = pty::spawn_pty_with_env(
         app,
@@ -1919,6 +2005,7 @@ fn launch_codex_app_server(
     mcp_config::codex::prepare_project(&project_cwd)?;
     let plan = app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
     let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name)?;
+    let launch_id = uuid::Uuid::new_v4().to_string();
     let token = crate::codex_app_server::new_token();
     let server_args = app_server::server_args(
         &plan,
@@ -1940,6 +2027,8 @@ fn launch_codex_app_server(
         .collect();
     server_env.extend(
         [
+            (mcp_config::codex::LAUNCH_ID_ENV, launch_id.clone()),
+            (mcp_config::codex::admission::REQUIRED_ENV, "1".into()),
             (ROOM_TOKEN_ENV, room.token()),
             (LAUNCHED_AS_ENV, account.id.clone()),
             (ROOM_ID_ENV, topic_id.to_string()),
@@ -1953,7 +2042,9 @@ fn launch_codex_app_server(
         .map(|(key, value)| (key.to_string(), value)),
     );
 
+    let on_spawn = |child| app.state::<RoomSeats>().starting_sidecar(topic_id, &account.id, &launch_id, child);
     let started = crate::codex_app_server::start(crate::codex_app_server::Request {
+        on_spawn: Some(&on_spawn),
         command: &account.command,
         server_args,
         cwd,
@@ -1998,7 +2089,7 @@ fn launch_codex_app_server(
     let url = started.url.clone();
     started.adopt(&app, &pty_id, topic_id, &account.id);
     Ok(StartedSession {
-        launch_id: None,
+        launch_id: Some(launch_id),
         native_id: Some(thread_id),
         pty_id,
         mcp_config: format!("Codex app-server {url}"),

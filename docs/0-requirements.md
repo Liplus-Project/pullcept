@@ -102,8 +102,9 @@
 3. cwd・起動オプション・環境変数・認証設定を保持する。既存 `.codex/config.toml` と hook を保持し、秘密をプレビューへ出さない。同じ cwd の混在・複数アカウント・別トピックでも正しい席だけが接続する。linked worktree は正式な root-checkout mapping と同一 Git 所属の検証を行い、実際の設定／hook ファイルまで境界外 symlink を拒否する。
 4. 標準 MCP instructions で札・返信・履歴を案内する。先頭512文字に部屋への参加・部屋の発言に返すとき端末出力は誰にも読まれないものとして扱うこと・返信と履歴の二道具を含め、名前を差し込んだ後で全文を 1792 字以内に収める（#273、#276、#333）。作法と道具の説明は英語で書き、部屋の発言は日本語で書くことを作法に明記する（#333）。Codex は信頼済み project の `.codex/output-styles/<name>.md` を、installed Li+ helper の v1 metadata でプレビューと起動・再開に共通検証する（#281）。アカウント指定は子プロセスの `LI_PLUS_OUTPUT_STYLE` に選択名だけを渡し、既定 persona を選択 persona で差し替える。空欄は project selector に任せ、未設定なら `character_instance.md`、false なら persona 無し。selector と style フォルダーの両方が無い場合だけ従来の inline developer_instructions 選択を維持する。共通指示・native の信頼／profile／手動 -c／CODEX_HOME／有効 cwd、ID capture は維持し、本文を argv／環境へ載せず原本を変更しない。ファイル方式の欠落・不正本文・hook の未登録／未信頼・解析失敗は表示して起動を拒否し、inline へ fallback しない。文法と優先順位は [起動とアカウント](3-accounts.md#codex-のキャラ選択281) に定める。Codex の席はモデル・effort・5h・週間・コンテキストの五値を rollout から読む（#283、#286、[起動とアカウント](3-accounts.md)）。
 5. Codex CLI 0.160.0 以上の SessionStart stdin のネイティブ ID を初回実ターンで取得し、起動・アカウント・トピックを照合して保存する。親の CODEX_THREAD_ID、端末出力、空 thread の事前割当は使わない。子セッション・古い起動・無関係な通知は拒否する。
-6. 保存 ID を明示して再開し、正常な探索で履歴が無いと確認できた時だけ新規へ戻る。探索不能時は ID を保って明示 resume を試す。過去は自動 push しない。利用者が診断端末で個別 hook を信頼できるよう案内し、信頼 hash の自動設定や全 hook の迂回はしない。
-7. タイムアウトと CLI 失敗を扱い、モデルを ID 発行のためだけに呼ばない。改行入力・応答中の入力・人間の打ちかけを検証し、mock と実 CLI / 実モデルの証拠を区別する。
+6. Codex の各 launch では最初の有効な sidecar instance だけが部屋に入る（#315）。launcher の live な起動 ID・account・topic と照合し、MCP 初期化より前に確定する。同 launch を継承した別 instance は正常な空 MCP server（instructions 無し、tools 空）となり、席・投稿・履歴を持たない。同 instance の socket 再接続は同じ参加者 ID で認める。未知・古い・不一致・終了した launch は拒否し、台帳登録中だけ最大 3 秒、50 ms 間隔で待つ。認証情報は argv・ログに出さず、別 topic/account の正当な launch と Claude の既存経路を保つ。参加者数の実機確認はマージ後に行い、合成試験を実機観測と同一視しない。
+7. 保存 ID を明示して再開し、正常な探索で履歴が無いと確認できた時だけ新規へ戻る。探索不能時は ID を保って明示 resume を試す。過去は自動 push しない。利用者が診断端末で個別 hook を信頼できるよう案内し、信頼 hash の自動設定や全 hook の迂回はしない。
+8. タイムアウトと CLI 失敗を扱い、モデルを ID 発行のためだけに呼ばない。改行入力・応答中の入力・人間の打ちかけを検証し、mock と実 CLI / 実モデルの証拠を区別する。
 
 ## 位置づけ
 
