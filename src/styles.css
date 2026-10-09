@@ -91,6 +91,21 @@
      theme. */
   --code-ground: color-mix(in oklch, var(--fg) 5%, transparent);
   --code-line: color-mix(in oklch, var(--fg) 14%, transparent);
+  /* The colours code is drawn in (#354), in a post and in the input box: one
+     per kind of word lowlight marks. This app's own pair of palettes, one for
+     each ground, written for it. */
+  --hl-keyword: #8a3ab9;
+  --hl-string: #2f7a3b;
+  --hl-number: #a8540a;
+  --hl-comment: #8a8985;
+  --hl-title: #1a5fb4;
+  --hl-type: #0d7377;
+  --hl-attr: #9a6200;
+  --hl-tag: #b0306f;
+  --hl-meta: #5f5f86;
+  --hl-regexp: #b8322a;
+  --hl-deletion: #b8322a;
+  --hl-addition: #2f7a3b;
   /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
      the conversation and the terminal is written in `rem`, so this one value
      moves all of it. The conversation divides it back out (`--room-font-size`
@@ -121,6 +136,18 @@
     --hover: rgb(255 255 255 / 0.08);
     --selected: rgb(255 255 255 / 0.13);
     --composer-line: #33333a;
+    --hl-keyword: #c79bef;
+    --hl-string: #9fcf8b;
+    --hl-number: #eda86d;
+    --hl-comment: #8d8d98;
+    --hl-title: #82b4f0;
+    --hl-type: #6ccfc6;
+    --hl-attr: #e2bc72;
+    --hl-tag: #ef8eac;
+    --hl-meta: #a6a6cc;
+    --hl-regexp: #f08484;
+    --hl-deletion: #f08484;
+    --hl-addition: #9fcf8b;
     --avatar-ground: 22%;
     --avatar-ink: 100%;
     --mine-ground: 14%;
@@ -367,7 +394,8 @@ button svg.icon {
    the scope the placement itself: there is no third element for the property
    to be inherited by, so nothing anywhere has to cancel it.
 
-   The textarea alone, not the whole composer. The row under it — 宛先, the
+   The text alone (`#input`, the editor #354 put where the textarea was), not
+   the whole composer. The row under it — 宛先, the
    keys, 送信 (#222) — and the list `@` opens over it (#204) are controls, not
    the sentence, and they stay on the whole-UI axis (#66). The room's own `font-size` lands on `.message` rather than here, so
    only the words are carried and the padding is not.
@@ -375,7 +403,7 @@ button svg.icon {
    `1rem` is what both surfaces have always rendered at. Until #194 no
    `font-size` was written on `body`, on `html` or on `:root`, so the room has
    been showing the user agent's default while everything around it was given a
-   size, and the textarea's `font: inherit` has been resolving to that same
+   size, and the textarea's `font: inherit` resolved to that same
    default. That is where "the text is large" came from, and keeping the default
    here is what makes a screen that has set nothing look exactly as it did.
    Levelling the surfaces against each other is a separate question and not this
@@ -393,8 +421,7 @@ button svg.icon {
    src/main.ts overrides this on all three elements when a size has been
    stored. */
 #room,
-#composer textarea,
-#input-fences,
+#input,
 #participants {
   --room-font-size: calc(1rem / var(--ui-scale));
 }
@@ -692,6 +719,79 @@ button svg.icon {
   font: inherit;
 }
 
+/* The words of code, coloured (#354): the classes lowlight puts on them, in a
+   post and in the input box alike. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in.hljs-keyword,
+.hljs-doctag {
+  color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-char.escape_ {
+  color: var(--hl-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--hl-number);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.function_,
+.hljs-title.class_ {
+  color: var(--hl-title);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-class {
+  color: var(--hl-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-selector-pseudo {
+  color: var(--hl-attr);
+}
+.hljs-tag,
+.hljs-name {
+  color: var(--hl-tag);
+}
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-subst {
+  color: var(--hl-meta);
+}
+.hljs-regexp,
+.hljs-link {
+  color: var(--hl-regexp);
+}
+.hljs-deletion {
+  color: var(--hl-deletion);
+}
+.hljs-addition {
+  color: var(--hl-addition);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
 /* A URL or a Windows path in a post's words (#349): the accent, underlined,
    so it reads as something a press opens and not as the speaker's colour.
    The accent is redefined for dark, so one rule draws both themes. A long
@@ -975,7 +1075,7 @@ button svg.icon {
    border on `--bg`; this one's is `--composer-line`, #235), and the text area
    inside it carries none. The frame turns to the accent while the text has the
    focus, so where the keys are going is still shown with the field's own edge
-   gone from the textarea. */
+   gone from the text. */
 #composer-box {
   display: flex;
   flex-direction: column;
@@ -1160,7 +1260,7 @@ button svg.icon {
   height: 1rem;
 }
 
-/* The list of who can be addressed, opened by `@` in the textarea (#204).
+/* The list of who can be addressed, opened by `@` in the text (#204).
 
    Anchored to the composer and drawn above it, over the conversation's last
    lines: below it the window ends. A control rather than the sentence, so it is
@@ -1204,76 +1304,153 @@ button svg.icon {
   background: var(--tint);
 }
 
-/* Written at the size it will be read at. The `font-size` follows the
-   shorthand deliberately: `font: inherit` sets a size of its own, and only a
-   later `font-size` in the same rule replaces it. `rows="2"` is counted in
-   lines, so the field's height moves with the size without being told to. */
-#composer textarea {
-  font: inherit;
+/* The text (#354): the editor src/composer.ts mounts in `#input`. Written at
+   the size it will be read at (#81), in the room's font. It is two lines tall
+   empty, as the textarea's `rows="2"` was, grows with what is written, and
+   scrolls inside past 40% of the window. */
+#input {
+  position: relative;
   font-size: var(--room-font-size);
   color: var(--fg);
-  background: none;
-  border: none;
+}
+
+#input .ProseMirror {
   outline: none;
   padding: 0 0.15rem;
-  resize: vertical;
-}
-
-/* The text area and the layer behind it that frames its ``` fences (#348).
-   The layer is placed over the text area's client area and carries the same
-   font, size, padding and wrapping, transparent, so each of its lines falls
-   where the same line falls in the box; src/main.ts sizes it to the box's
-   client area and keeps its scroll in step. The text area is above it with no
-   ground of its own, so the frame shows through and the caret and the
-   selection are the box's own. A textarea draws all its text in one font, so
-   the code cannot be in monospace alone: the whole box is, while it has a
-   fence (below). */
-#input-field {
-  position: relative;
-}
-
-#input-field textarea {
-  position: relative;
-  display: block;
-  width: 100%;
-}
-
-#input-fences {
-  position: absolute;
-  top: 0;
-  left: 0;
-  overflow: hidden;
-  pointer-events: none;
-  font: inherit;
-  font-size: var(--room-font-size);
-  color: transparent;
-  padding: 0 0.15rem;
+  line-height: 1.5;
+  min-height: 3em;
+  max-height: 40vh;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+#input p {
+  margin: 0;
+}
+
+/* The placeholder, while the box is one empty line. Drawn by the mount, not
+   inside the editable text, so nothing in the editor is redrawn for it. */
+#input[data-empty]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
+  left: 0.15rem;
+  color: var(--muted);
+  pointer-events: none;
+  line-height: 1.5;
+}
+
+/* A code block in the box (#354): the post's frame (#348), the language
+   button over the code. The code wraps rather than scrolling sideways, so the
+   caret is never carried out of sight on a long line. */
+#input .code-block {
+  margin: 0.25rem 0;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  background: var(--code-ground);
+}
+
+#input .code-head {
+  display: flex;
+  padding: 0.2rem 0.35rem 0;
   user-select: none;
 }
 
-#input-fences[hidden] {
+/* A control on the UI's axis (#66), so it does not grow with the text: the
+   #221 shape, a word with `--hover` under the pointer. */
+.code-lang-button {
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  cursor: pointer;
+}
+
+.code-lang-button:hover {
+  background: var(--hover);
+}
+
+#input .code-block pre {
+  margin: 0;
+  padding: 0.2rem 0.6rem 0.4rem;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+#input .code-block code {
+  font: inherit;
+}
+
+/* The language list a code block's button opens (#354): a search, and the
+   languages under it. Over the page, beside the button; a control on the UI's
+   axis. */
+.lang-menu {
+  position: fixed;
+  z-index: 30;
+  width: 14rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--float-shadow);
+  padding: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.lang-menu[hidden] {
   display: none;
 }
 
-/* While the text has a fence, the whole box is in the code's monospace
-   (#348, Master's choice B), and the layer behind it with it, so a line
-   wraps at the same place in both. Only the family changes; the size stays
-   the room's. */
-#input-field[data-code] textarea,
-#input-field[data-code] #input-fences {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+.lang-menu input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.45rem;
+  outline: none;
 }
 
-/* Widened into the padding either side and given it back, so the lines inside
-   wrap at the same width; the frame is drawn inside the box. */
-#input-fences .fence {
-  margin: 0 -0.15rem;
-  padding: 0 0.15rem;
-  border-radius: 6px;
-  background: var(--code-ground);
-  box-shadow: inset 0 0 0 1px var(--code-line);
+.lang-menu input:focus {
+  border-color: var(--accent);
+}
+
+.lang-menu ul {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.lang-menu li {
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.lang-menu li[aria-selected="true"] {
+  background: var(--tint);
+}
+
+.lang-menu li[data-current]::after {
+  content: " ✓";
+  color: var(--muted);
+}
+
+.lang-menu li.none {
+  color: var(--muted);
+  cursor: default;
 }
 
 /* Under the text: the tools on the left, the keys after them, 送信 on the

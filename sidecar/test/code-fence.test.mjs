@@ -1,12 +1,16 @@
 // The ``` fences of a post's words (#348): the actual frontend functions, run
-// without Tauri or a DOM.
+// without Tauri or a DOM. The fences are read in src/composer.ts (#354), which
+// the input box shares; `splitAttachments` stays in src/main.ts and is run here
+// with those functions beside it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
+import { tsImport } from "tsx/esm/api";
 
-const names = ["findCodeFences", "splitCodeFences", "lineInFence", "inOpenFence", "fenceCloseOnEnter", "splitAttachments", "ATTACHMENT_HEAD", "FENCE_LANG"];
+const fences = await tsImport("../../src/composer.ts", import.meta.url);
+const names = ["splitAttachments", "ATTACHMENT_HEAD"];
 const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
 const statements = source.statements.filter(s =>
   (ts.isFunctionDeclaration(s) && names.includes(s.name?.text)) ||
@@ -15,8 +19,13 @@ assert.equal(statements.length, names.length);
 const compiled = ts.transpileModule(statements.map(s => s.getText(source)).join("\n"), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 // `attachmentsRoot` is read off the global, as the screen's `let` is.
 const ROOT = "C:\\rooms\\r1\\attachments";
-const context = vm.createContext({attachmentsRoot: ROOT});
+const context = vm.createContext({
+  attachmentsRoot: ROOT,
+  findCodeFences: fences.findCodeFences,
+  lineInFence: fences.lineInFence,
+});
 vm.runInContext(compiled, context);
+context.splitCodeFences = fences.splitCodeFences;
 const plain = value => JSON.parse(JSON.stringify(value));
 const split = text => plain(context.splitCodeFences(text));
 const FENCE = "```";
@@ -93,28 +102,6 @@ test("fences are found by line index, open ones with a null close", () => {
   ]);
 });
 
-/** inOpenFence with the caret where `|` stands; the `|` is not part of the text. */
-const openAt = marked => context.inOpenFence(marked.replace("|", ""), marked.indexOf("|"));
-
-test("Enter breaks the line only while the caret is inside a fence", () => {
-  assert.equal(openAt("hello|"), false);
-  assert.equal(openAt("```ts|"), true);
-  assert.equal(openAt("```ts\nconst a|"), true);
-  assert.equal(openAt("```ts\nconst a\n```|"), false);
-  assert.equal(openAt("say ``` here|"), false);
-  assert.equal(openAt("before|\n```ts\nx"), false);
-  assert.equal(openAt("```\nx\n```\nafter|"), false);
-});
-
-test("a fence is judged on the whole text, not on what is before the caret", () => {
-  // "``` suffix" is no close: the fence stays open wherever the caret is on it.
-  assert.equal(openAt("```\ncode\n```| suffix"), true);
-  assert.equal(openAt("```\ncode\n``` suffix|"), true);
-  // A caret above the close is inside; the close line itself is not.
-  assert.equal(openAt("```\nco|de\n```"), true);
-  assert.equal(openAt("```\ncode\n```  |"), false);
-});
-
 test("a 添付: block written inside an unclosed fence stays code", () => {
   const path = `${ROOT}\\a.png`;
   const content = `see\n${FENCE}\nlog\n\n添付:\n${path}`;
@@ -133,64 +120,10 @@ test("attachments after a closed fence, or with no fence, are still read as atta
   assert.deepEqual(plain(context.splitAttachments(`添付:\n${path}`)), {text: "", paths: [path]});
 });
 
-test("a fence opened by words closes, holds Enter and keeps 添付: as code like any other (#352)", () => {
+test("a fence opened by words closes and keeps 添付: as code like any other (#352)", () => {
   assert.deepEqual(plain(context.findCodeFences(["```あ。。。", "b", "```", "c"])),
     [{open:0, close:2, ticks:3, lang:"", lead:"あ。。。"}]);
-  assert.equal(openAt("```あ。。。|"), true);
-  assert.equal(openAt("```あ。。。\nb|"), true);
-  assert.equal(openAt("```あ。。。\nb\n```|"), false);
   const path = `${ROOT}\\a.png`;
   const content = `${FENCE}あ。。。\n\n添付:\n${path}`;
   assert.deepEqual(plain(context.splitAttachments(content)), {text: content, paths: []});
-});
-
-/**
- * Enter as the input box takes it (#352), with the caret where `|` stands:
- * the text and caret after fenceCloseOnEnter's edit, or null when it makes none.
- */
-const enterAt = marked => {
-  const text = marked.replace("|", "");
-  const edit = context.fenceCloseOnEnter(text, marked.indexOf("|"));
-  if (!edit) return null;
-  const after = text.slice(0, edit.start) + edit.insert + text.slice(edit.end);
-  const caret = edit.start + edit.insert.length;
-  return after.slice(0, caret) + "|" + after.slice(caret);
-};
-
-test("Enter on an empty line of an unclosed fence closes it and leaves the fence (#352)", () => {
-  assert.equal(enterAt("```ts\nconst a = 1;\n|"), "```ts\nconst a = 1;\n```\n|");
-  // A line of spaces is empty too, and is replaced whole.
-  assert.equal(enterAt("```\nx\n  |  "), "```\nx\n```\n|");
-  // The close has as many backticks as the open.
-  assert.equal(enterAt("````\nx\n|"), "````\nx\n````\n|");
-  assert.equal(enterAt("```あ。。。\n|"), "```あ。。。\n```\n|");
-  // Right under the opening line, too.
-  assert.equal(enterAt("```\n|"), "```\n```\n|");
-  // Lines below the caret stay, after the new line; words before the fence too.
-  assert.equal(enterAt("```\nx\n|\ny"), "```\nx\n```\n|\ny");
-  assert.equal(enterAt("see\n```\nx\n|"), "see\n```\nx\n```\n|");
-});
-
-test("after the edit the caret is outside every fence, so the next Enter sends (#352)", () => {
-  const after = enterAt("```ts\nconst a = 1;\n|");
-  assert.equal(openAt(after), false);
-  assert.equal(enterAt(after), null);
-  assert.deepEqual(split(after.replace("|", "")), [
-    {kind:"code", code:"const a = 1;", lang:"ts"},
-    {kind:"text", text:""},
-  ]);
-});
-
-test("Enter makes no edit where it is not an empty line of an unclosed fence (#352)", () => {
-  for (const marked of [
-    "```ts\nconst a|",      // the line has words: Enter is a line break
-    "```ts|",               // the opening line is never empty
-    "```|",
-    "```\n|\nx\n```",       // a closed fence: a blank line of its code
-    "```\nx\n```\n|",       // outside every fence: Enter sends
-    "hello\n|",
-    "|",
-  ]) {
-    assert.equal(enterAt(marked), null, marked);
-  }
 });

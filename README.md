@@ -208,4 +208,6 @@ scripts/              インストール時に @xterm/addon-webgl へ当てる�
 
 Pullcept は [Apache License 2.0](LICENSE) のもとで提供されます。著作権表示は [NOTICE.txt](NOTICE.txt) を参照してください。
 
+入力欄のエディターが使うライブラリ（Tiptap・ProseMirror・lowlight・highlight.js など）の著作権表示とライセンス本文は [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめており、インストーラーにも同梱されます。
+
 `portable-pty-patch/` は MIT License のコードを含みます。詳細は [`portable-pty-patch/LICENSE.md`](portable-pty-patch/LICENSE.md) を参照してください。
