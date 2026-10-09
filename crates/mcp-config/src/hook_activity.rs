@@ -365,6 +365,15 @@ impl Activity {
         }
     }
 
+    /// Whether any agent of the seat — the main one or a counted subagent — is
+    /// stopped on a prompt. Every such prompt is drawn in the seat's one
+    /// terminal, so while this holds a room post typed there would land on a
+    /// prompt and its submit key would answer it (#346): the room keeps its
+    /// posts for the seat until this no longer holds (`prompt_hold`).
+    pub fn any_waiting(&self) -> bool {
+        self.main.wait.is_some() || self.subagents.iter().any(|sub| sub.agent.wait.is_some())
+    }
+
     /// The agent a hook is about: the main one when it carries no `agent_id`,
     /// a counted subagent when it does, and none for any other — an internal
     /// agent's, or one whose start was not heard.
@@ -829,5 +838,42 @@ mod tests {
         ask(&mut a, "Bash");
         a.hear("Stop", &body("Stop", json!({})));
         assert!(!a.waiting(None));
+    }
+
+    #[test]
+    fn any_waiting_covers_the_main_agent_and_every_subagent() {
+        // What the room holds its posts on (#346): a prompt of any agent, since
+        // all of them are drawn in the one terminal.
+        let mut a = Activity::new();
+        assert!(!a.any_waiting());
+        pre(&mut a, "t1", "Bash");
+        assert!(!a.any_waiting());
+        ask(&mut a, "Bash");
+        assert!(a.any_waiting());
+        a.typed("\r");
+        assert!(!a.any_waiting());
+
+        start(&mut a, "ag1", "Explore");
+        a.hear("PermissionRequest", &body("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {}, "agent_id": "ag1", "agent_type": "Explore"})));
+        assert!(a.any_waiting());
+        // A key ends the main agent's wait only; the subagent's stays.
+        a.typed("\r");
+        assert!(a.any_waiting());
+        // Its own end: the subagent stopping.
+        stop_sub(&mut a, "ag1", "Explore");
+        assert!(!a.any_waiting());
+
+        // A denied prompt ends at the next call; an allowed one at its post.
+        ask(&mut a, "Read");
+        pre(&mut a, "t2", "Read");
+        assert!(!a.any_waiting());
+        pre(&mut a, "t3", "Bash");
+        ask(&mut a, "Bash");
+        post(&mut a, "t3", "Bash");
+        assert!(!a.any_waiting());
+        // An interrupted turn: the next prompt clears it.
+        ask(&mut a, "Bash");
+        a.hear("UserPromptSubmit", &body("UserPromptSubmit", json!({"prompt": "x"})));
+        assert!(!a.any_waiting());
     }
 }

@@ -1038,8 +1038,15 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// **A Codex seat stopped on its usage limit is not typed into** (#294): the
 /// post is kept for it (`codex_limit::CodexLimits`), its id written to the
 /// seat's mailbox (#312), and handed over as one line when the recovery is
-/// confirmed. Every other seat, every Claude Code
-/// seat among them, is typed into as before.
+/// confirmed. A Claude Code seat stopped on its parent's limit is held the
+/// same way (#342, `claude_limit::ClaudeLimits`).
+///
+/// **A Claude Code seat waiting on a permission prompt is not typed into
+/// either** (#346): the post's submit key would answer the prompt. It is kept
+/// for the seat (`hook_activity::type_or_keep`) and typed once the wait has
+/// ended — or given to the limit hold then, if the seat is stopped on its
+/// limit by that time. The limit hold is asked first, so a post for a seat
+/// stopped on its limit stays that hold's, as before.
 fn type_into_sessions(
     app: &AppHandle,
     room_id: &str,
@@ -1095,8 +1102,24 @@ fn type_into_sessions(
         let held = limits.hold(&target.pty_id, post_for_hold)
             || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold);
         if held { continue; }
-        ptys.type_in(&target.pty_id, text.clone());
+        crate::hook_activity::type_or_keep(
+            app,
+            &target.pty_id,
+            mcp_config::prompt_hold::Item {
+                message_id: post.message_id.clone(),
+                text: text.clone(),
+                post: Some(post_for_hold()),
+            },
+        );
     }
+}
+
+/// Give `post` to the usage-limit hold of the seat on `pty_id`, if that seat
+/// is stopped on its limit (Codex #294, Claude #342). True when it was taken.
+/// The hand-over of posts kept for a permission wait asks this first (#346).
+pub fn limit_hold(app: &AppHandle, pty_id: &str, post: &mcp_config::codex::limit::Held) -> bool {
+    app.state::<crate::codex_limit::CodexLimits>().hold(pty_id, || post.clone())
+        || app.state::<crate::claude_limit::ClaudeLimits>().hold(pty_id, || post.clone())
 }
 
 /// Say one notice of the app's own into one room (#294), typed into every
@@ -1474,6 +1497,10 @@ fn permission_outcome(answered: Option<mcp_config::permission_prompt::Decision>,
 /// The screen is told how it ended (`permission-resolved`), so the card stops
 /// being pressable. A decision sent is not a decision taken: the terminal may
 /// have answered first, and the card says only what the room sent.
+///
+/// How it ended is also one line of `logs/permission-requests.log` (#346,
+/// `permission_prompt::log_line`), written once the answer has been sent or
+/// failed to be.
 async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> {
     use mcp_config::permission_prompt::HOLD_SECS;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1487,6 +1514,8 @@ async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> 
         account_id,
     } = held;
     let id = hold.id.clone();
+    let shown_at = hold.card["at"].as_str().unwrap_or_default().to_string();
+    let started = std::time::Instant::now();
 
     // The CLI sends nothing more on this connection; a read that ends is the
     // CLI having closed it — its own timeout, the session gone, or (not
@@ -1501,13 +1530,37 @@ async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> 
         }
     };
 
-    let (decision, how) = tokio::select! {
+    use crate::hook_activity::Ending;
+    let (decision, press, how, reason) = tokio::select! {
         answer = hold.answer => match answer {
-            Ok(decision) => (Some(decision), "answered"),
-            Err(_) => (None, "elsewhere"),
+            Ok(Ending::Pressed(decision, press)) => (Some(decision), Some(press), "answered", None),
+            Ok(Ending::Settled(reason)) => (None, None, "elsewhere", Some(reason)),
+            Err(_) => (None, None, "elsewhere", Some("dropped")),
         },
-        _ = closed => (None, "closed"),
-        _ = tokio::time::sleep(std::time::Duration::from_secs(HOLD_SECS)) => (None, "timeout"),
+        _ = closed => (None, None, "closed", None),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(HOLD_SECS)) => (None, None, "timeout", None),
+    };
+    let ended_at = now_iso();
+    let held_ms = started.elapsed().as_millis();
+    let log = |sent: Option<bool>| {
+        crate::hook_activity::log(
+            app,
+            &mcp_config::permission_prompt::log_line(&mcp_config::permission_prompt::Ended {
+                id: &id,
+                topic_id: &topic_id,
+                account_id: &account_id,
+                tool_name: &request.tool_name,
+                agent_id: request.agent_id.as_deref(),
+                outcome: how,
+                reason,
+                decision,
+                press: press.as_ref(),
+                shown_at: &shown_at,
+                ended_at: &ended_at,
+                held_ms,
+                sent,
+            }),
+        );
     };
     app.state::<crate::hook_activity::HookSeats>().release(&id);
     let _ = app.emit(
@@ -1520,6 +1573,7 @@ async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> 
         }),
     );
     if how == "closed" {
+        log(None);
         return Ok(());
     }
 
@@ -1531,15 +1585,15 @@ async fn hold_permission(app: &AppHandle, held: HeldHook) -> Result<(), String> 
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    writer
-        .write_all(answer.as_bytes())
-        .await
-        .map_err(|e| format!("permission answer could not be sent: {e}"))?;
-    writer
-        .flush()
-        .await
-        .map_err(|e| format!("permission answer could not be flushed: {e}"))?;
-    Ok(())
+    let sent = match writer.write_all(answer.as_bytes()).await {
+        Err(e) => Err(format!("permission answer could not be sent: {e}")),
+        Ok(()) => writer
+            .flush()
+            .await
+            .map_err(|e| format!("permission answer could not be flushed: {e}")),
+    };
+    log(Some(sent.is_ok()));
+    sent
 }
 
 async fn read_hook(

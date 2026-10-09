@@ -37,6 +37,7 @@ pub mod codex;
 pub mod hook_activity;
 pub mod claude_limit;
 pub mod permission_prompt;
+pub mod prompt_hold;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
