@@ -672,7 +672,7 @@ launcher の台帳が同じ起動の live な PTY を持つときだけ最初の
 
 保存範囲は launcher の `CLAUDE_CONFIG_DIR`（未指定なら `~/.claude`）配下の `projects/<project>/<親ID>.jsonl` に限定する。報告された path を canonical 化して basename・親 ID・保存範囲を検証し、子の subagents フォルダー、任意ファイル、範囲外 symlink を拒否する。`CLAUDE_CODE_PROJECT_DIR_NAME` による名前変更と長い cwd の派生名にも、reporter の検証済み path で対応する（[Claude Code 公式 sessions](https://code.claude.com/docs/en/sessions#name-the-project-directory-yourself)）。resume の既存ファイルは spawn 前の EOF を採り、未知 path や置換されたファイルは launch 時刻より前のイベントを除く。欠落・部分追記・不正 JSON は回復の証拠にせず、本文を状態・ログへ保存しない。
 
-親の `isSidechain=false` の新しい assistant にある `isApiErrorMessage=true` / `error=rate_limit` の構造化拒否で停止する。回復はその後の requestId と実モデルを持つ正常な親 assistant のみであり、API error フラグの未設定を許容するが `<synthetic>` の応答では解除しない。reset 時刻や usage 値だけで解除しない。人間は制限解除後に端末から通常どおり手動再開でき、その実応答を確認してから room 投稿の保持のまとめを一度渡す。SubagentStop の到着を捏造せず、保持した subagent 一覧は実 hook のまま扱う。
+親の `isSidechain=false` の新しい assistant にある `isApiErrorMessage=true` / `error=rate_limit` の構造化拒否で停止する。回復はその後の requestId と実モデルを持つ正常な親 assistant のみであり、API error フラグの未設定を許容するが `<synthetic>` の応答では解除しない。reset 時刻や usage 値だけで解除しない。人間は制限解除後に端末から通常どおり手動再開でき、その実応答を確認してから room 投稿の保持のまとめを一度渡す。解除予定が分かっていれば、その時刻を過ぎたところで Pullcept が端末へ再開の合図を一度打ち、この確認を自分で始める（下記「[解除予定時刻に親の再開を試す](#解除予定時刻に親の再開を試す357)」）。SubagentStop の到着を捏造せず、保持した subagent 一覧は実 hook のまま扱う。
 
 Claude mailbox は Codex と別ファイルであり、全 Claude 席の一つの lock が read/modify/write と release を守る。保持 ID の順序・重複排除を維持し、再開／アプリ再起動でも失わない。放出は mailbox を閉じてから端末入力を enqueue し、enqueue の直前にアプリが終了した場合は再送しない（Codex の mailbox と同じ重複回避の境界）。実機の親制限→手動再開→正常応答後に一度通知する確認は、合成試験の成功だけでは完了としない。
 
@@ -688,7 +688,7 @@ Claude stats 自体にも PTY ID を含め、画面が現在採用した PTY と
 
 親の停止通知は現在の JSONL watcher に集約する。拒否の `quotaLimits.resetsAt`（root または message）にある妥当な epoch から解除予定を読み、未知なら不明とする。StopFailure は rate_limit だけを通知専用 HTTP へ渡し、親 hook 自体からは通知しない。子は認証・現在の launch nonce・親 ID・PTY を照合した後に別対象として通知し、親 gate は触らない。子の reset は共通入力の `transcript_path` を親 file として検証し、`agent_id` から期待する子 file を導出する（SubagentStop 固有の `agent_transcript_path` は必須にしない）。期待親の `projects/<project>/<親ID>/subagents/agent-<子ID>.jsonl` を canonical 化して末尾最大 4 MiB の新しい構造化 metadata から読む。範囲外・旧履歴・未捕捉の場合は reset を推測しない。通知用の別参加者・WS 接続・AI 応答を作らない。
 
-同 launch 内の対象別停止 episode を重複排除する。親は正常応答による gate 解放後に次の episode とし、子は検証した新しい正常応答の identity で区別する。子の metadata が未捕捉なら同じ子の停止をまとめ、根拠なく次の episode にしない。予定時刻が来たときは一回だけ「回復は未確認、端末で再試行できます」と知らせる。reset だけでは保留を解除しない。通知は現在の live launch の app 巡回中だけであり、アプリ終了中の OS task による保証は加えない。一般 API エラーと許可待ちの新しい通知は登録しない（[公式 StopFailure input](https://code.claude.com/docs/en/hooks#stopfailure-input)）。
+同 launch 内の対象別停止 episode を重複排除する。親は正常応答による gate 解放後に次の episode とし、子は検証した新しい正常応答の identity で区別する。子の metadata が未捕捉なら同じ子の停止をまとめ、根拠なく次の episode にしない。子の予定時刻が来たときは一回だけ「回復は未確認、端末で再試行できます」と知らせる。親の予定時刻では、この知らせの代わりに再開を試す（#357、下記）。reset だけでは保留を解除しない。通知は現在の live launch の app 巡回中だけであり、アプリ終了中の OS task による保証は加えない。一般 API エラーと許可待ちの新しい通知は登録しない（[公式 StopFailure input](https://code.claude.com/docs/en/hooks#stopfailure-input)）。
 
 新しい対応 launch は `PULLCEPT_LIMIT_NOTICE_OWNER=app-v1` を持つ。app の HTTP hooks を実際に launch settings へ登録できる場合だけ marker を設定し、利用者の独自 `--settings` を持つ経路などへは設定しない。外部 hook は自動変更しない。`scripts/notify-stop-migration.ps1` は移行用 wrapper、`scripts/install-notify-stop-migration.ps1` は明示実行する installer である。
 
@@ -703,3 +703,16 @@ Claude stats 自体にも PTY ID を含め、画面が現在採用した PTY と
 installer は元 hook を同じ folder の一意な `.legacy-*.ps1` に byte 一致で backup し、実行用の `.fallback.ps1` を作って旧 scheduler の既知の式だけ元 wrapper path を予約先に向け、移行設定を `<hook>.pullcept.json` に保存してから wrapper を置く。byte 一致の backup 自体は変更しない。未知の scheduler 式なら元 hook を変えず拒否する。これにより旧 launch の fallback が作る新しい予約も wrapper の exact ledger を通る。settings.json や他の hook は編集しない。新 marker の rate_limit は旧投稿を抑止し、marker のない旧 launch と一般 API エラーは backup の旧処理へ渡す。permission_prompt は通知しない。旧 `-Resume` は exact task/server/project が移行設定に一致するものだけ旧 WS 通知を抑止する。その他の task は従来 handler に渡す。task 自体を一括削除しない。再適用は拒否して元 backup を保つ。rollback は表示された backup を元 hook path へ戻し、確認後に対応する `.pullcept.json` を除く。
 
 テンプレート配置だけでは、稼働中の旧 launch と旧 hook の通知は統一されない。新 launch への切替・外部 wrapper の適用後に、別名の自動通知席が増えず親／子・解除予定・返信不要が本体の発言に保たれることを実機で確認する。repo の合成試験は実機確認の代わりにしない。
+
+### 解除予定時刻に親の再開を試す（#357）
+
+**解除予定時刻を過ぎたら、Pullcept が止まっている席の端末へ再開の合図を一度打つ。** #342 では、予定時刻を過ぎても人が端末に打ち込むまで席は「制限中」のままだった（2026-10-09 22:16 に止まった Lay と Lin は、解除予定 10/10 01:20 を過ぎても朝まで戻らなかった）。#342 の「正常な親応答を確かめてから保留を解く」という条件は変えない。変えるのは、その確認を Pullcept が自分で始めるところだけである。対象は親だけで、子エージェントの上限（#355 で親と分けたもの）には打たない。
+
+- **いつ打つか。** 親の拒否が `quotaLimits.resetsAt` で解除予定を名指していれば、その 30 秒後（Codex の問い合わせと同じ `GRACE`）。解除予定が分からなければ打たない——打つ時刻の根拠が無いので、端末での手動再開を待つ。停止の知らせもそのどちらかを言う。受け箱だけが残って止まった状態から始まった席（#312 と同じ再起動）も、新しい拒否が解除予定を名指すまでは打たない。
+- **何を打つか。** `claude_resume::NUDGE` の一行を、部屋の札（発言者 `Pullcept（自動通知）`、`role` は `app`）を付けて一回の打ち込みで打つ。作業を始めさせず、部屋への返事も求めない。中身はどうでもよく、席が何か一言でも答えれば、それが #342 の待っている正常な親応答になる。札の `message_id` は、同時に部屋へ出す「再開の合図を一度打ちました」の知らせの id である。許可待ちの席（#346）では、その待ちが終わるまで合図も預かる。人が端末に打ちかけのときは、ほかの打ち込みと同じく欄が空くまで待つ。
+- **返事が返ったら。** 正常な親応答を読んだところで、今までどおり保留を外す。部屋には「再開しました（正常親応答を確認）」と、預かった件数を知らせ、そのあと預かった発言のまとめを今までどおり席へ打つ。人の手動再開で戻ったときも同じ知らせである。
+- **まだ止まっていたら。** 合図より後の時刻の親の拒否を読めば「まだ利用上限で止まっています」と、解除予定と次に試す時刻を部屋へ知らせ、間を空けてもう一度打つ。新しい拒否が名指す解除予定の 30 秒後が今から 1 分より先ならその時刻（5 時間の後に週次で止まった等）、そうでなければ 1 分・2 分・5 分・10 分・15 分と空け、以後は 15 分ごと（Codex の `BACKOFF`）。合図より前に書かれた拒否は合図の答えに数えない。
+- **答えが無かったら。** 合図から 2 分（`ANSWER_WAIT`）たっても拒否も正常応答も読めなければ、「応答を確認できませんでした」と知らせ、自動の再開をそこで止める。答えない端末に合図を重ねて、入力欄へ溜めないためである。保留は続き、人が端末で手動再開すれば戻る。その手動の試行が拒否され、解除予定を名指せば、自動の再開がまた始まる。
+- **予定時刻の知らせ（#355）は親には出さない。** 親の予定時刻は合図の知らせに置き換えた。子の予定時刻の「回復は未確認、端末で再試行できます」は今までどおりである。
+
+予定と回数の判断は `crates/mcp-config/src/claude_resume.rs`（tauri を持たずテストされる）、文面は `claude_notice.rs`、打ち込みと知らせは `src-tauri/src/claude_limit.rs` の見張りの一秒ごとの巡回が行う。予定は起動ごとのメモリにだけあり、アプリを落とせば次の拒否まで打たない。
