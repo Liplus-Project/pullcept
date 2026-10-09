@@ -4793,16 +4793,32 @@ function splitAttachments(content: string): { text: string; paths: string[] } {
 interface CodeFence {
   open: number;
   close: number | null;
-  /** The first word after the opening ```, or "" when there is none. */
+  /** How many backticks open it: a close needs at least as many. */
+  ticks: number;
+  /** The language after the opening ```, or "" when none is named (#352). */
   lang: string;
+  /**
+   * What follows the opening ``` when it names no language (#352): the first
+   * line of the code, or "" when nothing follows.
+   */
+  lead: string;
 }
+
+/**
+ * What may follow an opening ``` as a language name (#352): one word of ASCII
+ * letters, digits and - _ + . # — `ts`, `c++`, `c#`, `objective-c`. Anything
+ * else written there is the code's first line.
+ */
+const FENCE_LANG = /^[A-Za-z0-9_+.#-]+$/;
 
 /**
  * Where the ``` fences are in a text's lines (#348), as CommonMark draws them:
  * a fence opens on a line that starts with three or more backticks (up to three
- * spaces in), and what follows them on that line is the language and holds no
- * backtick — so a ``` in the middle of a sentence, or ```x``` on one line,
- * fences nothing. It closes on a line of at least as many backticks and nothing
+ * spaces in) and holds no backtick after them — so a ``` in the middle of a
+ * sentence, or ```x``` on one line, fences nothing. What follows them on that
+ * line is the language when it is one word of `FENCE_LANG`, and otherwise the
+ * code's first line (#352): "```あ。。。" is a block whose code starts with
+ * "あ。。。". It closes on a line of at least as many backticks and nothing
  * after them but spaces. A fence left open runs to the end.
  *
  * Shared by the room's lines and the input box, so the two cannot draw the same
@@ -4810,23 +4826,25 @@ interface CodeFence {
  */
 function findCodeFences(lines: string[]): CodeFence[] {
   const fences: CodeFence[] = [];
-  let open: { at: number; ticks: number; lang: string } | null = null;
+  let open: Omit<CodeFence, "close"> | null = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\r$/, "");
     if (open === null) {
       const start = /^ {0,3}(`{3,})([^`]*)$/.exec(line);
       if (start) {
-        open = { at: i, ticks: start[1].length, lang: start[2].trim().split(/\s+/)[0] };
+        const info = start[2].trim();
+        const named = info === "" || FENCE_LANG.test(info);
+        open = { open: i, ticks: start[1].length, lang: named ? info : "", lead: named ? "" : info };
       }
     } else {
       const end = /^ {0,3}(`{3,})[ \t]*$/.exec(line);
       if (end && end[1].length >= open.ticks) {
-        fences.push({ open: open.at, close: i, lang: open.lang });
+        fences.push({ ...open, close: i });
         open = null;
       }
     }
   }
-  if (open) fences.push({ open: open.at, close: null, lang: open.lang });
+  if (open) fences.push({ ...open, close: null });
   return fences;
 }
 
@@ -4850,6 +4868,8 @@ function splitCodeFences(text: string): PostPiece[] {
     prose(fence.open);
     const end = fence.close ?? lines.length;
     const code = lines.slice(fence.open + 1, end).map((one) => one.replace(/\r$/, ""));
+    // Words after the ``` that name no language are the code's first line (#352).
+    if (fence.lead) code.unshift(fence.lead);
     pieces.push({ kind: "code", code: code.join("\n"), lang: fence.lang });
     from = fence.close === null ? lines.length : fence.close + 1;
   }
@@ -4876,6 +4896,28 @@ function lineInFence(fences: CodeFence[], line: number): boolean {
 function inOpenFence(text: string, caret: number): boolean {
   const line = text.slice(0, caret).split("\n").length - 1;
   return lineInFence(findCodeFences(text.split("\n")), line);
+}
+
+/**
+ * Enter on an empty line of a fence nobody has closed (#352): the way out of
+ * the code. The caret's line — spaces only, below the opening line — becomes
+ * the closing ``` (as many backticks as opened it) and a line break, and the
+ * caret lands on the next line, outside the fence, where the next Enter sends.
+ * The edit is returned as a range of the text and what replaces it; null when
+ * Enter is not that (the caret is not in such a fence, or its line has words).
+ *
+ * A fence already closed further down is left as it is: an empty line in it is
+ * a blank line of the code, and a ``` put there would cut the block in two.
+ */
+function fenceCloseOnEnter(text: string, caret: number): { start: number; end: number; insert: string } | null {
+  const lines = text.split("\n");
+  const line = text.slice(0, caret).split("\n").length - 1;
+  if (lines[line].trim() !== "") return null;
+  const fence = findCodeFences(lines).find((one) => one.close === null && one.open < line);
+  if (!fence) return null;
+  const start = text.lastIndexOf("\n", caret - 1) + 1;
+  const end = start + lines[line].length;
+  return { start, end, insert: `${"`".repeat(fence.ticks)}\n` };
 }
 
 /**
@@ -8062,7 +8104,20 @@ async function main(): Promise<void> {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       // Inside a ``` fence still open, Enter is a line break, as Shift+Enter
       // is: the code is still being written (#348). 送信 still sends.
-      if (inOpenFence(inputEl.value, inputEl.selectionStart)) return;
+      if (inOpenFence(inputEl.value, inputEl.selectionStart)) {
+        // On an empty line of a fence nobody closed, Enter closes it and
+        // leaves it (#352).
+        const close =
+          inputEl.selectionStart === inputEl.selectionEnd
+            ? fenceCloseOnEnter(inputEl.value, inputEl.selectionStart)
+            : null;
+        if (close) {
+          event.preventDefault();
+          inputEl.setRangeText(close.insert, close.start, close.end, "end");
+          paintInputFences();
+        }
+        return;
+      }
       event.preventDefault();
       void send();
     }

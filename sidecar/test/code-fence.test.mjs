@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 
-const names = ["findCodeFences", "splitCodeFences", "lineInFence", "inOpenFence", "splitAttachments", "ATTACHMENT_HEAD"];
+const names = ["findCodeFences", "splitCodeFences", "lineInFence", "inOpenFence", "fenceCloseOnEnter", "splitAttachments", "ATTACHMENT_HEAD", "FENCE_LANG"];
 const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
 const statements = source.statements.filter(s =>
   (ts.isFunctionDeclaration(s) && names.includes(s.name?.text)) ||
@@ -34,9 +34,21 @@ test("a closed fence is cut out as code, the lines around it as prose", () => {
   ]);
 });
 
-test("the language is the first word after the fence and never part of the code", () => {
-  assert.deepEqual(split("```python title\nx\n```"), [{kind:"code", code:"x", lang:"python"}]);
+test("the language is one word after the fence and never part of the code", () => {
   assert.deepEqual(split("```\nx\n```"), [{kind:"code", code:"x", lang:""}]);
+  for (const lang of ["ts", "c++", "c#", "objective-c", "file_name.py", "v1.2"]) {
+    assert.deepEqual(split(`${FENCE}${lang}\nx\n${FENCE}`), [{kind:"code", code:"x", lang}]);
+  }
+  assert.deepEqual(split("```  sh  \nx\n```"), [{kind:"code", code:"x", lang:"sh"}]);
+});
+
+test("words after the fence that are not one language word are the code's first line (#352)", () => {
+  assert.deepEqual(split("```あ。。。"), [{kind:"code", code:"あ。。。", lang:""}]);
+  assert.deepEqual(split("```あ。。。\nnext\n```"), [{kind:"code", code:"あ。。。\nnext", lang:""}]);
+  assert.deepEqual(split("```python title\nx\n```"), [{kind:"code", code:"python title\nx", lang:""}]);
+  assert.deepEqual(split("``` hello world\n```"), [{kind:"code", code:"hello world", lang:""}]);
+  assert.deepEqual(split("```ts!\nx\n```"), [{kind:"code", code:"ts!\nx", lang:""}]);
+  assert.deepEqual(split("```日本語\r\nx\r\n```"), [{kind:"code", code:"日本語\nx", lang:""}]);
 });
 
 test("an unclosed fence runs to the end", () => {
@@ -74,8 +86,11 @@ test("CRLF lines are read as fences too", () => {
 });
 
 test("fences are found by line index, open ones with a null close", () => {
-  const fences = plain(context.findCodeFences(["a", "```x", "b", "```", "```", "c"]));
-  assert.deepEqual(fences, [{open:1, close:3, lang:"x"}, {open:4, close:null, lang:""}]);
+  const fences = plain(context.findCodeFences(["a", "```x", "b", "```", "````", "c"]));
+  assert.deepEqual(fences, [
+    {open:1, close:3, ticks:3, lang:"x", lead:""},
+    {open:4, close:null, ticks:4, lang:"", lead:""},
+  ]);
 });
 
 /** inOpenFence with the caret where `|` stands; the `|` is not part of the text. */
@@ -116,4 +131,66 @@ test("attachments after a closed fence, or with no fence, are still read as atta
   assert.deepEqual(plain(context.splitAttachments(closed)), {text: `${FENCE}\nx\n${FENCE}`, paths: [path]});
   assert.deepEqual(plain(context.splitAttachments(`hi\n\n添付:\n${path}`)), {text: "hi", paths: [path]});
   assert.deepEqual(plain(context.splitAttachments(`添付:\n${path}`)), {text: "", paths: [path]});
+});
+
+test("a fence opened by words closes, holds Enter and keeps 添付: as code like any other (#352)", () => {
+  assert.deepEqual(plain(context.findCodeFences(["```あ。。。", "b", "```", "c"])),
+    [{open:0, close:2, ticks:3, lang:"", lead:"あ。。。"}]);
+  assert.equal(openAt("```あ。。。|"), true);
+  assert.equal(openAt("```あ。。。\nb|"), true);
+  assert.equal(openAt("```あ。。。\nb\n```|"), false);
+  const path = `${ROOT}\\a.png`;
+  const content = `${FENCE}あ。。。\n\n添付:\n${path}`;
+  assert.deepEqual(plain(context.splitAttachments(content)), {text: content, paths: []});
+});
+
+/**
+ * Enter as the input box takes it (#352), with the caret where `|` stands:
+ * the text and caret after fenceCloseOnEnter's edit, or null when it makes none.
+ */
+const enterAt = marked => {
+  const text = marked.replace("|", "");
+  const edit = context.fenceCloseOnEnter(text, marked.indexOf("|"));
+  if (!edit) return null;
+  const after = text.slice(0, edit.start) + edit.insert + text.slice(edit.end);
+  const caret = edit.start + edit.insert.length;
+  return after.slice(0, caret) + "|" + after.slice(caret);
+};
+
+test("Enter on an empty line of an unclosed fence closes it and leaves the fence (#352)", () => {
+  assert.equal(enterAt("```ts\nconst a = 1;\n|"), "```ts\nconst a = 1;\n```\n|");
+  // A line of spaces is empty too, and is replaced whole.
+  assert.equal(enterAt("```\nx\n  |  "), "```\nx\n```\n|");
+  // The close has as many backticks as the open.
+  assert.equal(enterAt("````\nx\n|"), "````\nx\n````\n|");
+  assert.equal(enterAt("```あ。。。\n|"), "```あ。。。\n```\n|");
+  // Right under the opening line, too.
+  assert.equal(enterAt("```\n|"), "```\n```\n|");
+  // Lines below the caret stay, after the new line; words before the fence too.
+  assert.equal(enterAt("```\nx\n|\ny"), "```\nx\n```\n|\ny");
+  assert.equal(enterAt("see\n```\nx\n|"), "see\n```\nx\n```\n|");
+});
+
+test("after the edit the caret is outside every fence, so the next Enter sends (#352)", () => {
+  const after = enterAt("```ts\nconst a = 1;\n|");
+  assert.equal(openAt(after), false);
+  assert.equal(enterAt(after), null);
+  assert.deepEqual(split(after.replace("|", "")), [
+    {kind:"code", code:"const a = 1;", lang:"ts"},
+    {kind:"text", text:""},
+  ]);
+});
+
+test("Enter makes no edit where it is not an empty line of an unclosed fence (#352)", () => {
+  for (const marked of [
+    "```ts\nconst a|",      // the line has words: Enter is a line break
+    "```ts|",               // the opening line is never empty
+    "```|",
+    "```\n|\nx\n```",       // a closed fence: a blank line of its code
+    "```\nx\n```\n|",       // outside every fence: Enter sends
+    "hello\n|",
+    "|",
+  ]) {
+    assert.equal(enterAt(marked), null, marked);
+  }
 });
