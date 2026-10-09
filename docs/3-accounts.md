@@ -686,7 +686,7 @@ Claude stats 自体にも PTY ID を含め、画面が現在採用した PTY と
 
 本体のお知らせは `Pullcept（自動通知）` が発言し、本文末尾へ `（返信不要）` を一度だけ付ける。アイコン・履歴は `from_app` と app origin の構造的判定のままで、同じ名前を名乗る参加者を app 扱いしない。
 
-親の停止通知は現在の JSONL watcher に集約する。拒否の `quotaLimits.resetsAt`（root または message）にある妥当な epoch から解除予定を読み、未知なら不明とする。StopFailure は rate_limit だけを通知専用 HTTP へ渡し、親 hook 自体からは通知しない。子は認証・現在の launch nonce・親 ID・PTY を照合した後に別対象として通知し、親 gate は触らない。子の reset は期待親の `projects/<project>/<親ID>/subagents/agent-<子ID>.jsonl` を canonical 化して末尾最大 4 MiB の新しい構造化 metadata から読む。範囲外・旧履歴・未捕捉の場合は reset を推測しない。通知用の別参加者・WS 接続・AI 応答を作らない。
+親の停止通知は現在の JSONL watcher に集約する。拒否の `quotaLimits.resetsAt`（root または message）にある妥当な epoch から解除予定を読み、未知なら不明とする。StopFailure は rate_limit だけを通知専用 HTTP へ渡し、親 hook 自体からは通知しない。子は認証・現在の launch nonce・親 ID・PTY を照合した後に別対象として通知し、親 gate は触らない。子の reset は共通入力の `transcript_path` を親 file として検証し、`agent_id` から期待する子 file を導出する（SubagentStop 固有の `agent_transcript_path` は必須にしない）。期待親の `projects/<project>/<親ID>/subagents/agent-<子ID>.jsonl` を canonical 化して末尾最大 4 MiB の新しい構造化 metadata から読む。範囲外・旧履歴・未捕捉の場合は reset を推測しない。通知用の別参加者・WS 接続・AI 応答を作らない。
 
 同 launch 内の対象別停止 episode を重複排除する。親は正常応答による gate 解放後に次の episode とし、子は検証した新しい正常応答の identity で区別する。子の metadata が未捕捉なら同じ子の停止をまとめ、根拠なく次の episode にしない。予定時刻が来たときは一回だけ「回復は未確認、端末で再試行できます」と知らせる。reset だけでは保留を解除しない。通知は現在の live launch の app 巡回中だけであり、アプリ終了中の OS task による保証は加えない。一般 API エラーと許可待ちの新しい通知は登録しない（[公式 StopFailure input](https://code.claude.com/docs/en/hooks#stopfailure-input)）。
 

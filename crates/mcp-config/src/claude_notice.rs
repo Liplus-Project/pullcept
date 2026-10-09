@@ -71,20 +71,37 @@ pub fn enrich(root: &Path, parent: &str, stop: &mut Stop, body: &[u8], floor: i6
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
         return;
     };
-    let Some(reported) = v["agent_transcript_path"].as_str() else {
+    let Some(reported_parent) = v["transcript_path"].as_str() else {
         return;
     };
+    let Some(parent_path) = super::claude_limit::checked(root, parent, Path::new(reported_parent))
+    else {
+        return;
+    };
+    let agent = stop.subject.strip_prefix("child:").unwrap_or_default();
+    let expected = parent_path
+        .parent()
+        .unwrap()
+        .join(parent)
+        .join("subagents")
+        .join(format!("agent-{agent}.jsonl"));
+    let reported = v["agent_transcript_path"]
+        .as_str()
+        .map(Path::new)
+        .unwrap_or(&expected);
     let Ok(root) = root.canonicalize() else {
         return;
     };
-    let Ok(path) = Path::new(reported).canonicalize() else {
+    let Ok(path) = reported.canonicalize() else {
         return;
     };
+    if expected.canonicalize().ok().as_ref() != Some(&path) {
+        return;
+    }
     let Ok(relative) = path.strip_prefix(&root) else {
         return;
     };
     let parts: Vec<_> = relative.iter().collect();
-    let agent = stop.subject.strip_prefix("child:").unwrap_or_default();
     if parts.len() != 4
         || parts[1] != parent
         || parts[2] != "subagents"
@@ -390,14 +407,37 @@ mod tests {
         let childdir = root.join("project/parent/subagents");
         std::fs::create_dir_all(&childdir).unwrap();
         let path = childdir.join("agent-a.jsonl");
+        let parent_path = root.join("project/parent.jsonl");
+        std::fs::write(&parent_path, "").unwrap();
         let success = json!({"type":"assistant","timestamp":"1970-01-01T00:01:41Z","uuid":"normal-a","requestId":"r","message":{"model":"claude-test"}});
         let rejected = json!({"type":"assistant","timestamp":"1970-01-01T00:01:42Z","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"rejected","resetsAt":110}});
         std::fs::write(&path, format!("{success}\n{rejected}\n")).unwrap();
-        let body=serde_json::to_vec(&json!({"session_id":"parent","hook_event_name":"StopFailure","error":"rate_limit","agent_id":"a","agent_transcript_path":path})).unwrap();
+        let body=serde_json::to_vec(&json!({"session_id":"parent","hook_event_name":"StopFailure","error":"rate_limit","agent_id":"a","agent_type":"test","transcript_path":parent_path})).unwrap();
         let mut stop = child(&body).unwrap();
         enrich(&root, "parent", &mut stop, &body, 100000);
         assert_eq!(stop.reset, Some(110));
         assert_eq!(stop.episode, Some("normal-a".into()));
+        let mut explicit: Value = serde_json::from_slice(&body).unwrap();
+        explicit["agent_transcript_path"] = json!(path);
+        let mut same = child(&body).unwrap();
+        enrich(
+            &root,
+            "parent",
+            &mut same,
+            &serde_json::to_vec(&explicit).unwrap(),
+            100000,
+        );
+        assert_eq!(same, stop);
+        explicit["transcript_path"] = json!(root.join("project/foreign.jsonl"));
+        let mut invalid = child(&body).unwrap();
+        enrich(
+            &root,
+            "parent",
+            &mut invalid,
+            &serde_json::to_vec(&explicit).unwrap(),
+            100000,
+        );
+        assert_eq!(invalid.reset, None);
         let mut old = child(&body).unwrap();
         enrich(&root, "parent", &mut old, &body, 200000);
         assert_eq!(old.reset, None);
