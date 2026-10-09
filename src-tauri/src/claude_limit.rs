@@ -21,10 +21,29 @@ struct Entry {
     tail: Option<policy::Tail>,
     baseline: Option<(PathBuf, u64)>,
     gate: policy::Gate,
+    notices: mcp_config::claude_notice::Notices,
+    pending_notices: Vec<(mcp_config::claude_notice::Stop, bool)>,
+    floor: i64,
     mailbox: Option<PathBuf>,
     stats: SessionStats,
 }
 impl Entry {
+    fn remember_notice(&mut self, stop: mcp_config::claude_notice::Stop) {
+        let before = self.notices.known_reset(&stop.subject);
+        if self.notices.stop(&stop) {
+            self.pending_notices.push((stop, false));
+        } else if stop.reset.is_some() && before != stop.reset {
+            if let Some((pending, _)) = self
+                .pending_notices
+                .iter_mut()
+                .find(|(n, _)| n.subject == stop.subject)
+            {
+                pending.reset = stop.reset;
+            } else {
+                self.pending_notices.push((stop, true));
+            }
+        }
+    }
     fn current(&self, app: &AppHandle, topic: &str, account: &str) -> bool {
         let Some(pty) = &self.pty else {
             return true;
@@ -117,6 +136,9 @@ impl ClaudeLimits {
                 tail,
                 baseline,
                 gate: policy::Gate::new(floor, persisted),
+                notices: Default::default(),
+                pending_notices: Vec::new(),
+                floor,
                 mailbox,
                 stats,
             },
@@ -208,6 +230,77 @@ impl ClaudeLimits {
         stats.emit(app);
         true
     }
+    /// Authenticated StopFailure intake is notification-only. Parent hooks
+    /// bind the path but never announce: the structured watcher owns that notice.
+    pub fn notification(
+        &self,
+        app: &AppHandle,
+        topic: &str,
+        account: &str,
+        nonce: Option<&str>,
+        body: &[u8],
+    ) -> bool {
+        if !self.report(app, topic, account, nonce, body, None) {
+            return false;
+        }
+        let mut seats = self.seats.lock();
+        let Some(e) = seats
+            .get_mut(&(topic.into(), account.into()))
+            .filter(|e| nonce == Some(e.nonce.as_str()) && e.current(app, topic, account))
+        else {
+            return false;
+        };
+        if let Some(mut stop) = mcp_config::claude_notice::child(body) {
+            mcp_config::claude_notice::enrich(&e.root, &e.parent, &mut stop, body, e.floor);
+            e.remember_notice(stop);
+        }
+        true
+    }
+    fn flush_notices(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
+        let messages = {
+            let mut seats = self.seats.lock();
+            let Some(e) = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
+                e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
+            }) else {
+                return;
+            };
+            let mut messages: Vec<_> = std::mem::take(&mut e.pending_notices)
+                .into_iter()
+                .map(|(stop, update)| {
+                    let clock = stop.reset.and_then(terminal_input::clock);
+                    if update {
+                        mcp_config::claude_notice::reset_known(
+                            &e.name,
+                            &stop,
+                            clock.as_deref().unwrap_or("不明"),
+                        )
+                    } else {
+                        mcp_config::claude_notice::stopped(&e.name, &stop, clock.as_deref())
+                    }
+                })
+                .collect();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_default();
+            messages.extend(
+                e.notices
+                    .due(now)
+                    .into_iter()
+                    .map(|subject| mcp_config::claude_notice::reached(&e.name, &subject)),
+            );
+            messages
+        };
+        for message in messages {
+            crate::room::post_app_notice(
+                app,
+                &app.state::<RoomState>(),
+                topic,
+                &message,
+                Some(pty),
+            );
+        }
+    }
     pub fn hold(&self, pty: &str, post: impl FnOnce() -> Held) -> bool {
         let mut seats = self.seats.lock();
         let Some(((_, account), e)) = seats
@@ -248,6 +341,8 @@ pub fn watch(app: AppHandle, topic: String, account: String, nonce: String, pty:
                 break;
             }
             round(&app, &topic, &account, &nonce, &pty);
+            app.state::<ClaudeLimits>()
+                .flush_notices(&app, &topic, &account, &nonce, &pty);
             if !app
                 .state::<ClaudeLimits>()
                 .emit_current(&app, &topic, &account, &nonce, &pty)
@@ -280,13 +375,30 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
             }
             if let Ok(events) = tail.read(path, &e.parent) {
                 for event in events {
-                    e.gate.state.apply(event);
+                    let rejected = match &event {
+                        policy::Event::Rejected { reset, .. } => Some(*reset),
+                        _ => None,
+                    };
+                    if e.gate.state.apply(event) {
+                        if let Some(reset) = rejected {
+                            let stop = mcp_config::claude_notice::Stop {
+                                subject: "parent".into(),
+                                reset,
+                                episode: None,
+                            };
+                            e.remember_notice(stop);
+                        }
+                    }
                 }
             }
         }
         if !e.gate.state.limited && was && !e.tail.as_ref().is_some_and(|tail| tail.caught_up()) {
             e.gate.keep_holding();
             return;
+        }
+        if !was && !e.gate.state.limited && e.tail.as_ref().is_some_and(|t| t.caught_up()) {
+            e.notices.recovered_parent();
+            e.pending_notices.retain(|(n, _)| n.subject != "parent");
         }
         if was == e.gate.state.limited {
             return;
@@ -305,10 +417,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         return;
     };
     let room = app.state::<RoomState>();
-    if stopped {
-        crate::room::post_app_notice(app, &room, topic,
-            &format!("{name} は Claude 親の利用上限で停止しました。部屋の投稿を保留します。端末で手動再開し、正常な親応答が確認された後にまとめを渡します。"), Some(pty));
-    } else {
+    if !stopped {
         let record: Vec<_> = crate::room_log::topic_posts(app, topic)
             .unwrap_or_default()
             .into_iter()
@@ -345,6 +454,8 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         }) else {
             return;
         };
+        e.notices.recovered_parent();
+        e.pending_notices.retain(|(n, _)| n.subject != "parent");
         let held = limit::mailbox(&record, &seat, &e.stored(account), e.gate.release());
         e.persist(account, |boxes, id| boxes.close(id));
         if let Some(text) = limit::digest(&held) {

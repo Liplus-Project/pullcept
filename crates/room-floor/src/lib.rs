@@ -27,6 +27,16 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
+pub const APP_NOTICE_SPEAKER: &str = "Pullcept（自動通知）";
+pub fn app_notice_content(content: &str) -> String {
+    let content = content.trim_end();
+    if content.ends_with("（返信不要）") {
+        content.to_string()
+    } else {
+        format!("{content}（返信不要）")
+    }
+}
+
 /// How many posts the floor keeps.
 ///
 /// Bounded because a room runs for as long as the app does. The bound is what
@@ -615,10 +625,10 @@ mod tests {
     #[test]
     fn the_refusal_hands_a_post_back_as_the_app_s_own_when_it_was() {
         let mut floor = Floor::new();
-        let mut notice = post("m-1", "Pullcept", "Codex の席が止まりました");
+        let mut notice = post("m-1", APP_NOTICE_SPEAKER, "Codex の席が止まりました");
         notice.from_app = true;
         floor.admit("app", 0, None, notice);
-        floor.admit("lay", 0, Some("m-1"), post("m-2", "Claude Lay", "了解"));
+        floor.admit("lay", 0, Some("m-1"), post("m-2", APP_NOTICE_SPEAKER, "参加者が同じ名前を名乗った"));
 
         // The screen draws the app's icon on the app's own post, and a line
         // drawn from a refusal has to carry it the way the live one did; the
@@ -632,7 +642,7 @@ mod tests {
     #[test]
     fn a_refused_post_carries_from_app_on_the_wire_only_when_it_is_true() {
         let mut floor = Floor::new();
-        let mut notice = post("m-1", "Pullcept", "Codex の席が止まりました");
+        let mut notice = post("m-1", APP_NOTICE_SPEAKER, "Codex の席が止まりました");
         notice.from_app = true;
         floor.admit("app", 0, None, notice);
         floor.admit("lay", 0, Some("m-1"), post("m-2", "Claude Lay", "了解"));
@@ -867,5 +877,21 @@ mod tests {
         // One post went on, not two: the refusal is a refusal, not a notice
         // attached to a delivery.
         assert_eq!(floor.lock().unwrap().seq(), 2);
+    }
+}
+
+#[cfg(test)]
+mod app_notice_tests {
+    #[test]
+    fn all_app_notices_have_one_reply_unneeded_suffix() {
+        assert_eq!(super::APP_NOTICE_SPEAKER, "Pullcept（自動通知）");
+        assert_eq!(
+            super::app_notice_content("停止しました。"),
+            "停止しました。（返信不要）"
+        );
+        assert_eq!(
+            super::app_notice_content("停止しました。（返信不要） "),
+            "停止しました。（返信不要）"
+        );
     }
 }

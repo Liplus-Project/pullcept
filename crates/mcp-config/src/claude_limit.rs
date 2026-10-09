@@ -146,8 +146,15 @@ pub fn timestamp(value: &Value) -> Option<i64> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    Rejected { at: i64, id: String },
-    Succeeded { at: i64, id: String },
+    Rejected {
+        at: i64,
+        id: String,
+        reset: Option<i64>,
+    },
+    Succeeded {
+        at: i64,
+        id: String,
+    },
 }
 
 /// UUID/request identity is deduplicated; content is never copied or logged.
@@ -169,7 +176,11 @@ pub fn event(parent: &str, value: &Value) -> Option<Event> {
         && value["error"] == "rate_limit"
         && (value["apiErrorStatus"] == 429 || value["quotaLimits"]["status"] == "rejected")
     {
-        return Some(Event::Rejected { at, id });
+        return Some(Event::Rejected {
+            at,
+            id,
+            reset: super::claude_notice::reset(value, at),
+        });
     }
     let model = value["message"]["model"].as_str()?;
     if (!value["isApiErrorMessage"].is_null() && value["isApiErrorMessage"] != false)
@@ -203,13 +214,13 @@ impl State {
             order: VecDeque::new(),
         }
     }
-    pub fn apply(&mut self, event: Event) {
+    pub fn apply(&mut self, event: Event) -> bool {
         let (at, id, rejection) = match event {
-            Event::Rejected { at, id } => (at, id, true),
+            Event::Rejected { at, id, .. } => (at, id, true),
             Event::Succeeded { at, id } => (at, id, false),
         };
         if at < self.floor || at < self.latest || self.seen.contains(&id) {
-            return;
+            return false;
         }
         self.seen.insert(id.clone());
         self.order.push_back(id);
@@ -225,6 +236,7 @@ impl State {
         } else if self.rejected.is_none_or(|rejected| at > rejected) {
             self.limited = false;
         }
+        true
     }
 }
 

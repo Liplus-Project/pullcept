@@ -611,7 +611,7 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 **止まったことは rollout から読む。使用率からは読まない。** 利用上限で止まったターンは、rollout に `event_msg` / `task_complete` の行を書き、その `payload.error.codex_error_info` が `usage_limit_exceeded` である（2026-10-05、0.160.0 の実セッションで観測）。アプリは五欄と同じ見張り（上記）でこの行を読み、その席を「止まった」とする。rollout の使用率は止まった席で 99.0 のまま動かず（#290）、100% を待つ形では「制限中」が出なかった。パネルの「制限中」はこの判定から出し（`session-stats` の `limited`）、Codex の席では使用率の 100% を見ない。
 
-**止まったら部屋に一通知らせる。** 発言者は `Pullcept`（アカウントを持たない）、札の `role` は `app` である（「[発言は端末へ入る](1-room.md#発言は端末へ入る183--195)」）。文面は止まった席の名前と解除予定（この PC の現地時刻、`10月5日 22:45` の形）。解除予定は、止まった時点で一度だけ Codex の app-server に `account/rateLimits/read` を聞き、`ordinaryUsageAllowed: false` の答えの `resetsAt` を採る。聞けなければ rollout の最後の `token_count` の `resets_at` を採り、どちらも無ければ「分かっていません」と書く。どちらも、使用率がいちばん高い窓（二つが同じなら遅いほう）の解除時刻である。この知らせは止まった席の端末へは打たない——打てば走れないターンが一つ増える。
+**止まったら部屋に一通知らせる。** 発言者は `Pullcept（自動通知）`（アカウントを持たない）、札の `role` は `app` である（「[発言は端末へ入る](1-room.md#発言は端末へ入る183--195)」）。文面は止まった席の名前と解除予定（この PC の現地時刻、`10月5日 22:45` の形）。解除予定は、止まった時点で一度だけ Codex の app-server に `account/rateLimits/read` を聞き、`ordinaryUsageAllowed: false` の答えの `resetsAt` を採る。聞けなければ rollout の最後の `token_count` の `resets_at` を採り、どちらも無ければ「分かっていません」と書く。どちらも、使用率がいちばん高い窓（二つが同じなら遅いほう）の解除時刻である。この知らせは止まった席の端末へは打たない——打てば走れないターンが一つ増える。
 
 **止まっている間、部屋の発言はその席の端末へ打たず、アプリが預かる。** 他の席への打ち込みは変わらない。預かるのは端末への打ち込みだけであり、床・ログ・画面の会話面は変わらない。預かった発言の `message_id` は、預かるたびにその席の受け箱へ書き足す（下記「止まっている席の受け箱」、#312）。
 
@@ -622,7 +622,7 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 - 止まっている間に端末で直接打ったターンがエラー無しで終われば、次の問い合わせを今に繰り上げる。それ自体を解除とはしない。
 - app-server に繋がらなければ解除を確かめられず、席は「制限中」のまま、発言は預かったままである（「[受容したトレードオフ](6-tradeoffs.md#受容したトレードオフ)」）。
 
-**解除を確かめたら、部屋に一通、席に一通。** 部屋へは解除を知らせる（`Pullcept`、`app`。その席の端末へは打たない）。席へは、預かった発言を全部は渡さず、次の一通を打つ：「制限中に部屋で N 件の発言がありました。必要なら read_room_history で読んでください。」その席宛て（`to` に席の名前がある）の発言だけは、発言者・時刻・`message_id` と本文を続けて付ける。預かった発言が無ければ席へは何も打たない。この一通の札の `message_id` は、それが勘定に入れた最新の発言（部屋への解除の知らせ。それが入らなかったときは預かった最後の発言）の id である——席が次の `say_to_room` の `last_seen` に使えば、預かった発言で弾かれない。一通を打ってから席を「制限中」から戻すまでは一つの錠の内で行い、その後に届いた発言は一通の後に打たれる。
+**解除を確かめたら、部屋に一通、席に一通。** 部屋へは解除を知らせる（`Pullcept（自動通知）`、`app`。その席の端末へは打たない）。席へは、預かった発言を全部は渡さず、次の一通を打つ：「制限中に部屋で N 件の発言がありました。必要なら read_room_history で読んでください。」その席宛て（`to` に席の名前がある）の発言だけは、発言者・時刻・`message_id` と本文を続けて付ける。預かった発言が無ければ席へは何も打たない。この一通の札の `message_id` は、それが勘定に入れた最新の発言（部屋への解除の知らせ。それが入らなかったときは預かった最後の発言）の id である——席が次の `say_to_room` の `last_seen` に使えば、預かった発言で弾かれない。一通を打ってから席を「制限中」から戻すまでは一つの錠の内で行い、その後に届いた発言は一通の後に打たれる。
 
 **止まっている席の受け箱（#312）。** 預かりがメモリの中だけにあると、止まった席のセッションが終わるか Pullcept が起き直したときに消え、そのあと上限が外れていても、起き直した席は止まっていない状態から始まるので解除の流れに進まず、止まっていたあいだの発言のまとめが届かない（2026-10-07 に実際に起きた）。そこで、止まっている席にだけ、再起動をまたいで残る小さな記録——受け箱——を持つ。
 
@@ -681,3 +681,25 @@ JSONL は一行 4 MiB、読取一巡 1 MiB を上限として一時的に JSON �
 transcript が未作成・未捕捉でも、現在の nonce・親 ID・PTY に合う reporter の既存メトリクスと活動は維持します。監視対象の採用は独立に検証し、後の reporter で有効な親ファイルができた時に開始します。親 ID が未知の場合は停止・回復を判定しません。再開ファイルの探索が曖昧・読取不能な場合は保存 ID を消しません。読取が EOF と行末まで追いつく前の正常応答では保留を放出せず、後続 chunk の新しい拒否を確認します。
 
 Claude stats 自体にも PTY ID を含め、画面が現在採用した PTY と照合するため、旧起動の遅れた表示イベントは適用しません。保存した制限状態とメトリクスは現在の nonce・親 ID・PTY の生存を照合して一秒ごとに再通知するため、webview の再読込で席を拾い直した場合も backend の保留状態と表示を揃えます。既知の終了席へはまとめを放出せず、入力キューが受付を拒否した場合は mailbox を復元します。受付後の終了やアプリ停止については一度だけ enqueue する既存の境界を使います。
+
+### 利用上限の通知主体を移行する（#355）
+
+本体のお知らせは `Pullcept（自動通知）` が発言し、本文末尾へ `（返信不要）` を一度だけ付ける。アイコン・履歴は `from_app` と app origin の構造的判定のままで、同じ名前を名乗る参加者を app 扱いしない。
+
+親の停止通知は現在の JSONL watcher に集約する。拒否の `quotaLimits.resetsAt`（root または message）にある妥当な epoch から解除予定を読み、未知なら不明とする。StopFailure は rate_limit だけを通知専用 HTTP へ渡し、親 hook 自体からは通知しない。子は認証・現在の launch nonce・親 ID・PTY を照合した後に別対象として通知し、親 gate は触らない。子の reset は期待親の `projects/<project>/<親ID>/subagents/agent-<子ID>.jsonl` を canonical 化して末尾最大 4 MiB の新しい構造化 metadata から読む。範囲外・旧履歴・未捕捉の場合は reset を推測しない。通知用の別参加者・WS 接続・AI 応答を作らない。
+
+同 launch 内の対象別停止 episode を重複排除する。親は正常応答による gate 解放後に次の episode とし、子は検証した新しい正常応答の identity で区別する。子の metadata が未捕捉なら同じ子の停止をまとめ、根拠なく次の episode にしない。予定時刻が来たときは一回だけ「回復は未確認、端末で再試行できます」と知らせる。reset だけでは保留を解除しない。通知は現在の live launch の app 巡回中だけであり、アプリ終了中の OS task による保証は加えない。一般 API エラーと許可待ちの新しい通知は登録しない（[公式 StopFailure input](https://code.claude.com/docs/en/hooks#stopfailure-input)）。
+
+新しい対応 launch は `PULLCEPT_LIMIT_NOTICE_OWNER=app-v1` を持つ。app の HTTP hooks を実際に launch settings へ登録できる場合だけ marker を設定し、利用者の独自 `--settings` を持つ経路などへは設定しない。外部 hook は自動変更しない。`scripts/notify-stop-migration.ps1` は移行用 wrapper、`scripts/install-notify-stop-migration.ps1` は明示実行する installer である。
+
+移行は次の順序で行う。まず対応 app で新しい親／子の Pullcept 通知と解除予定を確認する。続いて既存 hook をレビューし、抑止したい旧予約 task の **exact task 名・registration server 名・project の絶対 path** の組だけを JSON 配列へ記録する（キーは `task` / `server` / `project`）。別 topic、過去の未移行予約を一括選択しない。予約を引き継いで app が通知する保証はなく、抑止対象は実機で通知所有を確認した停止だけにする。
+
+```powershell
+# 先に -WhatIf で対象を確認する。実行は親／操作者がレビュー後に行う。
+.\scripts\install-notify-stop-migration.ps1 -HookPath 'D:\Users\hal\Claude\.claude\hooks-local\notify-stop.ps1' -SuppressedResumeFile .\selected-resume-scopes.json -WhatIf
+# 確認した同じ引数から -WhatIf を外すと、backup 検証後に wrapper を配置する。
+```
+
+installer は元 hook を同じ folder の一意な `.legacy-*.ps1` に byte 一致で backup し、実行用の `.fallback.ps1` を作って旧 scheduler の既知の式だけ元 wrapper path を予約先に向け、移行設定を `<hook>.pullcept.json` に保存してから wrapper を置く。byte 一致の backup 自体は変更しない。未知の scheduler 式なら元 hook を変えず拒否する。これにより旧 launch の fallback が作る新しい予約も wrapper の exact ledger を通る。settings.json や他の hook は編集しない。新 marker の rate_limit は旧投稿を抑止し、marker のない旧 launch と一般 API エラーは backup の旧処理へ渡す。permission_prompt は通知しない。旧 `-Resume` は exact task/server/project が移行設定に一致するものだけ旧 WS 通知を抑止する。その他の task は従来 handler に渡す。task 自体を一括削除しない。再適用は拒否して元 backup を保つ。rollback は表示された backup を元 hook path へ戻し、確認後に対応する `.pullcept.json` を除く。
+
+テンプレート配置だけでは、稼働中の旧 launch と旧 hook の通知は統一されない。新 launch への切替・外部 wrapper の適用後に、別名の自動通知席が増えず親／子・解除予定・返信不要が本体の発言に保たれることを実機で確認する。repo の合成試験は実機確認の代わりにしない。
