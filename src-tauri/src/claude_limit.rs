@@ -358,7 +358,15 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
                 &[],
                 &text,
             );
-            if !app.state::<crate::pty::PtyState>().type_in(pty, typed) {
+            // A seat waiting on a permission prompt keeps the digest until the
+            // wait ends (#346): its submit key would answer the prompt. Kept
+            // counts as enqueued; it is this release, and is typed once.
+            let item = mcp_config::prompt_hold::Item {
+                message_id: watermark.clone().unwrap_or_default(),
+                text: typed,
+                post: None,
+            };
+            if !crate::hook_activity::type_or_keep(app, pty, item) {
                 // No input was enqueued: retain the mailbox for the next launch.
                 e.gate.keep_holding();
                 e.persist(account, |boxes, id| {

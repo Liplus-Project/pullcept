@@ -335,9 +335,183 @@ impl Request {
     }
 }
 
+/// The log every held request's end is written to, one line each (#346),
+/// under the app's `logs` directory beside `codex-activity-probe.log`.
+pub const LOG_FILE: &str = "permission-requests.log";
+
+/// What the screen says about the press that answered a card, as the click
+/// reached it: the pointer's kind (`mouse`, `pen`, `touch`, or empty for a key
+/// that activated the button), the click count (`detail`, 0 for a key), and
+/// whether the browser made the event (`isTrusted`). Only these, so a press of
+/// the mouse is told apart from Enter or Space on a focused button.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Press {
+    pub pointer: String,
+    pub detail: Option<i64>,
+    pub trusted: Option<bool>,
+}
+
+impl Press {
+    /// Read off what the screen sent, `{pointer_type, detail, trusted}`; a field
+    /// missing or of another type is left unknown.
+    pub fn read(value: &Value) -> Press {
+        let pointer: String = value["pointer_type"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .take(16)
+            .collect();
+        Press {
+            pointer,
+            detail: value["detail"].as_i64(),
+            trusted: value["trusted"].as_bool(),
+        }
+    }
+
+    /// `<pointer or key>/<detail or ?>/<trusted|untrusted|?>`.
+    fn text(&self) -> String {
+        let pointer = if self.pointer.is_empty() { "key" } else { &self.pointer };
+        let detail = self.detail.map_or("?".to_string(), |d| d.to_string());
+        let trusted = match self.trusted {
+            Some(true) => "trusted",
+            Some(false) => "untrusted",
+            None => "?",
+        };
+        format!("{pointer}/{detail}/{trusted}")
+    }
+}
+
+/// How one held request ended, as its log line says it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ended<'a> {
+    /// The card's id.
+    pub id: &'a str,
+    pub topic_id: &'a str,
+    pub account_id: &'a str,
+    pub tool_name: &'a str,
+    pub agent_id: Option<&'a str>,
+    /// What the screen was told: `answered`, `elsewhere`, `closed`, `timeout`.
+    pub outcome: &'a str,
+    /// For `elsewhere`, which sign let it go: `wait-ended` (the seat's hooks
+    /// said the wait ended), `terminal-key` (a key typed in the terminal),
+    /// `relaunch`, or `dropped` (none of those was named).
+    pub reason: Option<&'a str>,
+    /// For `answered`, the button pressed.
+    pub decision: Option<Decision>,
+    /// For `answered`, how the press reached the screen.
+    pub press: Option<&'a Press>,
+    /// When the card was shown and when the request ended (`now_iso`).
+    pub shown_at: &'a str,
+    pub ended_at: &'a str,
+    /// How long the request was held, in milliseconds.
+    pub held_ms: u128,
+    /// Whether the answer reached the connection: `Some(false)` when writing
+    /// it failed, `None` when none was written (`closed`).
+    pub sent: Option<bool>,
+}
+
+/// A value for one `key=value` of the log line: no spaces or control
+/// characters, `-` for nothing.
+fn token(text: &str) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_whitespace() || c.is_control() { '_' } else { c })
+        .take(NAME_MAX)
+        .collect();
+    if cleaned.is_empty() {
+        "-".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// One line of `LOG_FILE`: `[permission] id=… room=… account=… tool=…
+/// agent=… outcome=… decision=… reason=… press=… shown=… ended=… held_ms=…
+/// sent=…`. A press is said only for `answered`, so a line that has
+/// `decision=allow` names how the button was reached.
+pub fn log_line(ended: &Ended) -> String {
+    let or_dash = |value: Option<&str>| token(value.unwrap_or(""));
+    format!(
+        "[permission] id={} room={} account={} tool={} agent={} outcome={} decision={} reason={} press={} shown={} ended={} held_ms={} sent={}",
+        token(ended.id),
+        token(ended.topic_id),
+        token(ended.account_id),
+        token(ended.tool_name),
+        ended.agent_id.map_or("main".to_string(), token),
+        token(ended.outcome),
+        or_dash(ended.decision.map(Decision::word)),
+        or_dash(ended.reason),
+        ended.press.map_or("-".to_string(), |p| p.text()),
+        token(ended.shown_at),
+        token(ended.ended_at),
+        ended.held_ms,
+        match ended.sent {
+            Some(true) => "ok",
+            Some(false) => "failed",
+            None => "-",
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ended<'a>(press: Option<&'a Press>) -> Ended<'a> {
+        Ended {
+            id: "card-1",
+            topic_id: "topic",
+            account_id: "acct",
+            tool_name: "mcp__pullcept-room__say_to_room",
+            agent_id: None,
+            outcome: "answered",
+            reason: None,
+            decision: Some(Decision::AllowOnce),
+            press,
+            shown_at: "2026-10-09T19:16:06.500+09:00",
+            ended_at: "2026-10-09T19:16:08.400+09:00",
+            held_ms: 1900,
+            sent: Some(true),
+        }
+    }
+
+    #[test]
+    fn a_pressed_card_is_logged_with_its_decision_and_how_it_was_pressed() {
+        let mouse = Press::read(&json!({"pointer_type": "mouse", "detail": 1, "trusted": true}));
+        assert_eq!(
+            log_line(&ended(Some(&mouse))),
+            "[permission] id=card-1 room=topic account=acct tool=mcp__pullcept-room__say_to_room agent=main outcome=answered decision=allow reason=- press=mouse/1/trusted shown=2026-10-09T19:16:06.500+09:00 ended=2026-10-09T19:16:08.400+09:00 held_ms=1900 sent=ok"
+        );
+        // Enter or Space on a focused button: no pointer, no click count.
+        let key = Press::read(&json!({"pointer_type": "", "detail": 0, "trusted": true}));
+        assert!(log_line(&ended(Some(&key))).contains(" press=key/0/trusted "));
+        // Whatever the screen sent that is not these is unknown, not guessed.
+        let odd = Press::read(&json!({"pointer_type": "mouse pen\u{1b}[31m", "detail": "1"}));
+        assert_eq!(odd.pointer, "mousepen31m");
+        assert!(log_line(&ended(Some(&odd))).contains(" press=mousepen31m/?/? "));
+    }
+
+    #[test]
+    fn a_card_let_go_elsewhere_says_which_sign_and_names_no_press() {
+        let mut line = ended(None);
+        line.outcome = "elsewhere";
+        line.decision = None;
+        line.reason = Some("terminal-key");
+        line.agent_id = Some("agent 7");
+        line.sent = Some(false);
+        let text = log_line(&line);
+        assert!(text.contains(" agent=agent_7 "), "{text}");
+        assert!(text.contains(" outcome=elsewhere decision=- reason=terminal-key press=- "), "{text}");
+        assert!(text.ends_with(" sent=failed"), "{text}");
+        line.outcome = "closed";
+        line.reason = None;
+        line.sent = None;
+        assert!(log_line(&line).ends_with(" sent=-"));
+        // One line, whatever a field holds.
+        line.tool_name = "Bash\nrm";
+        assert!(!log_line(&line).contains('\n'));
+    }
 
     fn body(value: Value) -> Vec<u8> {
         serde_json::to_vec(&value).unwrap()

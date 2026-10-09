@@ -2523,7 +2523,7 @@ function permissionLine(card: PermissionCard): HTMLElement {
     press.type = "button";
     press.className = `permission-${button.decision}`;
     press.textContent = button.label;
-    press.addEventListener("click", () => void answerPermission(card, button.decision, article));
+    press.addEventListener("click", (event) => void answerPermission(card, button.decision, article, event));
     actions.appendChild(press);
   }
   const state = document.createElement("div");
@@ -2549,17 +2549,27 @@ function closePermissionLine(article: HTMLElement, text: string): void {
  * is the webview's, and the room reads no post as an answer (#336). What is
  * said back is what the room sent, not what the session did — the terminal
  * may have answered first.
+ *
+ * How the click reached the button goes with it, for the app's log only
+ * (#346): the pointer's kind (empty for Enter or Space on a focused button),
+ * the click count (0 for a key) and whether the browser made the event.
  */
 async function answerPermission(
   card: PermissionCard,
   decision: "deny" | "always" | "allow",
   article: HTMLElement,
+  event: MouseEvent,
 ): Promise<void> {
   const buttons = article.querySelectorAll<HTMLButtonElement>(".permission-actions button");
   for (const button of buttons) button.disabled = true;
+  const press = {
+    pointer_type: "pointerType" in event ? String((event as PointerEvent).pointerType ?? "") : "",
+    detail: event.detail,
+    trusted: event.isTrusted,
+  };
   let delivered: boolean;
   try {
-    delivered = await invoke<boolean>("permission_answer", { id: card.id, decision });
+    delivered = await invoke<boolean>("permission_answer", { id: card.id, decision, press });
   } catch (err) {
     for (const button of buttons) button.disabled = false;
     status(`許可の答えを送れませんでした: ${err}`, "error");
