@@ -608,7 +608,9 @@ function codeBlockView({ node, getPos, editor }: NodeViewRendererProps): NodeVie
         editor
           .chain()
           .command(({ tr }) => {
-            tr.setNodeAttribute(pos, "language", id);
+            // A markup change over the whole block, so the colouring plugin
+            // reads it as the block changing and colours it again.
+            tr.setNodeMarkup(pos, undefined, { ...current.attrs, language: id });
             return true;
           })
           .focus()
