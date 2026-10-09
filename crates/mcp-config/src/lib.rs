@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 pub mod codex;
 pub mod hook_activity;
 pub mod claude_limit;
+pub mod claude_notice;
 pub mod permission_prompt;
 pub mod prompt_hold;
 
@@ -802,6 +803,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     LAUNCHED_AS_ENV,
     ROOM_ID_ENV,
     claude_limit::LAUNCH_ENV,
+    claude_notice::OWNER_ENV,
     codex::LAUNCH_ID_ENV,
     codex::admission::REQUIRED_ENV,
     codex::LAUNCH_ROOM_ENV,
@@ -1015,6 +1017,13 @@ pub fn activity_hook_settings(port: u16, room_id: &str, account_id: &str) -> Val
             }]),
         );
     }
+    hooks.insert("StopFailure".into(), json!([{
+        "matcher": "rate_limit",
+        "hooks": [{"type": "http", "url": claude_notice::url(port, room_id, account_id),
+            "headers": {"Authorization": format!("Bearer ${{{ROOM_TOKEN_ENV}}}"),
+                "X-Pullcept-Claude-Launch": format!("${{{}}}", claude_limit::LAUNCH_ENV)},
+            "allowedEnvVars": [ROOM_TOKEN_ENV, claude_limit::LAUNCH_ENV], "timeout": 5}]
+    }]));
     Value::Object(hooks)
 }
 
@@ -2475,12 +2484,13 @@ mod tests {
                 "PostToolUseFailure",
                 "PreToolUse",
                 "Stop",
+                "StopFailure",
                 "SubagentStart",
                 "SubagentStop",
                 "UserPromptSubmit",
             ]
         );
-        assert_eq!(hooks.len(), ACTIVITY_HOOK_EVENTS.len());
+        assert_eq!(hooks.len(), ACTIVITY_HOOK_EVENTS.len() + 1);
         for event in ACTIVITY_HOOK_EVENTS {
             let groups = hooks[*event].as_array().expect("matcher groups");
             assert_eq!(groups.len(), 1, "{event}");
@@ -2498,8 +2508,9 @@ mod tests {
                 "{event}"
             );
         }
-        assert!(!line.iter().any(|arg| arg.contains("StopFailure")), "{line:?}");
-        assert!(!line.iter().any(|arg| arg.contains("rate_limit")), "{line:?}");
+        assert_eq!(hooks["StopFailure"][0]["matcher"], "rate_limit");
+        assert_eq!(hooks["StopFailure"][0]["hooks"][0]["url"], claude_notice::url(1234, ROOM, LIN));
+        assert!(!hooks.contains_key("Notification"));
     }
 
     #[test]

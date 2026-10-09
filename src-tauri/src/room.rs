@@ -455,7 +455,7 @@ pub struct RoomState {
 }
 
 /// The name the app's own notices are said under (#294).
-pub const APP_SPEAKER: &str = "Pullcept";
+pub const APP_SPEAKER: &str = room_floor::APP_NOTICE_SPEAKER;
 
 impl RoomState {
     pub fn new() -> Self {
@@ -1146,7 +1146,7 @@ pub fn post_app_notice(
             account: None,
             // Stamped by `deliver` off `app_origin`, as every post's is (#340).
             from_app: false,
-            content: content.to_string(),
+            content: room_floor::app_notice_content(content),
             to: Vec::new(),
             ts: now_iso(),
         },
@@ -1665,6 +1665,7 @@ async fn read_hook(
     let authorized = authorization.as_deref() == Some(&format!("Bearer {}", room.token()));
     let reported = mcp_config::parse_status_hook_target(&target);
     let activity = mcp_config::parse_activity_hook_target(&target);
+    let notification = mcp_config::claude_notice::target(&target);
     let native = target == mcp_config::codex::NATIVE_PATH;
     let admission = target == mcp_config::codex::admission::PATH;
     let admission_status = if authorized && admission {
@@ -1681,12 +1682,15 @@ async fn read_hook(
             room,
             &body,
         );
-    let status = match (authorized, reported.is_some() || activity.is_some() || native || admission) {
+    let notice_accepted = authorized && notification.as_ref().is_some_and(|(topic, account)|
+        app.state::<crate::claude_limit::ClaudeLimits>().notification(app, topic, account, claude_nonce.as_deref(), &body));
+    let status = match (authorized, reported.is_some() || activity.is_some() || notification.is_some() || native || admission) {
         (false, _) => "401 Unauthorized",
         (true, false) => "404 Not Found",
         (true, true) if admission && admission_status == 425 => "425 Too Early",
         (true, true) if admission && admission_status != 200 => "409 Conflict",
         (true, true) if native && !captured => "409 Conflict",
+        (true, true) if notification.is_some() && !notice_accepted => "409 Conflict",
         (true, true) => "200 OK",
     };
     if authorized {

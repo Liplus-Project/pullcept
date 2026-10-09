@@ -1937,6 +1937,7 @@ fn launch(
     // makes the room this room (#155).
     env.push((ROOM_TOKEN_ENV, room.token()));
     env.push((mcp_config::claude_limit::LAUNCH_ENV, claude_nonce.unwrap_or_default().to_string()));
+    env.push((mcp_config::claude_notice::OWNER_ENV, mcp_config::claude_notice::owner(claude_nonce, &line.args, status.is_some()).into()));
     // The account this CLI is launched as, on the process and not in the
     // registration (#208). The sidecar holds it against its own entry's
     // account and stays out of the room when they differ: a CLI that read a
