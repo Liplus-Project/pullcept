@@ -218,39 +218,58 @@ pub fn stopped(name: &str, stop: &Stop, clock: Option<&str>) -> String {
     let reset = clock
         .map(|c| format!("解除予定は {c} です。"))
         .unwrap_or_else(|| "解除予定は不明です。".into());
-    let action = if stop.subject == "parent" {
-        "親への部屋の投稿を保留します。端末で手動再開し、正常親応答を確認した後にまとめを渡します。"
-    } else {
-        "子の停止だけでは親への部屋の投稿を保留しません。"
+    let action = match (stop.subject == "parent", clock.is_some()) {
+        (true, true) => "親への部屋の投稿を保留します。解除予定時刻を過ぎたら Pullcept が端末へ再開の合図を一度打ち、正常親応答を確認した後にまとめを渡します。",
+        (true, false) => "親への部屋の投稿を保留します。解除予定が分からないため自動では再開を試しません。端末で手動再開し、正常親応答を確認した後にまとめを渡します。",
+        (false, _) => "子の停止だけでは親への部屋の投稿を保留しません。",
     };
     format!("{who} は利用上限で停止しました。{reset}{action}")
 }
+/// Child only: a parent's reset is acted on by the resume attempt (#357).
 pub fn reached(name: &str, subject: &str) -> String {
-    let who = if subject == "parent" {
-        format!("{name} の親セッション")
-    } else {
-        format!(
-            "{name} のサブエージェント（{}）",
-            subject.trim_start_matches("child:")
-        )
-    };
-    let action = if subject == "parent" {
-        "正常親応答を確認するまで親の投稿保留は解除しません。"
-    } else {
-        "子の予定時刻だけでは親の停止・回復を判定しません。"
-    };
-    format!("{who} の解除予定時刻になりました。回復は未確認です。端末で再試行できます。{action}")
+    format!(
+        "{name} のサブエージェント（{}）の解除予定時刻になりました。回復は未確認です。端末で再試行できます。子の予定時刻だけでは親の停止・回復を判定しません。",
+        subject.trim_start_matches("child:")
+    )
 }
 pub fn reset_known(name: &str, stop: &Stop, clock: &str) -> String {
-    let who = if stop.subject == "parent" {
-        format!("{name} の親セッション")
+    let (who, action) = if stop.subject == "parent" {
+        (
+            format!("{name} の親セッション"),
+            "解除予定時刻を過ぎたら端末へ再開の合図を一度打ちます。",
+        )
     } else {
-        format!(
-            "{name} のサブエージェント（{}）",
-            stop.subject.trim_start_matches("child:")
+        (
+            format!(
+                "{name} のサブエージェント（{}）",
+                stop.subject.trim_start_matches("child:")
+            ),
+            "",
         )
     };
-    format!("{who} の解除予定は {clock} と分かりました。回復は未確認です。")
+    format!("{who} の解除予定は {clock} と分かりました。回復は未確認です。{action}")
+}
+/// The parent's resume attempt (#357), told as the nudge is typed.
+pub fn nudged(name: &str) -> String {
+    format!("{name} の親セッションの解除予定時刻を過ぎたため、端末へ再開の合図を一度打ちました。正常親応答を確認するまで投稿の保留を続けます。")
+}
+/// The confirmed recovery, whether the nudge or a person's input drew it.
+pub fn resumed(name: &str, held: usize) -> String {
+    let base = format!("{name} の親セッションは再開しました（正常親応答を確認）。");
+    if held == 0 {
+        base
+    } else {
+        format!("{base}預かっていた {held} 件の発言は、一通にまとめて {name} に渡します。")
+    }
+}
+pub fn still_limited(name: &str, reset: Option<&str>, next: &str) -> String {
+    let reset = reset
+        .map(|c| format!("解除予定は {c} です。"))
+        .unwrap_or_else(|| "解除予定は不明です。".into());
+    format!("{name} の親セッションはまだ利用上限で止まっています。{reset}投稿の保留を続け、{next} にもう一度再開を試します。")
+}
+pub fn no_answer(name: &str) -> String {
+    format!("{name} の親セッションから再開の合図への応答を確認できませんでした。自動の再開はここで止め、投稿の保留を続けます。端末で手動再開できます。")
 }
 
 #[cfg(test)]
@@ -307,7 +326,7 @@ mod tests {
             episode: Some("another-normal".into()),
             ..next
         }));
-        assert!(reached("seat", "parent").contains("回復は未確認"));
+        assert!(reached("seat", "child:a").contains("回復は未確認"));
     }
     #[test]
     fn unknown_or_invalid_reset_does_not_schedule() {
@@ -458,5 +477,51 @@ mod tests {
         notices.due(110);
         assert!(!gate.is_limited());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn parent_resume_notices_name_the_attempt_and_both_outcomes() {
+        let parent = Stop {
+            subject: "parent".into(),
+            reset: Some(110),
+            episode: None,
+        };
+        // A known reset announces the automatic attempt; an unknown one says
+        // it will not be tried and points at the manual path.
+        assert!(stopped("seat", &parent, Some("10月10日 01:20")).contains("再開の合図を一度打ち"));
+        let unknown = stopped(
+            "seat",
+            &Stop {
+                reset: None,
+                ..parent.clone()
+            },
+            None,
+        );
+        assert!(unknown.contains("自動では再開を試しません"));
+        assert!(reset_known("seat", &parent, "10月10日 01:20").contains("再開の合図"));
+        let child = Stop {
+            subject: "child:a".into(),
+            ..parent
+        };
+        assert!(!reset_known("seat", &child, "10月10日 01:20").contains("再開の合図"));
+        assert!(nudged("seat").contains("保留を続けます"));
+        assert_eq!(
+            resumed("seat", 0),
+            "seat の親セッションは再開しました（正常親応答を確認）。"
+        );
+        assert!(resumed("seat", 48).contains("預かっていた 48 件"));
+        let still = still_limited("seat", Some("10月10日 06:20"), "10月10日 06:20");
+        assert!(still.contains("まだ利用上限") && still.contains("もう一度再開を試します"));
+        assert!(still_limited("seat", None, "10月10日 01:21").contains("解除予定は不明"));
+        assert!(no_answer("seat").contains("自動の再開はここで止め"));
+        // The unified format (#356) is added once by the app's notice layer.
+        for text in [
+            nudged("seat"),
+            resumed("seat", 1),
+            still,
+            no_answer("seat"),
+            reached("seat", "child:a"),
+        ] {
+            assert!(!text.contains("（返信不要）"));
+        }
     }
 }

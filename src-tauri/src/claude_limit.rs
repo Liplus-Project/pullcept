@@ -1,9 +1,10 @@
-//! Claude parent rejection and manual-response recovery (#342).
+//! Claude parent rejection and response recovery (#342), with a resume
+//! attempt typed at the known reset (#357).
 //! Each launch is registered before spawn, then bound to its own PTY. The
 //! Claude mailbox is separate from Codex's, with one lock for every Claude seat.
 use crate::room::{RoomState, SessionStats};
 use mcp_config::{
-    claude_limit as policy,
+    claude_limit as policy, claude_notice as notice, claude_resume as resume,
     codex::limit::{self, Held, Mailboxes},
 };
 use parking_lot::Mutex;
@@ -23,6 +24,9 @@ struct Entry {
     gate: policy::Gate,
     notices: mcp_config::claude_notice::Notices,
     pending_notices: Vec<(mcp_config::claude_notice::Stop, bool)>,
+    /// The parent's resume attempt at its reset (#357), and what it has to tell.
+    resume: mcp_config::claude_resume::Resume,
+    resume_notices: Vec<String>,
     floor: i64,
     mailbox: Option<PathBuf>,
     stats: SessionStats,
@@ -138,6 +142,8 @@ impl ClaudeLimits {
                 gate: policy::Gate::new(floor, persisted),
                 notices: Default::default(),
                 pending_notices: Vec::new(),
+                resume: Default::default(),
+                resume_notices: Vec::new(),
                 floor,
                 mailbox,
                 stats,
@@ -257,7 +263,7 @@ impl ClaudeLimits {
         true
     }
     fn flush_notices(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
-        let messages = {
+        let (messages, action, name) = {
             let mut seats = self.seats.lock();
             let Some(e) = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
                 e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
@@ -279,26 +285,67 @@ impl ClaudeLimits {
                     }
                 })
                 .collect();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or_default();
+            let now = unix_now();
+            // The parent's reset is the resume attempt's to tell (#357).
             messages.extend(
                 e.notices
                     .due(now)
                     .into_iter()
+                    .filter(|subject| subject != "parent")
                     .map(|subject| mcp_config::claude_notice::reached(&e.name, &subject)),
             );
-            messages
+            messages.append(&mut e.resume_notices);
+            // Only a rejection-limited parent is nudged, never one kept held
+            // while its recovery is still being read.
+            let action = if e.gate.state.limited {
+                e.resume.tick(now)
+            } else {
+                None
+            };
+            (messages, action, e.name.clone())
         };
+        let room = app.state::<RoomState>();
         for message in messages {
-            crate::room::post_app_notice(
-                app,
-                &app.state::<RoomState>(),
-                topic,
-                &message,
-                Some(pty),
-            );
+            crate::room::post_app_notice(app, &room, topic, &message, Some(pty));
+        }
+        match action {
+            Some(resume::Action::Nudge) => {
+                let posted = crate::room::post_app_notice(
+                    app,
+                    &room,
+                    topic,
+                    &notice::nudged(&name),
+                    Some(pty),
+                );
+                let at = terminal_input::at(&crate::room::now_iso());
+                let id = posted.unwrap_or_default();
+                let text = terminal_input::compose(
+                    &id,
+                    crate::room::APP_SPEAKER,
+                    terminal_input::ROLE_APP,
+                    at.as_deref(),
+                    &[],
+                    resume::NUDGE,
+                );
+                // One typing. A permission wait keeps it until the wait ends;
+                // the recovery itself is still read from the transcript.
+                let item = mcp_config::prompt_hold::Item {
+                    message_id: id,
+                    text,
+                    post: None,
+                };
+                crate::hook_activity::type_or_keep(app, pty, item);
+            }
+            Some(resume::Action::NoAnswer) => {
+                crate::room::post_app_notice(
+                    app,
+                    &room,
+                    topic,
+                    &notice::no_answer(&name),
+                    Some(pty),
+                );
+            }
+            None => {}
         }
     }
     pub fn hold(&self, pty: &str, post: impl FnOnce() -> Held) -> bool {
@@ -374,19 +421,32 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
                 return;
             }
             if let Ok(events) = tail.read(path, &e.parent) {
+                let now = unix_now();
                 for event in events {
                     let rejected = match &event {
-                        policy::Event::Rejected { reset, .. } => Some(*reset),
+                        policy::Event::Rejected { reset, at, .. } => Some((*reset, *at)),
                         _ => None,
                     };
                     if e.gate.state.apply(event) {
-                        if let Some(reset) = rejected {
+                        if let Some((reset, at)) = rejected {
                             let stop = mcp_config::claude_notice::Stop {
                                 subject: "parent".into(),
                                 reset,
                                 episode: None,
                             };
-                            e.remember_notice(stop);
+                            // A rejection after the nudge answers it (#357).
+                            // Its notice names the reset, so no second one.
+                            if let Some(still) = e.resume.rejected(at, reset, now) {
+                                let clock = |t| terminal_input::clock(t);
+                                e.resume_notices.push(notice::still_limited(
+                                    &e.name,
+                                    still.reset.and_then(clock).as_deref(),
+                                    &clock(still.next).unwrap_or_else(|| "不明".into()),
+                                ));
+                                e.notices.stop(&stop);
+                            } else {
+                                e.remember_notice(stop);
+                            }
                         }
                     }
                 }
@@ -399,6 +459,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         if !was && !e.gate.state.limited && e.tail.as_ref().is_some_and(|t| t.caught_up()) {
             e.notices.recovered_parent();
             e.pending_notices.retain(|(n, _)| n.subject != "parent");
+            e.resume.recovered();
         }
         if was == e.gate.state.limited {
             return;
@@ -445,7 +506,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
             app,
             &room,
             topic,
-            &limit::recovery_notice(&name, count),
+            &notice::resumed(&name, count),
             Some(pty),
         );
         let mut seats = limits.seats.lock();
@@ -456,6 +517,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         };
         e.notices.recovered_parent();
         e.pending_notices.retain(|(n, _)| n.subject != "parent");
+        e.resume.recovered();
         let held = limit::mailbox(&record, &seat, &e.stored(account), e.gate.release());
         e.persist(account, |boxes, id| boxes.close(id));
         if let Some(text) = limit::digest(&held) {
@@ -497,4 +559,11 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         e.stats.limited = Some(e.gate.is_limited());
         e.stats.clone().emit(app);
     }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
 }

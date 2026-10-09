@@ -894,4 +894,19 @@ mod app_notice_tests {
             "停止しました。（返信不要）"
         );
     }
+
+    /// The Claude resume notices (#357) carry full-width brackets mid-text;
+    /// only the end decides, so the suffix still comes exactly once.
+    #[test]
+    fn a_bracket_inside_the_notice_is_not_the_suffix() {
+        let resumed = "Lay の親セッションは再開しました（正常親応答を確認）。";
+        assert_eq!(
+            super::app_notice_content(resumed),
+            format!("{resumed}（返信不要）")
+        );
+        let nudged = "Lay の親セッションの解除予定時刻を過ぎたため、端末へ再開の合図を一度打ちました。";
+        let once = super::app_notice_content(nudged);
+        assert_eq!(super::app_notice_content(&once), once);
+        assert_eq!(once.matches("（返信不要）").count(), 1);
+    }
 }

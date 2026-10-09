@@ -37,6 +37,7 @@ pub mod codex;
 pub mod hook_activity;
 pub mod claude_limit;
 pub mod claude_notice;
+pub mod claude_resume;
 pub mod permission_prompt;
 pub mod prompt_hold;
 
