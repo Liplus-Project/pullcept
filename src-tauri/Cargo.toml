@@ -32,6 +32,7 @@ webhook-bridge = { path = "../crates/webhook-bridge" }
 mcp-servers = { path = "../crates/mcp-servers" }
 terminal-input = { path = "../crates/terminal-input" }
 character-file = { path = "../crates/character-file" }
+post-link = { path = "../crates/post-link" }
 uuid = { version = "1", features = ["v4"] }
 parking_lot = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "process"] }

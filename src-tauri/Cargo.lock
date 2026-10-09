@@ -2830,6 +2830,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "post-link"
+version = "0.1.0"
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2932,6 +2936,7 @@ dependencies = [
  "mcp-servers",
  "parking_lot",
  "portable-pty",
+ "post-link",
  "room-floor",
  "serde",
  "serde_json",
