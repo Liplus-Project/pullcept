@@ -813,6 +813,8 @@ const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 /** The frames drawn behind the input box's ``` fences (#348, `paintInputFences`). */
 const inputFencesEl = document.getElementById("input-fences") as HTMLElement;
+/** The text area and that layer; marked while the text has a fence (#348). */
+const inputFieldEl = document.getElementById("input-field") as HTMLElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const mentionEl = document.getElementById("mention") as HTMLButtonElement;
 const composerEl = document.getElementById("composer") as HTMLElement;
@@ -4926,12 +4928,20 @@ function codeBlock(code: string, lang: string): HTMLElement {
  * frame. The text in the box is untouched — what is sent is what was typed,
  * ``` lines and all.
  *
+ * While the text has a fence, open or closed, the whole box is in the code's
+ * monospace (`data-code` on `#input-field`, Master's choice B): the box and the
+ * layer take that font together, so their lines stay on one another. With no
+ * fence left, both go back to the room's font.
+ *
  * Called on every change to the box's text, typed or written by the screen
  * (`setRangeText` and assignments fire no `input`), and when its size changes.
  */
 function paintInputFences(): void {
   const text = inputEl.value;
   const fences = text.includes("```") ? findCodeFences(text.split("\n")) : [];
+  // Set before anything is measured: the font decides where every line wraps.
+  if (fences.length) inputFieldEl.dataset.code = "";
+  else delete inputFieldEl.dataset.code;
   if (!fences.length) {
     if (!inputFencesEl.hidden) {
       inputFencesEl.replaceChildren();

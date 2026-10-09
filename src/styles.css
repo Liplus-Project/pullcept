@@ -1226,7 +1226,8 @@ button svg.icon {
    client area and keeps its scroll in step. The text area is above it with no
    ground of its own, so the frame shows through and the caret and the
    selection are the box's own. A textarea draws all its text in one font, so
-   the code in the box is framed but not set in monospace. */
+   the code cannot be in monospace alone: the whole box is, while it has a
+   fence (below). */
 #input-field {
   position: relative;
 }
@@ -1254,6 +1255,15 @@ button svg.icon {
 
 #input-fences[hidden] {
   display: none;
+}
+
+/* While the text has a fence, the whole box is in the code's monospace
+   (#348, Master's choice B), and the layer behind it with it, so a line
+   wraps at the same place in both. Only the family changes; the size stays
+   the room's. */
+#input-field[data-code] textarea,
+#input-field[data-code] #input-fences {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 /* Widened into the padding either side and given it back, so the lines inside
