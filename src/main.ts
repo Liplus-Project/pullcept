@@ -811,6 +811,10 @@ const roomTitleCountEl = document.getElementById("room-title-count") as HTMLElem
 const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 const inputEl = document.getElementById("input") as HTMLTextAreaElement;
+/** The frames drawn behind the input box's ``` fences (#348, `paintInputFences`). */
+const inputFencesEl = document.getElementById("input-fences") as HTMLElement;
+/** The text area and that layer; marked while the text has a fence (#348). */
+const inputFieldEl = document.getElementById("input-field") as HTMLElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const mentionEl = document.getElementById("mention") as HTMLButtonElement;
 const composerEl = document.getElementById("composer") as HTMLElement;
@@ -1635,6 +1639,7 @@ function applyRoomFontSize(size: number, save: boolean): void {
   const value = `calc(${size}rem / var(--ui-scale))`;
   roomEl.style.setProperty("--room-font-size", value);
   inputEl.style.setProperty("--room-font-size", value);
+  inputFencesEl.style.setProperty("--room-font-size", value);
   participantsEl.style.setProperty("--room-font-size", value);
   // The lines change height with the size, and so does the distance to the foot.
   syncScrollLatest();
@@ -1931,9 +1936,9 @@ function roomLine(line: {
   if (text || !paths.length) {
     const body = document.createElement("div");
     body.className = "body";
-    // The URLs and the paths in the words are links (#349); the text is
-    // otherwise what it was, newlines and spaces included.
-    body.append(...linkifyText(text));
+    // ``` fences are drawn as code blocks (#348); the words around them as
+    // before.
+    appendPostWords(body, text);
     said.push(body);
   }
   if (paths.length) said.push(postAttachments(paths));
@@ -4493,6 +4498,7 @@ function typeMention(): void {
   const before = inputEl.value.slice(0, start);
   const at = before === "" || /\s$/.test(before) ? "@" : " @";
   inputEl.setRangeText(at, start, inputEl.selectionEnd, "end");
+  paintInputFences();
   refreshMentions();
 }
 
@@ -4537,6 +4543,7 @@ function pickMention(at: number): void {
   if (!one || mentionAt < 0) return;
   const caret = inputEl.selectionStart;
   inputEl.setRangeText(`@${one.name} `, mentionAt, caret, "end");
+  paintInputFences();
   closeMentions();
 }
 
@@ -4766,6 +4773,10 @@ function splitAttachments(content: string): { text: string; paths: string[] } {
   } else {
     return asText;
   }
+  // What was written inside a ``` fence stays code (#348): a `添付:` block that
+  // an unclosed fence runs over is part of the code, not attachments.
+  const head = at >= 0 ? text.split("\n").length + 1 : 0;
+  if (lineInFence(findCodeFences(content.split("\n")), head)) return asText;
   const paths = block.split("\n");
   const inside = (path: string) =>
     path.length > root.length + 1 &&
@@ -4773,6 +4784,197 @@ function splitAttachments(content: string): { text: string; paths: string[] } {
     (path[root.length] === "\\" || path[root.length] === "/");
   if (!paths.every(inside)) return asText;
   return { text, paths };
+}
+
+/**
+ * A run of lines fenced by ``` (#348), by line index. `close` is null for a
+ * fence nobody closed, which runs to the last line.
+ */
+interface CodeFence {
+  open: number;
+  close: number | null;
+  /** The first word after the opening ```, or "" when there is none. */
+  lang: string;
+}
+
+/**
+ * Where the ``` fences are in a text's lines (#348), as CommonMark draws them:
+ * a fence opens on a line that starts with three or more backticks (up to three
+ * spaces in), and what follows them on that line is the language and holds no
+ * backtick — so a ``` in the middle of a sentence, or ```x``` on one line,
+ * fences nothing. It closes on a line of at least as many backticks and nothing
+ * after them but spaces. A fence left open runs to the end.
+ *
+ * Shared by the room's lines and the input box, so the two cannot draw the same
+ * text differently.
+ */
+function findCodeFences(lines: string[]): CodeFence[] {
+  const fences: CodeFence[] = [];
+  let open: { at: number; ticks: number; lang: string } | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, "");
+    if (open === null) {
+      const start = /^ {0,3}(`{3,})([^`]*)$/.exec(line);
+      if (start) {
+        open = { at: i, ticks: start[1].length, lang: start[2].trim().split(/\s+/)[0] };
+      }
+    } else {
+      const end = /^ {0,3}(`{3,})[ \t]*$/.exec(line);
+      if (end && end[1].length >= open.ticks) {
+        fences.push({ open: open.at, close: i, lang: open.lang });
+        open = null;
+      }
+    }
+  }
+  if (open) fences.push({ open: open.at, close: null, lang: open.lang });
+  return fences;
+}
+
+/** A post's words cut at its fences (#348): prose, and the code between them. */
+type PostPiece = { kind: "text"; text: string } | { kind: "code"; code: string; lang: string };
+
+/**
+ * A post's words as prose and code blocks (#348). The ``` lines themselves are
+ * not in any piece: they are what the frame is drawn from. The line break on
+ * either side of a block is the block's own edge, so a piece of prose does not
+ * carry it. A text without a fence is one piece, itself.
+ */
+function splitCodeFences(text: string): PostPiece[] {
+  const lines = text.split("\n");
+  const pieces: PostPiece[] = [];
+  let from = 0;
+  const prose = (to: number): void => {
+    if (to > from) pieces.push({ kind: "text", text: lines.slice(from, to).join("\n") });
+  };
+  for (const fence of findCodeFences(lines)) {
+    prose(fence.open);
+    const end = fence.close ?? lines.length;
+    const code = lines.slice(fence.open + 1, end).map((one) => one.replace(/\r$/, ""));
+    pieces.push({ kind: "code", code: code.join("\n"), lang: fence.lang });
+    from = fence.close === null ? lines.length : fence.close + 1;
+  }
+  prose(lines.length);
+  return pieces;
+}
+
+/**
+ * Whether a line is inside a fence (#348): from its opening line up to, not
+ * including, its closing line; to the end when it is never closed.
+ */
+function lineInFence(fences: CodeFence[], line: number): boolean {
+  return fences.some((fence) => fence.open <= line && (fence.close === null || line < fence.close));
+}
+
+/**
+ * Whether the caret is inside a fence (#348): Enter there is a line break
+ * rather than 送信, since the code is still being written. Read on the whole
+ * text by the rule the room draws with, so a line like "``` suffix" — not a
+ * close — keeps the code open wherever the caret is on it. The opening line
+ * counts, so Enter after ```ts starts the code; the closing line does not, so
+ * Enter after the closing ``` sends.
+ */
+function inOpenFence(text: string, caret: number): boolean {
+  const line = text.slice(0, caret).split("\n").length - 1;
+  return lineInFence(findCodeFences(text.split("\n")), line);
+}
+
+/**
+ * A post's words into its body (#348): prose as it has always been drawn, each
+ * fenced block as code. Text only — nothing is read as HTML.
+ */
+function appendPostWords(body: HTMLElement, text: string): void {
+  for (const piece of splitCodeFences(text)) {
+    if (piece.kind === "text") appendProse(body, piece.text);
+    else body.appendChild(codeBlock(piece.code, piece.lang));
+  }
+}
+
+/**
+ * Words outside a fence: text, with its URLs and paths as links (#349). The one
+ * place prose is put into a post's body; code blocks do not pass through it, so
+ * nothing inside a fence is a link.
+ */
+function appendProse(parent: HTMLElement, text: string): void {
+  parent.append(...linkifyText(text));
+}
+
+/**
+ * One fenced block (#348): the code in monospace, its line breaks and spaces as
+ * written, inside a frame. The language, when the fence names one, is a small
+ * label over the code and never part of it.
+ */
+function codeBlock(code: string, lang: string): HTMLElement {
+  const block = document.createElement("div");
+  block.className = "code-block";
+  if (lang) {
+    const label = document.createElement("div");
+    label.className = "code-lang";
+    label.textContent = lang;
+    block.appendChild(label);
+  }
+  const pre = document.createElement("pre");
+  const inner = document.createElement("code");
+  inner.textContent = code;
+  pre.appendChild(inner);
+  block.appendChild(pre);
+  return block;
+}
+
+/**
+ * The frames behind the input box's fences (#348). A textarea draws its text in
+ * one font, so the frame is drawn by a layer behind it (`#input-fences`) that
+ * lays the same lines out in the same font, at the same width, transparent: a
+ * line there wraps where it wraps in the box, and the fenced ones carry the
+ * frame. The text in the box is untouched — what is sent is what was typed,
+ * ``` lines and all.
+ *
+ * While the text has a fence, open or closed, the whole box is in the code's
+ * monospace (`data-code` on `#input-field`, Master's choice B): the box and the
+ * layer take that font together, so their lines stay on one another. With no
+ * fence left, both go back to the room's font.
+ *
+ * Called on every change to the box's text, typed or written by the screen
+ * (`setRangeText` and assignments fire no `input`), and when its size changes.
+ */
+function paintInputFences(): void {
+  const text = inputEl.value;
+  const fences = text.includes("```") ? findCodeFences(text.split("\n")) : [];
+  // Set before anything is measured: the font decides where every line wraps.
+  if (fences.length) inputFieldEl.dataset.code = "";
+  else delete inputFieldEl.dataset.code;
+  if (!fences.length) {
+    if (!inputFencesEl.hidden) {
+      inputFencesEl.replaceChildren();
+      inputFencesEl.hidden = true;
+    }
+    return;
+  }
+  const lines = text.split("\n");
+  // The box's client area: inside its scroll bar, when it has one, so a line
+  // here is as wide as a line there.
+  inputFencesEl.style.width = `${inputEl.clientWidth}px`;
+  inputFencesEl.style.height = `${inputEl.clientHeight}px`;
+  // An empty line is a zero-width space here: an empty block would have no
+  // height, where the box gives it a line.
+  const line = (at: number): HTMLElement => {
+    const one = document.createElement("div");
+    one.textContent = lines[at] || String.fromCharCode(0x200b);
+    return one;
+  };
+  const drawn: HTMLElement[] = [];
+  let next = 0;
+  for (const fence of fences) {
+    for (; next < fence.open; next++) drawn.push(line(next));
+    const frame = document.createElement("div");
+    frame.className = "fence";
+    const last = fence.close ?? lines.length - 1;
+    for (; next <= last; next++) frame.appendChild(line(next));
+    drawn.push(frame);
+  }
+  for (; next < lines.length; next++) drawn.push(line(next));
+  inputFencesEl.replaceChildren(...drawn);
+  inputFencesEl.hidden = false;
+  inputFencesEl.scrollTop = inputEl.scrollTop;
 }
 
 /** One run of a post's words as they are drawn (#349): text, or a link. */
@@ -5045,6 +5247,7 @@ async function send(): Promise<void> {
   // watermark, and an arrival during the round trip must not be folded into it.
   const lastSeen = lastSeenId;
   inputEl.value = "";
+  paintInputFences();
   closeMentions();
   // Off the composer at once with the text, so a second Enter while the files
   // are being saved does not send them twice. Put back with it below on
@@ -5053,6 +5256,7 @@ async function send(): Promise<void> {
   renderAttachments();
   const putBack = (): void => {
     inputEl.value = text;
+    paintInputFences();
     attachments = [...pending, ...attachments];
     renderAttachments();
   };
@@ -7856,10 +8060,20 @@ async function main(): Promise<void> {
     // The list's keys first: Enter on an open list picks, it does not send.
     if (mentionKey(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      // Inside a ``` fence still open, Enter is a line break, as Shift+Enter
+      // is: the code is still being written (#348). 送信 still sends.
+      if (inOpenFence(inputEl.value, inputEl.selectionStart)) return;
       event.preventDefault();
       void send();
     }
   });
+  // The frames behind the box's fences follow its text, its scroll and its
+  // size (#348).
+  inputEl.addEventListener("input", () => paintInputFences());
+  inputEl.addEventListener("scroll", () => {
+    inputFencesEl.scrollTop = inputEl.scrollTop;
+  });
+  new ResizeObserver(() => paintInputFences()).observe(inputEl);
   // `@` opens the list of who can be addressed (#204). It follows the caret,
   // so a click or an arrow key that moves it off the `@` shuts it.
   inputEl.addEventListener("input", () => refreshMentions());

@@ -84,6 +84,13 @@
      block does not repeat it: red with white on it reads on either ground. */
   --close-ground: #c42b1c;
   --close-ink: #ffffff;
+  /* A ``` block's ground and frame (#348), in a post and behind the input
+     box's text. The text colour thinned into whatever ground the block stands
+     on — the room's, one's own bubble's — so one pair reads in light and dark
+     alike, and the dark block does not repeat it: `--fg` is resolved per
+     theme. */
+  --code-ground: color-mix(in oklch, var(--fg) 5%, transparent);
+  --code-line: color-mix(in oklch, var(--fg) 14%, transparent);
   /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
      the conversation and the terminal is written in `rem`, so this one value
      moves all of it. The conversation divides it back out (`--room-font-size`
@@ -387,6 +394,7 @@ button svg.icon {
    stored. */
 #room,
 #composer textarea,
+#input-fences,
 #participants {
   --room-font-size: calc(1rem / var(--ui-scale));
 }
@@ -631,6 +639,57 @@ button svg.icon {
   /* 1.6 until #225, opened a step with the gap between lines. */
   line-height: 1.7;
   margin-top: 0.15rem;
+}
+
+/* A line of code does not wrap, so it would widen one's own bubble past the
+   room; the bubble is held to the room's width and the code scrolls inside. */
+.message.mine:has(.code-block) {
+  max-width: min(46em, 100%);
+}
+
+/* A ``` block in a post (#348): the code in monospace inside a frame, its
+   lines as written. A line longer than the frame scrolls inside it rather than
+   wrapping, so the code's own layout is kept; the frame is no wider than the
+   words around it. The language the fence names is a small label over the
+   code. */
+.message .code-block {
+  margin: 0.35rem 0;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  background: var(--code-ground);
+  overflow: hidden;
+}
+
+.message .code-block:first-child {
+  margin-top: 0.1rem;
+}
+
+.message .code-block:last-child {
+  margin-bottom: 0;
+}
+
+.message .code-lang {
+  padding: 0.3rem 0.75rem 0;
+  font-size: 0.78em;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.message .code-block pre {
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  min-height: 1.5em;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+.message .code-block code {
+  font: inherit;
 }
 
 /* A URL or a Windows path in a post's words (#349): the accent, underlined,
@@ -1158,6 +1217,63 @@ button svg.icon {
   outline: none;
   padding: 0 0.15rem;
   resize: vertical;
+}
+
+/* The text area and the layer behind it that frames its ``` fences (#348).
+   The layer is placed over the text area's client area and carries the same
+   font, size, padding and wrapping, transparent, so each of its lines falls
+   where the same line falls in the box; src/main.ts sizes it to the box's
+   client area and keeps its scroll in step. The text area is above it with no
+   ground of its own, so the frame shows through and the caret and the
+   selection are the box's own. A textarea draws all its text in one font, so
+   the code cannot be in monospace alone: the whole box is, while it has a
+   fence (below). */
+#input-field {
+  position: relative;
+}
+
+#input-field textarea {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+#input-fences {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font: inherit;
+  font-size: var(--room-font-size);
+  color: transparent;
+  padding: 0 0.15rem;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  user-select: none;
+}
+
+#input-fences[hidden] {
+  display: none;
+}
+
+/* While the text has a fence, the whole box is in the code's monospace
+   (#348, Master's choice B), and the layer behind it with it, so a line
+   wraps at the same place in both. Only the family changes; the size stays
+   the room's. */
+#input-field[data-code] textarea,
+#input-field[data-code] #input-fences {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+/* Widened into the padding either side and given it back, so the lines inside
+   wrap at the same width; the frame is drawn inside the box. */
+#input-fences .fence {
+  margin: 0 -0.15rem;
+  padding: 0 0.15rem;
+  border-radius: 6px;
+  background: var(--code-ground);
+  box-shadow: inset 0 0 0 1px var(--code-line);
 }
 
 /* Under the text: the tools on the left, the keys after them, 送信 on the

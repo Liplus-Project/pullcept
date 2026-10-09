@@ -311,7 +311,13 @@
                    they go out with it. Drawn by src/main.ts; hidden while there
                    are none. -->
               <ul id="attachments" aria-label="添付" hidden></ul>
-              <textarea id="input" rows="2" placeholder="部屋に発言する"></textarea>
+              <!-- The text area, and behind it the frames of its ``` fences
+                   (#348): the same lines laid out the same way, transparent,
+                   drawn by src/main.ts only while the text has a fence. -->
+              <div id="input-field">
+                <div id="input-fences" aria-hidden="true" hidden></div>
+                <textarea id="input" rows="2" placeholder="部屋に発言する"></textarea>
+              </div>
               <div id="composer-actions">
                 <!-- Ghost icon buttons (#221). 添付 first (#223). -->
                 <div id="composer-tools">
