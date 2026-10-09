@@ -1,6 +1,10 @@
 Pullcept
 Copyright 2026 Yoshiharu Uematsu
 
+The libraries the input box's editor brings into the app (Tiptap,
+ProseMirror, lowlight, highlight.js and their dependencies) are listed, with
+their copyright notices and licence texts, in THIRD-PARTY-NOTICES.txt.
+
 This product includes icon drawings derived from Tabler Icons
 (https://tabler.io/icons): the outline icons `settings`, `paperclip`,
 `send`, `player-stop` and `chevron-down`, redrawn from their 24-unit grid onto the app's 16-unit grid in
