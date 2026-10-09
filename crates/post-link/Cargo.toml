@@ -1,0 +1,15 @@
+[package]
+name = "post-link"
+version = "0.1.0"
+description = "What a URL or a file path written in a room post may open, and how"
+authors = ["Liplus Project Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+# Free of tauri for the reason docs/5-development.md gives: a test binary that
+# links the tauri dependency tree does not load on the GNU target. A post is
+# written by anyone in the room, and pressing a link in it opens something on
+# the person's machine (#349) — which schemes, which paths, and which files are
+# shown rather than run are run here, not read.
+
+[dependencies]

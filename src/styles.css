@@ -633,6 +633,21 @@ button svg.icon {
   margin-top: 0.15rem;
 }
 
+/* A URL or a Windows path in a post's words (#349): the accent, underlined,
+   so it reads as something a press opens and not as the speaker's colour.
+   The accent is redefined for dark, so one rule draws both themes. A long
+   path breaks where the words around it do (`overflow-wrap` above). */
+.message .body .link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.message .body .link:hover {
+  text-decoration-thickness: 2px;
+}
+
 /* What a post attached, below its words (#318): a picture as a tile, any other
    file as a chip with its name and its type. The paths the post carries are
    not drawn. A tile is a fixed square cut from the picture, so a line has its
