@@ -6,6 +6,7 @@ mod claude_limit;
 mod codex_status;
 mod config;
 mod hook_activity;
+mod post_link;
 mod pty;
 mod room;
 mod room_log;
@@ -104,6 +105,8 @@ pub fn run() {
             character_editor::character_file_wearers,
             hook_activity::permission_answer,
             hook_activity::permission_requests,
+            post_link::open_post_url,
+            post_link::open_post_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

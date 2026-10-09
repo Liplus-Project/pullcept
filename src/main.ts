@@ -4771,6 +4771,10 @@ function splitAttachments(content: string): { text: string; paths: string[] } {
   } else {
     return asText;
   }
+  // What was written inside a ``` fence stays code (#348): a `添付:` block that
+  // an unclosed fence runs over is part of the code, not attachments.
+  const head = at >= 0 ? text.split("\n").length + 1 : 0;
+  if (lineInFence(findCodeFences(content.split("\n")), head)) return asText;
   const paths = block.split("\n");
   const inside = (path: string) =>
     path.length > root.length + 1 &&
@@ -4852,13 +4856,24 @@ function splitCodeFences(text: string): PostPiece[] {
 }
 
 /**
- * Whether the text up to the caret leaves a fence open (#348): Enter there is a
- * line break rather than 送信, since the code is still being written. The caret
- * on the opening line counts, so Enter after ```ts starts the code.
+ * Whether a line is inside a fence (#348): from its opening line up to, not
+ * including, its closing line; to the end when it is never closed.
  */
-function inOpenFence(before: string): boolean {
-  const fences = findCodeFences(before.split("\n"));
-  return fences.length > 0 && fences[fences.length - 1].close === null;
+function lineInFence(fences: CodeFence[], line: number): boolean {
+  return fences.some((fence) => fence.open <= line && (fence.close === null || line < fence.close));
+}
+
+/**
+ * Whether the caret is inside a fence (#348): Enter there is a line break
+ * rather than 送信, since the code is still being written. Read on the whole
+ * text by the rule the room draws with, so a line like "``` suffix" — not a
+ * close — keeps the code open wherever the caret is on it. The opening line
+ * counts, so Enter after ```ts starts the code; the closing line does not, so
+ * Enter after the closing ``` sends.
+ */
+function inOpenFence(text: string, caret: number): boolean {
+  const line = text.slice(0, caret).split("\n").length - 1;
+  return lineInFence(findCodeFences(text.split("\n")), line);
 }
 
 /**
@@ -4873,12 +4888,12 @@ function appendPostWords(body: HTMLElement, text: string): void {
 }
 
 /**
- * Words outside a fence, as the room has always drawn them: plain text. The one
- * place prose is put into a post's body, so a change to how prose is drawn
- * (links, #349) lands here and leaves the code blocks alone.
+ * Words outside a fence: text, with its URLs and paths as links (#349). The one
+ * place prose is put into a post's body; code blocks do not pass through it, so
+ * nothing inside a fence is a link.
  */
 function appendProse(parent: HTMLElement, text: string): void {
-  parent.appendChild(document.createTextNode(text));
+  parent.append(...linkifyText(text));
 }
 
 /**
@@ -4950,6 +4965,122 @@ function paintInputFences(): void {
   inputFencesEl.replaceChildren(...drawn);
   inputFencesEl.hidden = false;
   inputFencesEl.scrollTop = inputEl.scrollTop;
+}
+
+/** One run of a post's words as they are drawn (#349): text, or a link. */
+type TextPiece = { kind: "text" | "url" | "path"; text: string };
+
+/**
+ * Where a link may begin, and how far it runs before its end is trimmed
+ * (#349): an `http://` / `https://` URL, a drive path (`C:\…`, `D:/…`) or a
+ * UNC path (`\\server\share\…`). A relative path is not a link, and no other
+ * scheme is.
+ *
+ * A link is one run of text: it stops at whitespace, at what a path cannot
+ * hold, at a backquote (a path written as code), and at the Japanese
+ * punctuation that closes a phrase — 、。「」『』【】 — which a name almost
+ * never carries and a sentence written straight after a path always does.
+ * Other full-width characters are part of a path. Not preceded by a letter or
+ * a digit, so a drive path is not found inside a word, nor inside a URL or a
+ * longer path.
+ */
+const LINK_PATTERN =
+  /(?<![\w])https?:\/\/[^\s<>"`、。「」『』【】]+|(?<![\w/\\])[a-z]:[\\/][^\s<>"|*?:`、。「」『』【】]*|(?<![\w/\\])\\\\[^\s\\/<>"|*?:`、。「」『』【】]+\\[^\s<>"|*?:`、。「」『』【】]+/gi;
+
+/** What a link does not end on: the punctuation after it in a sentence. */
+const LINK_TRAILING = new Set([...".,;:!?'\"*>。、，．：；！？〉》」』】"]);
+
+/** A closing bracket, by the opening one it is kept with. */
+const LINK_CLOSERS: Record<string, string> = { ")": "(", "）": "（", "]": "[", "］": "［", "}": "{", "｝": "｛" };
+
+/**
+ * A link with the punctuation after it taken off (#349). A closing bracket is
+ * taken off only when it closes nothing in the link, so `…/Foo_(bar)` keeps its
+ * own and `（C:\資料）` gives back the sentence's.
+ */
+function trimLinkEnd(candidate: string): string {
+  let end = candidate.length;
+  while (end > 0) {
+    const last = candidate[end - 1];
+    if (LINK_TRAILING.has(last)) {
+      end--;
+      continue;
+    }
+    const open = LINK_CLOSERS[last];
+    if (!open) break;
+    const kept = candidate.slice(0, end);
+    if (kept.split(open).length >= kept.split(last).length) break;
+    end--;
+  }
+  return candidate.slice(0, end);
+}
+
+/**
+ * The words of a post as text and links, in order (#349): the pure half of
+ * `linkifyText`. Joined back, the pieces are `text` exactly.
+ */
+function linkPieces(text: string): TextPiece[] {
+  const pieces: TextPiece[] = [];
+  const say = (kind: TextPiece["kind"], part: string) => {
+    if (!part) return;
+    const last = pieces[pieces.length - 1];
+    if (kind === "text" && last?.kind === "text") last.text += part;
+    else pieces.push({ kind, text: part });
+  };
+  let from = 0;
+  for (const match of text.matchAll(LINK_PATTERN)) {
+    const at = match.index ?? 0;
+    const link = trimLinkEnd(match[0]);
+    const url = /^https?:\/\//i.test(link);
+    // Trimmed down to no host, or to a server with no share, it is no link;
+    // nor is `\\.\`, which names a device and not a server.
+    const whole = url ? /^https?:\/\/[^/\\]/i.test(link) : !link.startsWith("\\\\") || /^\\\\(?!\.\\)[^\\]+\\[^\\]/.test(link);
+    if (!whole) continue;
+    say("text", text.slice(from, at));
+    say(url ? "url" : "path", link);
+    from = at + link.length;
+  }
+  say("text", text.slice(from));
+  return pieces;
+}
+
+/**
+ * A post's words as the nodes the screen draws them with (#349): text as text,
+ * and every URL and Windows path as a link a press opens — a URL in the
+ * default browser, a folder in Explorer, a file in the app its type opens
+ * with. What is opened and how is decided again by the app
+ * (`open_post_url` / `open_post_path`), since a post is anyone's writing.
+ *
+ * Takes any run of plain text and gives it back unchanged but for the links,
+ * newlines and spaces included, so a part of a post drawn some other way can
+ * pass the rest of its words through here.
+ *
+ * A press is a click and nothing else. A drag that selects text across a link
+ * opens nothing.
+ */
+function linkifyText(text: string): Node[] {
+  return linkPieces(text).map((piece) => {
+    if (piece.kind === "text") return document.createTextNode(piece.text);
+    const link = document.createElement("a");
+    link.className = "link";
+    link.setAttribute("role", "link");
+    link.textContent = piece.text;
+    link.addEventListener("click", () => {
+      if (!(window.getSelection()?.isCollapsed ?? true)) return;
+      openLink(piece);
+    });
+    return link;
+  });
+}
+
+/** Open what a link names, saying on the status line when it cannot (#349). */
+async function openLink(piece: TextPiece): Promise<void> {
+  try {
+    if (piece.kind === "url") await invoke("open_post_url", { url: piece.text });
+    else await invoke("open_post_path", { path: piece.text });
+  } catch (err) {
+    status(String(err), "error");
+  }
 }
 
 /** What a file is called after its last dot, lower-cased; empty without one. */
@@ -7921,7 +8052,7 @@ async function main(): Promise<void> {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       // Inside a ``` fence still open, Enter is a line break, as Shift+Enter
       // is: the code is still being written (#348). 送信 still sends.
-      if (inOpenFence(inputEl.value.slice(0, inputEl.selectionStart))) return;
+      if (inOpenFence(inputEl.value, inputEl.selectionStart)) return;
       event.preventDefault();
       void send();
     }

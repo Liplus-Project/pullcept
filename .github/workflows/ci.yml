@@ -40,6 +40,7 @@ jobs:
             crates/mcp-servers/target
             crates/terminal-input/target
             crates/character-file/target
+            crates/post-link/target
           key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
@@ -108,6 +109,13 @@ jobs:
       # be, staying inside the working directory, and not overwriting a change.
       - name: Test the character-file crate
         working-directory: crates/character-file
+        run: cargo test
+
+      # What a link in a room post may open, and how (#349): http/https only,
+      # drive and UNC paths only, and the files shown in their folder rather
+      # than run.
+      - name: Test the post-link crate
+        working-directory: crates/post-link
         run: cargo test
 
   # Gate job: single Required status check for branch protection.

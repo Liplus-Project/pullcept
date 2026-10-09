@@ -641,17 +641,17 @@ button svg.icon {
   margin-top: 0.15rem;
 }
 
-/* A ``` block in a post (#348): the code in monospace inside a frame, its
-   lines as written. A line longer than the frame scrolls inside it rather than
-   wrapping, so the code's own layout is kept; the frame is no wider than the
-   words around it. The language the fence names is a small label over the
-   code. */
 /* A line of code does not wrap, so it would widen one's own bubble past the
    room; the bubble is held to the room's width and the code scrolls inside. */
 .message.mine:has(.code-block) {
   max-width: min(46em, 100%);
 }
 
+/* A ``` block in a post (#348): the code in monospace inside a frame, its
+   lines as written. A line longer than the frame scrolls inside it rather than
+   wrapping, so the code's own layout is kept; the frame is no wider than the
+   words around it. The language the fence names is a small label over the
+   code. */
 .message .code-block {
   margin: 0.35rem 0;
   border: 1px solid var(--code-line);
@@ -690,6 +690,21 @@ button svg.icon {
 
 .message .code-block code {
   font: inherit;
+}
+
+/* A URL or a Windows path in a post's words (#349): the accent, underlined,
+   so it reads as something a press opens and not as the speaker's colour.
+   The accent is redefined for dark, so one rule draws both themes. A long
+   path breaks where the words around it do (`overflow-wrap` above). */
+.message .body .link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.message .body .link:hover {
+  text-decoration-thickness: 2px;
 }
 
 /* What a post attached, below its words (#318): a picture as a tile, any other
