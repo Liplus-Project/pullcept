@@ -6,9 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { collect, render, NOTICES, ROOTS } from "../../scripts/third-party-notices.mjs";
 
-const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/
-?/g, "
-");
+// LF, whatever the checkout wrote.
+const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n?/g, "\n");
 
 test("THIRD-PARTY-NOTICES.txt is what the script writes from the lock (run it after a bump)", () => {
   assert.equal(readFileSync(NOTICES, "utf8").replace(/\r\n?/g, "\n"), render(collect()));
