@@ -99,13 +99,13 @@ Claude Code の席について、起動の `--settings` に載せた http 型の
 
 ## Codex の app-server の席の待機（#329、2026-10-08）
 
-app-server 方式の Codex の席で、スレッドが idle と分かっているときは、端末に文字が届いていても札を「待機」（利用上限なら「制限中」）にした。何もしていない Luna の席が「出力中」のまま消えなかったためである（Master、2026-10-08）。`seat-activity` の事象に `thread_status`（`idle`／`active`／null）を足し、画面は接続中で idle のときだけ端末の合図を見ない。`thread_status` は、ターンがこの接続に届くと示す知らせ（`turn/started`、または active を言う `thread/status/changed`）を一度受け取るまで null であり、起動・再開の答えの idle だけでは「待機」にしない。active で語が無いとき、様子をまだ受け取っていないとき、切断（「様子不明」）は今までどおりである（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」）。hook 方式の Codex の席と Claude Code の席は変えていない。
+app-server 方式の Codex の席で、スレッドが idle と分かっているときは、端末に文字が届いていても札を「待機」（利用上限なら「制限中」）にした。何もしていない Luna の席が「出力中」のまま消えなかったためである（Master、2026-10-08）。`seat-activity` の事象に `thread_status`（`idle`／`active`／null）を足し、画面は接続中で idle のときだけ端末の合図を見ない。`thread_status` は、起動・再開の答えの `thread.status` も、ターンの前の `thread/status/changed` の idle も、受け取ったときにそのまま送る（#368、2026-10-10。それまでは、ターンがこの接続に届くと示す知らせを一度受け取るまで null としていた）。active で語が無いとき、様子をまだ受け取っていないとき、切断（「様子不明」）は今までどおりである（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」）。hook 方式の Codex の席と Claude Code の席は変えていない。
 
-**確かめた範囲:** `crates/mcp-config/src/codex/activity.rs` のテストが、起動の答えの idle だけでは null のままであること、起動の idle の後に `turn/started` で active、`turn/completed` で idle になること、active を言う知らせの後の idle の知らせで idle になること、語の無い active のターン、様子の知らせを受けていない席が null のままであること、ターンの終わりで idle になること、`systemError`・`notLoaded`・スレッドの終わりで null に戻ること、切断で null と `connected: false` になること、別のスレッドのターンで動かないこと、記録の一行が method 名と状態だけを持つことを確かめる。画面の順は `src/main.ts` の `activityNote` にある。
+**確かめた範囲:** `crates/mcp-config/src/codex/activity.rs` のテストが、起動・再開の答えの idle と active をすぐに送ること、ターンの前の idle の知らせで idle になること、起動の idle の後に `turn/started` で active、`turn/completed` で idle になること、語の無い active のターン、様子の知らせを受けていない席が null のままであること、ターンの終わりで idle になること、`systemError`・`notLoaded`・スレッドの終わりで null に戻ること、切断で null と `connected: false` になること、別のスレッドのターンで動かないこと、記録の一行が method 名と状態だけを持つことを確かめる。画面の順は `src/main.ts` の `activityNote` にある。
 
 **記録:** 席の接続に届いた知らせごとに、method 名とスレッドの状態（`params.status.type`、無ければ `-`）、席（トピック id・アカウント id）、UTC 時刻を `logs/codex-activity-probe.log` に一行ずつ追記する。本文・コマンド・引数・文章は書かない（形は「[Codex の席は自分の様子を app-server の知らせで知らせる](3-accounts.md#codex-の席は自分の様子を-app-server-の知らせで知らせる326)」）。
 
-**未確認（仮説、#326 から持ち越し）:** 端末（`--remote` の TUI）が始めたターンの知らせが、アプリの接続にも届くこと。届かなければ、`thread_status` は null のままで、その席は今までどおり端末の合図を出す（「出力中」が残る症状はその席では直らない）。起動の答えの idle を信じないのはこのためである。実機で、Luna の席が何もしていないときに「待機」になり、端末から始めたターンで `codex-activity-probe.log` に `turn/started`・`thread/status/changed thread=active` などの行が出ることを確かめる。TUI の描き直しが端末を黙らせない、という見立ても仮説のままである。
+**確かめた（2026-10-10、#368）:** 端末（`--remote` の TUI）が始めたターンの知らせが、アプリの接続にも届くこと（#326 から持ち越した仮説）。`codex-activity-probe.log` で、Luna の端末に打ち込んだ文字で始まったターンが、12:39:03Z に `turn/started` としてアプリの接続に届いている。それまでは届くかが分からないとして起動の答えの idle を信じなかったため、12:28:40Z に席を起動し直した後、12:28:41Z に idle の知らせが来ていても、そのターンまで札は「出力中」のままだった（Master「Lunaが出力中で10分以上たってる？」2026-10-10）。そこで、起動・再開の答えとターンの前の idle をそのまま送るようにした。TUI の描き直しが端末を黙らせない、という見立ては仮説のままである。
 
 ## Codex の app-server の席の様子（#326、2026-10-08）
 
