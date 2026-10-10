@@ -181,3 +181,13 @@ test("a language is shown by its name, whichever alias the fence wrote", () => {
 test("the box's document starts as one empty line, never as a code block", () => {
   assert.equal(schema.topNodeType.createAndFill().firstChild.type.name, "paragraph");
 });
+
+test("code no language is guessed for is drawn as written, not dropped (#362)", () => {
+  const text = (node) => (node.type === "text" ? node.value : (node.children ?? []).map(text).join(""));
+  for (const code of ["できてるっぽい・", "できてるっぽい・\n"]) {
+    const tree = composer.highlightTree(code, "");
+    assert.ok(tree.children.length > 0, JSON.stringify(code));
+    assert.equal(text(tree), code);
+  }
+  assert.equal(text(composer.highlightTree("echo hi\n", "bash")), "echo hi\n");
+});

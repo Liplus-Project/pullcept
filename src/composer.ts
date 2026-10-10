@@ -146,11 +146,16 @@ function plainTree(value: string): ReturnType<typeof lowlightCommon.highlightAut
  * lowlight with the guess held to `AUTO_DETECT_LIMIT`. The input box's
  * colouring (the code-block-lowlight plugin) and the posts' (`highlightedCode`)
  * both go through this one, so the same code is coloured the same in both.
+ * A guess that finds no language gives back no nodes at all, so that code is
+ * drawn uncoloured too, not dropped (#362).
  */
 const lowlight: typeof lowlightCommon = {
   ...lowlightCommon,
-  highlightAuto: (value, options) =>
-    value.length > AUTO_DETECT_LIMIT || !value.trim() ? plainTree(value) : lowlightCommon.highlightAuto(value, options),
+  highlightAuto: (value, options) => {
+    if (value.length > AUTO_DETECT_LIMIT || !value.trim()) return plainTree(value);
+    const tree = lowlightCommon.highlightAuto(value, options);
+    return tree.data?.language ? tree : plainTree(value);
+  },
 };
 
 /** One language that can be picked: its id, the name it is shown by, and what else it answers to. */
@@ -213,8 +218,12 @@ function highlightNode(node: HighlightNode): Node {
  * so nothing in the code is read as HTML.
  */
 export function highlightedCode(code: string, lang: string): Node[] {
-  const tree = lang && lowlight.registered(lang) ? lowlight.highlight(lang, code) : lowlight.highlightAuto(code);
-  return tree.children.map(highlightNode);
+  return highlightTree(code, lang).children.map(highlightNode);
+}
+
+/** The tree `highlightedCode` draws: the fence's language when known, else a guess. */
+export function highlightTree(code: string, lang: string): ReturnType<typeof lowlight.highlight> {
+  return lang && lowlight.registered(lang) ? lowlight.highlight(lang, code) : lowlight.highlightAuto(code);
 }
 
 // ── the document and its text ────────────────────────────────────────────────
