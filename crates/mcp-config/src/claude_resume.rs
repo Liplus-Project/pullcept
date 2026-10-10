@@ -78,6 +78,17 @@ impl Resume {
         None
     }
 
+    /// The schedule of a seat restarted while still limited (#366), from the
+    /// reset its last parent rejection named. Before the reset, one nudge a
+    /// little after it; with the reset already passed, one nudge right away.
+    /// An unknown reset arms nothing, as in [`Resume::rejected`].
+    pub fn restored(reset: Option<i64>, now: i64) -> Self {
+        Self {
+            next: reset.map(|r| (r + GRACE).max(now)),
+            ..Self::default()
+        }
+    }
+
     /// Called once a second while the parent is limited by a rejection.
     pub fn tick(&mut self, now: i64) -> Option<Action> {
         if let Some(sent) = self.sent {
@@ -257,6 +268,42 @@ mod tests {
         assert!(!gate.is_limited());
         resume.recovered();
         assert_eq!(resume.tick(5092 + ANSWER_WAIT), None);
+    }
+
+    #[test]
+    fn restart_before_the_reset_nudges_once_at_the_reset() {
+        let mut r = Resume::restored(Some(5000), 3000);
+        assert_eq!(r.next(), Some(5000 + GRACE));
+        assert_eq!(r.tick(3001), None);
+        assert_eq!(r.tick(5000), None);
+        assert_eq!(r.tick(5000 + GRACE), Some(Action::Nudge));
+        for now in [5000 + GRACE + 1, 5000 + GRACE + ANSWER_WAIT - 1] {
+            assert_eq!(r.tick(now), None); // No double nudge.
+        }
+    }
+
+    #[test]
+    fn restart_after_the_reset_nudges_once_right_away() {
+        let mut r = Resume::restored(Some(5000), 9000);
+        assert_eq!(r.tick(9000), Some(Action::Nudge));
+        assert_eq!(r.tick(9001), None);
+        assert_eq!(r.tick(9000 + ANSWER_WAIT), Some(Action::NoAnswer));
+        assert_eq!(r.tick(100_000), None); // Still one nudge in all.
+                                           // A rejection that answers it schedules as before.
+        let mut r = Resume::restored(Some(5000), 9000);
+        assert_eq!(r.tick(9000), Some(Action::Nudge));
+        assert_eq!(
+            r.rejected(9_001_000, Some(5000), 9001).unwrap().next,
+            9001 + BACKOFF[0]
+        );
+    }
+
+    #[test]
+    fn restart_with_an_unknown_reset_never_types() {
+        let mut r = Resume::restored(None, 1000);
+        for now in [1000, 100_000, i64::MAX / 2] {
+            assert_eq!(r.tick(now), None);
+        }
     }
 
     #[test]
