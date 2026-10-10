@@ -19,8 +19,8 @@
 //! seat whose session has ended (docs/3-accounts.md).
 //!
 //! What reaches the screen is the same `session-stats` the status-line receiver
-//! emits (`SessionStats::emit`), carrying the five as read so far, sent only
-//! when one of them changed — or when 制限中 turned over.
+//! emits (`SessionStats::emit`), carrying the five as read so far and 制限中,
+//! sent every round so that a reloaded webview picks them up again (#374).
 //!
 //! **The same round drives the seat's usage limit** (#294, `codex_limit`):
 //! the turn end and the reset each read leaves behind are handed to the
@@ -109,14 +109,13 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
         else {
             return;
         };
-        let changed = match native {
-            Some(id) => read(&mut followed, id, home, &resumed),
-            None => false,
-        };
+        if let Some(id) = native {
+            read(&mut followed, id, home, &resumed);
+        }
         let mut tail = followed.as_mut().and_then(|f| f.tail.as_mut());
         // Every round, read or not, and with no rollout yet: a stopped seat's
         // due question does not wait for the file to move, or to exist.
-        let turned = match tail.as_deref_mut() {
+        let _ = match tail.as_deref_mut() {
             Some(tail) => limiter.round(tail.take_turn_end(), tail.resets_at),
             None => limiter.round(None, None),
         };
@@ -126,11 +125,12 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
                 limiter.received_usage(&tail.status);
             }
         }
-        if changed || turned {
-            let none = Status::default();
-            let status = tail.as_deref().map_or(&none, |tail| &tail.status);
-            limiter.stats(status).emit(app);
-        }
+        // Every round, changed or not (#374): a reloaded webview has no stats
+        // until it is sent them, and 制限中 is one of them. The Claude seat's
+        // watcher replays the same way (`claude_limit::emit_current`).
+        let none = Status::default();
+        let status = tail.as_deref().map_or(&none, |tail| &tail.status);
+        limiter.stats(status).emit(app);
     }
 }
 
