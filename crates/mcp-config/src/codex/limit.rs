@@ -166,6 +166,10 @@ pub const GRACE: i64 = 30;
 /// still no, or no answer came. The last one repeats.
 pub const BACKOFF: [i64; 5] = [60, 120, 300, 600, 900];
 
+/// The least time between two questions when a held post brings the next one
+/// forward (#377): posts arriving together ask once.
+pub const HELD_GAP: i64 = 60;
+
 /// One room post the room did not type into a stopped seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
@@ -183,6 +187,8 @@ struct Stopped {
     resets_at: Option<i64>,
     next_query: i64,
     misses: u32,
+    /// When the last question was answered, if one has been.
+    asked: Option<i64>,
 }
 
 /// One Codex seat: free, or stopped with what the room held for it.
@@ -209,6 +215,7 @@ impl Limit {
                 resets_at: None,
                 next_query: now,
                 misses: 0,
+                asked: None,
             }),
             held: Vec::new(),
         }
@@ -238,6 +245,7 @@ impl Limit {
             resets_at,
             next_query: first_query(now, resets_at),
             misses: 0,
+            asked: None,
         });
         true
     }
@@ -278,12 +286,24 @@ impl Limit {
         }
     }
 
+    /// A post has just been held (#377): the room has something for the seat,
+    /// so whether it is free is worth asking now rather than at the reset —
+    /// the limit may have been reset by hand. Not sooner than [`HELD_GAP`]
+    /// after the last question.
+    pub fn post_held(&mut self, now: i64) {
+        if let Some(stopped) = self.stopped.as_mut() {
+            let earliest = stopped.asked.map_or(now, |asked| (asked + HELD_GAP).max(now));
+            stopped.next_query = stopped.next_query.min(earliest);
+        }
+    }
+
     /// The answer of a due question. Whether it confirmed the recovery; the
     /// seat stays stopped, still holding, until [`Limit::release`].
     pub fn answer(&mut self, now: i64, answer: Answer) -> bool {
         let Some(stopped) = self.stopped.as_mut() else {
             return false;
         };
+        stopped.asked = Some(now);
         match answer {
             Answer::Allowed => return true,
             Answer::Denied { resets_at: Some(reset) } if reset + GRACE > now => {
@@ -702,6 +722,21 @@ mod tests {
         limit.turn_completed(50);
         assert!(limit.is_limited());
         assert!(limit.due(50));
+    }
+
+    #[test]
+    fn a_held_post_asks_before_the_reset_but_not_twice_a_minute() {
+        let mut limit = Limit::default();
+        limit.stop(0, Some(10_000));
+        assert!(!limit.due(100));
+        limit.post_held(100);
+        assert!(limit.due(100));
+        assert!(!limit.answer(100, Answer::Denied { resets_at: Some(10_000) }));
+        assert!(!limit.due(130));
+        limit.post_held(130);
+        assert!(!limit.due(130));
+        assert!(limit.due(160));
+        assert!(limit.answer(160, Answer::Allowed));
     }
 
     #[test]
