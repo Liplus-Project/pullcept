@@ -104,6 +104,7 @@ impl CodexLimits {
         });
         if let Some(id) = id {
             entry.persist(|boxes, account| boxes.push(account, &id));
+            entry.limit.post_held(now());
         }
         held
     }
