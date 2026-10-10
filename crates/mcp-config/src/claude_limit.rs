@@ -194,6 +194,40 @@ pub fn event(parent: &str, value: &Value) -> Option<Event> {
     Some(Event::Succeeded { at, id })
 }
 
+/// How far back from a restarted launch's baseline the last parent event is
+/// looked for (#366). A limited parent writes no responses, so its rejection
+/// sits near the end; one older than this window restores nothing.
+pub const RESTORE_WINDOW: u64 = 4 * 1024 * 1024;
+
+/// The parent's last rejection before `end`, when it is the parent's last
+/// event there (#366): `(at_ms, reset)`. A normal response after it, another
+/// parent's or a child's line, and an unreadable file all give `None`.
+pub fn last_rejection(path: &Path, parent: &str, end: u64) -> Option<(i64, Option<i64>)> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let end = end.min(f.metadata().ok()?.len());
+    let start = end.saturating_sub(RESTORE_WINDOW);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    f.take(end - start).read_to_end(&mut bytes).ok()?;
+    let mut lines = bytes.split(|b| *b == b'\n');
+    if start > 0 {
+        lines.next(); // A line cut by the window is not read.
+    }
+    let mut last = None;
+    for line in lines {
+        if let Some(e) = serde_json::from_slice(line)
+            .ok()
+            .and_then(|v| event(parent, &v))
+        {
+            last = Some(e);
+        }
+    }
+    match last? {
+        Event::Rejected { at, reset, .. } => Some((at, reset)),
+        Event::Succeeded { .. } => None,
+    }
+}
+
 /// One launch's chronological state. A reset/status report cannot change it.
 pub struct State {
     pub limited: bool,
@@ -797,6 +831,46 @@ mod tests {
         assert!(a.release().is_empty());
         assert!(Mailboxes::read(&path).get("a").is_none());
         assert!(Mailboxes::read(&path).get("b").is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn restart_reads_the_parents_last_rejection_and_its_reset() {
+        let root = dir();
+        let path = root.join(format!("{PARENT}.jsonl"));
+        let at = timestamp(&line(5, true)["timestamp"]).unwrap();
+        let mut rejected = line(5, true);
+        rejected["quotaLimits"]["resetsAt"] = json!(at / 1000 + 3600);
+        let mut other = line(6, false);
+        other["sessionId"] = json!("another-parent");
+        other["session_id"] = json!("another-parent");
+        let mut child = line(7, false);
+        child["isSidechain"] = json!(true);
+        let mut body = bytes(&line(1, false));
+        body.extend(bytes(&rejected));
+        body.extend(bytes(&other));
+        body.extend(bytes(&child));
+        body.extend(b"{\"type\":\"user\"}\n");
+        std::fs::write(&path, &body).unwrap();
+        let end = body.len() as u64;
+        // The rejection is the parent's last event: its reset comes back.
+        assert_eq!(
+            last_rejection(&path, PARENT, end),
+            Some((at, Some(at / 1000 + 3600)))
+        );
+        // Another parent's file reading gives nothing of this parent's.
+        assert_eq!(last_rejection(&path, "another-parent", end), None);
+        // Only bytes before the baseline count.
+        let before = bytes(&line(1, false)).len() as u64;
+        assert_eq!(last_rejection(&path, PARENT, before), None);
+        // A normal response after the rejection means it was answered.
+        let mut answered = body.clone();
+        answered.extend(bytes(&line(8, false)));
+        std::fs::write(&path, &answered).unwrap();
+        assert_eq!(last_rejection(&path, PARENT, answered.len() as u64), None);
+        assert_eq!(
+            last_rejection(&root.join("missing.jsonl"), PARENT, 10),
+            None
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

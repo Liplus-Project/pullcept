@@ -97,6 +97,13 @@ impl ClaudeLimits {
         let mailbox = crate::room_log::mailboxes_path(app, topic)
             .ok()
             .map(|p| p.with_extension("claude-mailboxes.json"));
+        // A seat restarted while still limited keeps its reset-time attempt
+        // (#366): re-read from this parent's own last rejection, never from
+        // another seat's. The rejection lies before the baseline, so the
+        // tail never applies it a second time. Read before the table lock.
+        let last = baseline
+            .as_ref()
+            .and_then(|(p, end)| policy::last_rejection(p, parent, *end));
         let mut seats = self.seats.lock();
         let persisted = !parent.is_empty()
             && mailbox
@@ -124,6 +131,10 @@ impl ClaudeLimits {
             five_hour_resets_at: None,
             seven_day_resets_at: None,
         };
+        let resume = match last.filter(|_| persisted) {
+            Some((_, reset)) => resume::Resume::restored(reset, unix_now()),
+            None => Default::default(),
+        };
         let (path, tail) = match &baseline {
             Some((p, offset)) => (Some(p.clone()), Some(policy::Tail::new(p, *offset))),
             None => (None, None),
@@ -142,7 +153,7 @@ impl ClaudeLimits {
                 gate: policy::Gate::new(floor, persisted),
                 notices: Default::default(),
                 pending_notices: Vec::new(),
-                resume: Default::default(),
+                resume,
                 resume_notices: Vec::new(),
                 floor,
                 mailbox,
