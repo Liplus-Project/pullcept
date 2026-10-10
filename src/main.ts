@@ -3416,7 +3416,11 @@ function activityNote(name: string, view: SessionView | undefined): RowWord {
   // terminal repainting its prompt would say 出力中 and its silence 待機, and
   // which work is under way where the bytes would say only that they arrived.
   // Confirmed parent rejection outranks leftover delegation and PTY repaint (#342).
-  if (view.stats?.limited_source === "claude-parent" && view.stats.limited === true) return { word: "制限中", line: "制限中", kind: "" };
+  // So does a Codex seat the app found stopped at its usage limit (#372): the
+  // server says systemError there, not idle, so the idle rule below does not
+  // hold the TUI's repaint back.
+  const limitedSource = view.stats?.limited_source;
+  if ((limitedSource === "claude-parent" || limitedSource === "codex") && view.stats?.limited === true) return { word: "制限中", line: "制限中", kind: "" };
   const reported = view.activity;
   if (reported?.word) {
     return {
