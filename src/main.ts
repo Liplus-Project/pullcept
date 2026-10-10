@@ -268,10 +268,10 @@ interface SeatActivity {
   connected: boolean;
   /**
    * What the seat's thread is doing, as far as its server has said (#329):
-   * "idle" or "active", null while nothing has said either, until this
-   * connection has carried a turn (`turn/started`, or a status saying active —
-   * the start answer does not count), and after the connection ends. Not the same as no word: a turn reasoning or writing its
-   * answer is active with no word. Only "idle" on a connected seat says 待機
+   * "idle" or "active", null while nothing has said either and after the
+   * connection ends. The start or resume answer's status is told as it is,
+   * before any turn (#368). Not the same as no word: a turn reasoning or
+   * writing its answer is active with no word. Only "idle" on a connected seat says 待機
    * over a terminal that keeps repainting.
    */
   thread_status: "idle" | "active" | null;
