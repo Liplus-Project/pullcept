@@ -1301,7 +1301,7 @@ export function createSessionController(deps: Dependencies) {
   function rememberSelection(topicId: string) { shownByTopic.set(topicId, shownAccount); }
   function forgetSelection(topicId: string) { shownByTopic.delete(topicId); }
   function launchFailure(key: string) { return launchFailures.get(key); }
-  function setTerminalFontSize(size: number) { terminalFontSize = size; for (const view of views.values()) view.term.options.fontSize = size; fitShown(); }
+  function setTerminalFontSize(size: number) { terminalFontSize = size; for (const view of views.values()) view.term.options.fontSize = size; }
   function wireSessionIdCopy() { sessionIdCopyEl.addEventListener("click", () => void copySessionId()); }
   function receiveStats(stats: SessionStats): void {
     const view = getView(deps.seatKey(stats.topic_id, stats.account_id));

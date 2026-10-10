@@ -4117,6 +4117,7 @@ const displaySettings = createDisplaySettings({
   get participantsEl() { return participantsEl; },
   syncScrollLatest: (...args) => syncScrollLatest(...args),
   setTerminalFontSize: (size) => sessions.setTerminalFontSize(size),
+  fitTerminal: () => sessions.fitShown(),
 });
 
 const accountDialog = createAccountDialog({

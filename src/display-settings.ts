@@ -6,6 +6,7 @@ export interface Dependencies {
   participantsEl: HTMLElement;
   syncScrollLatest: () => void;
   setTerminalFontSize: (size: number) => void;
+  fitTerminal: () => void;
 }
 
 export function createDisplaySettings(deps: Dependencies) {
@@ -279,6 +280,7 @@ export function createDisplaySettings(deps: Dependencies) {
     deps.setTerminalFontSize(size);
     settingsTerminalFontSizeEl.value = String(size);
     if (save) localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(size));
+    deps.fitTerminal();
 
   }
 

@@ -134,8 +134,8 @@ test("display initialization restores fonts before wiring changes without writin
   const {get} = dom(t); const before = globalThis.localStorage; const stored = new Map([["pullcept.terminal-font-size", "18"]]); const writes = [];
   globalThis.localStorage = {getItem: key => stored.get(key) ?? null, setItem: (key, value) => writes.push([key, value])};
   t.after(() => { globalThis.localStorage = before; });
-  const sizes = [];
-  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size)});
+  const sizes = [], fitted = [];
+  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size), fitTerminal: () => fitted.push({picker: get("settings-terminal-font-size").value, writes: [...writes]})});
   assert.deepEqual(sizes, []);
   display.initialize();
   assert.deepEqual(sizes, [18]);
@@ -143,4 +143,5 @@ test("display initialization restores fonts before wiring changes without writin
   get("settings-terminal-font-size").value = "16"; get("settings-terminal-font-size").emit("change");
   assert.deepEqual(sizes, [18, 16]);
   assert.deepEqual(writes, [["pullcept.terminal-font-size", "16"]]);
+  assert.deepEqual(fitted, [{picker: "18", writes: []}, {picker: "16", writes: [["pullcept.terminal-font-size", "16"]]}]);
 });
