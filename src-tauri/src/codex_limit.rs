@@ -340,6 +340,16 @@ impl Limiter {
             self.is_limited(),
         )
     }
+
+    /// The rollout has just carried the seat's rate limits (#364): record its
+    /// two windows as received now, for the seat to read back (`my_usage`).
+    pub fn received_usage(&self, status: &Status) {
+        self.app.state::<crate::room::UsageBook>().record(
+            &self.topic_id,
+            &self.account_id,
+            self.stats(status).usage(),
+        );
+    }
 }
 
 /// How long one question may take, start to answer.

@@ -16,6 +16,7 @@
  *   someone posts -> the app types it into this session's terminal
  *   this agent posts -> `say_to_room` tool -> WebSocket frame -> the room
  *   this agent looks back -> `read_room_history` tool -> WebSocket frame -> the room
+ *   this agent checks its limit -> `my_usage` tool -> WebSocket frame -> the room
  *
  * The first one does not pass through this process (#183, #195). Every post —
  * the person's at the screen, another session's, a notice — is typed into the
@@ -171,7 +172,7 @@ if (SEAT_REFUSAL === null && ADMISSION_REQUIRED &&
  */
 const UNSEEN_HISTORY = process.env.PULLCEPT_UNSEEN_HISTORY === "1";
 
-const PROTOCOL_VERSION = 9;
+const PROTOCOL_VERSION = 10;
 
 /**
  * What the first line of a post typed into this session's terminal opens with
@@ -213,9 +214,11 @@ function log(line: string): void {
 //   { type: "hello", protocol, name, room?, hue?, account_id? }
 //   { type: "post",  message_id, content, to?: [name], ts, last_seen? }
 //   { type: "history", request_id, limit?, before? }
+//   { type: "usage", request_id }
 // Room -> sidecar:
 //   { type: "post_result", message_id, delivered, missed }
 //   { type: "history_result", request_id, posts?, has_more?, error? }
+//   { type: "usage_result", request_id, five_hour?, seven_day?, received_at?, error? }
 //
 // The room sends no `post` frames (#195). What is said in the room reaches
 // this session typed into its terminal by the app, not through this process.
@@ -258,6 +261,10 @@ function log(line: string): void {
 // behind the floor, and only the speaker can supply it: whether a post reached
 // the agent's context is decided by where the CLI handed its queued input over,
 // which nothing here can observe (#47).
+//
+// `usage` names no seat (#364). The room answers with the figures of the seat
+// on this connection — its room and the account its `hello` was taken under —
+// so a session can read its own and no other's.
 //
 // `post_result` is the room's answer to a post, correlated by the
 // `message_id` the post was sent under. It arrives on this connection only.
@@ -307,6 +314,27 @@ interface HistoryResultFrame {
   /** True when the topic holds posts older than the oldest one returned. */
   has_more?: boolean;
   /** Set instead of `posts` when the room could not read the topic. */
+  error?: string;
+}
+
+/** One usage-limit window as the room holds it for this seat (#364). */
+interface UsageWindow {
+  used_percentage?: number;
+  /** Unix seconds; absent when the CLI did not say. */
+  resets_at?: number;
+}
+
+/** The room's answer to one read of this seat's own usage-limit figures. */
+interface UsageResultFrame {
+  type: "usage_result";
+  request_id?: string;
+  /** Absent when the window was not reported. */
+  five_hour?: UsageWindow;
+  seven_day?: UsageWindow;
+  /** Unix seconds the app received the figures at; absent when none have
+   *  arrived for this seat yet. */
+  received_at?: number;
+  /** Set when the room cannot say whose figures these would be. */
   error?: string;
 }
 
@@ -462,7 +490,7 @@ const TOOLS = [
     },
   },
   /**
-   * The pull, and the second of the two tools.
+   * The pull, and the second tool.
    *
    * `say_to_room` stays the only way to be heard, which is the constraint that
    * kept the tool count at one: a second way to speak would put "which one do I
@@ -501,6 +529,31 @@ const TOOLS = [
       required: [] as string[],
     },
   },
+  /**
+   * A seat's own usage-limit figures (#364), and the third tool, also a read.
+   *
+   * The values are the panel's, which the app already holds; the session
+   * itself has no way to see them — Claude Code shows the status line to the
+   * person, not to the model. Knowing the limit is near is what lets a seat
+   * wrap up, push what it has, or ask the room for a hand-off before it stops.
+   *
+   * Its own only. Another seat's are asked of that seat in the room (Master
+   * 判断 2026-10-10): every seat's at once grows with the room.
+   */
+  {
+    name: "my_usage",
+    description:
+      "Your own usage-limit figures: 5h and weekly used % with reset times, " +
+      "and when the app received them. Use to pace work and judge when to " +
+      "wrap up, push partial work, or ask the room to take over before you " +
+      "hit the limit. Yours only; ask others in room. Figures arrive only " +
+      "while your session runs; check received time. Read-only; posts nothing.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      required: [] as string[],
+    },
+  },
 ];
 
 /**
@@ -532,6 +585,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "read_room_history") return await readHistory(args);
+  if (name === "my_usage") return await readUsage();
 
   if (name !== "say_to_room") {
     return {
@@ -752,6 +806,86 @@ async function readHistory(args: Record<string, unknown> | undefined): Promise<{
   return { content: [{ type: "text", text: describeHistory(result) }] };
 }
 
+/**
+ * Ask the room for this seat's own usage-limit figures, and write them short.
+ *
+ * Failures are `isError`, as a pull's are. "None received yet" is not one: the
+ * room answered, and that is its answer.
+ */
+async function readUsage(): Promise<{
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+}> {
+  const requestId = randomUUID();
+  const answered = awaitUsageResult(requestId);
+  const sent = sendToRoom({ type: "usage", request_id: requestId });
+
+  if (!sent) {
+    abandonUsage(requestId);
+    await answered;
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Not read: the room socket is not connected (${roomStatus()}).`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const result = await answered;
+  if (result === null) {
+    return {
+      content: [{ type: "text", text: `Not read: the room did not answer (${roomStatus()}).` }],
+      isError: true,
+    };
+  }
+  if (typeof result.error === "string") {
+    return {
+      content: [{ type: "text", text: `Not read: ${result.error}` }],
+      isError: true,
+    };
+  }
+  return { content: [{ type: "text", text: describeUsage(result, Date.now()) }] };
+}
+
+/**
+ * This seat's figures, one line a window and one for when they arrived. Times
+ * are local with the UTC offset, as the room's labels write them.
+ */
+function describeUsage(result: UsageResultFrame, nowMs: number): string {
+  if (typeof result.received_at !== "number") {
+    return "No usage figures received for this seat yet.";
+  }
+  const window = (label: string, one: UsageWindow | undefined): string => {
+    if (typeof one?.used_percentage !== "number") return `${label}: not reported`;
+    const used = Math.round(one.used_percentage * 10) / 10;
+    const reset = typeof one.resets_at === "number"
+      ? `, resets ${localMinute(one.resets_at)}`
+      : "";
+    return `${label}: ${used}% used${reset}`;
+  };
+  const minutes = Math.max(0, Math.round((nowMs / 1000 - result.received_at) / 60));
+  return [
+    window("5h", result.five_hour),
+    window("weekly", result.seven_day),
+    `received ${localMinute(result.received_at)} (${minutes} min ago)`,
+  ].join("\n");
+}
+
+/** Unix seconds as `YYYY-MM-DDTHH:MM+09:00`, in this machine's zone. */
+function localMinute(seconds: number): string {
+  const at = new Date(seconds * 1000);
+  const two = (n: number) => String(n).padStart(2, "0");
+  const offset = -at.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  const abs = Math.abs(offset);
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}` +
+    `T${two(at.getHours())}:${two(at.getMinutes())}` +
+    `${sign}${two(Math.floor(abs / 60))}:${two(abs % 60)}`;
+}
+
 /** One page of a topic, oldest first, written the way a refusal writes posts. */
 function describeHistory(result: HistoryResultFrame): string {
   const posts = result.posts ?? [];
@@ -842,6 +976,36 @@ const awaitingResult = new Map<string, (result: PostResultFrame | null) => void>
  */
 const awaitingHistory = new Map<string, (result: HistoryResultFrame | null) => void>();
 
+/** Reads of this seat's usage waiting for the room's answer, by request id. */
+const awaitingUsage = new Map<string, (result: UsageResultFrame | null) => void>();
+
+function awaitUsageResult(requestId: string): Promise<UsageResultFrame | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      awaitingUsage.delete(requestId);
+      resolve(null);
+    }, POST_RESULT_TIMEOUT);
+    timer.unref?.();
+    awaitingUsage.set(requestId, (result) => {
+      clearTimeout(timer);
+      awaitingUsage.delete(requestId);
+      resolve(result);
+    });
+  });
+}
+
+/** Settle the read this answer belongs to, and only that one. */
+function settleUsageResult(frame: UsageResultFrame): void {
+  const id = frame.request_id;
+  if (typeof id !== "string") return;
+  awaitingUsage.get(id)?.(frame);
+}
+
+/** Give up on one read's answer: nothing will come for it. */
+function abandonUsage(requestId: string): void {
+  awaitingUsage.get(requestId)?.(null);
+}
+
 function awaitHistoryResult(requestId: string): Promise<HistoryResultFrame | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -902,6 +1066,7 @@ function abandonPost(messageId: string): void {
 function abandonPendingPosts(): void {
   for (const settle of [...awaitingResult.values()]) settle(null);
   for (const settle of [...awaitingHistory.values()]) settle(null);
+  for (const settle of [...awaitingUsage.values()]) settle(null);
 }
 
 function sendToRoom(frame: Record<string, unknown>): boolean {
@@ -973,6 +1138,7 @@ function connectRoom(): void {
     // delivering the past after all — which is the one thing the pull exists
     // in order not to do.
     else if (frame.type === "history_result") settleHistoryResult(frame as HistoryResultFrame);
+    else if (frame.type === "usage_result") settleUsageResult(frame as UsageResultFrame);
     // Unknown frame kinds are ignored on purpose; see the frame comment above.
     // A `post` frame from a room older than protocol 8 is one of them: the
     // session is typed its posts by the app, and there is nowhere here to put
