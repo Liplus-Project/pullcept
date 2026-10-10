@@ -5218,9 +5218,12 @@ function renderSessionFacts(): void {
  * The CLI sends a fraction (`23.5`), and the column is the narrow half of a
  * 16.5rem panel. The tenth would cost a character in every one of three rows to
  * say something nobody reads a usage bar that closely for.
+ *
+ * Floored, not rounded (#370): 100% has to mean the limit is reached. Rounded,
+ * 99.5% read as 100% while the provider still had 1% left to give.
  */
 function usedPercent(value: number | null): string {
-  return value === null ? "—" : `${Math.round(value)}%`;
+  return value === null ? "—" : `${Math.floor(value)}%`;
 }
 
 /**
