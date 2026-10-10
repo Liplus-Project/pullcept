@@ -1,5 +1,13 @@
 # 開発・テスト・配布
 
+## フロントエンドの責務（#379）
+
+`src/main.ts` は画面の組み立てと部屋・トピック・発言の連携を持つ。席の表示語と使用量の判定は `src/seat-status.ts` の純粋関数が持ち、部屋が返事を待っているかは呼び出し側が渡す。端末、選択中の席、トピックごとの選択、席の読み戻し、PTY の購読と破棄、出力の静けさを測るタイマー、起動・再開・終了、席の統計と活動通知の適用は `src/session-controller.ts` の factory が所有する。外へ渡すのは照会と操作であり、内部の Map は渡さない。破棄済みの席へ遅れて届く PTY の callback と、購読待ちの間に破棄された席の listener もここで拒否・解除する。
+
+`src/account-dialog.ts` は編集中の draft、環境変数の描画、avatar の仮編集、character ファイルの競合確認、起動プレビュー、MCP の欄とフォームの wiring を所有する。保存するアカウント一覧は main の設定であり、必要な読み書きと再描画は明示した依存で渡す。表示倍率と文字サイズの保存・復元・キー操作は `src/display-settings.ts` が持ち、端末の文字サイズは session 側の操作へ渡す。共通の型は `src/contracts.ts` に置く。各 factory は main を import せず、import 自体は DOM に触らない。wiring は main の既存の初期化順で呼ぶ。
+
+`sidecar/test/claude-limit-ui.test.mjs` は `tsx` の `tsImport` で状態判定の実モジュールを読む。`frontend-lifecycle.test.mjs` も実モジュールを読み、明示した端末・イベント・DOM の境界を代役にして、起動中のトピック切替、購読の順序と破棄、古い PTY の通知拒否、キャンセル後の環境変数読み戻しの拒否、表示設定の復元と保存を確かめる。キーと描画の実機確認は別に必要であり、このテストは実 CLI や Tauri を起動しない。
+
 ## Codex の再現チェック（#272）
 
 通常 CI はモデル／利用者認証を使わない。mcp-config は Codex の argv、設定の保持、hook、native ID 照合、履歴探索、profile／cwd／linked worktree 境界を検証する。codex-session.test.mjs は callback と起動直後の retry、親 ID を使わないことを確認する。sidecar 往復テストは同一アカウントの別トピック登録を接続しないケースも含む。旧 PULLCEPT_CHARACTER に長い自由文が残っていても MCP に入らないこと、SDK initialize の instructions の先頭512文字に部屋への投稿方法と返信／履歴の二道具が入ること、作法全文が 1024 字以内であること（#273、#276）を確認する（[公式 MCP 案内](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)）。
@@ -27,7 +35,7 @@ webhook の通知（#169）のうち、ブリッジへ書く三つの行、ブ�
 
 ステータスラインのスクリプトそのものは `sidecar/test/status-line.test.mjs` が持つ（`npm run sidecar:test`）。部屋の在る場所に受け口を立て、CLI と同じ形で走らせて、**アプリへ届く body と端末へ出る 1 行の両方**を読む。片方だけでは足りない——送る側が壊れてもバーは出るし、バーが空でも body は届くためである。
 
-発言と入力欄の `` ``` `` の枠（#348）のうち、どこが枠になるか（`findCodeFences`）と、本文を地の文とコードに分けること（`splitCodeFences`）は `src/composer.ts` に置く。入力欄のエディター（#354）が送る文字列と読み戻し（`textFromBlocks` / `docFromText`）、貼り付けとコピー（`pasteText` / `textFromSlice`）、キーに結ぶコマンド（`lineBreak` / `leaveCodeDown` / `enterCodeUp` / `backspaceInCode`）も同じファイルに、ページの無い所で走る形で置く。キーのコマンドは ProseMirror のコマンド（状態を受け取り、変更を返す関数）であり、カーソルが見えている最後・最初の行にあるかどうか（折り返しを数えるため画面が要る）だけは呼ぶ側から渡す。`sidecar/test/composer.test.mjs` と `sidecar/test/code-fence.test.mjs` は `tsx` の `tsImport` で `src/composer.ts` をそのまま読み込んで走らせる（`npm run sidecar:test`）。閉じていない枠の中の `添付:` を添付として読まないこと（`splitAttachments`）は `src/main.ts` に残り、`code-fence.test.mjs` がそれを取り出し、`src/composer.ts` の関数を横に置いて走らせる（`claude-limit-ui.test.mjs` と同じ取り出し方）。Enter で送ること、`` ``` `` で枠になる入力規則、言語のボタンと一覧、日本語入力はエディターの画面が要るため、実機で見る。
+発言と入力欄の `` ``` `` の枠（#348）のうち、どこが枠になるか（`findCodeFences`）と、本文を地の文とコードに分けること（`splitCodeFences`）は `src/composer.ts` に置く。入力欄のエディター（#354）が送る文字列と読み戻し（`textFromBlocks` / `docFromText`）、貼り付けとコピー（`pasteText` / `textFromSlice`）、キーに結ぶコマンド（`lineBreak` / `leaveCodeDown` / `enterCodeUp` / `backspaceInCode`）も同じファイルに、ページの無い所で走る形で置く。キーのコマンドは ProseMirror のコマンド（状態を受け取り、変更を返す関数）であり、カーソルが見えている最後・最初の行にあるかどうか（折り返しを数えるため画面が要る）だけは呼ぶ側から渡す。`sidecar/test/composer.test.mjs` と `sidecar/test/code-fence.test.mjs` は `tsx` の `tsImport` で `src/composer.ts` をそのまま読み込んで走らせる（`npm run sidecar:test`）。閉じていない枠の中の `添付:` を添付として読まないこと（`splitAttachments`）は `src/main.ts` に残り、`code-fence.test.mjs` がそれを取り出し、`src/composer.ts` の関数を横に置いて走らせる（TypeScript の AST から関数を取り出して実行する）。Enter で送ること、`` ``` `` で枠になる入力規則、言語のボタンと一覧、日本語入力はエディターの画面が要るため、実機で見る。
 
 画面に入れるライブラリを足したり版を上げたりしたら、`node scripts/third-party-notices.mjs` で `THIRD-PARTY-NOTICES.txt` を作り直す（#354）。ファイルは `src/composer.ts` が読み込むパッケージを起点に、`package-lock.json` の依存（peer を含む）をたどり、各パッケージが `node_modules` に持つ LICENSE の本文を写す。許すライセンス（MIT・BSD・ISC・Apache-2.0）の外のものや LICENSE の無いものがあれば、作らずに止まる。`sidecar/test/third-party-notices.test.mjs` は、ファイルが今のロックファイルから作ったものと一致しないとき、`src/composer.ts` が一覧に無いパッケージを読み込んだとき、インストーラーの同梱物（`src-tauri/tauri.conf.json` の `bundle.resources`）から外れたときに落ちる。
 

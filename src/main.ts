@@ -1,3 +1,11 @@
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { activityNote, NO_WORD } from "./seat-status";
+import type { RoomMessage, PostOutcome, MissedPost, LoggedPost, Topic, TopicRef, Participant, Roster, SessionStats, SeatActivity, AccountKind, Account, PanelState, AppConfig, SeatedAccount, IconName, IconShape, Fold, PermissionCard, PermissionResolved, Member, RowWord, Attachment, TextPiece } from "./contracts";
+import { createAccountDialog } from "./account-dialog";
+import { createDisplaySettings } from "./display-settings";
+import { createSessionController } from "./session-controller";
 // The room surface.
 //
 // Everyone in the room is a participant, and a post is one act whoever made it
@@ -13,299 +21,11 @@
 // has left something unsent there, which is when those posts wait. The rejected design is the one where the app parses CLI output to
 // find messages (docs/1-room.md); showing the CLI is not that.
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { createComposer, findCodeFences, highlightedCode, lineInFence, splitCodeFences } from "./composer";
-
-interface RoomMessage {
-  /** The room it was said in, which is its topic. Every topic open in the app
-   *  keeps talking, so a post arrives whether or not its topic is the one on the
-   *  glass, and this is what keeps it out of the one that is not (#141). */
-  topic_id: string;
-  message_id: string;
-  speaker: string;
-  /** The hue the speaker declared, or null when they declared none. Stamped by
-   *  the room from the connection the post arrived on, so it is that speaker's
-   *  and not whoever else currently answers to the same name. */
-  hue: number | null;
-  /** The account the speaker declared, or null when they declared none. For a
-   *  notice, the account of the local MCP server that pushed it (#193): what
-   *  the fold is decided on (`foldOf`). */
-  account: string | null;
-  /** True when the app itself said it, one of its own notices (#294). Stamped
-   *  by the room from where the post came in, not read off the name: what the
-   *  circle draws the app's icon by (#340). */
-  from_app: boolean;
-  content: string;
-  /** The names it was addressed to, or empty when it was said to the room
-   *  (#204). */
-  to: string[];
-  ts: string;
-  /** True when this screen's own participant posted it. Self/other, not
-   *  human/AI: the room no longer carries that axis. */
-  own: boolean;
-}
-
-/**
- * What the room did with a post from this screen.
- *
- * The room refuses a post whose speaker had not seen everything on the floor,
- * and hands back what they missed instead of delivering (#47). Not an error:
- * being told what arrived while the message was being typed, and deciding
- * again, is the point.
- */
-interface PostOutcome {
-  delivered: boolean;
-  /** The id the post is filed under, or null when it was refused. */
-  message_id: string | null;
-  /** What this screen had not seen, oldest first. Empty when delivered. */
-  missed: MissedPost[];
-}
-
-/**
- * One post the room handed back in place of delivering.
- *
- * The post itself, not a summary of it: everything a line needs is here, which
- * is what lets the refusal put it on the glass (#108).
- */
-interface MissedPost {
-  message_id: string;
-  speaker: string;
-  /** The hue it was said in, or null when the speaker declared none. Carried
-   *  so the drawn line is the line it would have been. */
-  hue: number | null;
-  /** The account it was said as, for the same reason (#193). */
-  account: string | null;
-  /** True when the app itself said it, for the same reason again (#340).
-   *  Absent on every other post. */
-  from_app?: boolean;
-  content: string;
-  /** Empty when it was said to the room (#204). */
-  to: string[];
-  ts: string;
-}
-
-/**
- * One post as the room's log kept it (src-tauri/src/room_log.rs).
- *
- * Seven fields, and the two a live post also carries are absent by decision
- * rather than by loss. `own` is a property of whoever is looking, so a file
- * could only have recorded one viewer's position as if it were part of the
- * utterance. `hue` was a declaration made at a seat that no longer exists by
- * the time this is read, so the history derives a colour from the name instead
- * — which means two participants who answered to one name are one colour here.
- * That is the known cost of not storing a declaration nobody is making any
- * more, and it is a panel of the past rather than the room's own attribution
- * surface (#48).
- */
-interface LoggedPost {
-  message_id: string;
-  speaker: string;
-  /** The account it was said as. Absent when the speaker declared none, and on
-   *  every line written before the log carried it (#193). What lets a line read
-   *  back fold the way it did live (`foldOf`). */
-  account?: string;
-  /** True when the app itself said it (#340). Absent on every other line and
-   *  on every line written before the log carried it. What lets a line read
-   *  back draw the app's icon the way it did live. */
-  from_app?: boolean;
-  content: string;
-  /** The names it was addressed to. Absent, not null or empty, when it was
-   *  said to the room: the field's presence is what carries the two states, in
-   *  the file and on the way here alike. A line written while a post had one
-   *  addressee is read back by the app as a list of that one (#204). */
-  to?: string[];
-  ts: string;
-}
-
-/**
- * One topic, as the index holds it (src-tauri/src/room_log.rs).
- *
- * The vessel a conversation happens in, not a section of a transcript. Picking
- * one puts its posts back in the room and hands its session ids to the next
- * launch, so what comes back is the participants' own context rather than a
- * reading of the log to them (#115).
- */
-interface Topic {
-  topic_id: string;
-  /** Generated from the first post's opening, editable after. Empty until that
-   *  post lands, which the list draws as its own state rather than as a blank. */
-  title: string;
-  created_at: string;
-  /** Which session each account was in while this was open, by account id.
-   *  The launch decides on it. The screen only shows it — the セッション ID
-   *  row reads the shown pane's account here, so the value on screen is the
-   *  record's and nothing on this side decides on it (#139). */
-  sessions: Record<string, string>;
-}
-
-/**
- * The topic on the glass (#141: one of the rooms, the one the screen shows).
- *
- * Held apart from the list because it may not be in the list: a launch opens a
- * new topic and nothing is written down until something is said in it, so the
- * index has no entry for it yet (#115). While it is not in the list, the panel
- * says where the room is by drawing 新規 as picked rather than by adding a row
- * for it (#125, 決定1 / AI 判断4).
- */
-interface TopicRef {
-  topic_id: string;
-  created_at: string;
-}
-
-/**
- * One participant of the room, as the roster lists them.
- *
- * `id` is the connection they are in the room on, and it is the identity. The
- * name is what they are called and what a post is addressed to; two
- * participants may answer to one name and are still two.
- */
-interface Participant {
-  id: string;
-  name: string;
-  hue: number | null;
-  /**
-   * The account this participant joined as, or null when they joined with
-   * none. What the panel joins its own account list against (#59).
-   *
-   * Not the identity, and not what anything here decides on. `id` above is the
-   * identity, `own` below is the room's answer to self/other, and both are the
-   * connection. An account id looks like the more stable of the two and is not
-   * the one that was chosen: two connections could carry one account id — from
-   * somewhere this app did not launch — and they would still be two
-   * participants (#39 / #40 / #47).
-   */
-  account: string | null;
-  own: boolean;
-}
-
-/**
- * One room's roster, as `room-participants` carries it.
- *
- * Named by its topic: a roster changes in a topic that is not on the glass — a
- * session joining the topic it was started in — and it is kept for when that
- * topic is opened (#141).
- */
-interface Roster {
-  topic_id: string;
-  participants: Participant[];
-}
-
-/**
- * What one session says about itself, through its own status line (#155).
- *
- * Keyed on the seat: the JSON the CLI hands its status line names that CLI's
- * session id, which is not what a terminal is keyed on here, so the launch
- * wrote the topic and the account into the address it posts to and the app
- * reads them back off it (`mcp-config`, `status_hook_url`).
- *
- * Every value is nullable because every one of them is a field the CLI may not
- * send — the rate limits are absent off a claude.ai plan and before the first
- * API answer, the effort is absent on a model with no such parameter, and the
- * context percentage is null early in a session. Null reaches the row as `—`,
- * which is a different thing from `0%`.
- *
- * `five_hour` and `seven_day` are read twice over: as two rows of the panel,
- * and as the row's own 制限中 (`limitedByUsage`). That second reading is what
- * replaced the `StopFailure` hook #149 had put on the launch line (#161).
- */
-interface SessionStats {
-  topic_id: string;
-  account_id: string;
-  model: string | null;
-  effort: string | null;
-  five_hour: number | null;
-  seven_day: number | null;
-  context: number | null;
-  /**
-   * Backend stop/recovery: Codex uses its app-server (#294); Claude uses
-   * current parent rejection and normal response (#342). Null is unknown.
-   */
-  limited: boolean | null;
-  limited_source?: "claude-parent" | "codex" | null;
-  pty_id?: string | null;
-  /**
-   * When the 5-hour and weekly windows reset, as Unix seconds (#306), read off
-   * the same window as the percentage. Shown under those two rows as the time
-   * left (`resetIn`); null when the CLI did not say.
-   */
-  five_hour_resets_at: number | null;
-  seven_day_resets_at: number | null;
-}
-
-/**
- * What a seat is doing, as structured reports told the app: a Codex
- * app-server seat's server notifications (#326), or a Claude Code seat's
- * hooks (#331).
- *
- * A hook-launched Codex seat never sends this, and keeps the four words. The
- * words are the app's (`mcp_config::codex::activity`,
- * `mcp_config::hook_activity`), read off structured reports rather than the
- * terminal: an item's kind and, for a tool, its name — never a command, an
- * argument or a body. A Claude Code seat says 許可待ち, ツール and 委任中 (a
- * subagent), is always `connected` and never has a `thread_status`, so with
- * no word it falls back to the screen's own words. `word` is null when the seat
- * says nothing beyond the screen's own words: no work under way, or the
- * connection to its server gone — and `connected` tells those two apart,
- * since not knowing is not 待機.
- */
-interface SeatActivity {
-  topic_id: string;
-  account_id: string;
-  /** The launch's terminal, so a run that ended cannot speak for the next. */
-  pty_id: string;
-  /**
-   * False once the app can no longer hear the seat's server. Not the same as
-   * no word: an idle seat falls back to the screen's own words, 待機 among
-   * them, and a seat that cannot be heard says 様子不明 instead.
-   */
-  connected: boolean;
-  /**
-   * What the seat's thread is doing, as far as its server has said (#329):
-   * "idle" or "active", null while nothing has said either and after the
-   * connection ends. The start or resume answer's status is told as it is,
-   * before any turn (#368). Not the same as no word: a turn reasoning or
-   * writing its answer is active with no word. Only "idle" on a connected seat says 待機
-   * over a terminal that keeps repainting.
-   */
-  thread_status: "idle" | "active" | null;
-  /** The row's badge: 許可待ち, 答え待ち, 実行中, 編集中, ツール, 委任中… */
-  word: string | null;
-  /** The longer form, for the line under the room and the badge's title. */
-  line: string | null;
-  /** A wait on the person (許可待ち / 答え待ち) rather than work under way. */
-  waiting: boolean;
-}
-
-/**
- * What kind of participant an account is, declared when it is made.
- *
- * Never inferred from the connection: the room sees only what kind of
- * connection someone arrived on, and a person joining from another client
- * arrives the same way a session does. The account form is the one moment
- * anyone can say which this is (#59).
- *
- * Two of the three launch, and what separates them is what the app knows about
- * the command under them (#156). `claude_code` names a CLI whose conventions
- * the app holds — how a session id is handed over, how one is resumed, how the
- * session reports itself — so none of that is written by hand. `cli` is an
- * account the app knows nothing of the sort about: it launches, and the line is
- * the person's own. A second CLI is a third value here, not a second reading of
- * somebody's launch options.
- *
- * `mcp` is a local MCP server the app runs itself (#193). It speaks — what the
- * server pushes is posted as its account — and nothing is launched under it.
- * Declared on the form when an account is made, which writes its entry in
- * `mcp-servers.json` (#200), or given by the app to an entry the file holds
- * with no account; either way no other kind turns into it or out of it.
- */
-type AccountKind = "admin" | "claude_code" | "codex_cli" | "cli" | "mcp";
 
 /**
  * Whether this account launches a session.
@@ -317,172 +37,6 @@ type AccountKind = "admin" | "claude_code" | "codex_cli" | "cli" | "mcp";
  */
 function launches(account: Account): boolean {
   return account.kind === "claude_code" || account.kind === "codex_cli" || account.kind === "cli";
-}
-
-/**
- * One account: someone who exists whether or not they are running.
- *
- * `id` is the identity and never changes. Everything else is an attribute the
- * person edits — the name included, which is why an account can be renamed
- * without anything losing track of it. The launch recipe this replaced had no
- * identity of its own, so the name a session took was the only handle on it,
- * and two launches off one recipe took the same name (#40).
- */
-interface Account {
-  id: string;
-  /** What the room lists this account under, and what a post is addressed to. */
-  name: string;
-  command: string;
-  args: string[];
-  cwd: string | null;
-  /** The hue chosen for this account, or null when none was — the derived one
-   *  from the name is used then. */
-  hue: number | null;
-  /** Declared when the account was made. What the participant list groups on,
-   *  and nothing else — the room still has one kind of participant. */
-  kind: AccountKind;
-  /** Claude's output style name or Codex's effective developer-instruction
-   *  character heading name (#276). Null delegates to the CLI's defaults. An attribute of the account
-   *  rather than a string inside `args`, for the reason the name and the hue
-   *  are attributes (#40) — it is who this account is when it runs (#99). */
-  character: string | null;
-  /** The whole command line that puts this account back into a session it was
-   *  already in, with `{session_id}` where the id goes — or null when it
-   *  declares none. A topic holds which session each account was in while it
-   *  was open, and reopening one hands that id to this line: what comes back is
-   *  the participant's own context, carried by the CLI rather than read out to
-   *  it (#115, decision 4B).
-   *
-   *  Null is the common state. An account with no resume line joins a reopened
-   *  topic as a new session and pulls what it needs out of the room instead
-   *  (#115, decision 4C). */
-  resume_command: string | null;
-  /** Variables set on the environment of the CLI this account launches (#163).
-   *  The name in the clear and the value sealed with DPAPI: this screen never
-   *  holds a stored value, only its mask (`account_env_text`), and hands what
-   *  was typed back to be sealed (`seal_account_env`). Opened only at launch,
-   *  and never onto the launch line. */
-  env: EnvVar[];
-  /** The entry of `mcp-servers.json` an `mcp` account answers to, by its name;
-   *  null for every other kind (#193). The account holds who speaks, the entry
-   *  what is run. */
-  server: string | null;
-  /** Whether this account carries an image, drawn in its circle in place of
-   *  the initial (#236). The flag only: the image is a file the app keeps
-   *  (`account_avatar`), read once into `avatarImages`. */
-  avatar: boolean;
-  /** A Codex CLI account's seat runs through its own app-server and gets its
-   *  character as `developerInstructions` (#299). Absent or false: the Li+
-   *  output style hook, which stays the default. */
-  codex_app_server?: boolean;
-}
-
-/** One stored environment variable. `sealed` is opaque here — ciphertext this
- *  screen neither reads nor makes. */
-interface EnvVar {
-  name: string;
-  sealed: string;
-}
-
-/**
- * Which of the two panels flanking the room are open.
- *
- * In the config rather than in this screen's own storage, where the two text
- * sizes are kept (#60 / #68). Those answer "is what I am reading a readable
- * size", which is the reader's own question; this is the window's layout, and
- * a panel folded away is expected to still be folded the next time the app
- * opens (#118, decision 1).
- */
-interface PanelState {
-  history: boolean;
-  participants: boolean;
-}
-
-interface AppConfig {
-  accounts: Account[];
-  panels: PanelState;
-}
-
-interface StartedSession {
-  pty_id: string;
-  mcp_config: string;
-  /** When the session was launched, stamped by the room's own clock. */
-  started_at: string;
-  /** The topic this launch went into — the one the screen named (#141). The
-   *  topic a failed resume has to be undone on (#127). */
-  topic_id: string;
-  /** The session id this went back into, or null when it started fresh — the
-   *  topic held a session for it, and the CLI came back carrying its own
-   *  context (#115, decision 4B). Null is not a failure: it is a seat starting
-   *  fresh in a reopened topic, which is what a topic does for every seat it
-   *  cannot resume (decision 6). The id itself rather than a flag, because a
-   *  resume that ends without the room ever seeing it has a record to drop, and
-   *  dropping it names it (#127). */
-  resumed_from: string | null;
-  /** The session id this launch took off the topic before starting, because
-   *  the conversation it named is not on disk — or null when it took none.
-   *  Never set together with `resumed_from`: the drop is what made this the
-   *  fresh line. Said on the status line for the reason the one #127 drops is
-   *  said there — the way back into a conversation went, and nobody asked for
-   *  that (#131, decision 2). */
-  dropped_resume: string | null;
-}
-
-/**
- * What a launch would do with each value the account form holds (#154, 決定4).
- *
- * Four answers because what a value costs differs by which one it is: a
- * character and launch options the Windows launch line cannot carry are left
- * off it and the session still starts, while a command it cannot carry is a
- * session that does not start at all. The judgment is the app's — the same
- * functions the launch itself goes through — and the sentences are here,
- * because they are read here.
- */
-interface LaunchFieldReport {
-  character: boolean;
-  options: boolean;
-  command: boolean;
-  resume: boolean;
-}
-
-/**
- * What is running under one held seat, as the app reports it.
- *
- * The same facts a `SessionView` holds, from the side that survives a reload of
- * this screen. The pty id is why it is sent at all: it is made at spawn and
- * handed over once, so a screen that has forgotten it cannot reach the session
- * again — and the account cannot be started either, because the seat refuses it
- * (#84).
- *
- * The command and the directory are the launch's own, not the account's as it
- * reads now. An account is editable while its session runs.
- */
-interface RunningSession {
-  pty_id: string;
-  started_at: string;
-  command: string;
-  cwd: string;
-  /** The topic this session was started into, and the room it is in. A
-   *  launch's own fact: the screen moves between topics while a session keeps
-   *  running in its own (#141, decision 2). What its terminal is filed under,
-   *  and what a topic delete ends it by (#119, decision 4). */
-  topic_id: string;
-  /** The session id this launch went back into, or null when it started fresh.
-   *  A launch's own fact like the three above, and kept on the seat for the
-   *  reason the pty id is: this screen loses it on a reload and the seat does
-   *  not (#127). */
-  resumed_from: string | null;
-}
-
-/** One account holding a seat in one topic, and what it is running. */
-interface SeatedAccount {
-  account_id: string;
-  /** The topic the seat is in. On the seat as well as on the session, because a
-   *  seat whose launch is in flight has no session yet and is still in one topic
-   *  and not another (#141). */
-  topic_id: string;
-  /** Null while its launch is in flight: claimed seat, nothing spawned yet. */
-  session: RunningSession | null;
 }
 
 /**
@@ -504,63 +58,6 @@ const HUE_KEY = "pullcept.display-hue";
  * other.
  */
 const LOCAL_KEY = "pullcept.local-account";
-
-/**
- * How large the conversation is drawn, in `rem`.
- *
- * In `localStorage` beside the key above, and for the same reason: this is a
- * property of the screen being read from, not of anybody in the room. Two
- * people reading one conversation do not have to want the same size, and a
- * size carried on a participant would make the answer travel with whoever
- * declared it. It is the shape #40 settled for a screen's own settings.
- *
- * Not a participant attribute in the other sense either: nothing here is
- * written per speaker. Every line in the room is drawn at one size, whoever
- * said it (#39).
- */
-const ROOM_FONT_SIZE_KEY = "pullcept.room-font-size";
-
-/**
- * The sizes the conversation can be set to, in `rem`.
- *
- * A list rather than a continuous range, like the hues below: what this has to
- * buy is a readable size that fits, and a ladder buys it without asking anyone
- * to judge fractions of a millimetre. The ends of the list are the bounds —
- * there is no size off the ladder to clamp, so nothing separate enforces them.
- *
- * The rungs are dense below the default and sparse above it. The observation
- * this comes from is that the room reads large (#60), so the direction that
- * gets used is downward and the steps there are the ones worth being fine.
- */
-const ROOM_FONT_SIZES = [0.7, 0.75, 0.8, 0.85, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
-
-/**
- * Where a screen that has never chosen sits.
- *
- * `1rem`, which is what the room already rendered at: `.message .body` is
- * given no size and inherits none, so the surface has been showing the user
- * agent's default. Keeping it is a completion condition of #60 — this change
- * adds the means to move, and moves nobody.
- */
-const DEFAULT_ROOM_FONT_SIZE = 1;
-
-/**
- * The keys that move along the ladder, and by how far.
- *
- * `Ctrl` with `=` / `-` / `0`, the combination browsers and editors have
- * trained. Both faces of the shifted keys are listed because a keyboard that
- * needs `Shift` for `+` reports `+`, and one that does not reports `=`; the
- * person pressing them is doing the same thing either way. `0` is the reset
- * and carries a step of zero, so the lookup below tests for `undefined` rather
- * than for falsity.
- */
-const ROOM_FONT_SIZE_KEYS: Record<string, number> = {
-  "=": 1,
-  "+": 1,
-  "-": -1,
-  "_": -1,
-  "0": 0,
-};
 
 /**
  * The hues a participant can declare.
@@ -595,45 +92,6 @@ const HUES: { label: string; hue: number }[] = [
 const ACCENT_HUE = 251.5;
 const RESERVED_ARC = 25;
 const DERIVED_ARC = 360 - RESERVED_ARC * 2;
-
-/**
- * The drawings the screen's buttons carry (#221), one place for all of them.
- *
- * A button on the screen is its drawing, with no frame and no fill until the
- * pointer is on it; its name is on `aria-label` and on `title`, which is the
- * tooltip. Drawn rather than typed: an emoji is painted by a colour font that
- * answers to no `color`, so it could not take the muted, the danger or the
- * hover colour the rest of the button does, and its width is whichever font the
- * host resolved it in (#71). A line drawing in `currentColor` takes all of them
- * and is one width everywhere.
- *
- * Every drawing is on the 16-unit grid the panel toggles were drawn on (#118),
- * stroked and unfilled, so the set reads as one hand. The buttons in
- * index.html name theirs with `data-icon` and are filled from here at start
- * (`fillIcons`); the buttons this file builds call `icon` directly. One copy of
- * each drawing, so the ✕ that folds the pane and the ✕ on an ended tab cannot
- * drift into two shapes.
- */
-type IconName =
-  | "panel"
-  | "terminal"
-  | "settings"
-  | "plus"
-  | "copy"
-  | "close"
-  | "send"
-  | "at"
-  | "attach"
-  | "start"
-  | "stop"
-  | "edit"
-  | "more"
-  | "chevron-down"
-  | "minimize"
-  | "maximize"
-  | "restore";
-
-type IconShape = [tag: string, attrs: Record<string, string>];
 
 const ICONS: Record<IconName, IconShape[]> = {
   // A panel seen edge-on, the divider on the side it folds (#118). The right
@@ -809,7 +267,6 @@ const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const roomTitleNameEl = document.getElementById("room-title-name") as HTMLElement;
 const roomTitleCountEl = document.getElementById("room-title-count") as HTMLElement;
-const accountNewEl = document.getElementById("account-new") as HTMLButtonElement;
 const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
 /** Where the input box's editor is mounted (#354); it carries the room's font size. */
 const inputEl = document.getElementById("input") as HTMLElement;
@@ -843,56 +300,8 @@ const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
 const factsMoreEl = document.querySelector("#participants .facts-more") as HTMLDetailsElement;
-const sessionStateEl = document.getElementById("session-state") as HTMLElement;
-const transportEl = document.getElementById("session-transport") as HTMLElement;
-const commandEl = document.getElementById("session-command") as HTMLElement;
-const dirEl = document.getElementById("session-dir") as HTMLElement;
-const startedEl = document.getElementById("session-started") as HTMLElement;
-const windowEl = document.getElementById("session-window") as HTMLElement;
-// The five the session reports about itself (#155), in the order they are read.
-const statsEls = {
-  model: document.getElementById("session-model") as HTMLElement,
-  effort: document.getElementById("session-effort") as HTMLElement,
-  five_hour: document.getElementById("session-five-hour") as HTMLElement,
-  seven_day: document.getElementById("session-seven-day") as HTMLElement,
-  context: document.getElementById("session-context") as HTMLElement,
-};
-const sessionIdEl = document.getElementById("session-id") as HTMLElement;
-const sessionIdCopyEl = document.getElementById("session-id-copy") as HTMLButtonElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
-const tabsEl = document.getElementById("terminal-tabs") as HTMLElement;
 const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
-const dialogEl = document.getElementById("account-dialog") as HTMLDialogElement;
-const dialogFormEl = document.getElementById("account-form") as HTMLFormElement;
-const dialogTitleEl = document.getElementById("account-dialog-title") as HTMLElement;
-const dialogNameEl = document.getElementById("dialog-name") as HTMLInputElement;
-const dialogKindEl = document.getElementById("dialog-kind") as HTMLSelectElement;
-const dialogHueEl = document.getElementById("dialog-hue") as HTMLSelectElement;
-// The image field (#236): the circle as it will be drawn, and its two buttons.
-const dialogAvatarEl = document.getElementById("dialog-avatar") as HTMLElement;
-const dialogAvatarPickEl = document.getElementById("dialog-avatar-pick") as HTMLButtonElement;
-const dialogAvatarClearEl = document.getElementById("dialog-avatar-clear") as HTMLButtonElement;
-const dialogAvatarInputEl = document.getElementById("dialog-avatar-input") as HTMLInputElement;
-const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
-const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
-// The character's body (#100): the file the three fields name, its place, and what is said about it.
-const dialogCharacterFileEl = document.getElementById("dialog-character-file") as HTMLElement;
-const dialogCharacterBodyEl = document.getElementById("dialog-character-body") as HTMLTextAreaElement;
-const dialogCharacterPathEl = document.getElementById("dialog-character-path") as HTMLElement;
-const dialogCharacterNoticeEl = document.getElementById("dialog-character-notice") as HTMLElement;
-const dialogCharacterReloadEl = document.getElementById("dialog-character-reload") as HTMLButtonElement;
-const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
-const dialogCodexAppServerFieldEl = document.getElementById("dialog-codex-app-server-field") as HTMLElement;
-const dialogCommandEl = document.getElementById("dialog-cli-command") as HTMLInputElement;
-const dialogOptionsEl = document.getElementById("dialog-options") as HTMLInputElement;
-const dialogResumeEl = document.getElementById("dialog-resume") as HTMLInputElement;
-const dialogResumeFieldEl = document.getElementById("dialog-resume-field") as HTMLElement;
-const dialogEnvEl = document.getElementById("dialog-env") as HTMLTextAreaElement;
-const dialogPreviewEl = document.getElementById("dialog-preview") as HTMLElement;
-const dialogNoticeEl = document.getElementById("dialog-notice") as HTMLElement;
-const dialogErrorEl = document.getElementById("dialog-error") as HTMLElement;
-const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
-const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
 const endDialogEl = document.getElementById("end-dialog") as HTMLDialogElement;
 const endMessageEl = document.getElementById("end-dialog-message") as HTMLElement;
 const endCancelEl = document.getElementById("end-cancel") as HTMLButtonElement;
@@ -908,38 +317,6 @@ const topicDeleteMessageEl = document.getElementById("topic-delete-message") as 
 const topicDeleteSessionsEl = document.getElementById("topic-delete-sessions") as HTMLElement;
 const topicDeleteCancelEl = document.getElementById("topic-delete-cancel") as HTMLButtonElement;
 const topicDeleteCommitEl = document.getElementById("topic-delete-commit") as HTMLButtonElement;
-const openSettingsEl = document.getElementById("open-settings") as HTMLButtonElement;
-const settingsDialogEl = document.getElementById("settings-dialog") as HTMLDialogElement;
-const settingsCloseEl = document.getElementById("settings-close") as HTMLButtonElement;
-// The display section's three pickers (#194), the only on-screen controls for
-// the three sizes since the title bar's and the terminal header's were taken
-// out (#209).
-const settingsRoomFontSizeEl = document.getElementById(
-  "settings-room-font-size",
-) as HTMLSelectElement;
-const settingsTerminalFontSizeEl = document.getElementById(
-  "settings-terminal-font-size",
-) as HTMLSelectElement;
-const settingsUiScaleEl = document.getElementById("settings-ui-scale") as HTMLSelectElement;
-const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
-const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
-const mcpFileErrorEl = document.getElementById("mcp-file-error") as HTMLElement;
-const dialogSectionTabEls = Array.from(
-  dialogEl.querySelectorAll<HTMLButtonElement>("[data-section-tab]"),
-);
-const dialogSectionPaneEls = Array.from(dialogEl.querySelectorAll<HTMLElement>("[data-section]"));
-const dialogKindMcpEl = dialogKindEl.querySelector('option[value="mcp"]') as HTMLOptionElement;
-const mcpStateEl = document.getElementById("mcp-state") as HTMLElement;
-const mcpRestartEl = document.getElementById("mcp-restart") as HTMLButtonElement;
-const mcpStaleEl = document.getElementById("mcp-stale") as HTMLElement;
-const mcpFieldsEl = document.getElementById("mcp-fields") as HTMLElement;
-const mcpCommandEl = document.getElementById("mcp-command") as HTMLInputElement;
-const mcpArgsEl = document.getElementById("mcp-args") as HTMLTextAreaElement;
-const mcpEnvEl = document.getElementById("mcp-env") as HTMLTextAreaElement;
-const mcpErrorEl = document.getElementById("mcp-error") as HTMLElement;
-const mcpSaveEl = document.getElementById("mcp-save") as HTMLButtonElement;
-const mcpLogEl = document.getElementById("mcp-log") as HTMLElement;
-const mcpLogHeadEl = document.getElementById("mcp-log-head") as HTMLElement;
 
 let accounts: Account[] = [];
 /**
@@ -951,25 +328,6 @@ let accounts: Account[] = [];
  * the other.
  */
 let panels: PanelState = { history: true, participants: true };
-/**
- * The seats held in every topic, by `seatKey`.
- *
- * Ids, never names: this is matched against the account list to decide who is
- * offline, and a name match would tie the wrong account as soon as two share a
- * name — which they may, now that a name is an editable attribute (#53). The
- * app is the authority (`seated_accounts`); the screen re-reads it rather than
- * keeping a count of its own launches.
- *
- * A map rather than a set of ids, because the answer carries what is running
- * under each seat as well. That is what a terminal is rebuilt from when this
- * screen has been reloaded out from under a running session (#84).
- *
- * Keyed on the topic and the account together (#141). One account may hold a
- * seat in each of two topics — a session left running where the screen was, and
- * the same account started where the screen is now — and what is refused is the
- * same account twice in one topic.
- */
-let seated = new Map<string, SeatedAccount>();
 /**
  * Every room's roster the screen has heard, by topic id.
  *
@@ -1029,285 +387,6 @@ let lastSeenId: string | null = null;
  * set of their ids grows no faster than the DOM already does.
  */
 const drawnIds = new Set<string>();
-/** The size the conversation is currently drawn at, in `rem`. */
-let roomFontSize = DEFAULT_ROOM_FONT_SIZE;
-
-/**
- * How large a terminal is drawn, in `px`.
- *
- * The third size axis and an independent one: the conversation (#60), this, and
- * the whole UI (#66) are three separate answers, and none of them is expressed
- * relative to another. What makes this one different in kind from #60 is that it
- * is not only a display size — xterm.js computes the session's columns and rows
- * from it, so moving it changes the window the CLI is drawing for.
- *
- * `localStorage` and not the config, for #60's reason: it is a property of the
- * screen being read from rather than of anybody in the room.
- */
-const TERMINAL_FONT_SIZE_KEY = "pullcept.terminal-font-size";
-
-/**
- * The sizes a terminal can be set to, in `px`.
- *
- * A ladder with its ends as the bounds, the shape #60 settled for the
- * conversation: there is no size off the ladder to clamp, so nothing separate
- * enforces the limits.
- *
- * In `px` and labelled in `px`, where #60 labels a proportion. The two are
- * asked different questions. A conversation is read against nothing in
- * particular, so "larger or smaller than what I have" is the whole of it; a
- * terminal is read against the CLI's own layout, and the number that decides how
- * many columns fit is this one. It is also the unit xterm takes.
- *
- * Spread evenly rather than dense at one end. #60's rungs lean downward because
- * the observation behind it was that the room reads large; nothing says which
- * direction this one gets used in, and inventing a lean would be answering a
- * question nobody has asked yet.
- */
-const TERMINAL_FONT_SIZES = [9, 10, 11, 12, 13, 14, 16, 18, 20, 24];
-
-/**
- * Where a screen that has never chosen sits.
- *
- * `13px`, which is what every terminal has been opened at. Keeping it is the
- * same completion condition #60 had: this adds the means to move, and moves
- * nobody.
- */
-const DEFAULT_TERMINAL_FONT_SIZE = 13;
-
-/**
- * How large everything but the conversation and the terminal is drawn, as a
- * multiple of what it has always been (#66, #194).
- *
- * The third of the three size axes. It is carried as the root's `font-size`,
- * because the UI around the two other surfaces is written in `rem` — the title
- * bar, the panels, the windows — so one value on `:root` moves all of it without
- * naming any of it. The two other axes are kept out by construction rather than
- * by exception: the conversation's size divides this one back out
- * (`--room-font-size` in src/styles.css), and the terminal is sized in `px`,
- * which a root size does not reach. Not the webview's own zoom: that takes the
- * whole screen, the two excluded surfaces with it, and those are what this may
- * not move.
- *
- * `localStorage`, for #60's reason: a property of the screen being read from.
- */
-const UI_SCALE_KEY = "pullcept.ui-scale";
-
-/**
- * The multiples the UI can be set to.
- *
- * A ladder with its ends as the bounds, the shape #60 settled. More rungs above
- * the default than below: what #66 asks for is a screen that reads from further
- * away, so the direction that gets used is upward.
- *
- * The top is `1.5` because the panels grow with it. They are written in `rem`,
- * and the conversation between them takes what is left: at `1.5` two open panels
- * already leave almost nothing of a 900px window. Past that the ladder would
- * mostly offer ways to lose the room.
- */
-const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
-
-/** `1`, which is what every screen has been drawn at. It moves nobody. */
-const DEFAULT_UI_SCALE = 1;
-
-/**
- * The emulator options every session's terminal is opened with.
- *
- * One set for all of them, so that two sessions on this screen are two of the
- * same kind of thing and a difference between their panes says something about
- * the sessions rather than about the panes. The size is one of them: it is the
- * screen's, not a session's, so opening a second terminal does not open it at
- * some other size than the first (`openView` passes the current one).
- */
-const TERMINAL_OPTIONS = {
-  cursorBlink: true,
-  fontSize: DEFAULT_TERMINAL_FONT_SIZE,
-  fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
-  // The CLI is a full-screen TUI: it moves the cursor, clears regions and
-  // repaints. Anything less than an emulator turns that into debris, which is
-  // what the previous line-appending pane did (#24).
-  convertEol: false,
-  scrollback: 5000,
-};
-
-/**
- * Draw a terminal with the WebGL renderer, or leave it on the DOM one.
- *
- * Every terminal is put through this, for the same reason they share
- * `TERMINAL_OPTIONS`: two panes on this screen draw the same way. The point is
- * the block elements and box-drawing characters a TUI builds its pictures from
- * (`█▛▜▐▌`, the CLI's mascot among them). The DOM renderer sets each one in the
- * font, and the glyphs do not quite meet at the cell edges, so a picture made of
- * them shows a grid of thin lines. The WebGL renderer paints those characters
- * cell by cell itself (`customGlyphs`, which the DOM renderer ignores), and the
- * cells meet (#278). Inside a cell, the rectangles of one block element meet
- * only because of the install-time patch in `scripts/patch-xterm-webgl.mjs`.
- *
- * The DOM renderer stays the floor. Where WebGL cannot start, loading throws and
- * the terminal keeps drawing as it did; where the context is lost later — the
- * GPU resets, or the webview takes back the oldest context once too many are
- * open — the addon is disposed and the terminal falls back to the DOM renderer
- * rather than going blank.
- */
-function useWebglRenderer(term: Terminal): void {
-  try {
-    const webgl = new WebglAddon();
-    webgl.onContextLoss(() => webgl.dispose());
-    term.loadAddon(webgl);
-  } catch {
-    // No WebGL here. The DOM renderer is already drawing; nothing to undo.
-  }
-}
-
-/**
- * The line a terminal opens with when it is picked up rather than launched.
- *
- * It stands where the missing output would have been, which is the only place
- * it answers the question it exists for: this pane is not empty because the
- * session has said nothing. Dim, because it is the app speaking inside a pane
- * that otherwise belongs entirely to the session (#84).
- */
-const RESUMED_NOTICE =
-  "\x1b[2m[pullcept] 画面が再読み込みされました。セッションは走ったままで、この端末はそこへ繋ぎ直したものです。これより前の出力は残っていません。\x1b[0m";
-
-/**
- * One account's terminal: the session's output, its scrollback, and the way in.
- *
- * One per account, never one shared. A shared emulator was handed the output of
- * every running session at once, and a TUI's repaint cannot be told from
- * another's after the two have been written into one screen — the panes were
- * not taking turns, they were overlapping (#57). Separate emulators also decide
- * where input goes: this view writes to `ptyId` and to nothing else, so what is
- * typed reaches the session that is being looked at.
- */
-interface SessionView {
-  /** The account this terminal belongs to. The identity, so a rename is free. */
-  accountId: string;
-  /** Empty until the launch returns; nothing may be written before then. */
-  ptyId: string;
-  /** The name the account had at launch, for a view whose account is gone. */
-  name: string;
-  command: string;
-  cwd: string | null;
-  startedAt: string;
-  term: Terminal;
-  fit: FitAddon;
-  host: HTMLElement;
-  unlisten: UnlistenFn[];
-  /** The topic this terminal belongs to: the one ▶ was pressed in, which is the
-   *  one the launch goes into (#141). Set when the terminal is made, since it
-   *  decides where the terminal is shown before any launch has answered, and
-   *  what reaches this session's record after it ends. */
-  topicId: string;
-  /**
-   * The session id this launch went back into, or null when it started fresh.
-   *
-   * Half of what says a resume failed. The other half is `seenInRoom` below,
-   * and the exit is where the two are read together (#127).
-   */
-  resumedFrom: string | null;
-  /**
-   * True once the room's roster has carried this account.
-   *
-   * The screen's own definition of a session having arrived, and the one the
-   * rows already draw 起動中 from: a process is up and the room has not seen it
-   * yet (`memberRow`). Raised and never lowered — a session that was in the
-   * room and then dropped its connection did arrive, and what this answers is
-   * whether it ever did.
-   *
-   * Read at the exit, because a resume that ends without this having been
-   * raised is a resume that went back into nothing: the CLI it was handed to
-   * stopped before it started the servers that join the room. That is
-   * observable without reading a word the CLI printed, which is what the id
-   * being dropped on an error message would have cost (#127).
-   */
-  seenInRoom: boolean;
-  /** How the session ended, or null while it is still running. */
-  ended: string | null;
-  /**
-   * True when the app ended this session itself: the row's ✕, a topic being
-   * deleted, the app closing (#121).
-   *
-   * Carried by the exit event (`PtyExit` in `pty.rs`), not worked out here. An
-   * end asked for is not reported as a failure and does not open the pane; an
-   * end nobody asked for still does both, because that one is worth checking.
-   */
-  endRequested: boolean;
-  /**
-   * True while output is still arriving from this session.
-   *
-   * Raised by the first byte and lowered by `OUTPUT_QUIET_MS` of silence, so it
-   * says "this terminal is printing right now" and not "this terminal has
-   * printed at some point". It is the whole of what this screen can observe
-   * about a running CLI: the bytes are not read, only counted as having
-   * arrived (#82).
-   */
-  outputting: boolean;
-  /**
-   * True once this terminal has been observed silent for `OUTPUT_QUIET_MS`, and
-   * false again from the next byte.
-   *
-   * Not the negation of `outputting`. Both are false in the window before a
-   * silence has been timed — right after the session is attached, and after a
-   * reload picks a running session up again — and that window says nothing: 待機
-   * claims a silence this screen measured, never one it assumed (#148).
-   */
-  silent: boolean;
-  /**
-   * The last thing this session said about itself, or null while it has said
-   * nothing (#155).
-   *
-   * Held rather than recomputed, and never cleared on its own: the status line
-   * runs when the session runs, so a session sitting quiet keeps the values it
-   * last reported (decision 4). They survive its exit for the reason the rest
-   * of the facts do — the question that column answers is what ran.
-   *
-   * Null after a reload of this screen, until the next report arrives. The
-   * report is not replayed, the same as the address record (#84 / #86): what
-   * this screen did not see, it does not say. 制限中 goes with it, since the
-   * word is read off two of these values (#161).
-   */
-  stats: SessionStats | null;
-  /**
-   * What the seat's app-server last said — what it is doing and whether it
-   * can still be heard — or null when this seat has no app-server or has not
-   * reported yet (#326). Like `stats`, not replayed
-   * after a reload: what this screen did not see, it does not say.
-   */
-  activity: SeatActivity | null;
-  /** The pending fall back to silence, or undefined when none is armed. */
-  quiet: number | undefined;
-}
-
-/**
- * How long a terminal must stay silent before its row stops saying that it is
- * printing, and says 待機 instead (#148), in milliseconds.
- *
- * Both halves of this number are load-bearing. Long enough that the gaps inside
- * one burst of output — a TUI's spinner frame, a pause between two paragraphs of
- * a streamed answer — do not read as the session having stopped, which is what
- * makes the word hold still instead of flickering once per repaint. Short enough
- * that a word describing something that has stopped is gone about as fast as a
- * person can look up from the terminal, because a word left standing over a
- * session that has fallen quiet is the failure this feature is most able to
- * cause: 考え中 over a CLI that is in fact sitting at a prompt waiting to be
- * answered (#82).
- *
- * It is also the whole of the redraw budget. The row is redrawn when the word
- * changes and at no other time, so a session printing without pause costs two
- * draws — one when it starts, one when it stops — however many bytes it sends.
- */
-const OUTPUT_QUIET_MS = 1000;
-
-/**
- * The terminals this screen holds, by `seatKey`, in launch order.
- *
- * One per account per topic (#141, decision 1). A topic is where a session was
- * started and where it keeps running, so its terminal belongs to the topic:
- * opening another topic puts that topic's terminals on the glass, and the ones
- * left behind keep filling their own buffers (`showTopicTerminals`).
- */
-const views = new Map<string, SessionView>();
 /**
  * The names the room is waiting on: addressed in a post, and not heard from
  * since.
@@ -1326,30 +405,6 @@ const views = new Map<string, SessionView>();
  * (#82).
  */
 const awaiting = new Map<string, Set<string>>();
-/**
- * The account whose terminal is on the glass, in the topic on the glass, or
- * null when none is.
- */
-let shownAccount: string | null = null;
-/**
- * Which account's terminal each topic was showing when it was left, by topic id.
- *
- * So coming back to a topic finds the pane that was being watched in it, and
- * not whichever pane the topic just left had on the glass (#141).
- */
-const shownByTopic = new Map<string, string | null>();
-/** The size every terminal on this screen is currently drawn at, in `px`. */
-let terminalFontSize = DEFAULT_TERMINAL_FONT_SIZE;
-/**
- * Why an account's last launch failed, by `seatKey`, until it is tried again.
- *
- * The status line carries the app's own reason and is the full account of it,
- * but it is one line for the whole screen and the next thing written takes it.
- * A launch that failed leaves nothing else behind — its terminal is discarded,
- * there being no session under it — so without this the row that was pressed
- * goes back to reading 未起動, as though it never had been.
- */
-const launchFailures = new Map<string, string>();
 /**
  * The terminal the open 終了 dialog is asking about, by `seatKey`, or null while
  * it is closed.
@@ -1402,16 +457,6 @@ function shownTopicId(): string {
 /** The roster of the topic on the glass. */
 function shownRoster(): Participant[] {
   return rosters.get(shownTopicId()) ?? [];
-}
-
-/** The terminals of the topic on the glass, in launch order. */
-function topicViews(): SessionView[] {
-  return [...views.values()].filter((view) => view.topicId === shownTopicId());
-}
-
-/** Whether an account holds a seat in any topic. */
-function seatedAnywhere(accountId: string): boolean {
-  return [...seated.values()].some((seat) => seat.account_id === accountId);
 }
 
 function status(text: string, kind: "info" | "error" = "info"): void {
@@ -1473,80 +518,6 @@ function togglePanel(which: keyof PanelState): void {
   saveConfig();
 }
 
-/** The terminal currently on the glass, or null when none is. */
-function shownView(): SessionView | null {
-  return shownAccount === null
-    ? null
-    : (views.get(seatKey(shownTopicId(), shownAccount)) ?? null);
-}
-
-/** What a view is called now — its account's current name, renames included. */
-function viewName(view: SessionView): string {
-  return accounts.find((account) => account.id === view.accountId)?.name || view.name;
-}
-
-/**
- * Lay out the terminal that is showing, and tell its session the new size.
- *
- * Only that one. A hidden pane has no size to fit against, and a session told
- * it has zero columns draws for a window it does not have.
- */
-function fitShown(): void {
-  const view = shownView();
-  if (!view || diagnosticsEl.hidden) return;
-  try {
-    view.fit.fit();
-  } catch {
-    // A fit against a zero-sized container is not worth a message.
-    return;
-  }
-  showWindowSize();
-  if (view.ptyId === "" || view.ended !== null) return;
-  void invoke("resize_pty", {
-    id: view.ptyId,
-    cols: view.term.cols,
-    rows: view.term.rows,
-  }).catch(() => {
-    // The session may have exited between the fit and the call.
-  });
-}
-
-/**
- * Lay out one terminal against the folded pane, without opening the pane.
- *
- * A launch has to hand its PTY a size before the CLI's first paint, and a
- * folded pane has none to measure — the same limit `fitShown` has. So the pane
- * is unfolded for the length of one fit and folded again in the same task: the
- * browser paints nothing in between, and the person sees the pane stay folded
- * (#215).
- *
- * The session is not told anything here. There is none yet, and the size goes
- * out with `start_session`. When the pane is opened later `revealDiagnostics`
- * fits again, which is what catches a window resized in the meantime.
- */
-function fitFolded(view: SessionView): void {
-  if (!diagnosticsEl.hidden) return;
-  diagnosticsEl.hidden = false;
-  try {
-    view.fit.fit();
-  } catch {
-    // Same as `fitShown`: the default size is what the PTY starts at then.
-  } finally {
-    diagnosticsEl.hidden = true;
-  }
-}
-
-/**
- * The size the CLI is laid out for.
- *
- * A TUI that is drawing at the wrong size looks like a broken TUI, and the
- * number it was given is the one thing that says which of the two it is.
- */
-function showWindowSize(): void {
-  const view = shownView();
-  windowEl.textContent = view ? `${view.term.cols}×${view.term.rows}` : "—";
-}
-
 /** Render saved arguments back into an editable line. */
 function joinArgs(args: string[]): string {
   return args.map((arg) => (arg === "" || arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
@@ -1585,177 +556,6 @@ function saveConfig(): Promise<boolean> {
       return false;
     },
   );
-}
-
-/**
- * Fill the text size picker.
- *
- * Labelled as a proportion of the default rather than in `rem`, because the
- * choice being made is "larger or smaller than what I have", and the unit the
- * size happens to be held in answers a question nobody is asking.
- */
-function fillRoomFontSizes(select: HTMLSelectElement): void {
-  for (const size of ROOM_FONT_SIZES) {
-    const option = document.createElement("option");
-    option.value = String(size);
-    option.textContent = `${Math.round((size / DEFAULT_ROOM_FONT_SIZE) * 100)}%`;
-    select.appendChild(option);
-  }
-}
-
-/**
- * The stored size, or the default.
- *
- * Only a size that is on the ladder is honoured. What is in `localStorage` was
- * written by some version of this app and can be anything — a rung that a
- * later version dropped, a value left by hand, or nothing at all — and the
- * failure it would cause is silent: a size off the ladder cannot be stepped
- * from, so the keys and the picker would both stop working with nothing on
- * screen saying why.
- */
-function storedRoomFontSize(): number {
-  const stored = Number(localStorage.getItem(ROOM_FONT_SIZE_KEY));
-  return ROOM_FONT_SIZES.includes(stored) ? stored : DEFAULT_ROOM_FONT_SIZE;
-}
-
-/**
- * Draw the conversation at `size`, and remember it if it was chosen.
- *
- * The property goes on the two elements that render the conversation's words —
- * `#room` and the composer's text (`#input`) — and on one element besides, the
- * participant panel, for its circle alone (below). What is typed is
- * the same sentence that is then read, so the two move together (#81). Their
- * nearest shared ancestor is `#conversation`, which also holds the diagnostics
- * pane and the status line; setting it there, or on the root, would reach
- * surfaces that are not on this axis, and the terminal computes its columns and
- * rows from its own size. Two `setProperty` calls make the scope the placement
- * itself, so nothing has to be cancelled anywhere.
- *
- * The row under the text — 宛先, the keys, 送信 (#222) — and the list `@` opens
- * sit in the composer but do not follow. They are controls, not the sentence,
- * and they stay on the whole-UI axis (#66, #204).
- *
- * The participant panel takes the property too (#260), and only its circle
- * reads it there: that circle is sized against the room's circle (#258), so it
- * has to move with the same size. The panel's text and controls stay on the
- * whole-UI axis.
- *
- * `save` is false for the restore at startup. Writing the value back there
- * would put a size in storage for a screen that never chose one, which is the
- * one state this is supposed to leave alone.
- */
-function applyRoomFontSize(size: number, save: boolean): void {
-  roomFontSize = size;
-  // Divided by the UI's multiple, so the size is this axis's alone: the root a
-  // `rem` is counted from is what the UI scale moves (#194), and dividing it back
-  // out is what keeps the two axes from riding on each other.
-  const value = `calc(${size}rem / var(--ui-scale))`;
-  roomEl.style.setProperty("--room-font-size", value);
-  inputEl.style.setProperty("--room-font-size", value);
-  participantsEl.style.setProperty("--room-font-size", value);
-  // The lines change height with the size, and so does the distance to the foot.
-  syncScrollLatest();
-  // Kept in step with the keys, which move the size without the picker.
-  settingsRoomFontSizeEl.value = String(size);
-  if (save) localStorage.setItem(ROOM_FONT_SIZE_KEY, String(size));
-}
-
-/**
- * Move one rung, or back to the default when `step` is zero.
- *
- * The ends hold: stepping past either one lands on it again, so there is no
- * size to reach that cannot be read or does not fit.
- */
-function stepRoomFontSize(step: number): void {
-  if (step === 0) {
-    applyRoomFontSize(DEFAULT_ROOM_FONT_SIZE, true);
-    return;
-  }
-  const at = ROOM_FONT_SIZES.indexOf(roomFontSize);
-  const next = Math.min(Math.max(at + step, 0), ROOM_FONT_SIZES.length - 1);
-  applyRoomFontSize(ROOM_FONT_SIZES[next], true);
-}
-
-/** Fill a terminal size picker. Labelled in `px`; see the ladder above. */
-function fillTerminalFontSizes(select: HTMLSelectElement): void {
-  for (const size of TERMINAL_FONT_SIZES) {
-    const option = document.createElement("option");
-    option.value = String(size);
-    option.textContent = `${size}px`;
-    select.appendChild(option);
-  }
-}
-
-/**
- * The stored terminal size, or the default.
- *
- * Only a size on the ladder is honoured, for the reason `storedRoomFontSize`
- * gives: a value off it cannot be stepped from, so the picker would stop working
- * with nothing on screen saying why.
- */
-function storedTerminalFontSize(): number {
-  const stored = Number(localStorage.getItem(TERMINAL_FONT_SIZE_KEY));
-  return TERMINAL_FONT_SIZES.includes(stored) ? stored : DEFAULT_TERMINAL_FONT_SIZE;
-}
-
-/**
- * Draw every terminal at `size`, and remember it if it was chosen.
- *
- * Every one, not only the one on the glass. The size is the screen's, so a pane
- * switched to later must not be the odd one out; and a terminal opened after
- * this reads the same value (`openView`).
- *
- * The re-fit that follows only reaches the shown pane, which is the same limit
- * `fitShown` has always had — a hidden container has no size to measure against.
- * The others are laid out when they are next shown, because `showView` fits what
- * it puts on the glass. Their sessions are told the new column count at that
- * moment rather than this one.
- *
- * `save` is false for the restore at startup, so a screen that never chose is
- * not given a stored size by being opened.
- */
-function applyTerminalFontSize(size: number, save: boolean): void {
-  terminalFontSize = size;
-  for (const view of views.values()) view.term.options.fontSize = size;
-  settingsTerminalFontSizeEl.value = String(size);
-  if (save) localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(size));
-  fitShown();
-}
-
-/** Fill the UI scale picker. Labelled as a percentage, as #60's is. */
-function fillUiScales(): void {
-  for (const scale of UI_SCALES) {
-    const option = document.createElement("option");
-    option.value = String(scale);
-    option.textContent = `${Math.round((scale / DEFAULT_UI_SCALE) * 100)}%`;
-    settingsUiScaleEl.appendChild(option);
-  }
-}
-
-/**
- * The stored UI scale, or the default. Only a rung on the ladder is honoured,
- * for the reason `storedRoomFontSize` gives.
- */
-function storedUiScale(): number {
-  const stored = Number(localStorage.getItem(UI_SCALE_KEY));
-  return UI_SCALES.includes(stored) ? stored : DEFAULT_UI_SCALE;
-}
-
-/**
- * Draw the UI at `scale`, and remember it if it was chosen.
- *
- * One property on `:root`, which src/styles.css turns into the root's
- * `font-size`. The conversation divides it back out and the terminal is in `px`,
- * so neither moves (see `UI_SCALE_KEY`). The terminal's pane does change size
- * when the chrome around it grows, and the `ResizeObserver` on it re-fits and
- * tells the session, as it does for any other change to the pane's size.
- *
- * `save` is false for the restore at startup, as for the two other axes.
- */
-function applyUiScale(scale: number, save: boolean): void {
-  document.documentElement.style.setProperty("--ui-scale", String(scale));
-  settingsUiScaleEl.value = String(scale);
-  if (save) localStorage.setItem(UI_SCALE_KEY, String(scale));
 }
 
 /**
@@ -2124,30 +924,6 @@ function placeDay(ts: string): void {
  */
 const LEGACY_NOTICE_SPEAKER = "webhook";
 
-/**
- * The fold a line goes into, or null for a line drawn as it stands (#169 / #193).
- *
- * A line said as an `mcp` account is folded: what a local MCP server says is a
- * notice, and a run of notices is not read line by line. Decided on the account
- * the line carries, which a live line and one read back from the log both have
- * (`LoggedPost`) — so the two fold alike, and a rename or a second account on the
- * same name moves nothing. The kind is this screen's list's: an account deleted
- * since is no longer one, and its lines are drawn as they stand.
- *
- * Folds are one account's: a run under one server is one fold, and another
- * server speaking starts a fold of its own. The fold is drawn in the account's
- * colour and headed with its name as it is now, the live and the read-back alike
- * — the account is this screen's to read, as the screen person's own is (#189).
- */
-interface Fold {
-  key: string;
-  /** The account the fold is, or null for the legacy name — whose image heads
-   *  the fold when it carries one (#236). */
-  account: string | null;
-  label: string;
-  colour: string;
-}
-
 function foldOf(speaker: string, account: string | null | undefined): Fold | null {
   if (account) {
     const owner = accounts.find((one) => one.id === account);
@@ -2405,40 +1181,6 @@ function drawTopic(posts: LoggedPost[]): void {
   // topic opened is a place arrived at, not a line arriving (#307).
   roomGliding = false;
   scrollRoomToLatest("instant");
-}
-
-/**
- * A Claude Code seat's permission prompt, held open for the room's answer
- * (#336, `hook_activity::HookSeats`). What the tool's input says is on the
- * card and nowhere else: the card is not a post, so it is not in the topic's
- * log and is typed into no terminal.
- */
-interface PermissionCard {
-  id: string;
-  topic_id: string;
-  account_id: string;
-  pty_id: string;
-  at: string;
-  tool_name: string;
-  /** The MCP server, for a tool of one. */
-  server: string | null;
-  tool: string;
-  /** The subagent's type, when a subagent asked. */
-  agent_type: string | null;
-  fields: { name: string; value: string; cut: boolean }[];
-  more_fields: number;
-  /** The rules 常に許可 would add, one line each. */
-  always_rules: string[];
-  can_always: boolean;
-  hold_secs: number;
-}
-
-/** How a held prompt ended: the button the room sent, or how it was let go. */
-interface PermissionResolved {
-  id: string;
-  topic_id: string;
-  account_id: string;
-  outcome: "deny" | "allow" | "always" | "elsewhere" | "closed" | "timeout";
 }
 
 /** The prompts still waiting on the room, by id, in every topic. */
@@ -2764,7 +1506,7 @@ function topicRow(topic: Topic): HTMLLIElement {
  * pressed ▶ just now in a topic that was then left.
  */
 function runsIn(topicId: string): boolean {
-  return [...seated.values()].some((seat) => seat.topic_id === topicId);
+  return [...sessions.allSeats()].some((seat) => seat.topic_id === topicId);
 }
 
 /**
@@ -2891,7 +1633,7 @@ async function openTopic(topic: Topic): Promise<void> {
 async function enterTopic(topic: TopicRef): Promise<void> {
   // The pane being watched in the topic being left, kept for coming back.
   const leaving = shownTopicId();
-  if (leaving !== "") shownByTopic.set(leaving, shownAccount);
+  if (leaving !== "") sessions.rememberSelection(leaving);
   currentTopic = topic;
   try {
     renderRoster(
@@ -2904,24 +1646,6 @@ async function enterTopic(topic: TopicRef): Promise<void> {
   }
   showTopicTerminals();
   renderTopics();
-}
-
-/**
- * Show the terminals of the topic on the glass, and the pane that topic was
- * last watching.
- *
- * The other topics' terminals are hidden, never discarded. Their sessions are
- * running (#141, decision 2), their output keeps arriving into their own
- * emulators, and coming back finds each scrollback where it was left.
- */
-function showTopicTerminals(): void {
-  const remembered = shownByTopic.get(shownTopicId()) ?? null;
-  const here = topicViews();
-  const pick =
-    remembered !== null && here.some((view) => view.accountId === remembered)
-      ? remembered
-      : (here.pop()?.accountId ?? null);
-  showView(pick);
 }
 
 /**
@@ -2981,7 +1705,7 @@ async function runningNamesInTopic(topicId: string): Promise<string[]> {
   try {
     held = await invoke<SeatedAccount[]>("seated_accounts");
   } catch {
-    held = [...seated.values()];
+    held = [...sessions.allSeats()];
   }
   return held
     .filter((seat) => seat.session !== null && seat.topic_id === topicId)
@@ -3028,7 +1752,7 @@ async function deleteTopic(topic: Topic): Promise<void> {
     const moved = await invoke<TopicRef | null>("room_delete_topic", {
       topicId: topic.topic_id,
     });
-    for (const view of [...views.values()]) {
+    for (const view of [...sessions.allViews()]) {
       if (view.topicId === topic.topic_id) discardView(view);
     }
     if (moved) {
@@ -3038,7 +1762,7 @@ async function deleteTopic(topic: Topic): Promise<void> {
     // After the move, which records what the topic being left was showing.
     rosters.delete(topic.topic_id);
     awaiting.delete(topic.topic_id);
-    shownByTopic.delete(topic.topic_id);
+    sessions.forgetSelection(topic.topic_id);
     renderTopics();
     status(`トピック「${topicName(topic)}」を削除しました。`);
   } catch (err) {
@@ -3131,21 +1855,6 @@ function drawMissed(missed: MissedPost[]): number {
   return drew;
 }
 
-/**
- * One line of the participant list: an account, whoever is in the room as it,
- * or both.
- *
- * Both halves are optional, and each absence is a real state rather than a
- * defect. An account with no participant is someone who exists and is not
- * running (#53). A participant with no account is a connection that declared
- * none — the room does not presume one exists, and something joining from
- * outside this app has none to declare (#59).
- */
-interface Member {
-  account: Account | null;
-  participant: Participant | null;
-}
-
 /** Which group a row falls in, and the heading it is drawn under. */
 const GROUPS: { kind: AccountKind | "guest"; label: string }[] = [
   { kind: "admin", label: "admin" },
@@ -3205,75 +1914,6 @@ function memberName(row: Member): string {
   return row.participant?.name ?? row.account?.name ?? "";
 }
 
-// ── what a running account is doing ──────────────────────────────────────────
-//
-// The row could say whether an account was running and nothing more: the four
-// words it had — 未起動 / 起動中 / 終了 / 起動失敗 — all come from whether a
-// process exists. What follows adds the two things this screen can observe about
-// one that does, and stops there (#82):
-//
-//   the room's round trip — addressed in a post, not heard from since
-//   the byte stream     — output arriving at this account's terminal
-//
-// Neither reads what the CLI printed. Reading it is the only way to tell 考え中
-// from ツール使用中, and it is a separate implementation per CLI that breaks
-// whenever the other side changes its display, so it is refused here and judged
-// on its own (#82 決まったこと).
-//
-// Both words are gated on output still arriving, and that gate is the design
-// rather than an optimisation. A word that outlives the thing it describes is
-// worse than no word at all, and being addressed has no end of its own: a
-// session that is asked something and then sits at a confirmation prompt never
-// answers, so 考え中 on the address alone would stand there for as long as the
-// app is open — which is exactly the shape the issue named as the worst one.
-// What stands there instead is 待機, and it claims only the silence itself —
-// a quiet window this screen timed — not what the CLI is silent about (#148).
-
-/**
- * Note that this session is printing, and arm its fall back to silence.
- *
- * Called once per chunk, and cheap on purpose: the timer is pushed forward every
- * time, and the panel is redrawn only on the edge where the word appears.
- */
-function markOutput(view: SessionView): void {
-  armQuiet(view);
-  view.silent = false;
-  if (view.outputting) return;
-  view.outputting = true;
-  renderPanel();
-}
-
-/**
- * Start (or restart) the clock that turns this terminal's silence into 待機.
- *
- * Armed by every byte, and once when the session is attached, so a session that
- * prints nothing at all after starting still reaches 待機 after one quiet window
- * rather than saying nothing forever (#148).
- */
-function armQuiet(view: SessionView): void {
-  if (view.quiet !== undefined) clearTimeout(view.quiet);
-  view.quiet = window.setTimeout(() => {
-    view.quiet = undefined;
-    view.outputting = false;
-    view.silent = true;
-    renderPanel();
-  }, OUTPUT_QUIET_MS);
-}
-
-/**
- * Take this session's word down at once, without waiting out the quiet window.
- *
- * For the two ends that are not silence: the session exited, or its terminal was
- * discarded. The timer goes with it — one left armed on a discarded view would
- * redraw the panel from a session nothing else can reach.
- */
-function stopOutput(view: SessionView): void {
-  if (view.quiet !== undefined) clearTimeout(view.quiet);
-  view.quiet = undefined;
-  view.outputting = false;
-  view.silent = false;
-}
-
 /**
  * Read one post for who the room is now waiting on.
  *
@@ -3328,156 +1968,6 @@ function pruneAwaiting(topicId: string): void {
 }
 
 /**
- * Whether the account behind this report has a rate-limit window that is full
- * (#161).
- *
- * Either window is enough, and neither is weighted against the other: a session
- * that cannot spend against its five-hour window is stopped whether or not its
- * week has room, and the other way round (決定1).
- *
- * `>=` rather than `===`, because a spend limit may report past 100% (決定7;
- * the docs line is the issue's citation, not one read here). A window the CLI
- * did not report is not a window at 0: null is absent, and an absent window
- * says nothing either way — the same line the panel's `—` stands on.
- *
- * Read off the last report and nothing else, which is what makes the word clear
- * itself: the next report carrying a lower percentage is the word going away,
- * with no edge to catch and no burst to wait for (決定2). What it costs is what
- * 決定4 accepted — a report arrives only while the session is moving, so an
- * account that stopped and then hit its limit says nothing until it moves
- * again, and one whose limit has lifted keeps the word until then.
- */
-function limitedByUsage(stats: SessionStats | null): boolean {
-  if (!stats) return false;
-  // A Codex seat: the app's word, not the percentages, which were seen stuck
-  // at 99 for a seat that had stopped (#294).
-  if (stats.limited !== null && stats.limited !== undefined) return stats.limited;
-  return (stats.five_hour ?? 0) >= 100 || (stats.seven_day ?? 0) >= 100;
-}
-
-/**
- * What a running account is doing, in the one word the row has room for.
- *
- * 考え中… when the room is waiting on this name, 出力中 otherwise, and 待機 once
- * the terminal has been silent for a whole quiet window (#148).
- *
- * 待機 says that the terminal is silent and nothing more. A CLI waiting for input
- * and one stopped at a confirmation prompt both read as 待機 — telling them apart
- * means reading what the CLI printed, which #82 refused and #148 keeps refused.
- * It is left uncoloured: the coloured words are the ones that say an utterance is
- * still under way, and 待機 is where that ends.
- *
- * 制限中 is the one silence that is told apart, and it is told apart without
- * reading anything: the CLI's own status line reports its rate-limit
- * percentages, and 100% of either window is the limit (`limitedByUsage`, #161).
- * The word says that the account's window is full, which is narrower than
- * "cannot run" and wider than the turn-level signal it replaced. It stays
- * uncoloured beside 待機 for the same reason.
- *
- * The order is not a preference between two equal signals. Both words stand on
- * the same observation — this terminal is printing — and the address is what says
- * why: the account owes the room an answer and has not given it. That is strictly
- * more than the other word says, so a row that could say both says that one.
- *
- * 出力中 rather than 動作中 for what is left. What was observed is that bytes
- * arrived, and a CLI repainting the prompt it is waiting at is producing output
- * without doing any work — 動作中 would be a claim about the CLI that this screen
- * has no way to check, and it would be wrong in exactly the case the issue
- * measured on the device (an `Enter to confirm` prompt). Both words are three
- * characters or so, inside the width 起動失敗 already costs the name beside it,
- * so neither buys anything back at the panel's 16.5rem (#71).
- *
- * A Codex seat launched through its own app-server reports more, and that
- * report comes first (#326): 許可待ち and 答え待ち, and the kind of work under
- * way (実行中, 編集中, ツール…). It does not reopen #82 — nothing is read off
- * the terminal; the server sends the state as data, the way 制限中 arrives. Its
- * badge words stay within 起動失敗's four characters; the longer form, with a
- * tool's name, is the badge's title and what the line under the room says.
- *
- * A Claude Code seat reports through its hooks the same way (#331): 許可待ち,
- * ツール with the tool's name, and 委任中 for a running subagent, in that order.
- * It has no thread status, so with no word the terminal's words stand.
- *
- * The same seat's thread status settles 待機 (#329). A connected seat whose
- * thread its server says is idle is 待機 (制限中 when limited) whatever the
- * terminal does: a TUI that keeps repainting kept the row at 出力中 with
- * nothing running. An active thread with no word — reasoning, writing the
- * answer — and a seat whose connection has not yet carried a turn keep the terminal's
- * words, as before. A confirmed Claude parent rejection comes first (#342).
- * Otherwise the order, top first: the report's word (許可待ち / 答え待ち,
- * then the kind of work), idle → 制限中 / 待機, 考え中… / 出力中, 制限中,
- * 様子不明, 待機 from the terminal's silence.
- */
-function activityNote(name: string, view: SessionView | undefined): RowWord {
-  if (!view || view.ended !== null) return NO_WORD;
-  // A seat's own report — a Codex app-server seat's (#326), a Claude Code
-  // seat's hooks (#331) — outranks the screen's. It is
-  // structured, not read off the terminal, and it says more: 許可待ち where the
-  // terminal repainting its prompt would say 出力中 and its silence 待機, and
-  // which work is under way where the bytes would say only that they arrived.
-  // Confirmed parent rejection outranks leftover delegation and PTY repaint (#342).
-  // So does a Codex seat the app found stopped at its usage limit (#372): the
-  // server says systemError there, not idle, so the idle rule below does not
-  // hold the TUI's repaint back.
-  const limitedSource = view.stats?.limited_source;
-  if ((limitedSource === "claude-parent" || limitedSource === "codex") && view.stats?.limited === true) return { word: "制限中", line: "制限中", kind: "" };
-  const reported = view.activity;
-  if (reported?.word) {
-    return {
-      word: reported.word,
-      line: reported.line ?? reported.word,
-      kind: reported.waiting ? "waiting" : "active",
-    };
-  }
-  // The server says the thread is idle (#329): the terminal's bytes are a
-  // repaint, not work, so they are not read. 制限中 still says which idle.
-  if (reported?.connected && reported.thread_status === "idle") {
-    if (limitedByUsage(view.stats)) return { word: "制限中", line: "制限中", kind: "" };
-    return { word: "待機", line: "待機", kind: "" };
-  }
-  if (view.outputting) {
-    const word = awaiting.get(view.topicId)?.has(name) ? "考え中…" : "出力中";
-    return { word, line: word, kind: "active" };
-  }
-  // 制限中 over 待機, because it says what 待機 cannot: which of the silences
-  // this is (#161, 決定6, carried over from #149). It loses to the two words
-  // above for the same reason 待機 does — output arriving is this screen's own
-  // observation of a session that is going again.
-  if (limitedByUsage(view.stats)) return { word: "制限中", line: "制限中", kind: "" };
-  // The seat's server can no longer be heard (#326). Not 待機: the silence
-  // of the terminal says nothing about whether the seat is waiting on a
-  // prompt or running a command, and the report that would have said so is
-  // gone. Below the words above, which are observed by other means.
-  if (reported && !reported.connected) {
-    return { word: "様子不明", line: "様子不明（app-server との接続が切れた）", kind: "" };
-  }
-  return view.silent ? { word: "待機", line: "待機", kind: "" } : NO_WORD;
-}
-
-function statsForView(stats: SessionStats, view: SessionView): boolean {
-  return stats.pty_id == null || (stats.pty_id === view.ptyId && view.ended === null);
-}
-
-/**
- * What a row says about its session: the badge's word, the longer form the
- * line under the room says and the badge's title carries, and the kind its
- * badge is drawn as.
- *
- * `active` is an utterance still under way — 考え中…, 出力中, and the work a
- * seat reports (#326, #331) — and is what pulses (#307). `waiting`
- * is a seat stopped on the person, 許可待ち or 答え待ち: not ended either, so it
- * is coloured and named under the room like the busy words, but it does not
- * pulse, because nothing is moving. "" is where an utterance has ended.
- */
-interface RowWord {
-  word: string;
-  line: string;
-  kind: "" | "active" | "waiting";
-}
-
-const NO_WORD: RowWord = { word: "", line: "", kind: "" };
-
-/**
  * The word a row in the room says about what its session is doing, or no word
  * when the row says something else or nothing (#82).
  *
@@ -3490,9 +1980,9 @@ const NO_WORD: RowWord = { word: "", line: "", kind: "" };
 function rowActivity(row: Member): RowWord {
   if (!row.participant || row.participant.own) return NO_WORD;
   if (row.account?.kind === "mcp" && mcpServerOf(row.account)) return NO_WORD;
-  const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
+  const view = row.account ? sessions.getView(seatKey(shownTopicId(), row.account.id)) : undefined;
   if (view != null && view.ended === null && view.ptyId === "") return NO_WORD;
-  return activityNote(memberName(row), view);
+  return activityNote(view, awaiting.get(view?.topicId ?? "")?.has(memberName(row)) ?? false);
 }
 
 /**
@@ -3569,7 +2059,7 @@ function memberRow(row: Member): HTMLLIElement {
   const own = row.participant?.own ?? false;
   // This topic's terminal for the account. The same account may be running in
   // another topic too, and that session is that topic's row (#141).
-  const view = row.account ? views.get(seatKey(shownTopicId(), row.account.id)) : undefined;
+  const view = row.account ? sessions.getView(seatKey(shownTopicId(), row.account.id)) : undefined;
   // The server an `mcp` account is. It takes no seat, so what says it is here
   // is the server running, not the roster (#193).
   const server = row.account?.kind === "mcp" ? mcpServerOf(row.account) : null;
@@ -3599,7 +2089,7 @@ function memberRow(row: Member): HTMLLIElement {
   // window (`startSession`).
   const launching = view != null && view.ended === null && view.ptyId === "";
   const failure = row.account
-    ? launchFailures.get(seatKey(shownTopicId(), row.account.id))
+    ? sessions.launchFailure(seatKey(shownTopicId(), row.account.id))
     : undefined;
 
   // What this line says about itself beyond the name. Someone present and not
@@ -3671,7 +2161,7 @@ function memberRow(row: Member): HTMLLIElement {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "pick";
-    button.setAttribute("aria-pressed", String(view.accountId === shownAccount));
+    button.setAttribute("aria-pressed", String(view.accountId === sessions.selectedAccount()));
     button.title = `${name} の端末を見る`;
     // Picking is selection, and the pane's fold is not part of it. A folded
     // pane stays folded: the pick moves which terminal is chosen, the row's
@@ -3684,7 +2174,7 @@ function memberRow(row: Member): HTMLLIElement {
       showView(view.accountId);
       if (!folded) view.term.focus();
     });
-    if (view.accountId === shownAccount) entry.classList.add("shown");
+    if (view.accountId === sessions.selectedAccount()) entry.classList.add("shown");
     pick = button;
   } else {
     pick = document.createElement("div");
@@ -3886,7 +2376,7 @@ let menuAccountId: string | null = null;
  * that field (`openAccountDialog`).
  */
 function openAccountMenu(account: Account, at: { x: number; y: number }): void {
-  const view = views.get(seatKey(shownTopicId(), account.id));
+  const view = sessions.getView(seatKey(shownTopicId(), account.id));
   accountMenuEl.replaceChildren();
 
   const item = (label: string, drawing: Element, act: () => void): HTMLButtonElement => {
@@ -4004,7 +2494,7 @@ function closeAccountMenu(restore: boolean): void {
  * as a terminal picked from its tab does.
  */
 function openTerminalOf(accountId: string): void {
-  const view = views.get(seatKey(shownTopicId(), accountId));
+  const view = sessions.getView(seatKey(shownTopicId(), accountId));
   if (!view) return;
   showView(accountId);
   revealDiagnostics();
@@ -4024,7 +2514,7 @@ function startFromMenu(accountId: string): void {
   // The session may have been started, from the row or another menu, while
   // the menu stood. `startSession` refuses a held seat as well; this keeps the
   // press from reaching that refusal.
-  const view = views.get(seatKey(shownTopicId(), accountId));
+  const view = sessions.getView(seatKey(shownTopicId(), accountId));
   if (view && view.ended === null) return;
   void startSession(account);
 }
@@ -4035,7 +2525,7 @@ function startFromMenu(accountId: string): void {
  */
 function endFromMenu(accountId: string): void {
   const key = seatKey(shownTopicId(), accountId);
-  const view = views.get(key);
+  const view = sessions.getView(key);
   // The session may have ended, or the topic changed, while the menu stood.
   if (!view || view.ended !== null || view.ptyId === "") return;
   openEndDialog(key, viewName(view));
@@ -4067,105 +2557,6 @@ function onAccountMenuKey(event: KeyboardEvent): void {
       return;
   }
   event.preventDefault();
-}
-
-/**
- * One tab: an open terminal, named by the account it belongs to.
- *
- * The name rather than the command it was launched from. The command is on the
- * row's `title` and in the account's own form, and a strip of `claude` repeated
- * once per session tells two sessions apart by nothing at all.
- *
- * The colour is the account's, the same one its lines carry in the room and its
- * circle carries in the panel — which is what lets a tab and a row be read as one
- * participant rather than as two names that happen to match.
- *
- * ✕ appears on an ended tab and on no other. On a running one it would be read
- * as "end this session", and ending a session is 終了 on the row, asked in a
- * dialog and answered there (#57 / #71); a second, plainer way to do it beside a
- * control that merely changes what is showing is the slip those two were built
- * against (#68).
- */
-function terminalTab(view: SessionView): HTMLElement {
-  const name = viewName(view);
-  const account = accounts.find((one) => one.id === view.accountId) ?? null;
-  const shown = view.accountId === shownAccount;
-
-  const tab = document.createElement("div");
-  tab.className = "tab";
-  // Never oneself: a terminal belongs to a session, and the person at this
-  // screen is not launched (`start_session` refuses an `admin` account).
-  tab.style.setProperty("--speaker", speakerColor(name, account?.hue ?? null, false));
-  if (shown) tab.classList.add("shown");
-  if (view.ended !== null) tab.classList.add("ended");
-
-  const pick = document.createElement("button");
-  pick.type = "button";
-  pick.className = "name";
-  pick.textContent = name;
-  pick.title = view.ended === null ? `${name} の端末` : `${name} の端末（${endedNote(view)}）`;
-  pick.setAttribute("aria-pressed", String(shown));
-  pick.addEventListener("click", () => {
-    showView(view.accountId);
-    view.term.focus();
-  });
-  tab.appendChild(pick);
-
-  if (view.ended !== null) {
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "close";
-    close.appendChild(icon("close"));
-    close.title = `${name} の端末を閉じる`;
-    close.setAttribute("aria-label", `${name} の端末を閉じる`);
-    close.addEventListener("click", () => closeView(view));
-    tab.appendChild(close);
-  }
-
-  return tab;
-}
-
-/**
- * Draw the tab strip: every terminal this screen holds, in launch order.
- *
- * Drawn from `views`, which is the same source the rows read to decide whether
- * they are a picker — so the tabs and the rows cannot disagree about what is
- * open. That they are two renderings of one selection is the duplication #59
- * removed from the roster and #68 chose here deliberately: the strip answers
- * "which terminals are open" at the pane being looked at, and the rows answer it
- * only by being read alongside it. Being drawn together is what keeps the
- * accepted duplication from becoming a divergence.
- */
-function renderTerminalTabs(): void {
-  tabsEl.replaceChildren();
-  // The topic on the glass only. The others' terminals are open and hidden, and
-  // a tab for one would switch the pane to a session of a conversation that is
-  // not the one being read (#141).
-  for (const view of topicViews()) tabsEl.appendChild(terminalTab(view));
-}
-
-/**
- * Close one ended terminal for good, from its tab.
- *
- * This is where "the person has read it" is said now. It used to be said by
- * choosing another account — `showView` discarded an ended terminal the moment
- * one was — and a tab that stays put until it is closed makes that an explicit
- * act instead of a side effect of looking elsewhere (#68). The signal is not
- * lost; it moved.
- *
- * What is on the glass afterwards is the most recently opened of what is left,
- * which is the nearest neighbour in launch order. Nothing left is an honest
- * answer too, and `showView(null)` is it.
- */
-function closeView(view: SessionView): void {
-  const wasShown = view === shownView();
-  discardView(view);
-  if (wasShown) {
-    showView(topicViews().pop()?.accountId ?? null);
-    return;
-  }
-  renderPanel();
-  renderSessionFacts();
 }
 
 /**
@@ -4246,79 +2637,8 @@ function renderRoster(topicId: string, joined: Participant[]): void {
   // connection is gone and the roster no longer remembers it was there (#127).
   // This room's terminals only: the same account arriving in another topic is
   // another session arriving (#141).
-  for (const view of views.values()) {
-    if (view.seenInRoom || view.topicId !== topicId) continue;
-    if (joined.some((one) => one.account === view.accountId)) view.seenInRoom = true;
-  }
+  sessions.receiveRoster(topicId, joined);
   if (topicId === shownTopicId()) renderPanel();
-}
-
-/**
- * Re-read which accounts hold a seat, from the app.
- *
- * The app is the authority because it is what refuses a second launch; a count
- * kept on this side would be a second opinion about the same fact. It is read
- * after a launch and after a session exits, which are the two moments the
- * answer changes.
- */
-async function refreshSeats(): Promise<void> {
-  try {
-    const held = await invoke<SeatedAccount[]>("seated_accounts");
-    seated = new Map(held.map((seat) => [seatKey(seat.topic_id, seat.account_id), seat]));
-  } catch {
-    // The panel keeps the last answer rather than declaring everyone offline
-    // on a failed read. It still redraws: what failed is this one value, and
-    // whatever else moved since the last draw is not held back by it.
-  }
-  await adoptSeats();
-  renderPanel();
-  // The list marks the topics holding a seat, and this is the answer that
-  // changed (#141, AI 判断5).
-  renderTopics();
-}
-
-/**
- * Give a running session its terminal back, wherever this screen has none.
- *
- * The terminals live in the webview and the sessions do not. A reload takes
- * every `SessionView` and leaves every PTY running, so the account is left held
- * by a session this screen has no id for: the row draws 開始 because it finds no
- * view, and 開始 is refused because the seat is taken. No way in and no way out
- * (#84). The app's answer carries the pty id, and subscribing to it again is
- * the whole of the way back.
- *
- * What does not come back is the scrollback — it was in the emulator that went
- * with the old screen, and nothing else ever held it — nor whatever the session
- * printed between the reload and this call. The terminal says so on its first
- * line instead of opening blank, because a blank terminal under 起動中 reads as
- * a session that has printed nothing, and reading what a session last printed
- * is how the person decides whether to end it (#57).
- *
- * Only ever after a reload, never after a restart: the seats are the app's own
- * memory and go with it, so an app that has just started holds none.
- */
-async function adoptSeats(): Promise<void> {
-  const adopted: string[] = [];
-  for (const seat of seated.values()) {
-    // No session yet: the seat is claimed and the launch is still in flight.
-    // Nothing to subscribe to, and it is this screen's own launch in every case
-    // but a reload landing inside that window.
-    if (!seat.session || views.has(seatKey(seat.topic_id, seat.account_id))) continue;
-    const account = accounts.find((one) => one.id === seat.account_id);
-    // An account this screen does not have is one it cannot draw a row for, and
-    // the row is the only way that terminal could be reached. The app refuses
-    // to delete a seated account, so this is a config edited from outside.
-    if (!account) continue;
-    const view = openView(account, seat.topic_id, seat.session);
-    view.term.writeln(RESUMED_NOTICE);
-    await attachSession(view, seat.session.pty_id);
-    adopted.push(viewName(view));
-  }
-  if (!adopted.length) return;
-  // Open, because open is where it was: a session is reloaded out from under
-  // while it is being watched, which is to say while this pane is showing it.
-  revealDiagnostics();
-  status(`${adopted.join("、")} の端末に繋ぎ直しました。再読み込みより前の出力は残っていません。`);
 }
 
 /** The name this screen posts under, and is listed in the roster under. */
@@ -4594,34 +2914,6 @@ function mentionKey(event: KeyboardEvent): boolean {
   return true;
 }
 
-/*
- * Attachments (#223). A post reaches a session as text typed into its
- * terminal (docs/1-room.md 発言は端末へ入る), and a file's contents cannot be
- * typed. So an attached file is saved under the topic and the post carries its
- * path in the text, where a CLI can open it. The tag line is untouched: the
- * paths are text, and the text is what was said.
- *
- * Three ways in — the 添付 button, a drop onto the composer, Ctrl+V of an
- * image — and one chip each above the text, by name, with a ✕ to take it off.
- * Nothing is saved until the post is sent, so a chip taken off leaves nothing
- * behind.
- */
-
-/** One chip. What it was attached from, and where it was saved once it was. */
-type Attachment = {
-  name: string;
-  /** Bytes the webview holds (the button, a paste), or a path a drop named. */
-  source: { file: File } | { path: string };
-  /** Where it was saved, and for which topic. Kept so a post the floor
-   *  refused, sent again, does not save the same file a second time. */
-  saved: { topicId: string; path: string } | null;
-  /** The picture its chip shows, as an object URL over the bytes the webview
-   *  already holds (#318). Only for an image picked or pasted: a dropped file
-   *  is a path outside the attachments folder, and the screen does not read
-   *  one of those. Revoked when the chip goes. */
-  preview: string | null;
-};
-
 let attachments: Attachment[] = [];
 
 /** Let go of the pictures the chips that are gone were showing. */
@@ -4840,9 +3132,6 @@ function codeBlock(code: string, lang: string): HTMLElement {
   block.appendChild(pre);
   return block;
 }
-
-/** One run of a post's words as they are drawn (#349): text, or a link. */
-type TextPiece = { kind: "text" | "url" | "path"; text: string };
 
 /**
  * Where a link may begin, and how far it runs before its end is trimmed
@@ -5176,296 +3465,6 @@ async function send(): Promise<void> {
 }
 
 /**
- * Show what the terminal on the glass was launched from.
- *
- * Read off the shown view rather than written once at launch: with a terminal
- * per account these values answer "what is this pane", and a pane switched away
- * from that left its command on screen would be answering for the wrong one.
- * They survive the session's exit — the question is what ran.
- */
-function renderSessionFacts(): void {
-  const view = shownView();
-  if (!view) {
-    sessionStateEl.textContent = "未起動";
-    sessionStateEl.dataset.kind = "info";
-    transportEl.textContent = "—";
-    commandEl.textContent = "—";
-    dirEl.textContent = "—";
-    dirEl.title = "";
-    startedEl.textContent = "—";
-    windowEl.textContent = "—";
-    renderSessionStats();
-    renderSessionId();
-    return;
-  }
-  const name = viewName(view);
-  sessionStateEl.textContent =
-    view.ended === null
-      ? `${name} 起動中`
-      : view.endRequested
-        ? `${name} 終了`
-        : `${name} 終了（${view.ended}）`;
-  sessionStateEl.dataset.kind = view.ended === null ? "ok" : view.endRequested ? "info" : "error";
-  transportEl.textContent = "PTY";
-  commandEl.textContent = view.command;
-  dirEl.textContent = view.cwd ?? "—";
-  dirEl.title = view.cwd ?? "";
-  startedEl.textContent = view.startedAt === "" ? "—" : shortTime(view.startedAt);
-  showWindowSize();
-  renderSessionStats();
-  renderSessionId();
-}
-
-/**
- * A percentage as this column shows one: a whole number.
- *
- * The CLI sends a fraction (`23.5`), and the column is the narrow half of a
- * 16.5rem panel. The tenth would cost a character in every one of three rows to
- * say something nobody reads a usage bar that closely for.
- *
- * Floored, not rounded (#370): 100% has to mean the limit is reached. Rounded,
- * 99.5% read as 100% while the provider still had 1% left to give.
- */
-function usedPercent(value: number | null): string {
-  return value === null ? "—" : `${Math.floor(value)}%`;
-}
-
-/**
- * Show what the terminal on the glass last said about itself (#155).
- *
- * `—` for a pane with no terminal, and for one whose session has not reported
- * yet. The two are the same answer here on purpose: what a row would otherwise
- * show is a value this screen does not have, and #82's line — no word for a
- * state nobody observed — is the same line one column over.
- *
- * Not cleared when the session ends or falls quiet. The status line runs when
- * the session runs, so these rows stand at the last thing that was reported
- * (decision 4); a row blanked on silence would say the session stopped using a
- * context window it is still holding.
- *
- * The one exception is the reset text of the 5-hour and weekly windows (#306,
- * #320): it is kept against the clock, not against reports, and is taken off
- * once the reset passes (`resetIn`, `resetAt`, `scheduleResetTick`).
- */
-function renderSessionStats(): void {
-  const stats = shownView()?.stats ?? null;
-  const now = Date.now();
-  statsEls.model.textContent = stats?.model ?? "—";
-  statsEls.effort.textContent = stats?.effort ?? "—";
-  renderUsage(
-    statsEls.five_hour,
-    stats?.five_hour ?? null,
-    resetIn(stats?.five_hour_resets_at ?? null, now),
-  );
-  renderUsage(
-    statsEls.seven_day,
-    stats?.seven_day ?? null,
-    resetAt(stats?.seven_day_resets_at ?? null, now),
-  );
-  renderUsage(statsEls.context, stats?.context ?? null);
-  scheduleResetTick(stats, now);
-}
-
-/**
- * The time left until the 5-hour window resets, as its row says it beside the
- * number (#306, #320): `4時間10分後にリセット`, the form Claude Desktop shows.
- *
- * Counted in whole minutes, rounded up, so the line never says 0分 while the
- * window is still running. A day or more drops the minutes, which nobody reads
- * a weekly window that closely for.
- *
- * `null` — no line — when no reset was reported, and once the reset has
- * passed. The value is not shown stale: the window has started over, and what
- * the next report says about it is the CLI's to tell.
- */
-function resetIn(resetsAt: number | null, now: number): string | null {
-  if (resetsAt === null) return null;
-  const left = resetsAt * 1000 - now;
-  if (!(left > 0)) return null;
-  const minutes = Math.ceil(left / 60_000);
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  const rest = minutes % 60;
-  let text: string;
-  if (days > 0) text = hours > 0 ? `${days}日${hours}時間` : `${days}日`;
-  else if (hours > 0) text = rest > 0 ? `${hours}時間${rest}分` : `${hours}時間`;
-  else text = `${rest}分`;
-  return `${text}後にリセット`;
-}
-
-/** The one-character weekday `resetAt` names, Sunday first as `getDay` counts. */
-const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
-
-/**
- * When the weekly window resets, as its row says it beside the number (#320):
- * `2:00 (月) にリセット`, local time with the weekday, the form Claude Desktop
- * shows for its weekly row. The hour carries no leading zero; the minutes do.
- *
- * A time and not a countdown: a week away is read as a day and an hour, not as
- * a number of hours. The text only changes when it goes — `null`, no text, when
- * no reset was reported and once the reset has passed, as `resetIn`.
- */
-function resetAt(resetsAt: number | null, now: number): string | null {
-  if (resetsAt === null) return null;
-  if (!(resetsAt * 1000 - now > 0)) return null;
-  const at = new Date(resetsAt * 1000);
-  const minutes = String(at.getMinutes()).padStart(2, "0");
-  return `${at.getHours()}:${minutes} (${WEEKDAYS[at.getDay()]}) にリセット`;
-}
-
-/** The timer that redraws the rows when a reset text next changes (#306). */
-let resetTick: number | null = null;
-
-/**
- * Redraw the rows at the next moment one of their reset lines changes: when
- * the time left of either window next crosses a whole minute, which is also
- * the moment a passed reset leaves the screen. One timer, for the pane on the
- * glass; nothing is scheduled while no reset is counting down.
- */
-function scheduleResetTick(stats: SessionStats | null, now: number): void {
-  if (resetTick !== null) {
-    window.clearTimeout(resetTick);
-    resetTick = null;
-  }
-  const lefts = [stats?.five_hour_resets_at, stats?.seven_day_resets_at]
-    .filter((at): at is number => typeof at === "number")
-    .map((at) => at * 1000 - now)
-    .filter((left) => left > 0);
-  if (lefts.length === 0) return;
-  const next = Math.min(...lefts.map((left) => left % 60_000 || 60_000));
-  // A little past the crossing, so the redraw lands on the far side of it.
-  resetTick = window.setTimeout(() => {
-    resetTick = null;
-    renderSessionStats();
-  }, next + 50);
-}
-
-/**
- * One usage row: the number, and a bar under the same value (#225).
- *
- * `—` with no bar while nothing has been reported — an empty bar would say 0%,
- * and not yet knowing is not that (#155). The bar is capped at full; the number
- * is not, because a spend limit can go past 100% and the number is what says by
- * how much. At 100% or over the bar takes the danger colour, the line 制限中
- * stands on (#161).
- *
- * Laid out as Claude Desktop lays it out (#320): the reset text, when there is
- * one, and the number make one line at the right of the label; the bar is a
- * line of its own under them, across the panel (`.usage-row` in the styles).
- * `reset` is given for the 5-hour and weekly rows (`resetIn`, `resetAt`) and is
- * left out on a row reading `—`. Where the line is too narrow the reset text
- * gives way with an ellipsis, the whole of it kept in its title; the number
- * never does.
- */
-function renderUsage(cell: HTMLElement, value: number | null, reset: string | null = null): void {
-  const line = document.createElement("span");
-  line.className = "line";
-  const text = document.createElement("span");
-  text.className = "value";
-  text.textContent = usedPercent(value);
-  if (value === null) {
-    line.appendChild(text);
-    cell.replaceChildren(line);
-    return;
-  }
-  if (reset !== null) {
-    const until = document.createElement("span");
-    until.className = "reset";
-    until.textContent = reset;
-    until.title = reset;
-    line.appendChild(until);
-  }
-  line.appendChild(text);
-  const meter = document.createElement("span");
-  meter.className = "meter";
-  const fill = document.createElement("span");
-  fill.className = "fill";
-  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
-  if (value >= 100) fill.dataset.kind = "error";
-  meter.appendChild(fill);
-  cell.replaceChildren(line, meter);
-}
-
-/**
- * The session id the topic index holds for the shown pane's account.
- *
- * Read from the index and not from the launch's answer (#139, decision 1). The
- * record is what outlives the app, so reopening it and opening the topic shows
- * the same value; and it is what `forget_session` takes away, so a record that
- * went takes the value off the screen with it rather than leaving an id nothing
- * can resume into. Redrawn whenever the index is, since a launch records its id
- * after the pane already exists.
- *
- * The topic is the pane's own — the one its launch went into. Every pane on the
- * glass belongs to the topic on the glass (#141), and reading the pane's own is
- * what keeps that true by construction rather than by agreement. Before the
- * launch answers there is no record to read yet, and the row reads — like the
- * other values that wait on the launch.
- *
- * なし is a value, not a blank: an account whose launch line declares no id, or
- * a record that is gone, leaves nothing to resume by hand, and saying so is
- * different from not yet knowing (#139, decision 2).
- */
-function renderSessionId(): void {
-  const view = shownView();
-  let id: string | null = null;
-  let known = false;
-  if (view && view.ptyId !== "") {
-    known = true;
-    id = topics.find((topic) => topic.topic_id === view.topicId)?.sessions[view.accountId] ?? null;
-  } else if (!view) {
-    // No pane on the glass: after a restart there is none, and the record is
-    // still there to read (#144, decision 1). Whose record is `idleAccount`'s
-    // answer; the topic is the one open, because no launch has named another.
-    const accountId = idleAccount();
-    const topic = topics.find((one) => one.topic_id === shownTopicId());
-    if (accountId !== null && topic) {
-      known = true;
-      id = topic.sessions[accountId] ?? null;
-    }
-  }
-  sessionIdEl.textContent = id ?? (known ? "なし" : "—");
-  sessionIdEl.title = id ?? "";
-  sessionIdCopyEl.hidden = id === null;
-  sessionIdCopyEl.dataset.id = id ?? "";
-}
-
-/**
- * The account the panel's values speak for while no terminal is on the glass.
- *
- * The row chosen in the list when there is one, and otherwise the first account
- * that launches, in the order the list draws them (#144, decision 1). An `admin`
- * account has no session to have recorded, so it is never the fallback; which
- * CLI the others launch does not enter into it. Once a terminal is on the glass
- * this is not asked: the values follow the pane again (decision 2).
- */
-function idleAccount(): string | null {
-  const launched = members()
-    .filter((row) => row.account !== null && launches(row.account))
-    .sort((a, b) => memberName(a).localeCompare(memberName(b)))
-    .map((row) => row.account!.id);
-  if (shownAccount !== null && launched.includes(shownAccount)) return shownAccount;
-  return launched[0] ?? null;
-}
-
-/**
- * Copy the shown session id, for a `--resume` typed by hand (#139, decision 3).
- *
- * The value copied is the one on screen, not a re-read: what the person saw is
- * what they get.
- */
-async function copySessionId(): Promise<void> {
-  const id = sessionIdCopyEl.dataset.id ?? "";
-  if (id === "") return;
-  try {
-    await writeText(id);
-    status(`セッション ID をコピーしました: ${id}`);
-  } catch (err) {
-    status(`セッション ID をコピーできませんでした: ${err}`, "error");
-  }
-}
-
-/**
  * Ask whether one account's session is to end. Nothing ends until answered.
  *
  * Ending a session cannot be undone, and the menu it is chosen from sits on a
@@ -5499,32 +3498,8 @@ function confirmEndDialog(): void {
   if (key === null) return;
   // Resolved now, not when the dialog opened: the session may have ended on its
   // own while the question stood, and there is then nothing left to end.
-  const view = views.get(key);
+  const view = sessions.getView(key);
   if (view) void endSession(view);
-}
-
-/**
- * End one account's session.
- *
- * The seat is released by the session ending, not by this call: `RoomSeats`
- * reads liveness off the PTY, so the account is offline again and startable the
- * moment the process is gone (#53). The view stays until another account is
- * chosen, because what it last printed is the only account of how it ended.
- */
-async function endSession(view: SessionView): Promise<void> {
-  const name = viewName(view);
-  try {
-    await invoke("kill_pty", { id: view.ptyId });
-  } catch (err) {
-    renderPanel();
-    status(`${name} を終了できませんでした: ${err}`, "error");
-    return;
-  }
-  status(`${name} を終了しました。`);
-  // The exit event marks the view ended and redraws the row; this call only
-  // says the kill was delivered.
-  await refreshSeats();
-  renderPanel();
 }
 
 /**
@@ -5549,7 +3524,7 @@ async function runningSeatNames(): Promise<string[]> {
   try {
     held = await invoke<SeatedAccount[]>("seated_accounts");
   } catch {
-    held = [...seated.values()];
+    held = [...sessions.allSeats()];
   }
   // Named from the account list, and by id where the account is not in it. The
   // app refuses to delete a seated account, so a seat with no account is a
@@ -5698,1640 +3673,6 @@ async function wireWindowControls(): Promise<void> {
   }
 }
 
-/**
- * Give an account its own terminal and put it on the glass.
- *
- * Made before the launch, because the CLI's first paint is laid out for the
- * size this pane reports and there is nothing else to measure.
- *
- * `running` is passed when the session is already up and this terminal is
- * being made for it rather than ahead of it — a session picked up again after
- * this screen was reloaded (#84). Its facts then come from the app's record of
- * the launch instead of from the account, which may have been edited since.
- *
- * `topicId` is the topic the terminal is filed under (#141). It is put on the
- * glass only when that topic is; a session picked up in another topic after a
- * reload is opened hidden, where coming back to its topic will find it.
- */
-function openView(account: Account, topicId: string, running?: RunningSession): SessionView {
-  const key = seatKey(topicId, account.id);
-  // A relaunch replaces the previous run's pane. Two panes for one account in
-  // one topic would be two rows under one name, and the row is what the
-  // operations hang on; the scrollback that goes with it is the one the person
-  // just decided to start over from.
-  discardView(views.get(key));
-
-  const host = document.createElement("div");
-  host.className = "term";
-  terminalEl.appendChild(host);
-
-  // At the size this screen is set to, not at the default in the options: a
-  // terminal opened after the size was changed would otherwise be the one pane
-  // that is a different size from the rest.
-  const term = new Terminal({ ...TERMINAL_OPTIONS, fontSize: terminalFontSize });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open(host);
-  useWebglRenderer(term);
-  term.options.theme = terminalTheme();
-
-  const view: SessionView = {
-    accountId: account.id,
-    ptyId: running?.pty_id ?? "",
-    name: account.name,
-    command: running?.command ?? account.command,
-    cwd: running?.cwd ?? account.cwd,
-    startedAt: running?.started_at ?? "",
-    topicId,
-    resumedFrom: running?.resumed_from ?? null,
-    term,
-    fit,
-    host,
-    unlisten: [],
-    // False even for a session picked up again after a reload. The roster is
-    // read on its own event and this account is on it if the session is in the
-    // room, so the answer arrives rather than being assumed here — and assuming
-    // it from the roster as it stands would read a connection the previous run
-    // of this account has not finished dropping as this one having arrived.
-    seenInRoom: false,
-    ended: null,
-    endRequested: false,
-    // Quiet until something arrives. A session picked up again after a reload
-    // starts here too: its terminal is new even though its process is not, so
-    // what this screen can say about it begins at the next byte (#86).
-    outputting: false,
-    silent: false,
-    // Nothing reported yet, on a fresh terminal and on one picking a running
-    // session up again alike. The status line runs on the next assistant
-    // message, so the values arrive on their own (#155) — and 制限中 arrives
-    // with them, since the word is read off two of these values (#161).
-    stats: null,
-    activity: null,
-    quiet: undefined,
-  };
-
-  term.onData((data) => {
-    // This view's own session, never "the session that started last". The
-    // terminal being typed into is the one on the glass, and the two were not
-    // the same thing while one `activePtyId` stood for both (#57).
-    if (view.ptyId === "" || view.ended !== null) return;
-    void invoke("write_pty", { id: view.ptyId, data }).catch((err) => {
-      status(`セッションへ送れませんでした: ${err}`, "error");
-    });
-  });
-
-  // The webview does not deliver a native paste to xterm, so Ctrl+V is bridged
-  // explicitly. preventDefault stops the input arriving twice.
-  term.attachCustomKeyEventHandler((event) => {
-    const isPaste =
-      event.type === "keydown" &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey &&
-      (event.key === "v" || event.key === "V");
-    if (!isPaste) return true;
-
-    event.preventDefault();
-    void readText().then((text) => {
-      // Same destination as a keystroke: the pasted text goes to this pane's
-      // session, so a paste cannot land in a session that is not on screen.
-      if (text && view.ptyId !== "" && view.ended === null) {
-        void invoke("write_pty", { id: view.ptyId, data: text });
-      }
-    });
-    return false;
-  });
-
-  views.set(key, view);
-  if (topicId === shownTopicId()) showView(account.id);
-  else host.hidden = true;
-  return view;
-}
-
-/** Close one terminal for good: its listeners, its emulator, its scrollback. */
-function discardView(view: SessionView | undefined): void {
-  if (!view) return;
-  for (const off of view.unlisten) off();
-  view.unlisten = [];
-  stopOutput(view);
-  view.term.dispose();
-  view.host.remove();
-  views.delete(seatKey(view.topicId, view.accountId));
-  if (view.topicId === shownTopicId() && shownAccount === view.accountId) shownAccount = null;
-  if (shownByTopic.get(view.topicId) === view.accountId) shownByTopic.delete(view.topicId);
-}
-
-/**
- * Put one account's terminal on the glass, and take the others off it.
- *
- * Hidden, not discarded: a session keeps running while another is being
- * watched, and its output keeps arriving into its own emulator, so switching
- * back finds the scrollback where it was left.
- *
- * A terminal whose session has ended is no longer the exception. It was
- * discarded here, on the reasoning that choosing another account is the person
- * saying they have read what it printed on its way out (#57). Its tab carries a
- * ✕ now, so that saying is an act rather than a by-product of looking elsewhere,
- * and `closeView` is where it lands (#68). The cost is that an ended terminal
- * holds its scrollback until someone closes it — a tab left alone is memory held
- * — and that is the accepted half of the trade.
- */
-function showView(accountId: string | null): void {
-  shownAccount = accountId;
-  const topicId = shownTopicId();
-  for (const view of views.values()) {
-    view.host.hidden = view.topicId !== topicId || view.accountId !== accountId;
-  }
-  renderPanel();
-  renderSessionFacts();
-  fitShown();
-  // A pane that was `display: none` kept filling its buffer and painted
-  // nothing, so coming back to it has to repaint from the buffer. The fit above
-  // does that only when the measured size changed, and returning to a pane the
-  // same size as the one just left is exactly when it did not.
-  const shown = shownView();
-  if (shown) shown.term.refresh(0, shown.term.rows - 1);
-}
-
-/**
- * Subscribe one view to its session: everything it prints, and its exit.
- *
- * Both listeners are this view's, and are dropped with it. The shared terminal
- * subscribed once per launch and unsubscribed never, which is how every running
- * session ended up writing into one pane (#57).
- *
- * Reached from two directions: a launch this screen just made, and a session it
- * is picking up again after having been reloaded out from under it (#84). The
- * pty id is the whole of what either one needs — nothing else about a session
- * is remembered on this side, which is why one can be followed again from the
- * id alone, and why losing the id is what made a running session unreachable.
- */
-/**
- * What `pty-exit-{id}` carries (`PtyExit` in `pty.rs`).
- *
- * `requested` is the app's own account of whether it ended the session, marked
- * where the kill happened. Nothing on this side infers it — a missing code is
- * not the same fact, since a code can go missing on an end nobody asked for.
- */
-interface PtyExit {
-  code: number | null;
-  requested: boolean;
-}
-
-/** How an ended session's end reads in a parenthesis: the code, or 終了 alone. */
-function endedNote(view: SessionView): string {
-  return view.endRequested ? "終了" : view.ended ?? "";
-}
-
-async function attachSession(view: SessionView, ptyId: string): Promise<void> {
-  view.unlisten.push(
-    await listen<string>(`pty-data-${ptyId}`, (event) => {
-      view.term.write(event.payload);
-      // The bytes go to the emulator and are not looked at here. That this
-      // chunk arrived is the whole of the signal (#82).
-      markOutput(view);
-    }),
-  );
-  // From here the silence is being timed. A session that has printed nothing
-  // yet reaches 待機 after one quiet window, the same as one that stopped (#148).
-  if (view.ended === null && view.quiet === undefined) armQuiet(view);
-  view.unlisten.push(
-    await listen<PtyExit>(`pty-exit-${ptyId}`, (event) => {
-      const { code, requested } = event.payload;
-      const detail = code === null ? "終了コード不明" : `終了コード ${code}`;
-      view.ended = detail;
-      view.endRequested = requested;
-      // Nothing more will print, so the row must not spend the quiet window
-      // still saying that something is (#82).
-      stopOutput(view);
-      // Nothing more will arrive on this pty. The view lives on for what it
-      // has already printed, not for anything it is still waiting to hear.
-      for (const off of view.unlisten) off();
-      view.unlisten = [];
-      const name = viewName(view);
-      // An end the app asked for is one the person has just agreed to in a
-      // dialog. Calling it an unexplained exit and sending them to the terminal
-      // has them look for a problem that is not there, and a warning that is
-      // always safe to ignore is ignored on the day it is not (#121).
-      if (requested) status(`${name} を終了しました。`);
-      else status(`${name} が終了しました（${detail}）。端末を確認してください。`, "error");
-      // A resume that ended on its own without the room ever having seen it
-      // went back into a session that is not there. The record it went in on is
-      // what every later launch into this topic will fail on the same way, so
-      // it goes (#127).
-      void dropDeadResume(view, event.payload, detail);
-      // The seat this account held is free the moment its session ends, so the
-      // panel says 未起動 again and the account can be started once more.
-      void refreshSeats();
-      renderPanel();
-      if (view === shownView()) {
-        renderSessionFacts();
-        // Only for an end nobody asked for: what it printed on the way out is
-        // the account of why. An end asked for leaves the pane as it was — not
-        // opened, and not closed either if it was already open (#121).
-        if (!requested) revealDiagnostics();
-      }
-    }),
-  );
-}
-
-/**
- * Take this topic's record of a session a resume could not go back into.
- *
- * The failure it answers has no other way out. A session id is recorded when the
- * spawn returns, which is a process having started and not a conversation having
- * been made — a CLI stopped at a confirm prompt and closed there leaves an id
- * behind it. Every launch of that account into that topic afterwards takes the
- * resume line, fails on the id, and ends; the pair is broken until the record
- * goes, and nothing was taking it (#127).
- *
- * The condition is three things this app already observes: the launch went in on
- * the resume line, the room never carried the account, and the session ended on
- * its own. The CLI's own words are not read for any of them. Matching the
- * message it prints would be a check that stops working the day the wording
- * changes, and stops silently (#127, 制約).
- *
- * The third is what the exit event says about who ended it (`PtyExit.requested`,
- * #121), and not any value of the code: the row's ✕, the topic delete, and the
- * app closing arrive marked as ends the app asked for, and none of them says the
- * resume failed. The window it covers is real: the confirm prompt holds a
- * launched CLI outside the room for minutes (#89), and ending the wrong account
- * during it is an ordinary act that must not cost a resume that would have
- * worked. An end nobody asked for that still arrives with no code falls the same
- * way, which is the safe side — the poisoned launch ends by itself and is caught
- * on the next press.
- *
- * It does not start anything again. The record is off, so the next press is a
- * normal launch — and whether to press is the person's. Retrying here would be
- * this screen running a failure round and round, which is the shape
- * `model-loop-safety` is about (#127, AI 判断2).
- *
- * Said in the status line, because a repair nobody is told about is a history
- * that quietly stopped being continuous. Only after the app answers that a
- * record was actually dropped: the account is seatless the moment it exits, so
- * a launch made in between owns the record now, and this says what happened
- * rather than what it asked for.
- */
-async function dropDeadResume(
-  view: SessionView,
-  exit: PtyExit,
-  detail: string,
-): Promise<void> {
-  const dead = view.resumedFrom;
-  if (dead === null || view.seenInRoom || exit.requested || exit.code === null) return;
-  const name = viewName(view);
-  try {
-    const dropped = await invoke<boolean>("room_forget_session", {
-      topicId: view.topicId,
-      accountId: view.accountId,
-      sessionId: dead,
-    });
-    if (!dropped) return;
-    status(
-      `${name} は会話へ戻れないまま終了しました（${detail}）。このトピックの再開先を外したので、次は通常の起動になります。`,
-      "error",
-    );
-  } catch (err) {
-    // The record is still there, which means the next launch fails the same
-    // way. Saying so is the whole of what is left to do here — a repair that
-    // failed quietly reads as a repair that happened.
-    status(`${name} の再開先を外せませんでした: ${err}`, "error");
-  }
-}
-
-/**
- * Follow a launched session until it dies.
- *
- * A session that exits on startup is the failure mode with no other witness:
- * the room simply stays empty. Without this the screen is identical whether
- * the CLI is running or was never there.
- */
-async function followSession(view: SessionView, started: StartedSession): Promise<void> {
-  view.ptyId = started.pty_id;
-  view.startedAt = started.started_at;
-  // Which line ran, from the launch's own answer. It is what the exit reads,
-  // and the exit can arrive as soon as the listener below is attached, so it is
-  // set before it (#127). Where it ran is not set here: the terminal was filed
-  // under its topic when ▶ was pressed, and the launch went into the topic it
-  // was told (#141).
-  view.resumedFrom = started.resumed_from;
-  renderPanel();
-  renderSessionFacts();
-
-  await attachSession(view, started.pty_id);
-
-  // The pane is left as it was. It used to open here because the first thing a
-  // session showed was a question — the development-channels confirm — and the
-  // answer went in through this terminal. That flag left the launch line in
-  // #195, so nothing waits on the person at startup, and a pane that opens on
-  // every ▶ is one the person keeps folding back (#215). What still opens it is
-  // an end nobody asked for (`attachSession`, #121).
-  //
-  // Focus only into a terminal that is on screen. A folded pane has nothing to
-  // type into, the same as a row picked while it is folded (#175).
-  if (view === shownView() && !diagnosticsEl.hidden) view.term.focus();
-}
-
-/**
- * Start one account's session: the row's half of the lifecycle 終了 closes.
- *
- * Takes the account rather than reading a picker. There is no picker — which
- * account this is, is which row was pressed (#62).
- */
-async function startSession(account: Account): Promise<void> {
-  const name = account.name.trim();
-  if (!name) {
-    status(
-      "アカウントの名前を入力してください。部屋での名乗りになります。",
-      "error",
-    );
-    openAccountDialog(account);
-    return;
-  }
-
-  // One account, one seat per room. Said here so the reason is on screen in the
-  // language it is read in; the app refuses it as well, and that refusal is the
-  // authority — this check only gets there first (#53).
-  //
-  // Re-read before refusing, never after. The copy this screen holds is only as
-  // new as the last thing that moved, and a launch that was in flight when the
-  // screen reloaded is a seat with no session under it yet — a row that draws
-  // 開始 with nothing to end beside it. Asking again resolves that seat, and
-  // resolving it is what puts 終了 on the row (`adoptSeats`), so the refusal
-  // below now names something the person can act on (#84).
-  //
-  // In this topic. The same account running in another topic is the shape
-  // #141 asks for, and is not refused.
-  const topicId = shownTopicId();
-  const key = seatKey(topicId, account.id);
-  if (seated.has(key)) await refreshSeats();
-  if (seated.has(key)) {
-    status(
-      `「${name}」は既にこのトピックに居ます。一つのアカウントが持てる席は一つのトピックにつき一つです。このトピックで起動中のセッションを終了してから、もう一度起動してください。`,
-      "error",
-    );
-    return;
-  }
-
-  // Read off the account, which is where the person set it — this row no longer
-  // carries a field of its own to read it out of (#59). Not defaulted to
-  // whatever directory the app process happens to sit in: that is what put a
-  // session in src-tauri (#20).
-  if (!(account.cwd ?? "").trim()) {
-    status(
-      `「${name}」に作業ディレクトリがありません。編集から設定してください。`,
-      "error",
-    );
-    openAccountDialog(account);
-    return;
-  }
-
-  // What was on the glass is kept, so a launch that fails can put it back
-  // rather than leaving a blank pane where a running session had been.
-  const previous = shownAccount;
-  // Cleared as the attempt starts rather than as it fails: 起動失敗 stands on
-  // the row until this account is asked again, and this is that moment.
-  launchFailures.delete(key);
-  // From here the row carries the launch. The view exists and has no pty id
-  // yet, which is what puts its 開始 into 起動中; `openView` redraws through
-  // `showView`.
-  const view = openView(account, topicId);
-  // Size the PTY to the terminal that will display it, so the CLI's first
-  // paint is not laid out for a window it does not have. An open pane was
-  // fitted by `showView` just now; a folded one is measured without being
-  // opened, because ▶ no longer opens it (#215).
-  fitFolded(view);
-
-  status(`${name} を起動しています…`);
-  try {
-    const started = await invoke<StartedSession>("start_session", {
-      account,
-      topicId,
-      cols: view.term.cols,
-      rows: view.term.rows,
-    });
-    // Which of the two lines ran is said, because the person is the one who
-    // can tell whether it mattered. A seat that came back fresh in a reopened
-    // topic is a legitimate outcome and not a silent one (#115, decision 6).
-    //
-    // A fresh line the topic had a record for is a third thing to say. The
-    // record went before this launch was made, and a launch that reads as an
-    // ordinary one leaves the person to find out from the next 起動しました
-    // that the way back is gone (#131, decision 2).
-    status(
-      started.resumed_from !== null
-        ? `${name} を再開しました。${started.mcp_config} に登録済み。`
-        : started.dropped_resume !== null
-          ? `${name} を起動しました。戻る先の会話が見つからなかったため、このトピックの再開先は外しました。${started.mcp_config} に登録済み。`
-          : `${name} を起動しました。${started.mcp_config} に登録済み。`,
-    );
-    await refreshSeats();
-    await followSession(view, started);
-  } catch (err) {
-    // Nothing was spawned, so this terminal has nothing to show and no session
-    // to end. It goes, and the app's own reason stands in the status line —
-    // recorded against the account first, because the pane going is what would
-    // otherwise leave the row reading 未起動 as though it had never been
-    // pressed. The row says 起動失敗 and holds the reason; the status line has
-    // it in full.
-    launchFailures.set(key, String(err));
-    discardView(view);
-    // Only when the topic it was pressed in is still on the glass. Otherwise
-    // the pane was hidden with its topic, and the topic on the glass has its
-    // own pane showing.
-    if (topicId === shownTopicId()) {
-      showView(
-        previous !== null && views.has(seatKey(topicId, previous))
-          ? previous
-          : (topicViews().pop()?.accountId ?? null),
-      );
-    }
-    status(`${name} を起動できませんでした: ${err}`, "error");
-    // The pane is left as it was here too. Nothing was spawned, so there is no
-    // output in it to read about why; the reason is the status line above and
-    // the row's 起動失敗. What opens the pane is a CLI that did start and then
-    // ended on its own, since what it printed is the account (#121, #215).
-    // A launch that failed after the app claimed the seat releases it there;
-    // this keeps the panel in step with that.
-    await refreshSeats();
-  } finally {
-    // Both paths above redraw already. This is so that no path can leave a row
-    // saying 起動中 for a launch that is over.
-    renderPanel();
-  }
-}
-
-/**
- * A default name for a new account that no existing account already answers to.
- *
- * A constant default would put every new account on one name, which is the
- * defect #40 removed — two participants answering alike, neither addressable.
- * The identity is the id and would survive that, but being able to name one of
- * them is the point of a name, so the default counts up past whatever is taken.
- * It is a starting point in an editable field, not a value anyone is stuck with.
- */
-function unusedAccountName(): string {
-  const taken = new Set(accounts.map((account) => account.name.trim()));
-  for (let n = accounts.length + 1; ; n += 1) {
-    const candidate = `アカウント ${n}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-}
-
-// ── the account dialog ───────────────────────────────────────────────────────
-//
-// One form for making, editing and deleting an account. It holds a draft and
-// writes nothing until 決定; 取消 leaves nothing behind, for a new account as
-// much as for an edit. The fields used to save on `change`, which meant ＋
-// created an account the instant it was pressed and every keystroke on the way
-// to a name was a state that had existed — there was no deciding and no undoing
-// (#59).
-
-/** The account being edited, or null while the form is making a new one. */
-let editing: Account | null = null;
-/** The draft the form is filling in. Never the account itself. */
-let draft: Account | null = null;
-/** True once 削除 has been armed. The shape 終了 held until #71; see #72. */
-let deleteArmed = false;
-/**
- * The environment field exactly as it was drawn for the draft (masks, one line
- * per variable), or null while it has not been drawn — still loading, or the
- * drawing failed (#163).
- *
- * What 決定 compares the field against. Unchanged, the draft's sealed values
- * stand as they are and nothing is sent to be sealed. Null, the field is not
- * read at all: an empty box that never received the stored lines is not the
- * person clearing them, and reading it as that would delete every variable.
- */
-let dialogEnvDrawn: string | null = null;
-/**
- * What 決定 does to the account's image (#236): leave it as it is, store the
- * one picked (already cropped and scaled, with an object URL for the form's
- * circle), or remove it.
- *
- * Held on the form like every other field and written only at 決定 (#59): a
- * picked image that is then cancelled leaves no file behind.
- */
-type AvatarEdit = { kind: "keep" } | { kind: "set"; png: Blob; url: string } | { kind: "clear" };
-let dialogAvatar: AvatarEdit = { kind: "keep" };
-
-/** Say why the form cannot be decided yet, or clear that. */
-function dialogError(text: string): void {
-  dialogErrorEl.textContent = text;
-}
-
-/**
- * The sections of the account form (#304). Faces of one form: a section that
- * is not on screen keeps what was typed into it, and 決定 reads them all.
- */
-type DialogSection = "basic" | "character" | "launch" | "env" | "server";
-
-/** The section on screen. Every form opens on 基本. */
-let dialogSection: DialogSection = "basic";
-
-/**
- * The sections a kind has, in the order the side menu lists them.
- *
- * The same judgment `showDialogKind` makes field by field, one level up: a
- * person is not launched, so a character, a launch line and an environment
- * would be sections of fields that never do anything; a server is started from
- * its entry in the file, which is its own section (#193).
- */
-function dialogSectionsFor(kind: AccountKind): DialogSection[] {
-  if (kind === "mcp") return ["basic", "server"];
-  if (launchesKind(kind)) return ["basic", "character", "launch", "env"];
-  return ["basic"];
-}
-
-/** Put one section on screen and mark its entry in the side menu. */
-function showDialogSection(section: DialogSection): void {
-  dialogSection = section;
-  for (const pane of dialogSectionPaneEls) pane.hidden = pane.dataset.section !== section;
-  for (const tab of dialogSectionTabEls) {
-    const on = tab.dataset.sectionTab === section;
-    tab.setAttribute("aria-selected", String(on));
-    // One stop in the tab order for the whole menu; the arrows move within it.
-    tab.tabIndex = on ? 0 : -1;
-  }
-}
-
-/**
- * Bring the section holding `field` on screen, and focus the field when asked.
- *
- * For a refusal that names a field: the reason is said below every section,
- * but the field it is about may be in one that is not shown, and a field that
- * is not shown cannot take focus.
- */
-function revealDialogField(field: HTMLElement, focus = true): void {
-  const section = field.closest<HTMLElement>("[data-section]")?.dataset.section;
-  if (section) showDialogSection(section as DialogSection);
-  if (focus) field.focus();
-}
-
-/** Move along the side menu by arrow key, over the sections this kind has. */
-function stepDialogSection(event: KeyboardEvent): void {
-  const step =
-    event.key === "ArrowDown" || event.key === "ArrowRight"
-      ? 1
-      : event.key === "ArrowUp" || event.key === "ArrowLeft"
-        ? -1
-        : 0;
-  if (step === 0 && event.key !== "Home" && event.key !== "End") return;
-  const shown = dialogSectionTabEls.filter((tab) => !tab.hidden);
-  if (shown.length === 0) return;
-  event.preventDefault();
-  const at = shown.findIndex((tab) => tab.dataset.sectionTab === dialogSection);
-  const next =
-    event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? shown.length - 1
-        : (at + step + shown.length) % shown.length;
-  showDialogSection(shown[next].dataset.sectionTab as DialogSection);
-  shown[next].focus();
-}
-
-/** Put 削除 back to resting. */
-function disarmDelete(): void {
-  deleteArmed = false;
-  dialogDeleteEl.textContent = "削除";
-  dialogDeleteEl.classList.remove("armed");
-}
-
-/**
- * Show only the fields that mean something for the kind being declared.
- *
- * A person has no command under them, so a working directory and launch options
- * would be two fields that never do anything.
- *
- * The resume line is the same judgment one level in (#156, 決定6). A kind that
- * names a CLI holds the way back into one of its sessions, so the field would
- * be a second answer to a question already answered — and a second answer is
- * one that can disagree. The kind that names none has only the field.
- */
-function showDialogKind(): void {
-  const kind = dialogKindEl.value as AccountKind;
-  // The groups of fields are sections of their own (#304), so the kind decides
-  // which sections the side menu offers. A server launches nothing either; what
-  // it is started with is its entry in the file, its own section (#193). A
-  // section the kind no longer offers is left for 基本, where the kind is.
-  const sections = dialogSectionsFor(kind);
-  for (const tab of dialogSectionTabEls) {
-    tab.hidden = !sections.includes(tab.dataset.sectionTab as DialogSection);
-  }
-  showDialogSection(sections.includes(dialogSection) ? dialogSection : "basic");
-  dialogResumeFieldEl.hidden = kind !== "cli";
-  const codex = kind === "codex_cli";
-  dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
-  document.getElementById("dialog-codex-note")!.hidden = !codex;
-  dialogCodexAppServerFieldEl.hidden = !codex;
-  if (launchesKind(kind)) refreshDialogLine();
-  // The kind picks the folder the character file is in, or that there is none (#100).
-  void refreshCharacterFile();
-  // Chosen on a form making an account: the server is written and started at
-  // 決定, so what there is to fill in now is what it is started with (#200).
-  if (kind === "mcp" && editing === null) drawNewMcp();
-}
-
-/** `launches`, for a kind the form holds rather than an account. */
-function launchesKind(kind: AccountKind): boolean {
-  return kind === "claude_code" || kind === "codex_cli" || kind === "cli";
-}
-
-/**
- * Show the command this account's launch would actually run.
- *
- * The app adds the room's own settings to whatever is typed and selects the
- * character named above, so the line written here is not the line that
- * launches; showing the result is cheaper than explaining either. The character
- * is why this reads the fields rather than the draft: it is the one place the
- * `--settings` it becomes can be seen before 決定, and a preview built from the
- * draft would only show it on the next open. The entry names this account's own
- * server, which follows the account id — so the preview holds still while the
- * name in the field above it is edited. Holding still is the point: the
- * identity being launched is the account, and renaming it does not make it
- * something else (#53).
- *
- * The working directory goes with them: another account's room registration
- * sitting in it is named on the line as one this session does not start (#103).
- * That is the case worth seeing before 決定 — pointing an account at a shared
- * directory is what puts `--settings` on a line that had none.
- */
-let dialogPreviewGeneration = 0;
-let codexPreviewTimer: ReturnType<typeof setTimeout> | null = null;
-let codexPreviewRunning = false;
-let codexPreviewQueued = false;
-async function refreshDialogPreview(): Promise<void> {
-  const generation = ++dialogPreviewGeneration;
-  if (codexPreviewTimer !== null) clearTimeout(codexPreviewTimer);
-  if (dialogKindEl.value !== "codex_cli") {
-    codexPreviewQueued = false;
-    await renderDialogPreview(generation);
-    return;
-  }
-  codexPreviewTimer = setTimeout(() => {
-    codexPreviewTimer = null;
-    codexPreviewQueued = true;
-    void drainCodexPreview();
-  }, 250);
-}
-async function drainCodexPreview(): Promise<void> {
-  if (codexPreviewRunning) return;
-  codexPreviewRunning = true;
-  try {
-    while (codexPreviewQueued) {
-      codexPreviewQueued = false;
-      await renderDialogPreview(dialogPreviewGeneration);
-    }
-  } finally { codexPreviewRunning = false; }
-}
-async function renderDialogPreview(generation: number): Promise<void> {
-  if (!draft) return;
-  const id = draft.id;
-  try {
-    const parsed = await invoke<string[]>("parse_launch_options", {
-      text: dialogOptionsEl.value,
-    });
-    const merged = await invoke<{args: string[]; character_mode: string | null; character_name: string | null; server_args: string[] | null; room_prompt: string | null}>("preview_launch_args", {
-      args: parsed,
-      accountId: id,
-      // The field rather than the draft, for the reason the character is read
-      // that way: what the kind's conventions put on the line is on the line
-      // shown, and the kind is being edited right there (#156).
-      kind: dialogKindEl.value as AccountKind,
-      // The topic on the glass, which is where ▶ would launch it: the entry is
-      // this account's in this topic (#141, decision 4).
-      topicId: shownTopicId() || null,
-      // The field rather than the draft: the preview answers for what the form
-      // holds now, and the draft is only written at 決定.
-      character: dialogCharacterEl.value.trim() || null,
-      cwd: dialogCwdEl.value.trim() || null,
-      command: dialogCommandEl.value.trim() || null,
-      envText: dialogEnvDrawn === null ? null : dialogEnvEl.value,
-      env: draft.env,
-      codexAppServer: dialogCodexAppServerEl.checked,
-    });
-    // The form may have been closed or reopened during the round trip.
-    if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
-    const character = merged.character_mode === "file" ? `キャラクター: ${merged.character_name}（project のファイル）\n`
-      : merged.character_mode === "disabled" ? "キャラクター: project の既定は無効\n"
-      : merged.character_mode === "legacy" ? `キャラクター: ${merged.character_name || "CLI の既定"}（従来の指示）\n` : "";
-    const command = dialogCommandEl.value.trim() || "codex";
-    // An app-server seat runs two lines: the server, then the terminal attached to it (#299).
-    dialogPreviewEl.textContent = merged.server_args
-      ? `${character}方式: app-server（キャラクターは developerInstructions、Li+ の output style hook はこの席で停止）
-` +
-        // The room's text Claude seats carry on --append-system-prompt, here after the character (#301).
-        (merged.room_prompt ? `部屋のルール（developerInstructions のキャラクターの後）: ${merged.room_prompt}
-` : "") +
-        `app-server: ${command} ${joinArgs(merged.server_args)}
-画面: ${command} ${joinArgs(merged.args)}`
-      : `${character}${dialogCommandEl.value.trim()} ${joinArgs(merged.args)}`;
-  } catch (error) {
-    if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
-    dialogPreviewEl.textContent = dialogKindEl.value === "codex_cli" ? String(error) : "";
-  }
-}
-
-/** The characters `cmd.exe` acts on, as the sentences below name them. */
-const CONSOLE_HAZARDS = '& | < > ^ ( ) "';
-
-/**
- * Say what a launch would do with what the form holds (#154, 決定4).
- *
- * The line that runs is drawn above this, and it is where the result is
- * visible — an account whose character was left off it shows a line with no
- * `outputStyle` in the JSON, and one whose options were left off shows a line
- * without them. That is legible once the person already knows what to look
- * for. This says it: what is missing from that line, and what happens at 起動.
- *
- * It does not refuse anything. The value is one the person wrote and the
- * account saves as written — what they can act on is knowing, before the
- * launch, which of these four things it will do. The launch itself refuses the
- * two it has to (`session::start_session`), and that refusal is the authority;
- * this only gets there first, at the moment it can be fixed rather than at the
- * moment it fails — the shape the two-`--settings` check here already has
- * (#99).
- */
-async function refreshDialogNotice(): Promise<void> {
-  const kind = dialogKindEl.value as AccountKind;
-  if (!draft || !launchesKind(kind)) {
-    dialogNoticeEl.textContent = "";
-    return;
-  }
-  const id = draft.id;
-  try {
-    const report = await invoke<LaunchFieldReport>("launch_field_report", {
-      kind,
-      character: dialogCharacterEl.value.trim() || null,
-      options: dialogOptionsEl.value,
-      // The current form's command, including a custom native executable.
-      command: dialogCommandEl.value.trim(),
-      // Only where the field is the answer. On a kind that holds its own way
-      // back, a line stored here is not the one that runs (#156, 決定6).
-      resume: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
-      codexAppServer: kind === "codex_cli" && dialogCodexAppServerEl.checked,
-    });
-    if (draft?.id !== id) return;
-    const said: string[] = [];
-    if (!report.character) {
-      said.push(
-        "キャラクター名に、Windows の起動の行へ載せられない文字があります。" +
-          "保存はできますが、起動時はキャラクターを指定せず、作業ディレクトリの既定で立ちます" +
-          "（載せられるのは ASCII の英数字と空白と / : . _ - です）。",
-      );
-    }
-    if (!report.options) {
-      said.push(
-        kind === "codex_cli" ? "Codex のオプションを安全に運べません。省略せず、起動を拒否します。プレビューの理由を確認してください。" :
-          `起動オプションに、Windows の起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
-          "保存はできますが、起動時はこの欄を丸ごと載せずに起動します。",
-      );
-    }
-    if (!report.command) {
-      said.push(
-        `このアカウントの起動コマンドに、起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
-          "このままでは起動できません。",
-      );
-    }
-    if (!report.resume) {
-      said.push(
-        `再開コマンドに、起動の行へ載せられない文字があります（${CONSOLE_HAZARDS}）。` +
-          "載せずに起動すれば戻る先へ戻らないため、このトピックが持つセッションへは戻れません。",
-      );
-    }
-    dialogNoticeEl.textContent = said.join("\n");
-  } catch {
-    dialogNoticeEl.textContent = "";
-  }
-}
-
-/**
- * Redraw both halves of what the form says about the line that would run.
- *
- * One call rather than two at each field, so a field wired to one of them
- * cannot be missing the other — which is the same reason the line itself is
- * composed in one place (`mcp_config::launch_args`).
- */
-function refreshDialogLine(): void {
-  void refreshDialogPreview();
-  void refreshDialogNotice();
-}
-
-/**
- * Open the form on one account, or on a new one when given none.
- *
- * A new account's id is minted here so the launch preview has something to name
- * a server after. That is all it is until 決定 — nothing is pushed into the
- * account list, so 取消 leaves no account behind and no id in use.
- */
-function openAccountDialog(account: Account | null, field: "name" | "hue" = "name"): void {
-  editing = account;
-  draft = account
-    ? { ...account, args: [...account.args] }
-    : {
-        // Opaque and minted once. Nothing reads a name out of it — the key in
-        // `.mcp.json` derives from it precisely so renaming is free (#53).
-        id: crypto.randomUUID(),
-        name: unusedAccountName(),
-        // The command the kind below names. See src-tauri/src/config.rs.
-        command: "claude",
-        args: [],
-        // A prefill, not a default: the app launches nothing in a directory the
-        // person has not seen on screen (#20).
-        cwd: homeDir || null,
-        hue: null,
-        // The one vendor the room is built on, and the kind that knows how to
-        // drive it (#156). See src-tauri/src/config.rs.
-        kind: "claude_code",
-        // Nothing, rather than a guess at a style name: an unnamed character
-        // launches on whatever the working directory's own settings say, which
-        // is an answer. A guessed name that resolves to no style is not.
-        character: null,
-        // Nothing, because the kind above holds the way back. This field is
-        // the generic kind's, and it is blank there too until someone writes
-        // the line the app has none of (#156, 決定6).
-        resume_command: null,
-        // Nothing added to the environment until someone writes a line (#163).
-        env: [],
-        // No server until one is written: choosing `mcp` below makes one at
-        // 決定, and the entry's name comes back from the app then (#200).
-        server: null,
-        // The initial until an image is picked (#236).
-        avatar: false,
-      };
-
-  dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
-  dialogNameEl.value = draft.name;
-  // `mcp` is offered where an account is being made (#200) and on an `mcp`
-  // account's own form, and on no other: an account that exists as another kind
-  // does not become a server, and the form of one that is a server cannot
-  // change it (#193) — the account answers to an entry in the file, and the
-  // kinds either side of it launch.
-  const server = draft.kind === "mcp";
-  const offered = account === null || server;
-  dialogKindMcpEl.hidden = !offered;
-  dialogKindMcpEl.disabled = !offered;
-  dialogKindEl.disabled = server;
-  dialogKindEl.value = draft.kind;
-  mcpDrawn = null;
-  mcpErrorEl.textContent = "";
-  // Emptied for every form, so a new server starts from nothing rather than
-  // from the fields of the last account the form was open on.
-  mcpCommandEl.value = "";
-  mcpArgsEl.value = "";
-  mcpEnvEl.value = "";
-  dialogHueEl.value = draft.hue === null ? "" : String(draft.hue);
-  resetDialogAvatar();
-  drawDialogAvatar();
-  dialogCwdEl.value = draft.cwd ?? "";
-  dialogCharacterEl.value = draft.character ?? "";
-  dialogCodexAppServerEl.checked = draft.codex_app_server === true;
-  dialogCommandEl.value = draft.command;
-  dialogOptionsEl.value = joinArgs(draft.args);
-  dialogResumeEl.value = draft.resume_command ?? "";
-  void drawDialogEnv(draft);
-  dialogDeleteEl.hidden = account === null;
-  disarmDelete();
-  dialogError("");
-  // Cleared before the round trip that refills it, so the account being opened
-  // is never read against the last one's notice.
-  dialogNoticeEl.textContent = "";
-  // The body is read for this account's place by `showDialogKind` below (#100).
-  resetCharacterFile();
-  dialogSection = "basic";
-  showDialogKind();
-  dialogEl.showModal();
-  // On the colour when the form was opened to change it (色を変える, #224);
-  // on the name otherwise, selected so typing replaces it.
-  if (field === "hue") dialogHueEl.focus();
-  else {
-    dialogNameEl.focus();
-    dialogNameEl.select();
-  }
-  if (server) {
-    // What was last read, at once, and then read again: the log may have moved
-    // while the form was closed. The tail is where a log is read from.
-    drawDialogMcp();
-    mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
-    void refreshMcpServers();
-  }
-}
-
-/** The character file as the app read it (`character_file::Opened`, #100). */
-interface CharacterOpened {
-  path: string;
-  exists: boolean;
-  folder_exists: boolean;
-  body: string;
-  crlf: boolean;
-  bom: boolean;
-  name_in_file: string | null;
-  stamp: string | null;
-}
-
-/** The three fields that place a character file (#100), or null for a kind that has none. */
-interface CharacterPlace {
-  kind: "claude_code" | "codex_cli";
-  cwd: string;
-  name: string;
-}
-
-/** The file the body field was last filled from; null when it shows none. */
-let characterOpened: CharacterOpened | null = null;
-/** The place `characterOpened` (or the refusal on screen) was read for, as one key. */
-let characterOpenedKey: string | null = null;
-/** Bumped by every read, so a read that lands after a later one is dropped. */
-let characterReads = 0;
-let characterTimer: number | undefined;
-/** The 決定 that was asked to be pressed again, as place and body: a second
- *  press of the same is the confirmation (the shape 削除 has). */
-let characterArmed: string | null = null;
-
-function characterPlace(): CharacterPlace | null {
-  const kind = dialogKindEl.value;
-  if (kind !== "claude_code" && kind !== "codex_cli") return null;
-  return { kind, cwd: dialogCwdEl.value.trim(), name: dialogCharacterEl.value.trim() };
-}
-
-function characterKey(place: CharacterPlace): string {
-  return `${place.kind}\n${place.cwd}\n${place.name}`;
-}
-
-/** Whether the body holds an edit not yet written. */
-function characterDirty(): boolean {
-  return characterOpened !== null && dialogCharacterBodyEl.value !== characterOpened.body;
-}
-
-/** Forget the file, for a form opening on another account. */
-function resetCharacterFile(): void {
-  characterReads++;
-  window.clearTimeout(characterTimer);
-  characterOpened = null;
-  characterOpenedKey = null;
-  characterArmed = null;
-  dialogCharacterBodyEl.value = "";
-  // Until the file arrives, so nothing typed is overwritten by a read landing late.
-  dialogCharacterBodyEl.disabled = true;
-}
-
-/** What is said under the body about the file on screen. */
-function drawCharacterNotice(place: CharacterPlace): void {
-  const opened = characterOpened;
-  const lines: string[] = [];
-  if (opened && !opened.exists) lines.push("このファイルはまだありません。本文を書いて決定すると新しく作ります。");
-  if (opened?.name_in_file && opened.name_in_file !== place.name) {
-    lines.push(
-      place.kind === "claude_code"
-        ? `このファイルの frontmatter の name は「${opened.name_in_file}」です。Claude は name で選ぶため、キャラクター欄の「${place.name}」ではこのファイルが選ばれません。`
-        : `このファイルの frontmatter の name は「${opened.name_in_file}」です。Codex はファイル名と違う name のファイルで起動を止めます。`,
-    );
-  }
-  if (opened && place.kind === "codex_cli" && !opened.folder_exists) {
-    lines.push(
-      "この作業ディレクトリには .codex/output-styles がありません。決定で作ると、ここで起動する Codex の席はすべてファイル方式になり、キャラクター欄が空の席は character_instance.md を要します。",
-    );
-  }
-  dialogCharacterNoticeEl.textContent = lines.join("\n");
-}
-
-/**
- * Read the file the three fields name into the body field (#100), when they
- * name another one than the field holds.
- *
- * An edit not yet written is not dropped for it: the field keeps the edit and
- * says that reading the new place would discard it, and 読み直す does that.
- */
-async function refreshCharacterFile(force = false): Promise<void> {
-  window.clearTimeout(characterTimer);
-  const place = characterPlace();
-  dialogCharacterFileEl.hidden = place === null;
-  if (place === null) return;
-  const key = characterKey(place);
-  if (!force && key === characterOpenedKey) {
-    dialogCharacterReloadEl.hidden = true;
-    // Back on the file shown, after a warning about leaving it. A refusal or
-    // the empty name's hint on screen stays as it is.
-    if (characterOpened !== null) drawCharacterNotice(place);
-    return;
-  }
-  if (!force && characterDirty()) {
-    dialogCharacterReloadEl.hidden = false;
-    dialogCharacterNoticeEl.textContent =
-      "本文に保存していない変更があります。種別・作業ディレクトリ・キャラクターが変わったため、新しい場所のファイルを読むと変更は捨てられます。読むには「読み直す」を、変更を残すには元の値に戻してください。";
-    return;
-  }
-  dialogCharacterReloadEl.hidden = true;
-  const read = ++characterReads;
-  if (!place.name) {
-    characterOpened = null;
-    characterOpenedKey = key;
-    dialogCharacterBodyEl.value = "";
-    dialogCharacterBodyEl.disabled = true;
-    dialogCharacterPathEl.textContent = `${place.cwd || "<作業ディレクトリ>"}\\${place.kind === "codex_cli" ? ".codex" : ".claude"}\\output-styles\\<キャラクター>.md`;
-    dialogCharacterNoticeEl.textContent = "キャラクター欄に名前を書くと、そのファイルをここで開きます。";
-    return;
-  }
-  let opened: CharacterOpened | null = null;
-  let refusal = "";
-  try {
-    opened = await invoke<CharacterOpened>("open_character_file", { kind: place.kind, cwd: place.cwd, name: place.name });
-  } catch (err) {
-    refusal = String(err);
-  }
-  if (read !== characterReads) return;
-  characterOpened = opened;
-  characterOpenedKey = key;
-  characterArmed = null;
-  dialogCharacterBodyEl.value = opened?.body ?? "";
-  dialogCharacterBodyEl.disabled = opened === null;
-  dialogCharacterPathEl.textContent = opened?.path ?? "—";
-  if (opened) drawCharacterNotice(place);
-  else dialogCharacterNoticeEl.textContent = refusal;
-}
-
-/** `refreshCharacterFile` after typing settles, for the fields read per key. */
-function scheduleCharacterFile(): void {
-  window.clearTimeout(characterTimer);
-  characterTimer = window.setTimeout(() => void refreshCharacterFile(), 300);
-}
-
-/**
- * Write the body at 決定, when it was changed (#100).
- *
- * Answers whether the form may go on, and whether anything was written. Before
- * writing, names the other accounts the same file is the character of, and on a
- * Codex directory with no style folder says that making one switches its seats
- * to file mode; either asks for 決定 a second time.
- */
-async function settleCharacterFile(
-  settlingId: string,
-): Promise<{ ok: boolean; written: boolean }> {
-  const place = characterPlace();
-  const opened = characterOpened;
-  if (place === null || opened === null || !characterDirty()) return { ok: true, written: false };
-  if (characterKey(place) !== characterOpenedKey) {
-    dialogError("キャラクターのファイルの場所が変わりました。「読み直す」で開き直すか、元の値に戻してください。");
-    revealDialogField(dialogCharacterBodyEl, false);
-    return { ok: false, written: false };
-  }
-  const body = dialogCharacterBodyEl.value;
-  const asks: string[] = [];
-  try {
-    const wearers = await invoke<string[]>("character_file_wearers", {
-      kind: place.kind,
-      cwd: place.cwd,
-      name: place.name,
-      others: accounts
-        .filter((one) => one.id !== settlingId)
-        .map((one) => ({ name: one.name, kind: one.kind, cwd: one.cwd, character: one.character })),
-    });
-    if (wearers.length > 0) {
-      asks.push(`このファイルは ${wearers.map((one) => `「${one}」`).join("")} のキャラクターでもあります。保存するとそちらも変わります。`);
-    }
-  } catch (err) {
-    dialogError(String(err));
-    revealDialogField(dialogCharacterBodyEl, false);
-    return { ok: false, written: false };
-  }
-  if (place.kind === "codex_cli" && !opened.folder_exists) {
-    asks.push(".codex/output-styles を作ると、この作業ディレクトリの Codex の席はファイル方式になります。");
-  }
-  const token = `${characterKey(place)}\n${body}`;
-  if (asks.length > 0 && characterArmed !== token) {
-    characterArmed = token;
-    dialogError(`${asks.join("")}もう一度「決定」を押すと保存します。`);
-    revealDialogField(dialogCharacterBodyEl, false);
-    return { ok: false, written: false };
-  }
-  try {
-    const saved = await invoke<{ written: boolean; opened: CharacterOpened }>("save_character_file", {
-      kind: place.kind,
-      cwd: place.cwd,
-      name: place.name,
-      body,
-      crlf: opened.crlf,
-      bom: opened.bom,
-      stamp: opened.stamp,
-    });
-    characterOpened = saved.opened;
-    characterArmed = null;
-    return { ok: true, written: saved.written };
-  } catch (err) {
-    dialogError(String(err));
-    revealDialogField(dialogCharacterBodyEl, false);
-    return { ok: false, written: false };
-  }
-}
-
-/**
- * Draw the draft's environment into the form: `NAME=<mask>` per line (#163).
- *
- * The masks are made on the app's side, which is the only side that can open a
- * value; this screen is handed the drawing and nothing else. The field is
- * read-only until it arrives, so nothing typed into it is overwritten by a
- * drawing that lands late, and a drawing for a form that has since been opened
- * on another account is dropped.
- */
-async function drawDialogEnv(forDraft: Account): Promise<void> {
-  dialogEnvDrawn = null;
-  dialogEnvEl.value = "";
-  dialogEnvEl.readOnly = true;
-  let text: string;
-  try {
-    text = await invoke<string>("account_env_text", { env: forDraft.env });
-  } catch (err) {
-    if (draft !== forDraft) return;
-    // Left read-only and undrawn: 決定 then keeps the stored variables as they
-    // are rather than reading an empty box as their removal.
-    dialogError(`環境変数を表示できませんでした: ${err}`);
-    return;
-  }
-  if (draft !== forDraft) return;
-  dialogEnvEl.value = text;
-  dialogEnvDrawn = text;
-  dialogEnvEl.readOnly = false;
-  refreshDialogLine();
-}
-
-/** Drop the form's image edit, and the object URL a picked image holds. */
-function resetDialogAvatar(): void {
-  if (dialogAvatar.kind === "set") URL.revokeObjectURL(dialogAvatar.url);
-  dialogAvatar = { kind: "keep" };
-  dialogAvatarInputEl.value = "";
-}
-
-/**
- * Draw the form's circle as 決定 would leave it (#236): the picked image, the
- * account's own while it is kept, or the initial of the name in the field on the
- * colour chosen above it. 外す is offered only while there is an image to take
- * off.
- */
-function drawDialogAvatar(): void {
-  if (!draft) return;
-  const own = draft.id === localAccountId;
-  dialogAvatarEl.style.setProperty(
-    "--speaker",
-    speakerColor(dialogNameEl.value, declaredHue(dialogHueEl), own),
-  );
-  dialogAvatarEl.dataset.initial = initialOf(dialogNameEl.value);
-  const url =
-    dialogAvatar.kind === "set"
-      ? dialogAvatar.url
-      : dialogAvatar.kind === "keep" && draft.avatar
-        ? avatarImages.get(draft.id)
-        : undefined;
-  drawAvatar(dialogAvatarEl, url);
-  dialogAvatarClearEl.hidden = url === undefined;
-}
-
-/** The size, in pixels a side, every stored image is scaled to (#236). */
-const AVATAR_SIZE = 128;
-
-/**
- * The formats an image may be picked in (#236). What the webview decodes is
- * wider than this; these are the ones the docs name, and an animated GIF gives
- * its first frame.
- */
-const AVATAR_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-
-/**
- * Turn a picked image into what is stored (#236): its centre square, scaled to
- * `AVATAR_SIZE` on a side, as a PNG. Made here rather than in the app because
- * the webview already decodes every format offered; the app is handed one small
- * PNG and only keeps it, so the original's size bounds nothing.
- */
-async function squarePng(file: Blob): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  try {
-    const side = Math.min(bitmap.width, bitmap.height);
-    const canvas = document.createElement("canvas");
-    canvas.width = AVATAR_SIZE;
-    canvas.height = AVATAR_SIZE;
-    const context = canvas.getContext("2d");
-    if (!context || side === 0) throw new Error("empty image");
-    context.imageSmoothingQuality = "high";
-    context.drawImage(
-      bitmap,
-      (bitmap.width - side) / 2,
-      (bitmap.height - side) / 2,
-      side,
-      side,
-      0,
-      0,
-      AVATAR_SIZE,
-      AVATAR_SIZE,
-    );
-    return await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (png) => (png ? resolve(png) : reject(new Error("not encoded"))),
-        "image/png",
-      ),
-    );
-  } finally {
-    bitmap.close();
-  }
-}
-
-/**
- * Take the file picked for the image into the form (#236). Nothing is written
- * until 決定. An image that will not decode is said on the form and leaves the
- * field as it was.
- */
-async function pickDialogAvatar(): Promise<void> {
-  const file = dialogAvatarInputEl.files?.[0];
-  dialogAvatarInputEl.value = "";
-  if (!file || !draft) return;
-  const forDraft = draft;
-  if (!AVATAR_TYPES.includes(file.type)) {
-    dialogError("画像は png・jpeg・webp・gif のどれかを選んでください。");
-    return;
-  }
-  let png: Blob;
-  try {
-    png = await squarePng(file);
-  } catch {
-    if (draft === forDraft) dialogError(`${file.name} を画像として読めませんでした。`);
-    return;
-  }
-  // The form may have been closed, or opened on another account, meanwhile.
-  if (draft !== forDraft) return;
-  resetDialogAvatar();
-  dialogAvatar = { kind: "set", png, url: URL.createObjectURL(png) };
-  dialogError("");
-  drawDialogAvatar();
-}
-
-/**
- * Carry out the form's image edit for the account `accountId`, at 決定 (#236).
- *
- * Answers the account's flag as it should be saved — `had` when the image was
- * left alone — or null when the file could not be written or removed, which is
- * said on the form. Runs before the config is saved, so a flag never names an
- * image that was not written.
- */
-async function settleDialogAvatar(
-  edit: AvatarEdit,
-  accountId: string,
-  had: boolean,
-): Promise<boolean | null> {
-  try {
-    if (edit.kind === "set") {
-      await invoke("save_account_avatar", new Uint8Array(await edit.png.arrayBuffer()), {
-        headers: { "Pullcept-Account": asciiJson(accountId) },
-      });
-      setAvatarImage(accountId, edit.png);
-      return true;
-    }
-    if (edit.kind === "clear") {
-      await invoke("delete_account_avatar", { accountId });
-      setAvatarImage(accountId, null);
-      return false;
-    }
-  } catch (err) {
-    dialogError(String(err));
-    revealDialogField(dialogAvatarEl, false);
-    return null;
-  }
-  return had;
-}
-
-/**
- * Take what the form holds and put it into the account list.
- *
- * The one moment anything here reaches the list. Returns false when the form
- * cannot be decided yet, so the dialog stays open on its own reason.
- */
-async function commitAccountDialog(): Promise<boolean> {
-  if (!draft) return false;
-  // Read before the await below. Escape closes the dialog on its own, and the
-  // close handler clears both — reading them afterwards would push a second
-  // copy of an account that was being edited.
-  const target = editing;
-  const settling = draft;
-  const avatarEdit = dialogAvatar;
-
-  const name = dialogNameEl.value.trim();
-  if (!name) {
-    dialogError("名前を入力してください。部屋での名乗りになります。");
-    revealDialogField(dialogNameEl);
-    return false;
-  }
-
-  const kind = dialogKindEl.value as AccountKind;
-  // Made here, from nothing: the entry is written and the account with it
-  // (#200). Only a form making an account reaches this — an existing account
-  // is not offered the kind.
-  if (kind === "mcp" && !target) return await createMcpAccount(settling, name, avatarEdit);
-  // A server's account is a name and a colour over an entry in the file, and the
-  // entry is the section below the form's fields (#193). Nothing else here
-  // applies to it, and no other kind becomes it or stops being it.
-  if (kind === "mcp" || target?.kind === "mcp") {
-    if (!target || target.kind !== "mcp" || kind !== "mcp") {
-      dialogError("MCP サーバのアカウントの種別は変えられません。");
-      revealDialogField(dialogKindEl);
-      return false;
-    }
-    // An edit to the server not yet saved is saved with the rest, rather than
-    // lost to the form closing over it. A field that will not save keeps the
-    // form open on its reason.
-    if (mcpFieldsEdited() && !(await saveMcpServer())) {
-      dialogError("サーバの設定を保存できませんでした。");
-      revealDialogField(mcpCommandEl, false);
-      return false;
-    }
-    const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
-    if (avatar === null) return false;
-    const settled: Account = { ...settling, name, hue: declaredHue(dialogHueEl), avatar };
-    const at = accounts.findIndex((one) => one.id === target.id);
-    if (at >= 0) accounts[at] = settled;
-    saveConfig();
-    renderPanel();
-    status(`アカウント「${settled.name}」を保存しました。`);
-    return true;
-  }
-  // A running account cannot change kind. Its session is in the room under this
-  // account, and turning it into a person would drop the working directory and
-  // options that session was launched from while it is still running.
-  if (target && kind !== target.kind && seatedAnywhere(target.id)) {
-    dialogError(`「${target.name}」は起動中です。種別を変えるには先に終了してください。`);
-    revealDialogField(dialogKindEl);
-    return false;
-  }
-  // The person at this screen is a person. Turning their account into one that
-  // launches would list them under the wrong heading and offer to start a CLI
-  // under their name, which is not a thing there is one of.
-  if (target && target.id === localAccountId && kind !== "admin") {
-    dialogError("この画面の本人のアカウントは種別 admin のままです。");
-    revealDialogField(dialogKindEl);
-    return false;
-  }
-  const cwd = dialogCwdEl.value.trim();
-  const character = dialogCharacterEl.value.trim();
-  // Only for a session. A person's working directory, character and options
-  // would be values nothing ever reads, kept alive by an edit that once set
-  // them. A person is not launched, so nothing selects a style for them.
-  const args =
-    kind === "admin"
-      ? []
-      : await invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value });
-
-  // The character rides in `--settings`, so one written by hand up in the
-  // options is the same setting declared twice. Said here because this is the
-  // one place both fields are on screen together, and in the language they are
-  // read in; the app refuses the launch as well, and that refusal is the
-  // authority — this check only gets there first, at the moment it can be
-  // fixed rather than at the moment it fails (#99).
-  if (kind !== "codex_cli" && character && args.some((arg) => arg.split("=")[0] === "--settings")) {
-    dialogError(
-      "起動オプションの --settings とキャラクターは同じ設定を指します。どちらか一方にしてください。",
-    );
-    revealDialogField(dialogOptionsEl);
-    return false;
-  }
-
-  // Sealed on the app's side before anything is stored (#163). Only when the
-  // field was drawn and then changed: a field left as drawn is the stored
-  // values, and one that was never drawn says nothing about them.
-  let env = settling.env;
-  if (kind === "admin") {
-    env = [];
-  } else if (dialogEnvDrawn !== null && dialogEnvEl.value !== dialogEnvDrawn) {
-    try {
-      env = await invoke<EnvVar[]>("seal_account_env", {
-        text: dialogEnvEl.value,
-        previous: settling.env,
-      });
-    } catch (err) {
-      dialogError(String(err));
-      revealDialogField(dialogEnvEl);
-      return false;
-    }
-  }
-
-  // The character's body (#100), after everything about the account itself that
-  // can still refuse the form: it is a file of its own, as the image is.
-  const characterFile = await settleCharacterFile(settling.id);
-  if (!characterFile.ok) return false;
-
-  // Last, after everything that can still refuse the form: the image is a file
-  // of its own, and one written for a form that is then refused would be an
-  // image for an account that was never decided (#236).
-  const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
-  if (avatar === null) return false;
-
-  const settled: Account = {
-    ...settling,
-    command: launchesKind(kind) ? dialogCommandEl.value.trim() : settling.command,
-    name,
-    kind,
-    avatar,
-    hue: declaredHue(dialogHueEl),
-    cwd: kind === "admin" ? null : cwd || null,
-    // Blank clears it, and clearing it is a state: the account goes back to
-    // launching on whatever its working directory's own settings name.
-    character: kind === "admin" ? null : character || null,
-    // Only the kind whose form shows this field keeps it (#156, 決定6). On a
-    // kind that holds its own way back, a line stored here would be one nothing
-    // reads and nobody can see to correct. Blank is a state on the kind that
-    // does keep it, and the common one: an account with no resume line joins a
-    // reopened topic as a new session and reads back what it needs through the
-    // room's own pull instead (#115, decision 4C).
-    resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
-    // Kept only where it is read (#299).
-    codex_app_server: kind === "codex_cli" && dialogCodexAppServerEl.checked,
-    args,
-    env,
-  };
-
-  if (target) {
-    const at = accounts.findIndex((one) => one.id === target.id);
-    if (at >= 0) accounts[at] = settled;
-  } else {
-    accounts.push(settled);
-  }
-  saveConfig();
-
-  renderPanel();
-  renderSessionFacts();
-  // The room holds this screen's person's name and colour on its seat, so a
-  // rename here has to be re-declared or the roster keeps the old pair.
-  if (settled.id === localAccountId) await join();
-  status(
-    (target
-      ? `アカウント「${settled.name}」を保存しました。`
-      : `アカウント「${settled.name}」を追加しました。`) +
-      (characterFile.written ? "キャラクターの本文を書き込みました（席の次の起動から効きます）。" : ""),
-  );
-  return true;
-}
-
-/**
- * Make an account of kind `mcp` from the form, and the server it is (#200).
- *
- * The entry first, because it is what the account answers to: the app writes it
- * under a name taken from the account's and hands back that name and the id the
- * account is given. Then the account, saved before the server is started, so
- * the server's first post is said under the name and colour chosen here rather
- * than the entry's name the app would fall back to. Then the start, from the
- * file, the way 再起動 starts one.
- *
- * A field the app refuses keeps the form open on its reason, with nothing
- * written. A server that will not start is still made: its account is there,
- * and its window says what happened and holds 起動.
- */
-async function createMcpAccount(
-  settling: Account,
-  name: string,
-  avatarEdit: AvatarEdit,
-): Promise<boolean> {
-  mcpErrorEl.textContent = "";
-  let created: { server: string; account_id: string };
-  try {
-    created = await invoke<{ server: string; account_id: string }>("create_mcp_server", {
-      name,
-      command: mcpCommandEl.value,
-      args: mcpArgsEl.value,
-      env: mcpEnvEl.value,
-    });
-  } catch (err) {
-    mcpErrorEl.textContent = String(err);
-    dialogError("サーバを設定ファイルに書けませんでした。");
-    revealDialogField(mcpCommandEl, false);
-    return false;
-  }
-  const settled: Account = {
-    ...settling,
-    id: created.account_id,
-    name,
-    kind: "mcp",
-    hue: declaredHue(dialogHueEl),
-    // An account has one shape, and nothing is launched from these: the server
-    // is started from its entry in the file (`mcp_servers::migrate_accounts`).
-    command: "",
-    args: [],
-    cwd: null,
-    character: null,
-    resume_command: null,
-    env: [],
-    server: created.server,
-    avatar: false,
-  };
-  // The id is the app's, so the image is written only now. A file that will not
-  // write does not hold the form open: the entry is already in the file, and a
-  // second 決定 would make a second one. The account is made without the image,
-  // and the status line says so below (#236).
-  const avatar = await settleDialogAvatar(avatarEdit, settled.id, false);
-  settled.avatar = avatar ?? false;
-  accounts.push(settled);
-  await saveConfig();
-  let started = true;
-  try {
-    await invoke("restart_mcp_server", { name: created.server });
-  } catch {
-    started = false;
-  }
-  renderPanel();
-  await refreshMcpServers();
-  if (avatar === null) {
-    status(`アカウント「${settled.name}」を追加しましたが、画像を保存できませんでした。`, "error");
-  } else if (started) {
-    status(`アカウント「${settled.name}」を追加し、サーバ「${created.server}」を起動しました。`);
-  } else {
-    status(
-      `アカウント「${settled.name}」を追加しましたが、サーバ「${created.server}」を起動できませんでした。`,
-      "error",
-    );
-  }
-  return true;
-}
-
-/**
- * Delete the account the form is open on, on the second click.
- *
- * Two clicks rather than `window.confirm`, for the reason 終了 does not use one
- * either: a host that answers nothing makes the button either silently dead or
- * — the bias `confirm` defaults to — destructive on one click (#57). 終了 asks
- * in a `<dialog>` of the app's own since #71; whether this follows is #72.
- *
- * Refused while it is running: the session in the room belongs to this account,
- * and deleting the account under it would leave a participant on the roster
- * that nothing on this screen can name or account for. Refused for the person
- * at this screen too — they are in the room by being here, and there would be
- * nothing left to be here as.
- *
- * A server's account takes its server with it (#200): the entry comes out of
- * the file and the run is ended, before the account goes. In that order,
- * because an entry still listed would be given an account again on the next
- * read of the config — so a file that cannot be written keeps the account.
- */
-async function deleteFromDialog(): Promise<void> {
-  const account = editing;
-  if (!account) return;
-
-  if (seatedAnywhere(account.id)) {
-    dialogError(`「${account.name}」は起動中です。セッションを終了してから削除してください。`);
-    disarmDelete();
-    return;
-  }
-  if (account.id === localAccountId) {
-    dialogError("この画面の本人のアカウントは削除できません。");
-    disarmDelete();
-    return;
-  }
-  const server = account.kind === "mcp" ? account.server : null;
-  if (!deleteArmed) {
-    deleteArmed = true;
-    dialogDeleteEl.textContent = "本当に削除";
-    dialogDeleteEl.classList.add("armed");
-    dialogError(
-      server
-        ? `もう一度押すと削除します。設定ファイルからサーバ「${server}」を外し、動いていれば止めます。`
-        : "もう一度押すと削除します。",
-    );
-    return;
-  }
-
-  if (server) {
-    try {
-      await invoke("delete_mcp_server", { name: server });
-    } catch (err) {
-      dialogError(`サーバを設定ファイルから外せませんでした: ${err}`);
-      disarmDelete();
-      return;
-    }
-  }
-
-  accounts = accounts.filter((candidate) => candidate.id !== account.id);
-  // Its terminal goes with it. An account that no longer exists cannot be named
-  // in the panel, and the row is the only way that pane could be reached.
-  for (const view of [...views.values()]) {
-    if (view.accountId === account.id) discardView(view);
-  }
-  saveConfig();
-  closeAccountDialog();
-  renderPanel();
-  renderSessionFacts();
-  status(`アカウント「${account.name}」を削除しました。`);
-  if (server) void refreshMcpServers();
-  // Its image goes with it (#236), whether or not the flag said there was one:
-  // a file left behind would be found by nothing, and an `mcp` account made
-  // again under the same entry name takes the same id.
-  setAvatarImage(account.id, null);
-  try {
-    await invoke("delete_account_avatar", { accountId: account.id });
-  } catch (err) {
-    status(`アカウント「${account.name}」を削除しましたが、画像を消せませんでした: ${err}`, "error");
-  }
-}
-
-/** Drop the draft and close. Nothing it held reached the account list. */
-function closeAccountDialog(): void {
-  editing = null;
-  draft = null;
-  disarmDelete();
-  if (dialogEl.open) dialogEl.close();
-}
-
 function renderSocket(port: number | null, error?: string): void {
   // The socket's row is folded under 詳細 (#225), and a fold must not hide that
   // the room is not listening: the summary takes the error colour with it.
@@ -7350,327 +3691,6 @@ function renderSocket(port: number | null, error?: string): void {
   // wide; that it is being listened on is what the accent colour says.
   socketStateEl.textContent = `127.0.0.1:${port}`;
   socketStateEl.dataset.kind = "ok";
-}
-
-/** The page's own colours, so a terminal is not a light rectangle in the dark. */
-function terminalTheme(): { background: string; foreground: string } {
-  const style = getComputedStyle(document.documentElement);
-  return {
-    background: style.getPropertyValue("--bg").trim() || "#17171a",
-    foreground: style.getPropertyValue("--fg").trim() || "#e8e8ea",
-  };
-}
-
-// ── the local MCP servers, as accounts (#172 / #193) ───────────────────────
-//
-// What src-tauri/src/app_mcp.rs hands the screen. The file is read on that side
-// and so is the text of the three fields: this screen draws what it is given
-// and hands back what was typed, so the reading of `NAME=value` has one
-// implementation, and it is the tested one (`crates/mcp-servers`).
-//
-// Each server is an account of kind `mcp` (#193). Its row in the participant
-// list says where its run is, and its window — the account form — holds what
-// the settings menu held until then: the server's state, what it is started
-// with, its log and the file. The view below is read for both, and read again
-// whenever a server moves.
-
-/** Where one run of a server is. `null` when this app run has not started it. */
-type McpRunState =
-  | { state: "starting" }
-  | { state: "running" }
-  | { state: "ended"; detail: string }
-  | { state: "failed"; detail: string }
-  | { state: "stopped" };
-
-interface McpLogLine {
-  /** Milliseconds since the epoch, drawn in local time. */
-  at_ms: number;
-  text: string;
-}
-
-interface McpServerView {
-  name: string;
-  /** False for a server still running under a name the file no longer lists. */
-  listed: boolean;
-  command: string;
-  /** One argument per line. */
-  args: string;
-  /** One `NAME=value` per line. */
-  env: string;
-  state: McpRunState | null;
-  /** The file holds something other than what the running server was started
-   *  from. */
-  stale: boolean;
-  log: McpLogLine[];
-}
-
-interface McpPanelView {
-  file: string;
-  error: string | null;
-  servers: McpServerView[];
-}
-
-/** The servers as last read, or null before the first read answered. */
-let mcpPanel: McpPanelView | null = null;
-/** A read is on its way, and another was asked for while it was. */
-let mcpReading = false;
-let mcpReadAgain = false;
-/** The fields as last drawn from the file, to tell an edit from what is saved.
- *  A refresh redraws state and log under an edit, never the edit itself. */
-let mcpDrawn: { name: string; command: string; args: string; env: string } | null = null;
-
-/**
- * The server an `mcp` account answers to, as last read.
- *
- * `view` is undefined when the file lists no entry of that name and this run
- * has not run one under it: the account outlived its entry, and says so.
- */
-function mcpServerOf(account: Account): { name: string; view: McpServerView | undefined } {
-  const name = account.server ?? "";
-  return { name, view: mcpPanel?.servers.find((server) => server.name === name) };
-}
-
-/**
- * What an `mcp` account's row says about its server (#193).
- *
- * The words the session rows use where they mean the same thing — 起動中,
- * 終了, 起動失敗, 未起動 — so one list does not say one state two ways. Running
- * says nothing, as a session in the room says nothing (#82). 停止 is a run
- * ended by hand, and 未登録 an account whose entry is gone from the file. Each
- * fits the width 起動失敗 already takes (#71).
- */
-function mcpNote(view: McpServerView | undefined): { text: string; kind: string; title: string } {
-  if (!view) return { text: "未登録", kind: "", title: "設定ファイルにこのサーバはありません。" };
-  const state = view.state;
-  if (!state) return { text: view.listed ? "未起動" : "未登録", kind: "", title: "" };
-  switch (state.state) {
-    case "starting":
-      return { text: "起動中", kind: "", title: "" };
-    case "running":
-      return { text: "", kind: "", title: "" };
-    case "ended":
-      return { text: "終了", kind: "", title: state.detail };
-    case "failed":
-      return { text: "起動失敗", kind: "error", title: state.detail };
-    case "stopped":
-      return { text: "停止", kind: "", title: "" };
-  }
-}
-
-function mcpStateText(state: McpRunState | null): string {
-  if (!state) return "未起動";
-  switch (state.state) {
-    case "starting":
-      return "起動中";
-    case "running":
-      return "実行中";
-    case "ended":
-      return `終了（${state.detail}）`;
-    case "failed":
-      return `失敗（${state.detail}）`;
-    case "stopped":
-      return "停止";
-  }
-}
-
-/** `ok` for running, `error` for a run that ended or never started, and nothing
- *  for the states on the way — the same two colours the socket row uses. */
-function mcpStateKind(state: McpRunState | null): string {
-  if (state?.state === "running") return "ok";
-  if (state?.state === "ended" || state?.state === "failed") return "error";
-  return "";
-}
-
-/** The server the account form is open on, or null when it is on no `mcp`
- *  account. */
-function dialogServer(): string | null {
-  return draft?.kind === "mcp" ? draft.server : null;
-}
-
-function mcpFieldsEdited(): boolean {
-  const name = dialogServer();
-  if (!mcpDrawn || name === null || mcpDrawn.name !== name) return false;
-  return (
-    mcpCommandEl.value !== mcpDrawn.command ||
-    mcpArgsEl.value !== mcpDrawn.args ||
-    mcpEnvEl.value !== mcpDrawn.env
-  );
-}
-
-function mcpLogText(lines: McpLogLine[]): string {
-  return lines
-    .map((line) => {
-      const time = new Date(line.at_ms).toLocaleTimeString("ja-JP", { hour12: false });
-      return `${time}  ${line.text}`;
-    })
-    .join("\n");
-}
-
-/**
- * What the rows read off the servers: the note each would draw. Compared before
- * and after a read, so a log line — which moves no row — does not redraw the
- * participant list under the person using it.
- */
-function mcpRowSignature(): string {
-  return accounts
-    .filter((account) => account.kind === "mcp")
-    .map((account) => `${account.id}:${mcpNote(mcpServerOf(account).view).text}`)
-    .join("\n");
-}
-
-/**
- * Read the servers again: the rows, and the account form when it is open on
- * one of them.
- *
- * Called once at startup, after each act, and on every `mcp-servers-changed`.
- * A read asked for while one is on its way is folded into one more after it, so
- * a burst of log lines is not a burst of reads.
- */
-async function refreshMcpServers(): Promise<void> {
-  if (mcpReading) {
-    mcpReadAgain = true;
-    return;
-  }
-  mcpReading = true;
-  try {
-    do {
-      mcpReadAgain = false;
-      const before = mcpRowSignature();
-      try {
-        mcpPanel = await invoke<McpPanelView>("mcp_servers");
-      } catch (err) {
-        mcpFileErrorEl.textContent = String(err);
-        continue;
-      }
-      if (mcpRowSignature() !== before) renderPanel();
-      drawDialogMcp();
-    } while (mcpReadAgain);
-  } finally {
-    mcpReading = false;
-  }
-}
-
-/**
- * Draw the account form's server section from the last read (#193).
- *
- * The fields are redrawn only when they hold what was last drawn into them: a
- * log line arriving while someone types is not a reason to take what they typed
- * away.
- */
-function drawDialogMcp(): void {
-  const name = dialogServer();
-  if (name === null || !dialogEl.open) return;
-  // Put back what a form making a server took away (`drawNewMcp`).
-  mcpSaveEl.hidden = false;
-  mcpLogHeadEl.hidden = false;
-  mcpLogEl.hidden = false;
-  const panel = mcpPanel;
-  mcpFileEl.textContent = panel?.file ?? "";
-  mcpFileErrorEl.textContent = panel?.error ?? "";
-  const server = panel?.servers.find((each) => each.name === name);
-
-  mcpStateEl.textContent = server ? mcpStateText(server.state) : "未登録";
-  mcpStateEl.dataset.kind = server ? mcpStateKind(server.state) : "";
-  // One button, named for what it will do: start what has not run, start again
-  // what has, and stop what the file no longer lists. Nothing to do for an entry
-  // that is neither listed nor running.
-  mcpRestartEl.hidden = !server;
-  if (server) {
-    mcpRestartEl.textContent = !server.listed ? "停止" : server.state ? "再起動" : "起動";
-  }
-  mcpStaleEl.textContent = !server
-    ? `設定ファイルにサーバ「${name}」はありません。このアカウントは、そのサーバが部屋で言ったことの話し手として残っています。`
-    : !server.listed
-      ? "設定ファイルにこのサーバはありません。停止しても、一覧から消えるのはアプリを起動し直したときです。"
-      : server.stale
-        ? "保存した設定は、再起動するまで反映されません。"
-        : "";
-
-  mcpFieldsEl.hidden = !server?.listed;
-  if (server?.listed && !mcpFieldsEdited()) {
-    mcpCommandEl.value = server.command;
-    mcpArgsEl.value = server.args;
-    mcpEnvEl.value = server.env;
-    mcpDrawn = { name: server.name, command: server.command, args: server.args, env: server.env };
-  }
-
-  // Follow the tail while it is being followed: a log scrolled back up to read
-  // is left where it was put.
-  const following = mcpLogEl.scrollTop + mcpLogEl.clientHeight >= mcpLogEl.scrollHeight - 4;
-  mcpLogEl.textContent = server?.log.length ? mcpLogText(server.log) : "（まだ何も出ていません）";
-  if (following) mcpLogEl.scrollTop = mcpLogEl.scrollHeight;
-}
-
-/**
- * Draw the server section for a form making an account of kind `mcp` (#200).
- *
- * The three fields, empty, and nothing that answers for a server: there is none
- * yet to have a state, a log, a 保存 or a 再起動 of its own. 決定 writes it and
- * starts it (`createMcpAccount`). The file it will be written to is named, as
- * the section of an existing server names it.
- */
-function drawNewMcp(): void {
-  mcpStateEl.textContent = "決定で設定ファイルに書き、起動します";
-  mcpStateEl.dataset.kind = "";
-  mcpRestartEl.hidden = true;
-  mcpStaleEl.textContent = "";
-  mcpFieldsEl.hidden = false;
-  mcpSaveEl.hidden = true;
-  mcpLogHeadEl.hidden = true;
-  mcpLogEl.hidden = true;
-  mcpFileEl.textContent = mcpPanel?.file ?? "";
-  mcpFileErrorEl.textContent = mcpPanel?.error ?? "";
-}
-
-/** Write the open server's fields into the file. The running server is left as
- *  it is; the section then says the two differ until 再起動. */
-async function saveMcpServer(): Promise<boolean> {
-  const name = dialogServer();
-  if (name === null) return false;
-  mcpErrorEl.textContent = "";
-  try {
-    await invoke("save_mcp_server", {
-      name,
-      command: mcpCommandEl.value,
-      args: mcpArgsEl.value,
-      env: mcpEnvEl.value,
-    });
-  } catch (err) {
-    mcpErrorEl.textContent = String(err);
-    return false;
-  }
-  // Drawn again from the file, so what the fields hold is what was stored —
-  // blank lines dropped, quotes taken off — rather than what was typed.
-  mcpDrawn = null;
-  await refreshMcpServers();
-  return true;
-}
-
-/** Start the open server again from what the file holds. A field typed into
- *  and not saved is not what starts, so an unsaved edit is said instead. */
-async function restartMcpServer(): Promise<void> {
-  const name = dialogServer();
-  if (name === null) return;
-  if (mcpFieldsEdited()) {
-    mcpErrorEl.textContent = "保存していない変更があります。先に保存してください。";
-    return;
-  }
-  mcpErrorEl.textContent = "";
-  try {
-    await invoke("restart_mcp_server", { name });
-  } catch (err) {
-    mcpErrorEl.textContent = String(err);
-    return;
-  }
-  await refreshMcpServers();
-}
-
-async function openMcpServersFile(): Promise<void> {
-  try {
-    await invoke("open_mcp_servers_file");
-  } catch (err) {
-    mcpFileErrorEl.textContent = String(err);
-  }
 }
 
 async function main(): Promise<void> {
@@ -7734,44 +3754,13 @@ async function main(): Promise<void> {
 
   // The account's colour is the account's, so nothing is restored into this
   // picker — the form fills it from whichever account it was opened on.
-  fillHues(dialogHueEl, null);
+  accountDialog.initializeHue();
 
   // Restored before anything is drawn, so the first line to arrive is already
   // at the size this screen reads at rather than jumping once it lands.
   //
   // The UI's multiple goes first: the conversation's size is written against it.
-  fillUiScales();
-  applyUiScale(storedUiScale(), false);
-  settingsUiScaleEl.addEventListener("change", () => {
-    applyUiScale(Number(settingsUiScaleEl.value), true);
-  });
-  fillRoomFontSizes(settingsRoomFontSizeEl);
-  applyRoomFontSize(storedRoomFontSize(), false);
-  settingsRoomFontSizeEl.addEventListener("change", () => {
-    applyRoomFontSize(Number(settingsRoomFontSizeEl.value), true);
-  });
-  // On the window rather than on the room: the keys are meant to work while
-  // something is being typed, and the room is not what holds focus then.
-  window.addEventListener("keydown", (event) => {
-    if (!event.ctrlKey || event.altKey || event.isComposing) return;
-    const step = ROOM_FONT_SIZE_KEYS[event.key];
-    if (step === undefined) return;
-    // Load-bearing, not tidiness: the webview answers these same keys with its
-    // own zoom, which takes the whole screen — the terminal, the panel, and the
-    // composer's own controls along with its text. Scaling those is the one
-    // thing this control may not do, so the default has to be stopped for the
-    // scoped version to be what happens.
-    event.preventDefault();
-    stepRoomFontSize(step);
-  });
-
-  // Restored before any terminal is opened, so the first session is laid out at
-  // the size this screen reads at rather than being re-fitted once it lands.
-  fillTerminalFontSizes(settingsTerminalFontSizeEl);
-  applyTerminalFontSize(storedTerminalFontSize(), false);
-  settingsTerminalFontSizeEl.addEventListener("change", () => {
-    applyTerminalFontSize(Number(settingsTerminalFontSizeEl.value), true);
-  });
+  displaySettings.initialize();
 
   // The two ends of one act. 端末 is reachable while the pane is folded and ✕
   // while it is open, which is the whole of why both exist (#68).
@@ -7841,38 +3830,14 @@ async function main(): Promise<void> {
   // (#82). A report arrives on every assistant message, and the two that cross
   // the threshold are the only ones the row has anything to say about — the
   // rest move the facts column alone.
-  await listen<SessionStats>("session-stats", (event) => {
-    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
-    if (!view || !statsForView(event.payload, view)) return;
-    const was = limitedByUsage(view.stats);
-    view.stats = event.payload;
-    if (view === shownView()) renderSessionStats();
-    if (limitedByUsage(view.stats) !== was) renderPanel();
-  });
+  await listen<SessionStats>("session-stats", (event) => sessions.receiveStats(event.payload));
   // A Codex app-server seat (#326) or a Claude Code seat's hooks (#331) said
   // what it is doing. Keyed on the seat
   // like the report above, dropped for a seat this screen has no terminal for,
   // and drawn only when the word, its longer form, the thread's status (#329)
   // or the connection changed —
   // the server sends one of these on each change, not on every notification.
-  await listen<SeatActivity>("seat-activity", (event) => {
-    const view = views.get(seatKey(event.payload.topic_id, event.payload.account_id));
-    if (!view) return;
-    // The last run's server going down after this seat was launched again.
-    if (view.ptyId !== "" && view.ptyId !== event.payload.pty_id) return;
-    const was = view.activity;
-    const now = event.payload;
-    view.activity = now;
-    if (
-      was?.connected !== now.connected ||
-      was?.thread_status !== now.thread_status ||
-      was?.word !== now.word ||
-      was?.line !== now.line ||
-      was?.waiting !== now.waiting
-    ) {
-      renderPanel();
-    }
-  });
+  await listen<SeatActivity>("seat-activity", (event) => sessions.receiveActivity(event.payload));
   // The index changed underneath: a topic realised by its own first post, or a
   // session id recorded by a launch. Both happen without the screen asking, and
   // the first is how a topic gets the name the list shows it under (#115).
@@ -7897,19 +3862,13 @@ async function main(): Promise<void> {
   // The display settings (#194). Its pickers are wired with the two size axes
   // and the UI scale above; each takes effect as it is changed, so the dialog
   // has nothing to commit and only closes.
-  openSettingsEl.addEventListener("click", () => {
-    if (!settingsDialogEl.open) settingsDialogEl.showModal();
-  });
-  settingsCloseEl.addEventListener("click", () => settingsDialogEl.close());
+  displaySettings.wireDialog();
 
   // ── the local MCP servers (#172 / #193) ─────────────────────────────────────
   //
   // Read again whenever a server moves — a state, a log line — whether or not a
   // window is open: each server's row says where its run is.
-  mcpOpenFileEl.addEventListener("click", () => void openMcpServersFile());
-  mcpSaveEl.addEventListener("click", () => void saveMcpServer());
-  mcpRestartEl.addEventListener("click", () => void restartMcpServer());
-  await listen<string>("mcp-servers-changed", () => void refreshMcpServers());
+  await accountDialog.wireMcp();
 
   // The one thing that draws a topic boundary, and the head of the list it
   // appears in (#125, 決定1). `renderTopics` is what draws it as picked; this is
@@ -7976,7 +3935,8 @@ async function main(): Promise<void> {
   //
   // Nothing here writes to an account. Every field edits the form's own draft,
   // and only 決定 puts that draft into the list.
-  accountNewEl.addEventListener("click", () => openAccountDialog(null));
+  accountDialog.wireNewAccount();
+
   // An account row's menu (#224). It closes the way a menu does: on a press
   // anywhere outside it, and when what is under it moves — a menu left
   // standing at a point the row has scrolled away from reads as belonging to
@@ -8000,84 +3960,8 @@ async function main(): Promise<void> {
   participantsEl.addEventListener("scroll", () => closeAccountMenu(false), true);
   window.addEventListener("resize", () => closeAccountMenu(false));
   window.addEventListener("blur", () => closeAccountMenu(false));
-  sessionIdCopyEl.addEventListener("click", () => void copySessionId());
-  dialogKindEl.addEventListener("change", () => {
-    if (dialogKindEl.value === "codex_cli" && dialogCommandEl.value === "claude") dialogCommandEl.value = "codex";
-    if (dialogKindEl.value === "claude_code" && dialogCommandEl.value === "codex") dialogCommandEl.value = "claude";
-    showDialogKind();
-  });
-  // The form's circle is drawn from the name and the colour above it (#236).
-  dialogNameEl.addEventListener("input", () => drawDialogAvatar());
-  dialogHueEl.addEventListener("change", () => drawDialogAvatar());
-  dialogAvatarPickEl.addEventListener("click", () => {
-    disarmDelete();
-    dialogAvatarInputEl.click();
-  });
-  dialogAvatarInputEl.addEventListener("change", () => void pickDialogAvatar());
-  dialogAvatarClearEl.addEventListener("click", () => {
-    disarmDelete();
-    resetDialogAvatar();
-    dialogAvatar = { kind: "clear" };
-    drawDialogAvatar();
-  });
-  dialogOptionsEl.addEventListener("input", () => refreshDialogLine());
-  dialogCommandEl.addEventListener("input", () => refreshDialogLine());
-  // The character ends up in the line that runs, so it redraws the preview for
-  // the same reason the options do: the line shown has to be the line spawned.
-  dialogCharacterEl.addEventListener("input", () => refreshDialogLine());
-  // The name and the working directory place the character file (#100).
-  dialogCharacterEl.addEventListener("input", () => scheduleCharacterFile());
-  dialogCwdEl.addEventListener("input", () => scheduleCharacterFile());
-  dialogCharacterReloadEl.addEventListener("click", () => void refreshCharacterFile(true));
-  dialogCodexAppServerEl.addEventListener("change", () => refreshDialogLine());
-  // So does the working directory: which registrations the line stops is read
-  // out of the directory it is pointed at (#103).
-  dialogCwdEl.addEventListener("input", () => refreshDialogLine());
-  dialogEnvEl.addEventListener("input", () => refreshDialogLine());
-  // The resume line is not in the preview — the preview answers for a fresh
-  // launch — but it is a line that runs, and what it cannot carry is a topic
-  // this account cannot go back into (#154, 決定4).
-  dialogResumeEl.addEventListener("input", () => refreshDialogLine());
-  // Anything but the second click of 削除 disarms it: an arm left standing is
-  // one that an unrelated click fires later.
-  for (const field of [
-    dialogNameEl,
-    dialogKindEl,
-    dialogHueEl,
-    dialogCwdEl,
-    dialogCharacterEl,
-    dialogOptionsEl,
-    dialogResumeEl,
-    dialogEnvEl,
-    dialogCharacterBodyEl,
-  ]) {
-    field.addEventListener("input", () => disarmDelete());
-  }
-  dialogDeleteEl.addEventListener("click", () => void deleteFromDialog());
-  for (const tab of dialogSectionTabEls) {
-    tab.addEventListener("click", () => showDialogSection(tab.dataset.sectionTab as DialogSection));
-    tab.addEventListener("keydown", stepDialogSection);
-  }
-  dialogCancelEl.addEventListener("click", () => closeAccountDialog());
-  // Escape closes the dialog itself, and it means 取消: the draft is dropped by
-  // the close handler below, so there is no path out of this form that leaves
-  // half of it applied.
-  dialogEl.addEventListener("close", () => {
-    editing = null;
-    draft = null;
-    mcpDrawn = null;
-    resetDialogAvatar();
-    resetCharacterFile();
-    disarmDelete();
-  });
-  dialogFormEl.addEventListener("submit", (event) => {
-    // Always prevented: `method="dialog"` would close on submit, and the form
-    // may not be decidable yet. The commit closes it once it has succeeded.
-    event.preventDefault();
-    void commitAccountDialog().then((done) => {
-      if (done) closeAccountDialog();
-    });
-  });
+  sessions.wireSessionIdCopy();
+  accountDialog.wireForm();
 
   endCancelEl.addEventListener("click", () => closeEndDialog());
   endCommitEl.addEventListener("click", () => confirmEndDialog());
@@ -8193,5 +4077,74 @@ async function main(): Promise<void> {
     renderSocket(null, `取得できませんでした: ${err}`);
   }
 }
+
+const sessions = createSessionController({
+  invoke, listen,
+  createTerminal: (options) => new Terminal(options),
+  createFitAddon: () => new FitAddon(),
+  useWebglRenderer: (term) => {
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      // No WebGL here. The DOM renderer is already drawing; nothing to undo.
+    }
+  },
+  shownTopicId: (...args) => shownTopicId(...args),
+  seatKey: (...args) => seatKey(...args),
+  get accounts() { return accounts; },
+  get diagnosticsEl() { return diagnosticsEl; },
+  renderPanel: (...args) => renderPanel(...args),
+  speakerColor: (...args) => speakerColor(...args),
+  icon: (...args) => icon(...args),
+  renderTopics: (...args) => renderTopics(...args),
+  revealDiagnostics: (...args) => revealDiagnostics(...args),
+  status: (...args) => status(...args),
+  shortTime: (...args) => shortTime(...args),
+  get topics() { return topics; },
+  members: (...args) => members(...args),
+  launches: (...args) => launches(...args),
+  memberName: (...args) => memberName(...args),
+  get terminalEl() { return terminalEl; },
+  openAccountDialog: (...args) => openAccountDialog(...args),
+});
+const { seatedAnywhere, viewName, fitShown, showTopicTerminals, renderTerminalTabs, refreshSeats, renderSessionFacts, renderSessionId, endSession, discardView, showView, startSession } = sessions;
+
+const displaySettings = createDisplaySettings({
+  get roomEl() { return roomEl; },
+  get inputEl() { return inputEl; },
+  get participantsEl() { return participantsEl; },
+  syncScrollLatest: (...args) => syncScrollLatest(...args),
+  setTerminalFontSize: (size) => sessions.setTerminalFontSize(size),
+  fitTerminal: () => sessions.fitShown(),
+});
+
+const accountDialog = createAccountDialog({
+  invoke, listen,
+  get accounts() { return accounts; },
+  set accounts(value) { accounts = value; },
+  shownTopicId: (...args) => shownTopicId(...args),
+  joinArgs: (...args) => joinArgs(...args),
+  get homeDir() { return homeDir; },
+  get localAccountId() { return localAccountId; },
+  speakerColor: (...args) => speakerColor(...args),
+  declaredHue: (...args) => declaredHue(...args),
+  initialOf: (...args) => initialOf(...args),
+  get avatarImages() { return avatarImages; },
+  drawAvatar: (...args) => drawAvatar(...args),
+  asciiJson: (...args) => asciiJson(...args),
+  setAvatarImage: (...args) => setAvatarImage(...args),
+  saveConfig: (...args) => saveConfig(...args),
+  renderPanel: (...args) => renderPanel(...args),
+  status: (...args) => status(...args),
+  seatedAnywhere: (...args) => seatedAnywhere(...args),
+  renderSessionFacts: (...args) => renderSessionFacts(...args),
+  join: (...args) => join(...args),
+  allViews: () => sessions.allViews(),
+  discardView: (...args) => discardView(...args),
+  fillHues: (...args) => fillHues(...args),
+});
+const { openAccountDialog, mcpServerOf, mcpNote, refreshMcpServers } = accountDialog;
 
 void main();
