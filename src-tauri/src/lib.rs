@@ -35,6 +35,9 @@ pub fn run() {
         // keeps back from them (#294).
         .manage(codex_limit::CodexLimits::new())
         .manage(claude_limit::ClaudeLimits::default())
+        // Each seat's usage-limit figures as last received, read back by the
+        // seat itself (#364).
+        .manage(room::UsageBook::default())
         // Each Codex seat's own app-server, by its terminal (#299).
         .manage(codex_app_server::CodexServers::new())
         // What each Claude Code seat is doing, as its hooks tell it (#331).

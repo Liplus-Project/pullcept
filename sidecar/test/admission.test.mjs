@@ -124,7 +124,7 @@ test('real MCP parent admitted before initialize, child empty, same sidecar reco
   launcher.ledger.values().next().value.pending = 2;
   const parent = await sidecar(t, launcher.port, launcher.launch);
   assert.match(parent.initialized.result.instructions, /Pullcept room/);
-  assert.equal((await parent.rpc('tools/list')).result.tools.length, 2);
+  assert.equal((await parent.rpc('tools/list')).result.tools.length, 3);
   await until(() => launcher.connections.length === 1);
   const instance = launcher.connections[0].headers['x-pullcept-instance'];
   assert.equal(instance, launcher.requests[0].instance_id);
@@ -138,7 +138,7 @@ test('real MCP parent admitted before initialize, child empty, same sidecar reco
   launcher.connections[0].socket.close();
   await until(() => launcher.connections.length === 2);
   assert.equal(launcher.connections[1].headers['x-pullcept-instance'], instance);
-  assert.equal((await parent.rpc('tools/list')).result.tools.length, 2);
+  assert.equal((await parent.rpc('tools/list')).result.tools.length, 3);
   assert.ok(!child.stderr().includes('synthetic-only'));
 });
 
@@ -153,7 +153,7 @@ test('stale/dead launches rejected and distinct topics/accounts admitted', async
   for (const [account, topic] of [['synthetic-account', 'topic-2'], ['account-2', 'synthetic-topic']]) {
     const launch = randomUUID(); launcher.ledger.set(`${topic}/${account}`, { launch, live: true, owner: null });
     const parent = await sidecar(t, launcher.port, launch, account, topic);
-    assert.equal((await parent.rpc('tools/list')).result.tools.length, 2);
+    assert.equal((await parent.rpc('tools/list')).result.tools.length, 3);
   }
   await until(() => launcher.connections.length === 2);
   assert.equal(launcher.connections.length, 2);
@@ -165,7 +165,7 @@ test('legacy Claude and no-account sidecars keep instructions/tools without admi
   for (const account of ['synthetic-account', '']) {
     const legacy = await sidecar(t, launcher.port, '', account, 'synthetic-topic', false);
     assert.match(legacy.initialized.result.instructions, /Pullcept room/);
-    assert.equal((await legacy.rpc('tools/list')).result.tools.length, 2);
+    assert.equal((await legacy.rpc('tools/list')).result.tools.length, 3);
   }
   await until(() => launcher.connections.length === 2);
   assert.equal(launcher.requests.length, 0);

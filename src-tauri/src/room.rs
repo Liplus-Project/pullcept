@@ -178,7 +178,10 @@ use uuid::Uuid;
 /// 8: the room sends no `post` frames. Every post reaches a session through
 ///    its terminal, and the channel the sidecar pushed them onto is gone
 ///    (#195).
-pub const PROTOCOL_VERSION: u32 = 9;
+/// 9: `post` carries `to` as a list of names (#204).
+/// 10: `usage` / `usage_result` — a participant may read its own seat's
+///    usage-limit figures (#364). Its own only, read off the connection.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -1421,6 +1424,43 @@ impl SessionStats {
     pub fn emit(self, app: &AppHandle) {
         let _ = app.emit("session-stats", self);
     }
+
+    /// The two windows of this report as the seat reads them back (#364),
+    /// stamped as received now. Called where a report arrives, never where
+    /// one is replayed to the screen: a replay is not a new receipt.
+    pub fn usage(&self) -> mcp_config::usage::Usage {
+        mcp_config::usage::Usage {
+            five_hour: self.five_hour,
+            five_hour_resets_at: self.five_hour_resets_at,
+            seven_day: self.seven_day,
+            seven_day_resets_at: self.seven_day_resets_at,
+            received_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// Every seat's usage-limit figures as last received (#364): what `my_usage`
+/// hands back to the seat that asks, and to no other (`mcp_config::usage`).
+/// Recorded where the panel's values arrive — a Claude Code seat's status
+/// line (`read_hook`) and a Codex seat's rollout (`codex_limit::Limiter`).
+#[derive(Default)]
+pub struct UsageBook(Mutex<mcp_config::usage::Book>);
+
+impl UsageBook {
+    pub fn record(&self, topic: &str, account: &str, usage: mcp_config::usage::Usage) {
+        self.0.lock().record(topic, account, usage);
+    }
+
+    fn answer(&self, request_id: &str, topic: &str, account: &str) -> serde_json::Value {
+        mcp_config::usage::answer(request_id, self.0.lock().get(topic, account))
+    }
+
+    fn forget_topic(&self, topic: &str) {
+        self.0.lock().forget_topic(topic);
+    }
 }
 
 /// The most of a hook request this reads before giving up on it.
@@ -1704,8 +1744,15 @@ async fn read_hook(
         // because one report arrived malformed.
         if let Some((room_id, account_id)) = reported {
             let stats = SessionStats::read(room_id.clone(), account_id.clone(), &body);
-            app.state::<crate::claude_limit::ClaudeLimits>().report(app, &room_id,
-                &account_id, claude_nonce.as_deref(), &body, stats);
+            // Stamped on arrival, and kept only for a report the seat's own
+            // launch sent — the one the panel takes (#364).
+            let usage = stats.as_ref().map(SessionStats::usage);
+            if app.state::<crate::claude_limit::ClaudeLimits>().report(app, &room_id,
+                &account_id, claude_nonce.as_deref(), &body, stats) {
+                if let Some(usage) = usage {
+                    app.state::<UsageBook>().record(&room_id, &account_id, usage);
+                }
+            }
         }
         // A Claude Code seat's activity hook (#331). The event is the path's;
         // the body — cut at `HOOK_BODY_MAX`, so possibly not whole — is read
@@ -1904,6 +1951,11 @@ async fn serve_participant(
     // Known once the participant says hello; used to attribute posts and to
     // drop them from the roster.
     let mut joined_as: Option<String> = None;
+    // The account the seat is, once its `hello` has been taken: an admitted
+    // sidecar's is its launch's, checked against the `hello` above. What
+    // `usage` reads with, so a seat is answered its own figures and never a
+    // pair its frame names (#364).
+    let mut joined_account: Option<String> = None;
 
     // What a post or a pull from a connection in no room is answered with. Not
     // a refusal and not an empty page: either would read as the room having
@@ -1974,14 +2026,16 @@ async fn serve_participant(
                     }
                 };
                 // Admission is scoped to a launch, not to duplicate names/accounts.
+                let account = normalize_account(frame.account_id);
                 room.seat(
                     &room_id,
                     &origin,
                     &name,
                     normalize_hue(frame.hue),
-                    normalize_account(frame.account_id).as_deref(),
+                    account.as_deref(),
                 );
                 joined_as = Some(name);
+                joined_account = account;
                 let _ = app.emit("room-participants", room.roster(&room_id));
             }
             "post" => {
@@ -2094,6 +2148,27 @@ async fn serve_participant(
                             "error": err,
                         })
                     }
+                };
+                let _ = room.to_participants.send(Fanout {
+                    target: origin.clone(),
+                    frame: answer.to_string(),
+                });
+            }
+            // A seat reading its own usage-limit figures (#364). The pair is
+            // this connection's room and account; the frame names neither, so
+            // no seat can be handed another's. A connection with no account
+            // is no seat with figures, and is told so rather than "none yet".
+            "usage" => {
+                let request_id = frame.request_id.unwrap_or_default();
+                let answer = match (joined_room.get().filter(|id| room.holds(id)), &joined_account) {
+                    (Some(topic), Some(account)) => {
+                        app.state::<UsageBook>().answer(&request_id, topic, account)
+                    }
+                    (None, _) => mcp_config::usage::refusal(&request_id, &no_room(joined_room.get())),
+                    (Some(_), None) => mcp_config::usage::refusal(
+                        &request_id,
+                        "this session has no account in the app, so it has no usage figures",
+                    ),
                 };
                 let _ = room.to_participants.send(Fanout {
                     target: origin.clone(),
@@ -2244,6 +2319,7 @@ pub fn room_delete_topic(
     room_log::delete_topic(&app, &topic_id)?;
 
     let moved = state.remove(&topic_id);
+    app.state::<UsageBook>().forget_topic(&topic_id);
     if let Some(fresh) = &moved {
         let _ = app.emit("room-participants", state.roster(&fresh.topic_id));
     }

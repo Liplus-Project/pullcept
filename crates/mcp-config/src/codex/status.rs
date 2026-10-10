@@ -81,9 +81,7 @@ impl Status {
                 if info.is_object() {
                     self.context = context(info);
                 }
-                let limits = &payload["rate_limits"];
-                if limits.is_object() && limits["limit_id"].as_str().is_none_or(|id| id == LIMIT_ID)
-                {
+                if let Some(limits) = rate_limits(value) {
                     self.five_hour = window(limits, FIVE_HOUR_MINUTES);
                     self.seven_day = window(limits, SEVEN_DAY_MINUTES);
                     self.five_hour_resets_at = window_reset(limits, FIVE_HOUR_MINUTES);
@@ -94,6 +92,17 @@ impl Status {
         }
         *self != before
     }
+}
+
+/// A `token_count` line's `rate_limits`, when they are this seat's bucket.
+fn rate_limits(value: &Value) -> Option<&Value> {
+    let payload = &value["payload"];
+    if value["type"] != "event_msg" || payload["type"] != "token_count" {
+        return None;
+    }
+    let limits = &payload["rate_limits"];
+    (limits.is_object() && limits["limit_id"].as_str().is_none_or(|id| id == LIMIT_ID))
+        .then_some(limits)
 }
 
 fn text(value: &Value) -> Option<String> {
@@ -158,6 +167,10 @@ pub struct Tail {
     /// (#294, `limit::rollout_reset`): what the room is told while the
     /// app-server has not said better.
     pub resets_at: Option<i64>,
+    /// A `token_count` carrying this seat's rate limits was read and not yet
+    /// taken (#364): when the app received the 5-hour and weekly figures, the
+    /// same figures or not.
+    limits_read: bool,
 }
 
 impl Tail {
@@ -188,6 +201,7 @@ impl Tail {
                     if let Some(reset) = super::limit::rollout_reset(&value) {
                         self.resets_at = Some(reset);
                     }
+                    self.limits_read |= rate_limits(&value).is_some();
                 }
             }
             self.line.clear();
@@ -202,6 +216,11 @@ impl Tail {
     /// carry several; the last is the seat's state.
     pub fn take_turn_end(&mut self) -> Option<super::limit::TurnEnd> {
         self.turn_end.take()
+    }
+
+    /// Whether the rate limits were read since the previous call (#364).
+    pub fn take_limits_read(&mut self) -> bool {
+        std::mem::take(&mut self.limits_read)
     }
 
     fn hold(&mut self, part: &[u8]) {
@@ -461,6 +480,23 @@ mod tests {
         assert_eq!(tail.resets_at, Some(1791613577), "93 is the fuller window in TOKENS");
         assert_eq!(tail.take_turn_end(), Some(TurnEnd::UsageLimit));
         assert_eq!(tail.take_turn_end(), None);
+    }
+
+    #[test]
+    fn a_rate_limit_read_is_reported_once_even_when_nothing_changed() {
+        let mut tail = Tail::new(0);
+        assert!(!tail.take_limits_read());
+        tail.feed(lines(&[TURN]).as_bytes());
+        assert!(!tail.take_limits_read(), "a turn_context carries no rate limits");
+        tail.feed(lines(&[TOKENS]).as_bytes());
+        assert!(tail.take_limits_read());
+        assert!(!tail.take_limits_read(), "taken once");
+        // The same figures again: no change for the panel, but a new receipt.
+        assert!(!tail.feed(lines(&[TOKENS]).as_bytes()));
+        assert!(tail.take_limits_read());
+        // Another bucket's numbers are not this seat's.
+        tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"other","primary":{"used_percent":1,"window_minutes":300}}}}"#]).as_bytes());
+        assert!(!tail.take_limits_read());
     }
 
     #[test]

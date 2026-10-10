@@ -189,6 +189,11 @@ const ADDRESS_ARG =
 const PULL =
   "Read current topic's past posts, oldest first. For joining mid-conversation and needing what you missed; room never delivers past posts itself. Call only if you'd otherwise answer without following the conversation; else don't. Page doesn't reach start -> call again with before = its oldest message_id. Read-only; posts nothing.";
 
+// A seat's own usage-limit figures (#364): what they are, what they are for,
+// that they are this seat's only, and that they can be old.
+const USAGE =
+  "Your own usage-limit figures: 5h and weekly used % with reset times, and when the app received them. Use to pace work and judge when to wrap up, push partial work, or ask the room to take over before you hit the limit. Yours only; ask others in room. Figures arrive only while your session runs; check received time. Read-only; posts nothing.";
+
 /** A string constant of the Rust crate that writes the label, read off its source. */
 function appConstant(name) {
   const source = readFileSync(join(REPO, "crates", "terminal-input", "src", "lib.rs"), "utf8");
@@ -294,12 +299,47 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   ];
   const historyFrames = [];
 
+  // What the room answers the next reads of this seat's usage with (#364),
+  // in order: figures, then none received yet, then a room that cannot say
+  // whose figures these would be.
+  const RECEIVED = Math.floor(Date.now() / 1000) - 12 * 60;
+  const usageAnswers = [
+    {
+      five_hour: { used_percentage: 85.04, resets_at: 1791207909 },
+      received_at: RECEIVED,
+    },
+    {},
+    { error: "this session has no account in the app, so it has no usage figures" },
+  ];
+  const usageFrames = [];
+
   wss.on("connection", (socket) => {
     roomSocket = socket;
     connected.resolve(socket);
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
+      if (frame.type === "usage") {
+        usageFrames.push(frame);
+        // Another read's answer first, carrying other figures: correlation is
+        // by request_id, as a pull's is.
+        socket.send(
+          JSON.stringify({
+            type: "usage_result",
+            request_id: "not-this-read",
+            five_hour: { used_percentage: 1 },
+            received_at: RECEIVED,
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: "usage_result",
+            request_id: frame.request_id,
+            ...usageAnswers.shift(),
+          }),
+        );
+        return;
+      }
       if (frame.type === "history") {
         historyFrames.push(frame);
         // An answer for a pull nobody made, sent first. The call must not
@@ -547,10 +587,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // at one is about *posting*: a second way to be heard would put "which one do
   // I answer through" back on the agent. `read_room_history` cannot post, so it
   // does not sit on that axis (#115, decision 4C).
+  // `my_usage` reads too, and only this seat's own figures (#364).
   assert.deepEqual(
     toolNames,
-    ["say_to_room", "read_room_history"],
-    "one posting tool and one reading tool, and nothing else",
+    ["say_to_room", "read_room_history", "my_usage"],
+    "one posting tool and two reading tools, and nothing else",
   );
   assert.equal(
     toolNames.filter((name) => name === "say_to_room").length,
@@ -613,6 +654,13 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   );
   const pull = tools.result.tools.find((tool) => tool.name === "read_room_history");
   assertContains(pull.description, PULL, "read_room_history must say when to call it and how to page back");
+  const usage = tools.result.tools.find((tool) => tool.name === "my_usage");
+  assertContains(usage.description, USAGE, "my_usage must say what it returns, what for, whose and how old");
+  assert.deepEqual(
+    Object.keys(usage.inputSchema.properties),
+    [],
+    "my_usage takes no argument: there is no other seat to name",
+  );
 
   // ── the room -> this session: nothing on this path ────────────────────────
   await withTimeout(connected.promise, "sidecar to connect to the room");
@@ -632,7 +680,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // The room it was started into. One socket serves every topic open in the
   // app, so this is what puts the connection in one of them (#141).
   assert.equal(hello.room, "test-room");
-  assert.equal(hello.protocol, 9);
+  assert.equal(hello.protocol, 10);
 
   // A `post` frame, as a room older than protocol 8 would send. The session
   // is typed its posts by the app now (#195): this process pushes nothing into
@@ -832,6 +880,38 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "Read it as context, not as something to answer.",
     "the pull must say that what it returns is not addressed to the reader",
   );
+
+  // ── this seat's own usage-limit figures (#364) ─────────────────────────────
+  const usageRead = await request("tools/call", { name: "my_usage", arguments: {} });
+  assert.ok(!usageRead.result.isError, `usage read failed: ${JSON.stringify(usageRead.result)}`);
+  assert.equal(usageFrames.length, 1, "one read produces exactly one frame");
+  // The frame names no seat: the room answers for the connection it came on.
+  assert.deepEqual(
+    Object.keys(usageFrames[0]).sort(),
+    ["request_id", "type"],
+    "a usage read must not name whose figures it wants",
+  );
+  assert.equal(postFrames.length, 4, "reading usage must not put anything on the floor");
+  const figures = usageRead.result.content[0].text;
+  assert.match(
+    figures,
+    /^5h: 85% used, resets \d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2}$/m,
+    `the 5-hour window, with its reset in local time and offset\n${figures}`,
+  );
+  assertContains(figures, "weekly: not reported", "a window not reported is said absent, not zero");
+  assert.match(
+    figures,
+    /^received \d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2} \(12 min ago\)$/m,
+    `when the figures arrived, and how long ago\n${figures}`,
+  );
+
+  const noneYet = await request("tools/call", { name: "my_usage", arguments: {} });
+  assert.ok(!noneYet.result.isError, "no figures yet is the room's answer, not a failure");
+  assert.equal(noneYet.result.content[0].text, "No usage figures received for this seat yet.");
+
+  const noSeat = await request("tools/call", { name: "my_usage", arguments: {} });
+  assert.ok(noSeat.result.isError, "a room that cannot say whose figures these are must read as a failure");
+  assertContains(noSeat.result.content[0].text, "Not read: this session has no account", "the reason is passed on");
 
   // ── the refused draft is held, and re-sent by leaving content out (#268) ───
   // Still the draft refused above. It goes through the floor like any post —
