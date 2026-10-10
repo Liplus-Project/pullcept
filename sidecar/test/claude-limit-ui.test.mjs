@@ -25,15 +25,17 @@ test("confirmed Claude parent rejection outranks stale delegation and terminal r
   seat.activity = null;
   assert.equal(context.activityNote("name", seat).word, "出力中");
 });
-test("Codex reported work, permission waiting and output keep their existing priority", () => {
+test("a Codex seat stopped at its limit outranks leftover work and terminal repaint (#372)", () => {
   const seat = view("codex", true);
-  assert.equal(context.activityNote("name", seat).word, "委任中");
+  assert.equal(context.activityNote("name", seat).word, "制限中");
   seat.activity.word = "許可待ち"; seat.activity.waiting = true;
-  assert.equal(context.activityNote("name", seat).word, "許可待ち");
+  assert.equal(context.activityNote("name", seat).word, "制限中");
   seat.activity = null;
+  assert.equal(context.activityNote("name", seat).word, "制限中");
+  seat.stats.limited = false;
   assert.equal(context.activityNote("name", seat).word, "出力中");
   seat.outputting = false;
-  assert.equal(context.activityNote("name", seat).word, "制限中");
+  assert.equal(context.activityNote("name", seat).word, "");
 });
 
 test("reloaded views accept the current PTY snapshot and reject delayed old-launch stats", () => {
