@@ -313,6 +313,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     { error: "this session has no account in the app, so it has no usage figures" },
   ];
   const usageFrames = [];
+  let explicitUsage = false;
+  let feedbackUsage = { five_hour: { used_percentage: 78, resets_at: 1791207909 }, seven_day: { used_percentage: 12 }, received_at: RECEIVED, context: 42, context_received_at: RECEIVED };
 
   wss.on("connection", (socket) => {
     roomSocket = socket;
@@ -322,6 +324,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
       if (frame.type === "hello") helloSeen.resolve(frame);
       if (frame.type === "usage") {
         usageFrames.push(frame);
+        if (!explicitUsage && feedbackUsage === null) return;
         // Another read's answer first, carrying other figures: correlation is
         // by request_id, as a pull's is.
         socket.send(
@@ -336,7 +339,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
           JSON.stringify({
             type: "usage_result",
             request_id: frame.request_id,
-            ...usageAnswers.shift(),
+            ...(explicitUsage ? usageAnswers.shift() : feedbackUsage),
           }),
         );
         return;
@@ -771,6 +774,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   assert.deepEqual(severalPost.to, ["Claude Lay", "Master"]);
 
   // ── the room refuses, and the refusal carries what was missed ──────────────
+  feedbackUsage = { error: "usage temporarily unavailable" };
   answer = "refuse";
   const refused = await request("tools/call", {
     name: "say_to_room",
@@ -882,13 +886,18 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "the pull must say that what it returns is not addressed to the reader",
   );
 
+  assertContains(refused.result.content.at(-1).text, "Usage unavailable", "usage failure cannot erase refusal");
+  feedbackUsage = { five_hour: { used_percentage: 78, resets_at: 1791207909 }, seven_day: { used_percentage: 12 }, received_at: RECEIVED, context: 42, context_received_at: RECEIVED };
+
   // ── this seat's own usage-limit figures (#364) ─────────────────────────────
+  explicitUsage = true;
+  const usageBaseline = usageFrames.length;
   const usageRead = await request("tools/call", { name: "my_usage", arguments: {} });
   assert.ok(!usageRead.result.isError, `usage read failed: ${JSON.stringify(usageRead.result)}`);
-  assert.equal(usageFrames.length, 1, "one read produces exactly one frame");
+  assert.equal(usageFrames.length - usageBaseline, 1, "one read produces exactly one frame");
   // The frame names no seat: the room answers for the connection it came on.
   assert.deepEqual(
-    Object.keys(usageFrames[0]).sort(),
+    Object.keys(usageFrames[usageBaseline]).sort(),
     ["request_id", "type"],
     "a usage read must not name whose figures it wants",
   );
@@ -902,17 +911,20 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   assertContains(figures, "weekly: not reported", "a window not reported is said absent, not zero");
   assert.match(
     figures,
-    /^received \d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2} \(12 min ago\)$/m,
+    /^received \d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2} \(12 min ago\); last reported figures$/m,
     `when the figures arrived, and how long ago\n${figures}`,
   );
 
   const noneYet = await request("tools/call", { name: "my_usage", arguments: {} });
   assert.ok(!noneYet.result.isError, "no figures yet is the room's answer, not a failure");
-  assert.equal(noneYet.result.content[0].text, "No usage figures received for this seat yet.");
+  assertContains(noneYet.result.content[0].text, "No usage figures received for this seat yet.", "absence remains explicit");
+  assertContains(noneYet.result.content[0].text, "context: not reported", "missing context is not zero");
 
   const noSeat = await request("tools/call", { name: "my_usage", arguments: {} });
   assert.ok(noSeat.result.isError, "a room that cannot say whose figures these are must read as a failure");
   assertContains(noSeat.result.content[0].text, "Not read: this session has no account", "the reason is passed on");
+
+  explicitUsage = false;
 
   // ── the refused draft is held, and re-sent by leaving content out (#268) ───
   // Still the draft refused above. It goes through the floor like any post —
@@ -923,6 +935,12 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     arguments: { last_seen: "m-10" },
   });
   assert.ok(!resent.result.isError, `re-send failed: ${JSON.stringify(resent.result)}`);
+  const feedback = resent.result.content.at(-1).text;
+  assert.match(feedback, /now \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/);
+  assertContains(feedback, "5h: 78% used", "own limit feedback");
+  assertContains(feedback, "weekly: 12% used, resets not reported", "reset absence is explicit");
+  assertContains(feedback, "context: 42% used, received", "context has its receipt time");
+  assertContains(feedback, "last reported", "past figures are not current claims");
   const resentPost = await nextPost(4);
   assert.equal(resentPost.content, "私も答えます", "the held draft goes out unchanged");
   assert.equal(resentPost.last_seen, "m-10", "a re-send declares its own watermark");
@@ -935,6 +953,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
 
   // Delivered, so nothing is held any more: leaving content out is now a
   // missing body, said as such, and nothing goes to the room.
+  feedbackUsage = null;
+  const feedbackStarted = Date.now();
   const nothingHeld = await request("tools/call", {
     name: "say_to_room",
     arguments: { last_seen: "m-10" },
@@ -948,6 +968,9 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   assert.equal(postFrames.length, 5, "a call that sends nothing puts nothing on the floor");
 
   // A held draft keeps its addressees, and the newest refusal replaces it.
+  assertContains(nothingHeld.result.content.at(-1).text, "Usage unavailable", "timeout affects feedback only");
+  assert.ok(Date.now() - feedbackStarted < 5000, "feedback timeout is bounded");
+  feedbackUsage = { context: 55, context_received_at: RECEIVED };
   answer = "refuse";
   await request("tools/call", {
     name: "say_to_room",
@@ -958,7 +981,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     arguments: { content: "マスター宛の下書き", to: "Master", last_seen: "m-1" },
   });
   answer = "deliver";
-  await request("tools/call", { name: "say_to_room", arguments: { last_seen: "m-10" } });
+  feedbackUsage = null;
+  const deliveredWithoutUsage = await request("tools/call", { name: "say_to_room", arguments: { last_seen: "m-10" } });
+  assert.ok(!deliveredWithoutUsage.result.isError, "usage timeout cannot make a delivered post fail");
+  assertContains(deliveredWithoutUsage.result.content.at(-1).text, "Usage unavailable", "delivered result survives absent usage");
+  feedbackUsage = { context: 55, context_received_at: RECEIVED };
   const addressedPost = await nextPost(7);
   assert.equal(addressedPost.content, "マスター宛の下書き", "the newest refused draft is the one held");
   assert.deepEqual(addressedPost.to, ["Master"], "a held draft keeps who it was for");
@@ -981,6 +1008,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     name: "say_to_room",
     arguments: { last_seen: "m-10" },
   });
+  assertContains(clearedAgain.result.content.at(-1).text, "context: 55%", "a later call fetches new figures");
   assert.ok(clearedAgain.result.isError, "a delivery clears the held draft, whatever was sent");
 
   roomSocket.send(JSON.stringify({type: "identity", nickname: "Luna", name: "Codex Luna"}));

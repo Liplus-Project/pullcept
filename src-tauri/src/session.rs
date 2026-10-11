@@ -1615,6 +1615,8 @@ pub fn start_session(
         )
         })?;
 
+    app.state::<crate::room::UsageBook>().begin_session(&topic.topic_id, &account.id);
+
     // Where a Codex seat's rollout lives, and — on a resume — how long the file
     // already was before this launch. That length is where the reading starts,
     // so the panel shows what this run reports and not the last run's values
