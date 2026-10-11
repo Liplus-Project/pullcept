@@ -261,6 +261,9 @@ impl Limiter {
     /// restart, and its mailbox file holds the rest. The record is read once,
     /// before the notice goes in.
     fn recover(&self) {
+        if !self.current() {
+            return;
+        }
         let record = self.record();
         let seat = limit::Seat {
             name: &self.name,
@@ -276,8 +279,11 @@ impl Limiter {
             &limit::recovery_notice(&self.name, count),
             Some(&self.pty_id),
         );
-        let ptys = self.app.state::<crate::pty::PtyState>();
         self.with(|entry| {
+            // The app-server query may have outlived this launch.
+            if !self.current() {
+                return;
+            }
             // Read again with what was held up to the release, so a post held
             // after the record was read is not lost.
             let ids = entry.stored();
@@ -285,9 +291,7 @@ impl Limiter {
             // The mailbox goes before the line is typed: cut short between the
             // two, the seat misses its line rather than being handed it twice.
             entry.persist(|boxes, account| boxes.close(account));
-            let Some(text) = limit::digest(&held) else {
-                return;
-            };
+            let text = mcp_config::limit_recovery::input(&held);
             // The label carries the id of the newest post this line accounts
             // for — the recovery notice, or the newest held post if the notice
             // did not go in — so the seat's next `last_seen` stands past
@@ -302,8 +306,26 @@ impl Limiter {
                 &[],
                 &text,
             );
-            ptys.type_in(&self.pty_id, typed);
+            crate::hook_activity::type_or_keep(
+                &self.app,
+                &self.pty_id,
+                mcp_config::prompt_hold::Item {
+                    message_id: watermark.unwrap_or_default(),
+                    text: typed,
+                    post: None,
+                    launch_bound: true,
+                },
+            );
         });
+    }
+
+    fn current(&self) -> bool {
+        self.app
+            .state::<crate::session::RoomSeats>()
+            .running_pty(&self.topic_id, &self.account_id)
+            .as_deref()
+            == Some(&self.pty_id)
+            && self.app.state::<crate::pty::PtyState>().is_running(&self.pty_id)
     }
 
     /// The topic's record, as `limit::mailbox` reads it. Unreadable is no

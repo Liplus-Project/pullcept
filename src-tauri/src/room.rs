@@ -1149,6 +1149,7 @@ fn type_into_sessions(
                 message_id: post.message_id.clone(),
                 text: text.clone(),
                 post: Some(post_for_hold()),
+                launch_bound: false,
             },
         );
     }

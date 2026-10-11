@@ -56,6 +56,8 @@ pub struct Item {
     /// The post as the usage-limit hold keeps one, or `None` for what is not a
     /// post of the room's — the limit hold's own digest.
     pub post: Option<Held>,
+    /// Recovery continuation belongs only to the launch that confirmed it.
+    pub launch_bound: bool,
 }
 
 /// One seat's kept posts.
@@ -117,14 +119,17 @@ impl Queue {
     /// front of the queue the launch after it carried (`carry`). A hand-over of
     /// that launch, if one is under way, is not ended by it.
     pub fn put_first(&mut self, item: Item) {
-        self.items.push_front(item);
+        if !item.launch_bound {
+            self.items.push_front(item);
+        }
     }
 
     /// The queue of a seat launched again: what was kept carries over to the
-    /// new launch, and a hand-over that was under way for the old one ends.
+    /// new launch, except continuation bound to the old launch (#389). A
+    /// hand-over that was under way for the old one ends.
     pub fn carry(self) -> Queue {
         Queue {
-            items: self.items,
+            items: self.items.into_iter().filter(|item| !item.launch_bound).collect(),
             handing: false,
         }
     }
@@ -198,6 +203,7 @@ mod tests {
         Item {
             message_id: id.into(),
             text: format!("[pullcept] {id}"),
+            launch_bound: false,
             post: Some(Held {
                 message_id: id.into(),
                 speaker: "Lin".into(),
@@ -213,6 +219,7 @@ mod tests {
             message_id: id.into(),
             text: format!("[pullcept] digest {id}"),
             post: None,
+            launch_bound: false,
         }
     }
 
