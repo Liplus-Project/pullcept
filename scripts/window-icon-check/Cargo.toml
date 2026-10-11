@@ -1,0 +1,10 @@
+[package]
+name = "pullcept-icon-native-check"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+winapi = { version = "0.3", features = ["libloaderapi", "winuser", "wingdi"] }
+
+[build-dependencies]
+tauri-winres = "=0.3.6"

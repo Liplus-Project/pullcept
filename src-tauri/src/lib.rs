@@ -12,6 +12,8 @@ mod room;
 mod room_log;
 mod session;
 mod webhook;
+#[cfg(windows)]
+mod window_icon;
 
 use app_mcp::McpServers;
 use pty::PtyState;
@@ -43,6 +45,16 @@ pub fn run() {
         // What each Claude Code seat is doing, as its hooks tell it (#331).
         .manage(hook_activity::HookSeats::new())
         .setup(|app| {
+            #[cfg(windows)]
+            for window in app.webview_windows().values() {
+                let result = window
+                    .hwnd()
+                    .map_err(std::io::Error::other)
+                    .and_then(|hwnd| window_icon::set_taskbar_icon(hwnd.0 as _));
+                if let Err(err) = result {
+                    eprintln!("[window] failed to set taskbar icon: {err}");
+                }
+            }
             // The room has to be listening before any session is started: the
             // port goes into the `.mcp.json` a session launch writes.
             let handle = app.handle().clone();
