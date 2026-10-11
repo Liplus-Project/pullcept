@@ -140,6 +140,7 @@ fn logged(post: &Post) -> LoggedPost {
     LoggedPost {
         message_id: post.message_id.clone(),
         speaker: post.speaker.clone(),
+        full_name: post.full_name.clone(),
         account: post.account.clone(),
         from_app: post.from_app,
         content: post.content.clone(),

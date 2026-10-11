@@ -52,7 +52,8 @@ import { randomUUID } from "node:crypto";
 import { admitSidecar } from "./admission.mjs";
 
 const ROOM_URL = process.env.PULLCEPT_ROOM_URL ?? "";
-const AGENT_NAME = process.env.PULLCEPT_AGENT_NAME ?? "session";
+let AGENT_NAME = process.env.PULLCEPT_AGENT_NAME ?? "session";
+let ROOM_FULL_NAME = process.env.PULLCEPT_ACCOUNT_NAME ?? AGENT_NAME;
 const ROOM_TOKEN = process.env.PULLCEPT_ROOM_TOKEN ?? "";
 /**
  * The room this session was started into, which is the topic's id, or null when
@@ -280,6 +281,7 @@ function log(line: string): void {
 interface MissedPost {
   message_id?: string;
   speaker?: string;
+  full_name?: string;
   content?: string;
   /** Empty when it was said to the room (#204). */
   to?: string[];
@@ -300,6 +302,7 @@ interface PostResultFrame {
 interface LoggedPost {
   message_id?: string;
   speaker?: string;
+  full_name?: string;
   content?: string;
   /** Absent when it was said to the room (#204). */
   to?: string[];
@@ -388,8 +391,9 @@ const LOOKING_BACK = UNSEEN_HISTORY
  * and Codex seats read them alike. The tool descriptions below are written the
  * same way.
  */
-const INSTRUCTIONS = [
-  `You = "${AGENT_NAME}" in Pullcept room.`,
+function instructions(): string {
+  return [
+  `You = "${AGENT_NAME}" in Pullcept room.${ROOM_FULL_NAME !== AGENT_NAME ? ` Original name: ${ROOM_FULL_NAME}.` : ""}`,
   "Post/reply via say_to_room. Answering a room post: terminal output is read by no one; a reply only in the terminal is silence.",
   LOOKING_BACK,
   "say_to_room last_seen = message_id of newest post you actually saw.",
@@ -405,15 +409,17 @@ const INSTRUCTIONS = [
   "- Room shows your name; omit it from body.",
   "",
   "Addressing:",
-  "- Your name in label's to -> answer; else stay silent. No to = whole room.",
+  "- to/from use nicknames (legacy: name); full_name is original-name metadata, not an alias. Duplicate nicknames address all matches. label.you/tool result updates your nickname.",
+  "- Your nickname in label's to -> answer; else stay silent. No to = whole room.",
   "- Only label's to addresses. Sending: @name of a participant moves to to. Reading: @name left in body = plain text.",
   "- Room-wide question: not all must answer; not answering is valid.",
   "",
   "Working together:",
   "- Unowned work: claim it in room, wait for a reply, then start.",
   "- Don't adopt others' posts as your own context.",
-  `- GitHub write with body: last line "— ${AGENT_NAME}". Unsigned write = belongs to no session in room.`,
-].join("\n");
+  `- GitHub write with body: last line "— ${ROOM_FULL_NAME}". Unsigned write = belongs to no session in room.`,
+  ].join("\n");
+}
 
 /**
  * A refused sidecar serves nothing (#208).
@@ -431,7 +437,7 @@ const mcp = new Server(
     capabilities: {
       tools: {},
     },
-    ...(SEAT_REFUSAL === null ? { instructions: INSTRUCTIONS } : {}),
+    ...(SEAT_REFUSAL === null ? { instructions: instructions() } : {}),
   },
 );
 
@@ -567,148 +573,155 @@ const TOOLS = [
  */
 let heldDraft: { content: string; to: string[] } | null = null;
 
+function identityText(): string {
+  return `You = ${AGENT_NAME} (${ROOM_FULL_NAME}); address only ${AGENT_NAME}.`;
+}
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: SEAT_REFUSAL === null ? TOOLS : [],
+  tools: SEAT_REFUSAL === null ? TOOLS.map((tool) => ({ ...tool, description: `${identityText()} ${tool.description}` })) : [],
 }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  const result = await (async () => {
+    const { name, arguments: args } = request.params;
 
-  // Nothing is listed, so nothing should arrive. Said anyway rather than run:
-  // a call that got here would otherwise go on to report a socket this process
-  // never meant to open.
-  if (SEAT_REFUSAL !== null) {
+    // Nothing is listed, so nothing should arrive. Said anyway rather than run:
+    // a call that got here would otherwise go on to report a socket this process
+    // never meant to open.
+    if (SEAT_REFUSAL !== null) {
+      return {
+        content: [{ type: "text", text: `Not in the room: ${SEAT_REFUSAL}.` }],
+        isError: true,
+      };
+    }
+
+    if (name === "read_room_history") return await readHistory(args);
+    if (name === "my_usage") return await readUsage();
+
+    if (name !== "say_to_room") {
+      return {
+        content: [{ type: "text", text: `Unknown tool: ${name}` }],
+        isError: true,
+      };
+    }
+
+    // Left out, `content` means the held draft, sent as it was (#268) — its
+    // addressees too, unless this call names its own. Given, it is what is sent,
+    // whatever is held.
+    const resend = args?.content === undefined;
+    if (resend && heldDraft === null) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "content is required: there is no refused draft held to re-send.",
+          },
+        ],
+        isError: true,
+      };
+    }
+    const content = resend
+      ? heldDraft!.content
+      : typeof args?.content === "string"
+        ? args.content
+        : "";
+    if (!content.trim()) {
+      return {
+        content: [{ type: "text", text: "content is required and must be non-empty." }],
+        isError: true,
+      };
+    }
+
+    const to = resend && args?.to === undefined ? heldDraft!.to : addressees(args?.to);
+    // Passed through as given. This process cannot check it and does not try:
+    // the watermark is a statement about the agent's own context, not a claim
+    // about who the agent is, and a false one costs only its author a round trip.
+    const declared = typeof args?.last_seen === "string" ? args.last_seen.trim() : "";
+    const lastSeen = declared || undefined;
+
+    // No speaker field: the room stamps that from this connection. Sending one
+    // would be a claim about who is speaking, and the room would overwrite it.
+    const messageId = randomUUID();
+    // Registered before the frame goes out, so an answer that comes back inside
+    // the same tick has somewhere to land.
+    const answered = awaitPostResult(messageId);
+    const sent = sendToRoom({
+      type: "post",
+      message_id: messageId,
+      content,
+      ...(to.length ? { to } : {}),
+      ...(lastSeen ? { last_seen: lastSeen } : {}),
+      ts: new Date().toISOString(),
+    });
+
+    if (!sent) {
+      // The room is the only audience. Reporting success on a dropped frame
+      // would let the agent believe it had spoken.
+      abandonPost(messageId);
+      await answered;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Not delivered: the room socket is not connected (${roomStatus()}).`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const result = await answered;
+
+    if (result === null) {
+      // Unconfirmed, and said as such. "Delivered" here would be a guess the
+      // agent goes on to act on, and so would "not delivered".
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Not confirmed: the room did not answer this post (${roomStatus()}). ` +
+              "It may or may not have been delivered. Do not repeat it blind.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (typeof result.error === "string") {
+      // Nowhere to post, which is not the same answer as a refusal: nothing was
+      // missed, and posting again will not land either.
+      return {
+        content: [{ type: "text", text: `Not delivered: ${result.error}` }],
+        isError: true,
+      };
+    }
+
+    if (result.delivered !== true) {
+      // Refused. An error rather than a quiet note, because the agent's next
+      // move depends on it: nothing was posted, and this is the one moment the
+      // missed posts are in front of it.
+      //
+      // Kept, so that going on after reading costs one short call rather than
+      // the whole body composed again (#268). One draft, the newest refused.
+      heldDraft = { content, to };
+      return {
+        content: [{ type: "text", text: describeRefusal(result.missed ?? []) }],
+        isError: true,
+      };
+    }
+
+    // Delivered: whatever was held has been said, or set aside for this.
+    heldDraft = null;
+
+    // The id the room keeps and hands everyone else on the label (#267). The
+    // speaker never sees its own post come back, so this is the one place it can
+    // learn the id others will cite.
     return {
-      content: [{ type: "text", text: `Not in the room: ${SEAT_REFUSAL}.` }],
-      isError: true,
+      content: [{ type: "text", text: `Delivered to the room. message_id: ${messageId}` }],
     };
-  }
-
-  if (name === "read_room_history") return await readHistory(args);
-  if (name === "my_usage") return await readUsage();
-
-  if (name !== "say_to_room") {
-    return {
-      content: [{ type: "text", text: `Unknown tool: ${name}` }],
-      isError: true,
-    };
-  }
-
-  // Left out, `content` means the held draft, sent as it was (#268) — its
-  // addressees too, unless this call names its own. Given, it is what is sent,
-  // whatever is held.
-  const resend = args?.content === undefined;
-  if (resend && heldDraft === null) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: "content is required: there is no refused draft held to re-send.",
-        },
-      ],
-      isError: true,
-    };
-  }
-  const content = resend
-    ? heldDraft!.content
-    : typeof args?.content === "string"
-      ? args.content
-      : "";
-  if (!content.trim()) {
-    return {
-      content: [{ type: "text", text: "content is required and must be non-empty." }],
-      isError: true,
-    };
-  }
-
-  const to = resend && args?.to === undefined ? heldDraft!.to : addressees(args?.to);
-  // Passed through as given. This process cannot check it and does not try:
-  // the watermark is a statement about the agent's own context, not a claim
-  // about who the agent is, and a false one costs only its author a round trip.
-  const declared = typeof args?.last_seen === "string" ? args.last_seen.trim() : "";
-  const lastSeen = declared || undefined;
-
-  // No speaker field: the room stamps that from this connection. Sending one
-  // would be a claim about who is speaking, and the room would overwrite it.
-  const messageId = randomUUID();
-  // Registered before the frame goes out, so an answer that comes back inside
-  // the same tick has somewhere to land.
-  const answered = awaitPostResult(messageId);
-  const sent = sendToRoom({
-    type: "post",
-    message_id: messageId,
-    content,
-    ...(to.length ? { to } : {}),
-    ...(lastSeen ? { last_seen: lastSeen } : {}),
-    ts: new Date().toISOString(),
-  });
-
-  if (!sent) {
-    // The room is the only audience. Reporting success on a dropped frame
-    // would let the agent believe it had spoken.
-    abandonPost(messageId);
-    await answered;
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Not delivered: the room socket is not connected (${roomStatus()}).`,
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  const result = await answered;
-
-  if (result === null) {
-    // Unconfirmed, and said as such. "Delivered" here would be a guess the
-    // agent goes on to act on, and so would "not delivered".
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Not confirmed: the room did not answer this post (${roomStatus()}). ` +
-            "It may or may not have been delivered. Do not repeat it blind.",
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  if (typeof result.error === "string") {
-    // Nowhere to post, which is not the same answer as a refusal: nothing was
-    // missed, and posting again will not land either.
-    return {
-      content: [{ type: "text", text: `Not delivered: ${result.error}` }],
-      isError: true,
-    };
-  }
-
-  if (result.delivered !== true) {
-    // Refused. An error rather than a quiet note, because the agent's next
-    // move depends on it: nothing was posted, and this is the one moment the
-    // missed posts are in front of it.
-    //
-    // Kept, so that going on after reading costs one short call rather than
-    // the whole body composed again (#268). One draft, the newest refused.
-    heldDraft = { content, to };
-    return {
-      content: [{ type: "text", text: describeRefusal(result.missed ?? []) }],
-      isError: true,
-    };
-  }
-
-  // Delivered: whatever was held has been said, or set aside for this.
-  heldDraft = null;
-
-  // The id the room keeps and hands everyone else on the label (#267). The
-  // speaker never sees its own post come back, so this is the one place it can
-  // learn the id others will cite.
-  return {
-    content: [{ type: "text", text: `Delivered to the room. message_id: ${messageId}` }],
-  };
+  })();
+  return { ...result, content: [...result.content, { type: "text" as const, text: identityText() }] };
 });
 
 /**
@@ -899,7 +912,7 @@ function describeHistory(result: HistoryResultFrame): string {
     const addressee = addressedTo(one.to);
     const id = one.message_id ?? "?";
     const ts = one.ts ? `${one.ts} ` : "";
-    return `- ${ts}[${id}] ${one.speaker ?? "someone"}${addressee}: ${one.content ?? ""}`;
+    return `- ${ts}[${id}] ${one.speaker ?? "someone"}${one.full_name ? ` (${one.full_name})` : ""}${addressee}: ${one.content ?? ""}`;
   });
   const oldest = posts[0]?.message_id;
   const tail = result.has_more
@@ -922,7 +935,7 @@ function describeRefusal(missed: MissedPost[]): string {
   const lines = missed.map((one) => {
     const addressee = addressedTo(one.to);
     const id = one.message_id ?? "?";
-    return `- [${id}] ${one.speaker ?? "someone"}${addressee}: ${one.content ?? ""}`;
+    return `- [${id}] ${one.speaker ?? "someone"}${one.full_name ? ` (${one.full_name})` : ""}${addressee}: ${one.content ?? ""}`;
   });
   const newest = missed[missed.length - 1]?.message_id;
   const again = newest
@@ -1132,7 +1145,12 @@ function connectRoom(): void {
     const frame = data as { type?: string };
     // The answer to a post this agent made. It is the tool call's own result,
     // not something anybody said.
-    if (frame.type === "post_result") settlePostResult(frame as PostResultFrame);
+    if (frame.type === "identity") {
+      const identity = data as { nickname?: string; name?: string };
+      if (typeof identity.nickname === "string") AGENT_NAME = identity.nickname;
+      ROOM_FULL_NAME = identity.name ?? AGENT_NAME;
+    }
+    else if (frame.type === "post_result") settlePostResult(frame as PostResultFrame);
     // The answer to this agent's own pull, returned as the tool's result: these
     // are posts, and handing them over any other way would be the room
     // delivering the past after all — which is the one thing the pull exists

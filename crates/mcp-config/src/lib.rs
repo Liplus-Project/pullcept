@@ -814,6 +814,7 @@ pub const APP_LAUNCH_ENV: &[&str] = &[
     codex::app_server::REMOTE_TOKEN_ENV,
     "PULLCEPT_ROOM_URL",
     "PULLCEPT_AGENT_NAME",
+    "PULLCEPT_ACCOUNT_NAME",
     "PULLCEPT_ACCOUNT_ID",
     "PULLCEPT_AGENT_HUE",
     "PULLCEPT_UNSEEN_HISTORY",
@@ -3277,5 +3278,22 @@ mod tests {
         let mut parts = split_launch_options(line);
         assert_eq!(parts.remove(0), "claude");
         assert!(declares_session_id(&parts), "{parts:?}");
+    }
+}
+
+/// Account addressing is the optional nickname, falling back for legacy/blank settings.
+pub fn address_name<'a>(name: &'a str, nickname: Option<&'a str>) -> &'a str {
+    nickname.map(str::trim).filter(|name| !name.is_empty()).unwrap_or_else(|| name.trim())
+}
+
+#[cfg(test)]
+mod nickname_tests {
+    #[test]
+    fn optional_nickname_has_no_original_name_alias() {
+        assert!(super::APP_LAUNCH_ENV.contains(&"PULLCEPT_ACCOUNT_NAME"));
+        assert_eq!(super::address_name("Codex Luna", Some(" Luna ")), "Luna");
+        for nickname in [None, Some(""), Some("  ")] {
+            assert_eq!(super::address_name(" Codex Luna ", nickname), "Codex Luna");
+        }
     }
 }

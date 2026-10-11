@@ -83,6 +83,8 @@ const TITLE_CHARS: usize = 40;
 pub struct LoggedPost {
     pub message_id: String,
     pub speaker: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_name: Option<String>,
     /// The account the speaker declared, or absent when they declared none.
     /// Omitted rather than written as null, as `to` is; a line written before
     /// this field existed reads as declaring none (#193).
@@ -714,6 +716,7 @@ mod tests {
         let post = LoggedPost {
             message_id: Uuid::new_v4().to_string(),
             speaker: "Lin".to_string(),
+            full_name: None,
             account: None,
             from_app: false,
             content: content.to_string(),
@@ -948,7 +951,7 @@ mod tests {
         let scratch = Scratch::new();
         let path = scratch.path().join("t.jsonl");
         let before = r#"{"message_id":"a","speaker":"webhook","content":"x","ts":"2026-09-27T00:00:00Z"}"#;
-        let after = r#"{"message_id":"b","speaker":"github-webhook-mcp","account":"mcp-github-webhook-mcp","content":"y","ts":"2026-09-28T00:00:00Z"}"#;
+        let after = r#"{"message_id":"b","speaker":"github-webhook-mcp","full_name":"Original Webhook", "account":"mcp-github-webhook-mcp","content":"y","ts":"2026-09-28T00:00:00Z"}"#;
         std::fs::write(&path, format!("{before}
 {after}
 ")).expect("write");
@@ -956,6 +959,9 @@ mod tests {
         let (posts, skipped) = read_posts(&path);
         assert_eq!(skipped, 0);
         assert_eq!(posts[0].account, None);
+        assert_eq!(posts[0].full_name, None);
+        assert_eq!(posts[1].full_name.as_deref(), Some("Original Webhook"));
+        assert!(serde_json::to_string(&posts[1]).unwrap().contains("Original Webhook"));
         assert_eq!(posts[1].account.as_deref(), Some("mcp-github-webhook-mcp"));
 
         let line = serde_json::to_string(&posts[0]).expect("serialize");

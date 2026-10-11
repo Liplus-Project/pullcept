@@ -1,3 +1,4 @@
+import { accountName } from "./account-name";
 import { limitedByUsage, statsForView } from "./seat-status";
 import type { invoke } from "@tauri-apps/api/core";
 import type { listen } from "@tauri-apps/api/event";
@@ -1134,10 +1135,10 @@ export function createSessionController(deps: Dependencies) {
    * account this is, is which row was pressed (#62).
    */
   async function startSession(account: Account): Promise<void> {
-    const name = account.name.trim();
+    const name = accountName(account);
     if (!name) {
       deps.status(
-        "アカウントの名前を入力してください。部屋での名乗りになります。",
+        "アカウントの名前を入力してください。ニックネーム未設定時は部屋の呼び名にも使います。",
         "error",
       );
       deps.openAccountDialog(account);

@@ -144,12 +144,13 @@
 //! it reads the topic through the pull. The room writes to a terminal here; it
 //! still reads nothing from one.
 
+use crate::config;
 use crate::pty::PtyState;
 use crate::room_log::{self, TopicRef};
 use crate::session::RoomSeats;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use room_floor::{Admission, Floor, Missed, Post};
+use room_floor::{Admission, Floor, Missed, Post, Seat};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -200,6 +201,8 @@ pub struct RoomMessage {
     pub message_id: String,
     /// Display name of the speaker.
     pub speaker: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_name: Option<String>,
     /// The hue the speaker declared, in oklch degrees, or `None` when they
     /// declared none. Carried on the message rather than looked up by name on
     /// the screen: a name is not an identity here, so a lookup by name is the
@@ -232,6 +235,7 @@ pub struct RoomMessage {
 pub struct Participant {
     pub id: String,
     pub name: String,
+    pub full_name: Option<String>,
     /// Declared at join; `None` when this participant declared none, which the
     /// screen answers by deriving one from the name.
     pub hue: Option<f64>,
@@ -320,22 +324,6 @@ struct IncomingFrame {
     before: Option<String>,
 }
 
-/// What the room holds about one seated participant.
-#[derive(Debug, Clone)]
-struct Seat {
-    name: String,
-    hue: Option<f64>,
-    /// The account declared at join, or `None`. Held so the roster can hand it
-    /// back; nothing in this file branches on it.
-    account: Option<String>,
-    /// Where the floor stood when this connection took its seat. It is the
-    /// watermark of a participant who declares none: what predates the seat
-    /// was never delivered to them, so it is not theirs to have missed.
-    /// Preserved across a rename — that is the same participant, still having
-    /// seen what they saw.
-    since: u64,
-}
-
 /// One room: a topic, the floor of what has been said in it this run, and who
 /// is in it.
 struct Room {
@@ -384,6 +372,7 @@ impl Room {
 #[derive(Debug, Clone)]
 struct Declaration {
     name: String,
+    full_name: Option<String>,
     hue: Option<f64>,
     account: Option<String>,
 }
@@ -528,6 +517,7 @@ impl RoomState {
             .map(|(id, seat)| Participant {
                 id: id.clone(),
                 name: seat.name.clone(),
+                full_name: seat.full_name.clone(),
                 hue: seat.hue,
                 account: seat.account.clone(),
                 // Decided on the connection, as it has to be: this is the one
@@ -573,6 +563,36 @@ impl RoomState {
             Some(room) => seat_in(room, origin, name, hue, account),
             None => false,
         }
+    }
+
+    /// Update every live connection by account id without resetting its floor.
+    pub(crate) fn refresh_accounts(&self, app: &AppHandle, accounts: &[config::Account]) {
+        let (ids, identities) = self.update_accounts(accounts);
+        for (target, frame) in identities { let _ = self.to_participants.send(Fanout { target, frame }); }
+        for id in ids { let _ = app.emit("room-participants", self.roster(&id)); }
+    }
+
+    fn update_accounts(&self, accounts: &[config::Account]) -> (Vec<String>, Vec<(String, String)>) {
+        let mut guard = self.inner.lock();
+        if let Some(local) = guard.local.as_mut() {
+            if let Some(account) = accounts.iter().find(|a| Some(a.id.as_str()) == local.account.as_deref()) {
+                local.name = account.address_name().to_string();
+                local.full_name = (account.name.trim() != local.name).then(|| account.name.trim().to_string());
+                local.hue = account.hue;
+            }
+        }
+        for room in guard.rooms.values_mut() {
+            for seat in room.participants.values_mut() {
+                if let Some(account) = accounts.iter().find(|a| Some(a.id.as_str()) == seat.account.as_deref()) {
+                    seat.rename(account.address_name(), &account.name, account.hue);
+                }
+            }
+        }
+        let ids: Vec<String> = guard.rooms.keys().cloned().collect();
+        let identities: Vec<(String, String)> = guard.rooms.values().flat_map(|room| room.participants.iter().map(|(id, seat)| {
+            (id.clone(), serde_json::json!({"type":"identity", "nickname":seat.name, "name":seat.full_name.as_deref().unwrap_or(&seat.name)}).to_string())
+        })).collect();
+        (ids, identities)
     }
 
     fn unseat(&self, room_id: &str, origin: &str) {
@@ -634,6 +654,7 @@ impl RoomState {
                     person.hue,
                     person.account.as_deref(),
                 );
+                if let Some(seat) = room.participants.get_mut(&self.local_origin) { seat.full_name = person.full_name; }
             }
             inner.rooms.insert(room_id.clone(), room);
         }
@@ -669,6 +690,7 @@ impl RoomState {
                 person.hue,
                 person.account.as_deref(),
             );
+            if let Some(seat) = room.participants.get_mut(&self.local_origin) { seat.full_name = person.full_name; }
         }
         inner.current = fresh.topic_id.clone();
         inner.rooms.insert(fresh.topic_id.clone(), room);
@@ -695,6 +717,7 @@ impl RoomState {
         let mut inner = self.inner.lock();
         inner.local = Some(Declaration {
             name: name.to_string(),
+            full_name: None,
             hue,
             account: account.map(str::to_string),
         });
@@ -740,6 +763,7 @@ fn seat_in(
         origin.to_string(),
         Seat {
             name: name.to_string(),
+            full_name: None,
             hue,
             account: account.map(str::to_string),
             since,
@@ -903,6 +927,10 @@ fn deliver_except(
         // Stamped before the floor takes its copy, so the retained post and the
         // live line carry one declaration rather than two readings of it. A
         // refusal hands that copy back, and the screen draws it (#108).
+        if let Some(seat) = inner.participants.get(origin) {
+            post.speaker = seat.name.clone();
+            post.full_name = seat.full_name.clone();
+        }
         post.hue = hue;
         post.account = account;
         // Whether the app itself is saying it, off the origin and nothing else
@@ -980,6 +1008,7 @@ fn deliver_except(
             topic_id: room_id.to_string(),
             message_id: post.message_id,
             speaker: post.speaker,
+            full_name: post.full_name,
             // Read off the seat on this connection, so the colour of a line and
             // the colour of its author's roster entry are the one declaration.
             // Read inside the critical section above, with the same lock the
@@ -1079,9 +1108,11 @@ fn type_into_sessions(
         return;
     }
     let at = terminal_input::at(&post.ts);
-    let text = terminal_input::compose(
+    let display_speaker = post.full_name.as_ref().map(|name| format!("{} ({name})", post.speaker)).unwrap_or_else(|| post.speaker.clone());
+    let text = terminal_input::compose_named(
         &post.message_id,
         &post.speaker,
+        post.full_name.as_deref(),
         role,
         at.as_deref(),
         &post.to,
@@ -1094,7 +1125,7 @@ fn type_into_sessions(
         }
         let post_for_hold = || mcp_config::codex::limit::Held {
             message_id: post.message_id.clone(),
-            speaker: post.speaker.clone(),
+            speaker: display_speaker.clone(),
             at: at.clone(),
             content: post.content.clone(),
             addressed: seats
@@ -1105,6 +1136,14 @@ fn type_into_sessions(
         let held = limits.hold(&target.pty_id, post_for_hold)
             || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold);
         if held { continue; }
+        // The recipient's current call-name supersedes launch-time instructions.
+        // A live rename does not need a new conversation or a synthetic user post.
+        let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
+        let text = config::read_config(app).ok().and_then(|config| config.accounts.into_iter().find(|account| Some(account.id.as_str()) == recipient)).map(|account| {
+            let identity = serde_json::json!({"you": account.address_name(), "your_full_name": account.name});
+            let fields = identity.to_string();
+            text.replacen("}\n", &format!(",{} }}\n", &fields[1..fields.len()-1]), 1)
+        }).unwrap_or_else(|| text.clone());
         crate::hook_activity::type_or_keep(
             app,
             &target.pty_id,
@@ -1145,6 +1184,7 @@ pub fn post_app_notice(
         Post {
             message_id: Uuid::new_v4().to_string(),
             speaker: APP_SPEAKER.to_string(),
+            full_name: None,
             hue: None,
             account: None,
             // Stamped by `deliver` off `app_origin`, as every post's is (#340).
@@ -1203,6 +1243,7 @@ pub fn post_notice(
             Post {
                 message_id: Uuid::new_v4().to_string(),
                 speaker: speaker.name.clone(),
+                full_name: speaker.full_name.clone(),
                 hue: speaker.hue,
                 account: Some(speaker.account_id.clone()),
                 from_app: false,
@@ -2034,6 +2075,7 @@ async fn serve_participant(
                     normalize_hue(frame.hue),
                     account.as_deref(),
                 );
+                if let Ok(config) = config::read_config(&app) { room.refresh_accounts(&app, &config.accounts); }
                 joined_as = Some(name);
                 joined_account = account;
                 let _ = app.emit("room-participants", room.roster(&room_id));
@@ -2057,6 +2099,7 @@ async fn serve_participant(
                         Post {
                             message_id: message_id.clone(),
                             speaker,
+                            full_name: None,
                             // Stamped by `deliver` off the seat on this connection.
                             // A sender may name an addressee; it may not name its
                             // own colour any more than its own name.
@@ -2361,6 +2404,7 @@ pub fn room_join(
         normalize_hue(hue),
         normalize_account(account_id).as_deref(),
     );
+    if let Ok(config) = config::read_config(&app) { state.refresh_accounts(&app, &config.accounts); }
     for room_id in changed {
         let _ = app.emit("room-participants", state.roster(&room_id));
     }
@@ -2418,6 +2462,7 @@ pub fn room_post(
         let _ = app.emit("room-participants", state.roster(&room_id));
     }
 
+    if let Ok(config) = config::read_config(&app) { state.refresh_accounts(&app, &config.accounts); }
     let local_origin = state.local_origin.clone();
     let message_id = Uuid::new_v4().to_string();
     deliver(
@@ -2428,6 +2473,7 @@ pub fn room_post(
         Post {
             message_id,
             speaker,
+            full_name: None,
             // Stamped by `deliver` off the seat, which the call above left as
             // it stood. Filling it here would be a second reading of the same
             // declaration.

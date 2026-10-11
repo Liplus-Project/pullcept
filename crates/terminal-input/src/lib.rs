@@ -151,6 +151,19 @@ pub fn compose(
     to: &[String],
     content: &str,
 ) -> String {
+    compose_named(message_id, speaker, None, role, at, to, content)
+}
+
+/// The addressing nickname remains `from`; `full_name` is recognition metadata.
+pub fn compose_named(
+    message_id: &str,
+    speaker: &str,
+    full_name: Option<&str>,
+    role: &str,
+    at: Option<&str>,
+    to: &[String],
+    content: &str,
+) -> String {
     // Written key by key rather than as a `serde_json` map: the map sorts its
     // keys unless the `preserve_order` feature is on, and that feature would
     // be switched on for every crate in the build that shares the dependency.
@@ -160,6 +173,9 @@ pub fn compose(
         string(speaker),
         string(message_id),
     );
+    if let Some(name) = full_name.filter(|name| *name != speaker) {
+        label.push_str(&format!(",\"full_name\":{}", string(name)));
+    }
     if let Some(at) = at {
         label.push_str(&format!(",\"at\":{}", string(at)));
     }
@@ -885,5 +901,17 @@ mod tests {
         let mut unsent = fed(&["ab"]);
         unsent.sent();
         assert!(unsent.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod nickname_tests {
+    #[test]
+    fn full_name_is_metadata_and_nickname_is_address() {
+        let text = super::compose_named("a", "Luna", Some("Codex Luna"), "cli", None, &["Lin".into()], "hello");
+        let label: serde_json::Value = serde_json::from_str(text.lines().next().unwrap().strip_prefix("[pullcept] ").unwrap()).unwrap();
+        assert_eq!(label["from"], "Luna");
+        assert_eq!(label["full_name"], "Codex Luna");
+        assert_eq!(label["to"][0], "Lin");
     }
 }

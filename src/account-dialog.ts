@@ -427,6 +427,7 @@ export function createAccountDialog(deps: Dependencies) {
 
     dialogTitleEl.textContent = account ? "アカウントの編集" : "アカウントの追加";
     dialogNameEl.value = draft.name;
+    dialogNicknameEl.value = draft.nickname ?? "";
     // `mcp` is offered where an account is being made (#200) and on an `mcp`
     // account's own form, and on no other: an account that exists as another kind
     // does not become a server, and the form of one that is a server cannot
@@ -861,8 +862,9 @@ export function createAccountDialog(deps: Dependencies) {
     const avatarEdit = dialogAvatar;
 
     const name = dialogNameEl.value.trim();
+    settling.nickname = dialogNicknameEl.value.trim() || null;
     if (!name) {
-      dialogError("名前を入力してください。部屋での名乗りになります。");
+      dialogError("名前を入力してください。ニックネーム未設定時は部屋の呼び名にも使います。");
       revealDialogField(dialogNameEl);
       return false;
     }
@@ -1456,6 +1458,7 @@ export function createAccountDialog(deps: Dependencies) {
 
   const dialogTitleEl = document.getElementById("account-dialog-title") as HTMLElement;
 
+  const dialogNicknameEl = document.getElementById("dialog-nickname") as HTMLInputElement;
   const dialogNameEl = document.getElementById("dialog-name") as HTMLInputElement;
 
   const dialogKindEl = document.getElementById("dialog-kind") as HTMLSelectElement;

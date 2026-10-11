@@ -53,6 +53,7 @@ pub const DEFAULT_CAPACITY: usize = 512;
 pub struct Post {
     pub message_id: String,
     pub speaker: String,
+    pub full_name: Option<String>,
     /// The hue the speaker had declared when they said it, in oklch degrees,
     /// or `None` when they declared none.
     ///
@@ -285,6 +286,8 @@ fn close_up(text: &mut String, rest: &mut &str) {
 pub struct Missed {
     pub message_id: String,
     pub speaker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_name: Option<String>,
     /// The hue it was said in, carried straight from the post. What lets a
     /// screen draw this post as the line it would have been, rather than as a
     /// line in some other colour (#108).
@@ -403,6 +406,7 @@ impl Floor {
             .map(|entry| Missed {
                 message_id: entry.post.message_id.clone(),
                 speaker: entry.post.speaker.clone(),
+                full_name: entry.post.full_name.clone(),
                 hue: entry.post.hue,
                 account: entry.post.account.clone(),
                 from_app: entry.post.from_app,
@@ -452,6 +456,7 @@ mod tests {
         Post {
             message_id: message_id.to_string(),
             speaker: speaker.to_string(),
+            full_name: None,
             hue: None,
             account: None,
             from_app: false,
@@ -908,5 +913,70 @@ mod app_notice_tests {
         let once = super::app_notice_content(nudged);
         assert_eq!(super::app_notice_content(&once), once);
         assert_eq!(once.matches("（返信不要）").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod nickname_tests {
+    use super::*;
+    #[test]
+    fn nickname_only_mentions_and_duplicate_fanout() {
+        let (text, to) = take_mentions("@Luna hello @Codex Luna", ["Luna", "Luna"]);
+        assert_eq!(to, vec!["Luna"]);
+        assert_eq!(text, "hello @Codex Luna");
+        assert_eq!(["Luna", "Luna"].into_iter().filter(|name| to.iter().any(|to| to == name)).count(), 2);
+    }
+    #[test]
+    fn refused_post_keeps_original_name_snapshot() {
+        let mut floor = Floor::new();
+        let post = Post { message_id: "a".into(), speaker: "Luna".into(), full_name: Some("Codex Luna".into()), hue: None, account: None, from_app: false, content: "hello".into(), to: vec![], ts: "t".into() };
+        floor.admit("a", 0, None, post.clone());
+        match floor.admit("b", 0, None, post) {
+            Admission::Unseen(missed) => assert_eq!(missed[0].full_name.as_deref(), Some("Codex Luna")),
+            _ => panic!("expected unseen"),
+        }
+    }
+}
+
+/// A connection's room declaration. Display edits leave identity and reading position intact.
+#[derive(Debug, Clone)]
+pub struct Seat {
+    pub name: String,
+    pub full_name: Option<String>,
+    pub hue: Option<f64>,
+    pub account: Option<String>,
+    pub since: u64,
+}
+
+impl Seat {
+    /// The current sole addressing name plus original-name recognition metadata.
+    pub fn rename(&mut self, nickname: &str, name: &str, hue: Option<f64>) {
+        self.name = nickname.to_string();
+        self.full_name = (name.trim() != nickname).then(|| name.trim().to_string());
+        self.hue = hue;
+    }
+}
+
+#[cfg(test)]
+mod seat_tests {
+    use super::Seat;
+    #[test]
+    fn live_edit_clear_and_reconnect_keep_account_and_floor_position() {
+        let mut seats = vec![
+            Seat { name: "old".into(), full_name: None, hue: None, account: Some("a".into()), since: 7 },
+            Seat { name: "old".into(), full_name: None, hue: None, account: Some("a".into()), since: 12 },
+        ];
+        for seat in &mut seats { seat.rename("Luna", "Codex Luna", Some(30.0)); }
+        for seat in &mut seats { seat.rename("Moon", "Codex Luna", None); }
+        assert_eq!(seats[0].name, "Moon");
+        assert_eq!(seats[1].full_name.as_deref(), Some("Codex Luna"));
+        assert_eq!(seats.iter().map(|s| s.since).collect::<Vec<_>>(), vec![7, 12]);
+        assert!(seats.iter().all(|s| s.account.as_deref() == Some("a")));
+        let mut reconnect = Seat {name: "stale-launch-name".into(), full_name: None, hue: None, account: Some("a".into()), since: 20};
+        reconnect.rename("Moon", "Codex Luna", None);
+        assert_eq!(reconnect.name, "Moon");
+        reconnect.rename("Codex Luna", "Codex Luna", None);
+        assert_eq!(reconnect.full_name, None);
+        assert_eq!(reconnect.since, 20);
     }
 }
