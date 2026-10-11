@@ -23,13 +23,12 @@
 //! sent every round so that a reloaded webview picks them up again (#374).
 //!
 //! **The same round drives the seat's usage limit** (#294, `codex_limit`):
-//! the turn end and the reset each read leaves behind are handed to the
-//! seat's `Limiter`, which stops the seat, asks the app-server when a question
-//! is due, and hands the seat back. The question does not wait for the rollout:
-//! a seat that starts stopped (#312) is asked on the first round, before its
-//! CLI has written anything. The limit in memory is the launch's, like this
-//! thread: when the thread ends, what was held in memory goes with it, and the
-//! seat's mailbox keeps the ids of what was held (#312).
+//! the turn start, the turn end and the reset each read leaves behind are
+//! handed to the seat's `Limiter`, which stops the seat, asks the app-server
+//! when a question is due, and types the resume. The question does not wait
+//! for the rollout: a seat that starts stopped (#312) is asked on the first
+//! round, before its CLI has written anything. The limit in memory is the
+//! launch's, like this thread; the seat's mark outlives it (#312).
 
 use crate::codex_limit::Limiter;
 use crate::pty::PtyState;
@@ -82,8 +81,7 @@ pub fn watch(limiter: Limiter, home: PathBuf, resumed: Option<(PathBuf, u64)>) {
         });
     if let Err(err) = spawned {
         // The session runs without its five values, which read `—`, and
-        // without its limit being watched: the room types into it as before,
-        // whatever its mailbox says.
+        // without its limit being watched: no resume is typed into it.
         app.state::<crate::codex_limit::CodexLimits>().forget(&pty_id);
         eprintln!("[codex-status] watcher could not start: {err}");
     }
@@ -116,8 +114,8 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
         // Every round, read or not, and with no rollout yet: a stopped seat's
         // due question does not wait for the file to move, or to exist.
         let _ = match tail.as_deref_mut() {
-            Some(tail) => limiter.round(tail.take_turn_end(), tail.resets_at),
-            None => limiter.round(None, None),
+            Some(tail) => limiter.round(tail.take_turn_started(), tail.take_turn_end(), tail.resets_at),
+            None => limiter.round(false, None, None),
         };
         // When the figures were received, changed or not (#364).
         if let Some(tail) = tail.as_deref_mut() {

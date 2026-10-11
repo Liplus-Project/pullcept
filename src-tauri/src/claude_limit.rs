@@ -317,9 +317,7 @@ impl ClaudeLimits {
                 let item = mcp_config::prompt_hold::Item {
                     message_id: notice.unwrap_or_default(),
                     text,
-                    post: None,
                     launch_bound: true,
-                    relaunch_text: None,
                 };
                 let typed = crate::hook_activity::type_or_keep(app, pty, item);
                 log(

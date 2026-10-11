@@ -163,6 +163,9 @@ pub struct Tail {
     pub status: Status,
     /// The last turn end read and not yet taken (#294, `limit::turn_end`).
     turn_end: Option<super::limit::TurnEnd>,
+    /// A turn's `task_started` was read and not yet taken (#403): the seat
+    /// answered the resume typed into it.
+    turn_started: bool,
     /// The reset the last `token_count` reported for its fullest window
     /// (#294, `limit::rollout_reset`): what the room is told while the
     /// app-server has not said better.
@@ -199,6 +202,7 @@ impl Tail {
                     if let Some(end) = super::limit::turn_end(&value) {
                         self.turn_end = Some(end);
                     }
+                    self.turn_started |= value["type"] == "event_msg" && value["payload"]["type"] == "task_started";
                     if let Some(reset) = super::limit::rollout_reset(&value) {
                         self.resets_at = Some(reset);
                     }
@@ -218,6 +222,11 @@ impl Tail {
     /// carry several; the last is the seat's state.
     pub fn take_turn_end(&mut self) -> Option<super::limit::TurnEnd> {
         self.turn_end.take()
+    }
+
+    /// Whether a turn started since the previous call (#403).
+    pub fn take_turn_started(&mut self) -> bool {
+        std::mem::take(&mut self.turn_started)
     }
 
     /// Whether the rate limits were read since the previous call (#364).
@@ -496,6 +505,10 @@ mod tests {
         assert_eq!(tail.resets_at, Some(1791613577), "93 is the fuller window in TOKENS");
         assert_eq!(tail.take_turn_end(), Some(TurnEnd::UsageLimit));
         assert_eq!(tail.take_turn_end(), None);
+        assert!(!tail.take_turn_started());
+        tail.feed(lines(&[r#"{"type":"event_msg","payload":{"type":"task_started"}}"#]).as_bytes());
+        assert!(tail.take_turn_started());
+        assert!(!tail.take_turn_started(), "taken once");
     }
 
     #[test]

@@ -1,17 +1,18 @@
-//! A Codex CLI seat stopped on its usage limit (#294). See docs/3-accounts.md,
-//! "Codex の席が利用上限で止まったとき".
+//! A Codex CLI seat stopped on its usage limit (#294, #403). See
+//! docs/3-accounts.md, "Codex の席が利用上限で止まったとき".
 //!
 //! What is read and decided is `mcp_config::codex::limit`, free of tauri so a
 //! test can run it. What stays here is what needs the app: the table of
-//! seats the room consults before typing (`CodexLimits`), the question put to
-//! Codex's app-server, and the notices and the one line handed back.
+//! Codex seats a watcher is following (`CodexLimits`), the question put to
+//! Codex's app-server, the notices, and the resume typed into the seat.
 //!
 //! **Driven from the rollout watcher** (`codex_status`), one per Codex launch,
 //! on its one-second round. A turn the rollout says ended on the limit stops
-//! the seat; while stopped, the room keeps its posts back from that terminal
-//! (`room::type_into_sessions`), and the watcher asks the app-server when a
-//! question is due. Claude Code seats never enter the table and are never
-//! asked about.
+//! the seat and the room is told; the watcher asks the app-server when a
+//! question is due. Nothing is held back from a stopped seat (#403): the room
+//! types into it as into any seat (`room::type_into_sessions`), and what is
+//! typed stays in its conversation as a turn the limit refused. Claude Code
+//! seats never enter the table and are never asked about.
 //!
 //! **The app-server is asked over stdio, one short-lived process per
 //! question** (`codex app-server`, the default `stdio://` transport: one JSON
@@ -24,19 +25,26 @@
 //! A process that does not answer within `ASK_TIMEOUT` is killed and the
 //! answer is `Unavailable`, which keeps the seat stopped.
 //!
-//! **A stopped seat's mailbox outlives the session and the app** (#312): the
-//! id of every post held for it is written to a small file beside its topic's
-//! record (`limit::Mailboxes`) as it is held. A seat launched while its mailbox
-//! is there starts stopped and asks at once (`Limiter::open`); the recovery
-//! hands over exactly the posts the mailbox names, read from the record, and
-//! the mailbox goes.
+//! **A stopped seat's mark outlives the session and the app** (#312): it is
+//! written to a small file beside its topic's record (`limit::Mailboxes`) at
+//! the stop. A seat launched while its mark is there starts stopped and asks
+//! at once (`Limiter::open`), so the resume is typed by whichever launch holds
+//! the seat when the recovery is confirmed. The mark goes as the resume is
+//! typed.
+//!
+//! **After the resume is typed** (#403, as #401 for a Claude seat): a turn
+//! that starts or ends answers it. A turn that ends on the limit is a new
+//! stop, and the next confirmed recovery types it again. Neither within
+//! `limit::ANSWER_WAIT`: the room is told once that the seat seems stopped on
+//! something else, and nothing is typed again; a turn the seat completes
+//! later is told back once.
 
 use crate::room::{RoomState, SessionStats};
-use mcp_config::codex::limit::{self, Answer, Held, Limit, Mailboxes, TurnEnd};
+use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd};
 use mcp_config::codex::status::Status;
 use parking_lot::Mutex;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -48,29 +56,24 @@ use tauri::{AppHandle, Manager};
 #[derive(Default)]
 pub struct CodexLimits {
     seats: Mutex<HashMap<String, Entry>>,
+    /// The seats (topic, account) the room was told seem stopped on another
+    /// cause, kept across their launches until a turn completes.
+    stalled: Mutex<HashSet<(String, String)>>,
 }
 
-/// One seat in the table: its limit, and where its mailbox is kept.
+/// One seat in the table: its limit, and where its mark is kept.
 struct Entry {
     limit: Limit,
     account_id: String,
-    /// The topic's mailbox file, or `None` when it could not be placed: the
-    /// seat is then held in memory only, as before #312.
+    /// The topic's mark file, or `None` when it could not be placed: the stop
+    /// is then known in memory only, as before #312.
     mailboxes: Option<PathBuf>,
 }
 
 impl Entry {
-    /// The seat's mailbox as its file has it, empty when it has none.
-    fn stored(&self) -> Vec<String> {
-        self.mailboxes
-            .as_deref()
-            .and_then(|path| Mailboxes::read(path).get(&self.account_id))
-            .unwrap_or_default()
-    }
-
-    /// Change the seat's mailbox in its file. Every change goes through the
+    /// Change the seat's mark in its file. Every change goes through the
     /// table's lock, so two seats of one topic do not write over each other.
-    /// A failure is said and goes no further: memory still holds the post.
+    /// A failure is said and goes no further.
     fn persist(&self, change: impl FnOnce(&mut Mailboxes, &str)) {
         let Some(path) = self.mailboxes.as_deref() else {
             return;
@@ -78,7 +81,7 @@ impl Entry {
         let mut boxes = Mailboxes::read(path);
         change(&mut boxes, &self.account_id);
         if let Err(err) = boxes.write(path) {
-            eprintln!("[codex-limit] the mailbox could not be written: {err}");
+            eprintln!("[codex-limit] the mark could not be written: {err}");
         }
     }
 }
@@ -88,28 +91,7 @@ impl CodexLimits {
         Self::default()
     }
 
-    /// Keep a post back from the seat on `pty_id` if it is stopped, its id
-    /// written to the seat's mailbox. `false` for a free seat and for a
-    /// terminal that is not a Codex seat's.
-    pub fn hold(&self, pty_id: &str, post: impl FnOnce() -> Held) -> bool {
-        let mut seats = self.seats.lock();
-        let Some(entry) = seats.get_mut(pty_id) else {
-            return false;
-        };
-        let mut id = None;
-        let held = entry.limit.hold(|| {
-            let post = post();
-            id = Some(post.message_id.clone());
-            post
-        });
-        if let Some(id) = id {
-            entry.persist(|boxes, account| boxes.push(account, &id));
-            entry.limit.post_held(now());
-        }
-        held
-    }
-
-    /// The seat on `pty_id` has left the table. Its mailbox stays.
+    /// The seat on `pty_id` has left the table. Its mark stays.
     pub fn forget(&self, pty_id: &str) {
         self.seats.lock().remove(pty_id);
     }
@@ -148,7 +130,7 @@ impl Limiter {
 
     fn mailboxes(&self) -> Option<PathBuf> {
         crate::room_log::mailboxes_path(&self.app, &self.topic_id)
-            .map_err(|err| eprintln!("[codex-limit] the mailbox has no place: {err}"))
+            .map_err(|err| eprintln!("[codex-limit] the mark has no place: {err}"))
             .ok()
     }
 
@@ -172,18 +154,16 @@ impl Limiter {
         f(entry)
     }
 
-    /// Put the seat in the table, before the room can type into it (#312).
-    /// A mailbox left from an earlier launch — the seat was still stopped
-    /// when its session or the app ended — starts it stopped, its first
-    /// question due at once (`Limit::resumed`). Nothing is said to the room:
-    /// the stop was told when it happened.
+    /// Put the seat in the table (#312). A mark left from an earlier launch —
+    /// the seat was still stopped when its session or the app ended — starts
+    /// it stopped, its first question due at once (`Limit::resumed`). Nothing
+    /// is said to the room: the stop was told when it happened.
     pub fn open(&self) {
         let entry = self.entry(Limit::default());
         let left = entry
             .mailboxes
             .as_deref()
-            .and_then(|path| Mailboxes::read(path).get(&self.account_id))
-            .is_some();
+            .is_some_and(|path| Mailboxes::read(path).has(&self.account_id));
         let entry = Entry {
             limit: if left { Limit::resumed(now()) } else { Limit::default() },
             ..entry
@@ -195,15 +175,19 @@ impl Limiter {
         self.with(|entry| entry.limit.is_limited())
     }
 
-    /// One round: the turn end the rollout last reported, if any, then a due
-    /// question. `rollout_reset` is the reset the rollout last reported.
-    /// Whether 制限中 turned over, for the caller to send to the screen.
-    pub fn round(&self, end: Option<TurnEnd>, rollout_reset: Option<i64>) -> bool {
+    /// One round: whether a turn started and the turn end the rollout last
+    /// reported, if any, then a due question, then the resume's answer wait.
+    /// `rollout_reset` is the reset the rollout last reported. Whether 制限中
+    /// turned over, for the caller to send to the screen.
+    pub fn round(&self, started: bool, end: Option<TurnEnd>, rollout_reset: Option<i64>) -> bool {
         let was = self.is_limited();
+        if started {
+            self.with(|entry| entry.limit.answered());
+        }
         match end {
             Some(TurnEnd::UsageLimit) => {
-                // The mailbox from the stop on, empty until a post is held,
-                // so a seat stopped when the app goes down starts stopped.
+                // The mark from the stop on, so a seat stopped when the app
+                // goes down starts stopped.
                 let stopped = self.with(|entry| {
                     let stopped = entry.limit.stop(now(), rollout_reset);
                     if stopped {
@@ -216,9 +200,16 @@ impl Limiter {
                 }
             }
             Some(TurnEnd::Completed) => {
-                self.with(|entry| entry.limit.turn_completed(now()));
+                self.with(|entry| {
+                    entry.limit.answered();
+                    entry.limit.turn_completed(now());
+                });
+                self.announce_back();
             }
-            Some(TurnEnd::Failed) | None => {}
+            Some(TurnEnd::Failed) => {
+                self.with(|entry| entry.limit.answered());
+            }
+            None => {}
         }
         if self.with(|entry| entry.limit.due(now())) {
             let answer = ask(&self.asker);
@@ -227,11 +218,14 @@ impl Limiter {
                 self.recover();
             }
         }
+        if self.with(|entry| entry.limit.unanswered(now())) {
+            self.announce_other_cause();
+        }
         self.is_limited() != was
     }
 
     /// The seat has just stopped. One question for the reset the room is
-    /// told, then the notice. The room's posts are already being held.
+    /// told, then the notice.
     fn announce_stop(&self) {
         let answer = ask(&self.asker);
         let reset = self.with(|entry| {
@@ -239,84 +233,86 @@ impl Limiter {
             entry.limit.resets_at()
         });
         let clock = reset.and_then(terminal_input::clock);
-        let content = limit::stop_notice(&self.name, clock.as_deref());
-        let room = self.app.state::<RoomState>();
-        crate::room::post_app_notice(
-            &self.app,
-            &room,
-            &self.topic_id,
-            &content,
-            Some(&self.pty_id),
-        );
+        self.notice(&limit::stop_notice(&self.name, clock.as_deref()));
     }
 
-    /// The app-server said the seat may run again. The room is told first,
-    /// with the seat still holding, so the notice is not typed into it; then
-    /// the seat is freed and handed its one line under the same lock, so a
-    /// post arriving after is typed after it.
+    /// The resume drew no answer: told once, and the seat is remembered so a
+    /// turn it completes later is told back (`announce_back`).
+    fn announce_other_cause(&self) {
+        self.limits()
+            .stalled
+            .lock()
+            .insert((self.topic_id.clone(), self.account_id.clone()));
+        self.notice(&limit::other_cause(&self.name));
+    }
+
+    /// A turn completed: if the room was told the seat seemed stopped on
+    /// another cause, it is told once that the seat is back.
+    fn announce_back(&self) {
+        let told = self
+            .limits()
+            .stalled
+            .lock()
+            .remove(&(self.topic_id.clone(), self.account_id.clone()));
+        if told {
+            self.notice(&limit::back_after_other_cause(&self.name));
+        }
+    }
+
+    /// Say `content` to the room, not typed into this seat. The id it was
+    /// filed under, if it went in.
+    fn notice(&self, content: &str) -> Option<String> {
+        let room = self.app.state::<RoomState>();
+        crate::room::post_app_notice(&self.app, &room, &self.topic_id, content, Some(&self.pty_id))
+    }
+
+    /// The app-server said the seat may run again. The room is told first, so
+    /// the notice is not typed into the seat; then, under one lock, the seat is
+    /// freed, its mark goes, and the resume (`limit::CONTINUE`, #389) is typed
+    /// once into its terminal, so a post arriving after is typed after it.
     ///
-    /// What the notice counts and the line carries are the posts the seat's
-    /// mailbox names (`limit::mailbox`, #312), read from the topic's record:
-    /// a seat restarted while stopped holds in memory only what came after its
-    /// restart, and its mailbox file holds the rest. The record is read once,
-    /// before the notice goes in.
+    /// Typed by the launch that holds the seat now. A launch that no longer
+    /// does types nothing and leaves the mark: the launch after it started
+    /// stopped from that mark, asks for itself, and types its own resume.
     fn recover(&self) {
         if !self.current() {
             return;
         }
-        let record = self.record();
-        let seat = limit::Seat {
-            name: &self.name,
-            account_id: &self.account_id,
-        };
-        let (ids, held) = self.with(|entry| (entry.stored(), entry.limit.held().to_vec()));
-        let count = limit::mailbox(&record, &seat, &ids, held).len();
-        let room = self.app.state::<RoomState>();
-        let notice = crate::room::post_app_notice(
-            &self.app,
-            &room,
-            &self.topic_id,
-            &limit::recovery_notice(&self.name, count),
-            Some(&self.pty_id),
-        );
+        let notice = self.notice(&limit::recovery_notice(&self.name));
         self.with(|entry| {
             // The app-server query may have outlived this launch.
             if !self.current() {
                 return;
             }
-            // Read again with what was held up to the release, so a post held
-            // after the record was read is not lost.
-            let ids = entry.stored();
-            let held = limit::mailbox(&record, &seat, &ids, entry.limit.release());
-            // The mailbox goes before the line is typed: cut short between the
-            // two, the seat misses its line rather than being handed it twice.
+            entry.limit.free();
+            // The mark goes before the resume is typed: cut short between the
+            // two, the seat misses its resume rather than being typed it twice.
             entry.persist(|boxes, account| boxes.close(account));
-            let text = mcp_config::limit_recovery::input(&held);
-            // The label carries the id of the newest post this line accounts
-            // for — the recovery notice, or the newest held post if the notice
-            // did not go in — so the seat's next `last_seen` stands past
-            // everything it was told of here (#47).
-            let watermark = notice.or_else(|| held.last().map(|p| p.message_id.clone()));
+            // The label carries the recovery notice's id, so the seat's next
+            // `last_seen` stands past it (#47).
+            let watermark = notice.unwrap_or_default();
             let at = terminal_input::at(&crate::room::now_iso());
-            let compose = |text: &str| terminal_input::compose(
-                watermark.as_deref().unwrap_or_default(),
+            let text = terminal_input::compose(
+                &watermark,
                 crate::room::APP_SPEAKER,
                 terminal_input::ROLE_APP,
                 at.as_deref(),
                 &[],
-                text,
+                limit::CONTINUE,
             );
-            crate::hook_activity::type_or_keep(
+            // Bound to this launch: not carried to the next (#389).
+            let typed = crate::hook_activity::type_or_keep(
                 &self.app,
                 &self.pty_id,
                 mcp_config::prompt_hold::Item {
-                    message_id: watermark.clone().unwrap_or_default(),
-                    text: compose(&text),
-                    post: None,
+                    message_id: watermark,
+                    text,
                     launch_bound: true,
-                    relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
                 },
             );
+            if typed {
+                entry.limit.resume_typed(now());
+            }
         });
     }
 
@@ -329,28 +325,8 @@ impl Limiter {
             && self.app.state::<crate::pty::PtyState>().is_running(&self.pty_id)
     }
 
-    /// The topic's record, as `limit::mailbox` reads it. Unreadable is no
-    /// record, which leaves the line to what memory held.
-    fn record(&self) -> Vec<limit::Recorded> {
-        crate::room_log::topic_posts(&self.app, &self.topic_id)
-            .unwrap_or_else(|err| {
-                eprintln!("[codex-limit] the record could not be read: {err}");
-                Vec::new()
-            })
-            .into_iter()
-            .map(|post| limit::Recorded {
-                at: terminal_input::at(&post.ts),
-                message_id: post.message_id,
-                speaker: post.speaker,
-                account: post.account,
-                content: post.content,
-                to: post.to,
-            })
-            .collect()
-    }
-
-    /// The session has ended: whatever was held in memory goes with it. The
-    /// mailbox stays, and the seat's next launch starts from it (`open`).
+    /// The session has ended. The mark stays, and the seat's next launch
+    /// starts from it (`open`).
     pub fn forget(&self) {
         self.limits().forget(&self.pty_id);
     }

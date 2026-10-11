@@ -1699,9 +1699,8 @@ pub fn start_session(
                 room_log::report(&app, err);
             }
             // The Codex seat's usage limit (#294) is put in the table before the
-            // seat is held, since holding it is what lets the room type into
-            // it: a seat whose mailbox was left from a launch that ended
-            // stopped (#312) has its first post held, not typed. It asks the
+            // seat is held: a seat whose mark was left from a launch that ended
+            // stopped (#312) starts stopped and asks at once. It asks the
             // app-server with the seat's own command, environment and
             // `CODEX_HOME`, so the account asked about is the seat's.
             let watched = rollout.map(|(home, resumed)| {

@@ -1067,19 +1067,14 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// to push to it, and it reads the topic through the pull
 /// (`terminal_input::targets`).
 ///
-/// **A Codex seat stopped on its usage limit is not typed into** (#294): the
-/// post is kept for it (`codex_limit::CodexLimits`), its id written to the
-/// seat's mailbox (#312), and handed over as one line when the recovery is
-/// confirmed. A Claude Code seat stopped on its parent's limit is typed into
-/// as any seat is (#401): its resume is the prompt `claude_limit` types at the
-/// reset, and what was said meanwhile is in the topic's history.
+/// **A seat stopped on its usage limit is typed into as any seat is** (Claude
+/// #401, Codex #403): its resume is what `claude_limit` / `codex_limit` types
+/// once it may run again, and what was said meanwhile is in the topic's
+/// history.
 ///
-/// **A Claude Code seat waiting on a permission prompt is not typed into
-/// either** (#346): the post's submit key would answer the prompt. It is kept
-/// for the seat (`hook_activity::type_or_keep`) and typed once the wait has
-/// ended — or given to the Codex limit hold then, if the seat is stopped on
-/// its limit by that time. The limit hold is asked first, so a post for a
-/// seat stopped on its limit stays that hold's, as before.
+/// **A Claude Code seat waiting on a permission prompt is not typed into**
+/// (#346): the post's submit key would answer the prompt. It is kept for the
+/// seat (`hook_activity::type_or_keep`) and typed once the wait has ended.
 fn type_into_sessions(
     app: &AppHandle,
     room_id: &str,
@@ -1109,7 +1104,6 @@ fn type_into_sessions(
         return;
     }
     let at = terminal_input::at(&post.ts);
-    let display_speaker = post.full_name.as_ref().map(|name| format!("{} ({name})", post.speaker)).unwrap_or_else(|| post.speaker.clone());
     let text = terminal_input::compose_named(
         &post.message_id,
         &post.speaker,
@@ -1119,22 +1113,8 @@ fn type_into_sessions(
         &post.to,
         &post.content,
     );
-    let limits = app.state::<crate::codex_limit::CodexLimits>();
     for target in targets {
         if except_pty == Some(target.pty_id.as_str()) {
-            continue;
-        }
-        let post_for_hold = || mcp_config::codex::limit::Held {
-            message_id: post.message_id.clone(),
-            speaker: display_speaker.clone(),
-            at: at.clone(),
-            content: post.content.clone(),
-            addressed: seats
-                .iter()
-                .filter(|(origin, _, _)| target.origins.contains(origin))
-                .any(|(_, _, name)| post.to.contains(name)),
-        };
-        if limits.hold(&target.pty_id, post_for_hold) {
             continue;
         }
         // For addressed posts, the recipient's current call-name supersedes launch-time instructions.
@@ -1149,19 +1129,10 @@ fn type_into_sessions(
             mcp_config::prompt_hold::Item {
                 message_id: post.message_id.clone(),
                 text: text.clone(),
-                post: Some(post_for_hold()),
                 launch_bound: false,
-                relaunch_text: None,
             },
         );
     }
-}
-
-/// Give `post` to the usage-limit hold of the seat on `pty_id`, if that seat
-/// is a Codex seat stopped on its limit (#294). True when it was taken. The
-/// hand-over of posts kept for a permission wait asks this first (#346).
-pub fn limit_hold(app: &AppHandle, pty_id: &str, post: &mcp_config::codex::limit::Held) -> bool {
-    app.state::<crate::codex_limit::CodexLimits>().hold(pty_id, || post.clone())
 }
 
 /// Say one notice of the app's own into one room (#294), typed into every

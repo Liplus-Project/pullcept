@@ -22,23 +22,16 @@
 //! to end. An item the terminal refused is put back at the front and the
 //! hand-over ends: nothing is dropped.
 //!
-//! **The usage-limit hold comes first** (#294). A post for a Codex seat stopped
-//! on its usage limit is that hold's, as before, and never reaches this queue.
-//! A Claude Code seat has no such hold (#401): its posts come here like any.
-//! A kept post whose hand-over finds the seat stopped on its limit is given to
-//! that hold (`deliver`) rather than typed, and goes out with its digest at the
-//! recovery. The digest itself, typed at a recovery that finds the seat
-//! waiting, is kept here like a post and typed after the wait — it is already
-//! the limit hold's release, and is not given back to it. One order is not
-//! kept: a post held here before a limit began goes into the limit's mailbox
-//! after the posts the limit itself held while this wait lasted.
+//! **No seat is held back on its usage limit** (Claude #401, Codex #403): a
+//! post for a seat stopped on its limit comes here like any. The resume typed
+//! at a recovery that finds the seat waiting is kept here like a post and
+//! typed after the wait, for that launch only (`Item::launch_bound`).
 //!
 //! **A wait's end is not a hand-over at once.** The hand-over is begun
 //! `RELEASE_GRACE` after the end was heard, and only if no wait has begun in
 //! between: a prompt answered in the terminal can be followed at once by the
 //! next one (a second call waiting on its own permission), and the request of
 //! that one is heard before its prompt is drawn.
-use crate::codex::limit::Held;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -49,27 +42,19 @@ pub const RELEASE_GRACE: Duration = Duration::from_millis(1500);
 /// One thing the room would have typed into the seat's terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
-    /// The post's id, or the watermark a digest is labelled with: for the log
-    /// only.
+    /// The post's id, or the watermark a resume is labelled with: for the
+    /// log only.
     pub message_id: String,
     /// What is typed, label line and all (`terminal_input::compose`).
     pub text: String,
-    /// The post as the usage-limit hold keeps one, or `None` for what is not a
-    /// post of the room's — the limit hold's own digest.
-    pub post: Option<Held>,
-    /// Recovery continuation belongs only to the launch that confirmed it.
+    /// A resume belongs only to the launch it was typed for (#389, #401): it
+    /// is not carried to the next launch, which types its own.
     pub launch_bound: bool,
-    /// The existing held-post digest carried across relaunch, without continuation.
-    pub relaunch_text: Option<String>,
 }
 
 impl Item {
-    fn for_relaunch(mut self) -> Option<Self> {
-        if self.launch_bound {
-            self.text = self.relaunch_text.take()?;
-            self.launch_bound = false;
-        }
-        Some(self)
+    fn for_relaunch(self) -> Option<Self> {
+        (!self.launch_bound).then_some(self)
     }
 }
 
@@ -138,7 +123,7 @@ impl Queue {
     }
 
     /// The queue of a seat launched again: what was kept carries over to the
-    /// new launch, except continuation bound to the old launch (#389). A
+    /// new launch, except a resume bound to the old launch (#389). A
     /// hand-over that was under way for the old one ends.
     pub fn carry(self) -> Queue {
         Queue {
@@ -156,19 +141,10 @@ impl Queue {
     }
 }
 
-/// How one item of a hand-over went.
-#[derive(Debug, PartialEq)]
-pub enum Delivered {
-    /// Given to the usage-limit hold, the seat being stopped on its limit.
-    ToLimit,
-    /// Handed to the terminal.
-    Typed,
-}
-
 /// One line of `permission_prompt::LOG_FILE` for a kept post (#346):
-/// `[prompt-hold] <kept|typed|to-limit|refused> message=<id> room=<topic id>
+/// `[prompt-hold] <kept|typed|refused> message=<id> room=<topic id>
 /// account=<account id> at=<time>`. `kept` when the room keeps it for the
-/// wait, then one of the other three when the hand-over reaches it.
+/// wait, then one of the other two when the hand-over reaches it.
 pub fn log_line(action: &str, message_id: &str, topic_id: &str, account_id: &str, at: &str) -> String {
     let token = |text: &str| -> String {
         let cleaned: String = text
@@ -188,19 +164,11 @@ pub fn log_line(action: &str, message_id: &str, topic_id: &str, account_id: &str
     )
 }
 
-/// Deliver one item of a hand-over: to the usage-limit hold when `limit` takes
-/// its post (the seat is stopped on its limit), else typed. `Err` is the item
-/// back when the terminal took nothing, for `Queue::put_back`.
-pub fn deliver(
-    item: Item,
-    limit: impl FnOnce(&Held) -> bool,
-    type_in: impl FnOnce(&str) -> bool,
-) -> Result<Delivered, Item> {
-    if item.post.as_ref().is_some_and(limit) {
-        return Ok(Delivered::ToLimit);
-    }
+/// Deliver one item of a hand-over: typed. `Err` is the item back when the
+/// terminal took nothing, for `Queue::put_back`.
+pub fn deliver(item: Item, type_in: impl FnOnce(&str) -> bool) -> Result<(), Item> {
     if type_in(&item.text) {
-        Ok(Delivered::Typed)
+        Ok(())
     } else {
         Err(item)
     }
@@ -209,31 +177,20 @@ pub fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::limit::Limit;
 
     fn post(id: &str) -> Item {
         Item {
             message_id: id.into(),
             text: format!("[pullcept] {id}"),
             launch_bound: false,
-            relaunch_text: None,
-            post: Some(Held {
-                message_id: id.into(),
-                speaker: "Lin".into(),
-                at: None,
-                content: id.into(),
-                addressed: false,
-            }),
         }
     }
 
-    fn digest(id: &str) -> Item {
+    fn resume(id: &str) -> Item {
         Item {
             message_id: id.into(),
-            text: format!("[pullcept] digest {id}"),
-            post: None,
-            launch_bound: false,
-            relaunch_text: None,
+            text: format!("[pullcept] resume {id}"),
+            launch_bound: true,
         }
     }
 
@@ -242,14 +199,13 @@ mod tests {
     fn hand_over(
         q: &mut Queue,
         waiting: impl Fn() -> bool,
-        mut limit: impl FnMut(&Held) -> bool,
         typed: &mut Vec<String>,
     ) {
         if !q.begin(waiting()) {
             return;
         }
         while let Some(item) = q.next(waiting()) {
-            match deliver(item, &mut limit, |text| {
+            match deliver(item, |text| {
                 typed.push(text.to_string());
                 true
             }) {
@@ -282,15 +238,15 @@ mod tests {
         }
         let mut typed = Vec::new();
         // Still waiting: nothing goes.
-        hand_over(&mut q, || true, |_| false, &mut typed);
+        hand_over(&mut q, || true, &mut typed);
         assert!(typed.is_empty());
         assert_eq!(q.len(), 3);
         // The wait ended.
-        hand_over(&mut q, || false, |_| false, &mut typed);
+        hand_over(&mut q, || false, &mut typed);
         assert_eq!(ids(&typed), ["a", "b", "c"]);
         assert!(q.is_empty());
         // A second hand-over hands nothing again.
-        hand_over(&mut q, || false, |_| false, &mut typed);
+        hand_over(&mut q, || false, &mut typed);
         assert_eq!(typed.len(), 3);
         // And the seat is free again.
         assert!(q.pass(false, post("d")).is_some());
@@ -355,12 +311,12 @@ mod tests {
         }
         assert!(q.begin(false));
         let item = q.next(false).unwrap();
-        let back = deliver(item, |_| false, |_| false).unwrap_err();
+        let back = deliver(item, |_| false).unwrap_err();
         q.put_back(back);
         assert_eq!(q.len(), 2);
         // A later hand-over starts from it.
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |_| false, &mut typed);
+        hand_over(&mut q, || false, &mut typed);
         assert_eq!(ids(&typed), ["a", "b"]);
     }
 
@@ -399,83 +355,27 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_ending_on_a_limited_seat_gives_its_posts_to_the_limit_hold() {
-        // The permission wait and a Codex seat's usage limit at once (#294).
-        // The posts kept for the prompt are not typed while the seat is
-        // stopped on its limit; they go to the limit hold, and out once with
-        // its release.
-        let mut limit = Limit::default();
+    fn a_resume_kept_for_a_wait_is_typed_after_it() {
         let mut q = Queue::new();
-        // The prompt first: the seat is free of its limit, so the queue keeps.
-        assert!(!limit.hold(|| post("a").post.unwrap()));
-        for id in ["a", "b"] {
-            assert_eq!(q.pass(true, post(id)), None);
-        }
-        // The limit begins during the wait: the limit hold is asked before
-        // the queue, and takes what comes now.
-        limit.stop(1, None);
-        assert!(limit.hold(|| post("c").post.unwrap()));
-        // The wait ends while the seat is still stopped.
-        let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
-        assert!(typed.is_empty(), "nothing is typed into a limited seat");
-        assert!(q.is_empty(), "the queue let them go to the limit hold");
-        // The one order not kept: the limit's own first (module docs).
-        assert_eq!(
-            limit.held().iter().map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
-            ["c", "a", "b"]
-        );
-        // The recovery releases each one once.
-        assert_eq!(limit.release().len(), 3);
-        assert!(limit.release().is_empty());
-    }
-
-    #[test]
-    fn a_limit_on_a_seat_that_then_waits_keeps_its_hold() {
-        // The limit first, then a prompt: every post is the limit hold's, the
-        // queue keeps nothing, and the wait's end types nothing.
-        let mut limit = Limit::default();
-        let mut q = Queue::new();
-        limit.stop(1, None);
-        for id in ["a", "b"] {
-            assert!(limit.hold(|| post(id).post.unwrap()));
-        }
-        assert!(q.is_empty());
-        let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
-        assert!(typed.is_empty());
-        assert_eq!(limit.held().len(), 2);
-    }
-
-    #[test]
-    fn a_recovery_during_a_wait_keeps_its_digest_for_after_the_wait() {
-        let mut limit = Limit::default();
-        let mut q = Queue::new();
-        limit.stop(1, None);
-        limit.hold(|| post("early").post.unwrap());
-        // The recovery comes while a prompt is up: its digest is kept here
-        // rather than typed onto the prompt.
-        assert_eq!(limit.release().len(), 1);
-        assert_eq!(q.pass(true, digest("notice")), None);
-        // A post after the recovery, still during the wait: the limit hold no
-        // longer takes it, the queue does.
-        assert!(!limit.hold(|| post("b").post.unwrap()));
+        assert_eq!(q.pass(true, resume("notice")), None);
         assert_eq!(q.pass(true, post("b")), None);
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
-        assert_eq!(ids(&typed), ["digest notice", "b"]);
-        assert!(limit.held().is_empty());
+        hand_over(&mut q, || false, &mut typed);
+        assert_eq!(ids(&typed), ["resume notice", "b"]);
     }
 
     #[test]
-    fn a_digest_is_typed_even_if_a_new_limit_began_during_the_wait() {
-        // The digest is the limit hold's release already: it is not given back.
-        let mut limit = Limit::default();
+    fn a_resume_is_not_carried_to_another_launch() {
         let mut q = Queue::new();
-        q.pass(true, digest("notice"));
-        limit.stop(3, None);
-        let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
-        assert_eq!(ids(&typed), ["digest notice"]);
+        q.pass(true, resume("notice"));
+        q.pass(true, post("b"));
+        let mut next_launch = q.carry();
+        assert_eq!(next_launch.len(), 1);
+        // An earlier launch's in-flight hand-over can also refuse after carry.
+        next_launch.put_first(resume("notice"));
+        assert_eq!(next_launch.len(), 1);
+        assert!(next_launch.begin(false));
+        assert_eq!(next_launch.next(false), Some(post("b")));
+        assert!(next_launch.next(false).is_none());
     }
 }

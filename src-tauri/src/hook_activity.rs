@@ -47,7 +47,7 @@
 use crate::session::RoomSeats;
 use mcp_config::hook_activity::{Activity, Reporter};
 use mcp_config::permission_prompt::{Decision, Press, Request};
-use mcp_config::prompt_hold::{self, Delivered, Item, Queue};
+use mcp_config::prompt_hold::{self, Item, Queue};
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -234,8 +234,8 @@ impl HookSeats {
     }
 
     /// Hand the posts kept for one seat over, once its wait has ended
-    /// (`prompt_hold`). Each item is taken under the lock and delivered
-    /// outside it, so the Codex limit hold's lock is never taken inside this one.
+    /// (`prompt_hold`). Each item is taken under the lock and typed outside
+    /// it.
     fn hand_over(&self, app: &AppHandle, topic_id: &str, account_id: &str) {
         let key = (topic_id.to_string(), account_id.to_string());
         {
@@ -263,18 +263,10 @@ impl HookSeats {
             };
             let id = item.message_id.clone();
             let at = crate::room::now_iso();
-            let delivered = prompt_hold::deliver(
-                item,
-                |post| crate::room::limit_hold(app, &pty_id, post),
-                |text| ptys.type_in(&pty_id, text.to_string()),
-            );
+            let delivered = prompt_hold::deliver(item, |text| ptys.type_in(&pty_id, text.to_string()));
             match delivered {
-                Ok(how) => {
-                    let action = match how {
-                        Delivered::ToLimit => "to-limit",
-                        Delivered::Typed => "typed",
-                    };
-                    log(app, &prompt_hold::log_line(action, &id, topic_id, account_id, &at));
+                Ok(()) => {
+                    log(app, &prompt_hold::log_line("typed", &id, topic_id, account_id, &at));
                 }
                 Err(item) => {
                     log(app, &prompt_hold::log_line("refused", &id, topic_id, account_id, &at));
