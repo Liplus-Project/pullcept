@@ -249,9 +249,9 @@ pub fn reset_known(name: &str, stop: &Stop, clock: &str) -> String {
     };
     format!("{who} の解除予定は {clock} と分かりました。回復は未確認です。{action}")
 }
-/// The parent's resume attempt (#357), told as the nudge is typed.
+/// The parent resume check delivered as one room notice (#399).
 pub fn nudged(name: &str) -> String {
-    format!("{name} の親セッションの解除予定時刻を過ぎたため、端末へ再開の合図を一度打ちました。正常親応答を確認するまで投稿の保留を続けます。")
+    format!("{name} の親セッションの解除予定時刻を過ぎたため、利用上限の解除を確認します。{name} の親セッションだけが作業を始めず、部屋にも返信せず、端末で一言だけ応答してください。正常親応答を確認するまで投稿の保留を続けます。")
 }
 /// The confirmed recovery, whether the nudge or a person's input drew it.
 pub fn resumed(name: &str, held: usize) -> String {
@@ -524,4 +524,14 @@ mod tests {
             assert!(!text.contains("（返信不要）"));
         }
     }
+    #[test]
+    fn resume_notice_requests_terminal_answer_without_claiming_delivery() {
+        let text = nudged("seat");
+        assert!(text.contains("解除予定時刻を過ぎた"));
+        assert!(text.contains("一言だけ応答"));
+        assert!(text.contains("作業を始めず、部屋にも返信せず"));
+        assert!(!text.contains("打ちました"));
+        assert!(!text.contains("（返信不要）"));
+    }
+
 }

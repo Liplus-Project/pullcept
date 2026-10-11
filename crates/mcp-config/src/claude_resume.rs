@@ -16,13 +16,23 @@ use super::codex::limit::{BACKOFF, GRACE};
 /// response) before the attempt counts as unanswered.
 pub const ANSWER_WAIT: i64 = 120;
 
-/// The one line typed into the terminal. It asks for no work and no room post:
-/// any answer at all writes the parent response the gate is waiting for.
-pub const NUDGE: &str = "利用上限の解除を確かめるための合図です（Pullcept）。作業は始めず、部屋にも返信せず、一言だけ応答してください。";
+/// Internal routing metadata, never deserialized from room/socket posts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub topic: String,
+    pub account: String,
+    pub nonce: String,
+    pub pty: String,
+}
+impl Launch {
+    pub fn matches(&self, topic: &str, account: &str, nonce: &str, pty: &str) -> bool {
+        self.topic == topic && self.account == account && self.nonce == nonce && self.pty == pty
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Type [`NUDGE`] now. The attempt counts as sent from this moment.
+    /// Send the resume room notice now. The attempt counts as sent from this moment.
     Nudge,
     /// The last nudge drew no answer within [`ANSWER_WAIT`]. Automatic
     /// attempts stop until the next rejection arms them again.
@@ -307,9 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn nudge_is_one_line_and_asks_for_no_work() {
-        assert!(!NUDGE.contains('\n'));
-        assert!(NUDGE.contains("作業は始めず"));
-        assert!(NUDGE.chars().count() < 80);
+    fn resume_authority_requires_every_launch_key() {
+        let launch = Launch { topic: "t".into(), account: "a".into(), nonce: "n".into(), pty: "p".into() };
+        assert!(launch.matches("t", "a", "n", "p"));
+        for keys in [("other", "a", "n", "p"), ("t", "other", "n", "p"),
+                     ("t", "a", "old", "p"), ("t", "a", "n", "old")] {
+            assert!(!launch.matches(keys.0, keys.1, keys.2, keys.3));
+        }
     }
 }

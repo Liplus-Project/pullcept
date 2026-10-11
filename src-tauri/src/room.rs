@@ -864,7 +864,7 @@ fn deliver(
     post: Post,
     last_seen: Option<&str>,
 ) -> Result<PostOutcome, String> {
-    deliver_except(app, room, room_id, origin, post, last_seen, None)
+    deliver_except(app, room, room_id, origin, post, last_seen, None, None)
 }
 
 /// [`deliver`], leaving one terminal untyped: the seat an app notice is about
@@ -879,6 +879,7 @@ fn deliver_except(
     mut post: Post,
     last_seen: Option<&str>,
     except_pty: Option<&str>,
+    resume: Option<&mcp_config::claude_resume::Launch>,
 ) -> Result<PostOutcome, String> {
     let message_id = post.message_id.clone();
 
@@ -1000,7 +1001,7 @@ fn deliver_except(
     // No session in the room is not an error — the room accepts what is said
     // in it; a later joiner simply missed it, and can pull it.
     let role = role_of(app, room, origin, post.account.as_deref());
-    type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty);
+    type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty, resume);
 
     let _ = app.emit(
         "room-message",
@@ -1087,6 +1088,7 @@ fn type_into_sessions(
     role: &str,
     post: &Post,
     except_pty: Option<&str>,
+    resume: Option<&mcp_config::claude_resume::Launch>,
 ) {
     let ptys = app.state::<PtyState>();
     let running = app.state::<RoomSeats>().seated(&ptys);
@@ -1133,12 +1135,22 @@ fn type_into_sessions(
                 .filter(|(origin, _, _)| target.origins.contains(origin))
                 .any(|(_, _, name)| post.to.contains(name)),
         };
-        let held = limits.hold(&target.pty_id, post_for_hold)
-            || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold);
+        let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
+        let resume_for_target = resume.filter(|launch| {
+            launch.topic == room_id && recipient == Some(launch.account.as_str())
+                && app.state::<crate::claude_limit::ClaudeLimits>()
+                    .resume_current(app, launch, &target.pty_id)
+        });
+        // A replacement of the owner must not keep an old-launch check as an ordinary post.
+        if resume.is_some_and(|launch| launch.topic == room_id && recipient == Some(launch.account.as_str()))
+            && resume_for_target.is_none() {
+            continue;
+        }
+        let held = resume_for_target.is_none() && (limits.hold(&target.pty_id, post_for_hold)
+            || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold));
         if held { continue; }
         // For addressed posts, the recipient's current call-name supersedes launch-time instructions.
         // A live rename does not need a new conversation or a synthetic user post.
-        let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
         let text = config::read_config(app).ok().and_then(|config| config.accounts.into_iter().find(|account| Some(account.id.as_str()) == recipient)).map(|account| {
             terminal_input::with_recipient_identity(&text, &post.to, account.address_name(), &account.name)
         }).unwrap_or_else(|| text.clone());
@@ -1149,6 +1161,7 @@ fn type_into_sessions(
                 message_id: post.message_id.clone(),
                 text: text.clone(),
                 post: Some(post_for_hold()),
+                resume: resume_for_target.cloned(),
                 launch_bound: false,
                 relaunch_text: None,
             },
@@ -1176,6 +1189,20 @@ pub fn post_app_notice(
     content: &str,
     except_pty: Option<&str>,
 ) -> Option<String> {
+    post_app_notice_routed(app, room, room_id, content, except_pty, None)
+}
+
+pub(crate) fn post_claude_resume_notice(app: &AppHandle, room: &RoomState, content: &str,
+    launch: mcp_config::claude_resume::Launch) -> Option<String> {
+    if !app.state::<crate::claude_limit::ClaudeLimits>().resume_current(app, &launch, &launch.pty) {
+        return None;
+    }
+    let topic = launch.topic.clone();
+    post_app_notice_routed(app, room, &topic, content, None, Some(launch))
+}
+
+fn post_app_notice_routed(app: &AppHandle, room: &RoomState, room_id: &str, content: &str,
+    except_pty: Option<&str>, resume: Option<mcp_config::claude_resume::Launch>) -> Option<String> {
     let outcome = deliver_except(
         app,
         room,
@@ -1189,12 +1216,13 @@ pub fn post_app_notice(
             account: None,
             // Stamped by `deliver` off `app_origin`, as every post's is (#340).
             from_app: false,
-            content: room_floor::app_notice_content(content),
+            content: if resume.is_some() { content.to_string() } else { room_floor::app_notice_content(content) },
             to: Vec::new(),
             ts: now_iso(),
         },
         None,
         except_pty,
+        resume.as_ref(),
     );
     match outcome {
         Ok(outcome) if outcome.delivered => outcome.message_id,

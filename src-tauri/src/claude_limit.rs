@@ -321,33 +321,8 @@ impl ClaudeLimits {
         }
         match action {
             Some(resume::Action::Nudge) => {
-                let posted = crate::room::post_app_notice(
-                    app,
-                    &room,
-                    topic,
-                    &notice::nudged(&name),
-                    Some(pty),
-                );
-                let at = terminal_input::at(&crate::room::now_iso());
-                let id = posted.unwrap_or_default();
-                let text = terminal_input::compose(
-                    &id,
-                    crate::room::APP_SPEAKER,
-                    terminal_input::ROLE_APP,
-                    at.as_deref(),
-                    &[],
-                    resume::NUDGE,
-                );
-                // One typing. A permission wait keeps it until the wait ends;
-                // the recovery itself is still read from the transcript.
-                let item = mcp_config::prompt_hold::Item {
-                    message_id: id,
-                    text,
-                    post: None,
-                    launch_bound: false,
-                    relaunch_text: None,
-                };
-                crate::hook_activity::type_or_keep(app, pty, item);
+                crate::room::post_claude_resume_notice(app, &room, &notice::nudged(&name),
+                    resume::Launch { topic: topic.into(), account: account.into(), nonce: nonce.into(), pty: pty.into() });
             }
             Some(resume::Action::NoAnswer) => {
                 crate::room::post_app_notice(
@@ -360,6 +335,12 @@ impl ClaudeLimits {
             }
             None => {}
         }
+    }
+    pub fn resume_current(&self, app: &AppHandle, launch: &resume::Launch, pty: &str) -> bool {
+        self.seats.lock().get(&(launch.topic.clone(), launch.account.clone())).is_some_and(|e| {
+            launch.matches(&launch.topic, &launch.account, &e.nonce, pty)
+                && e.pty.as_deref() == Some(pty) && e.current(app, &launch.topic, &launch.account)
+        })
     }
     pub fn hold(&self, pty: &str, post: impl FnOnce() -> Held) -> bool {
         let mut seats = self.seats.lock();
@@ -551,6 +532,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
             message_id: watermark.clone().unwrap_or_default(),
             text: compose(&text),
             post: None,
+            resume: None,
             launch_bound: true,
             relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
         };

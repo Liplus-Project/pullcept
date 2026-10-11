@@ -58,12 +58,17 @@ pub struct Item {
     pub post: Option<Held>,
     /// Recovery continuation belongs only to the launch that confirmed it.
     pub launch_bound: bool,
+    /// Only the app resume-notice route supplies this authority.
+    pub resume: Option<crate::claude_resume::Launch>,
     /// The existing held-post digest carried across relaunch, without continuation.
     pub relaunch_text: Option<String>,
 }
 
 impl Item {
     fn for_relaunch(mut self) -> Option<Self> {
+        if self.resume.is_some() {
+            return None;
+        }
         if self.launch_bound {
             self.text = self.relaunch_text.take()?;
             self.launch_bound = false;
@@ -195,7 +200,7 @@ pub fn deliver(
     limit: impl FnOnce(&Held) -> bool,
     type_in: impl FnOnce(&str) -> bool,
 ) -> Result<Delivered, Item> {
-    if item.post.as_ref().is_some_and(limit) {
+    if item.resume.is_none() && item.post.as_ref().is_some_and(limit) {
         return Ok(Delivered::ToLimit);
     }
     if type_in(&item.text) {
@@ -215,6 +220,7 @@ mod tests {
         Item {
             message_id: id.into(),
             text: format!("[pullcept] {id}"),
+            resume: None,
             launch_bound: false,
             relaunch_text: None,
             post: Some(Held {
@@ -232,6 +238,7 @@ mod tests {
             message_id: id.into(),
             text: format!("[pullcept] digest {id}"),
             post: None,
+            resume: None,
             launch_bound: false,
             relaunch_text: None,
         }
@@ -496,4 +503,37 @@ mod tests {
         hand_over(&mut q, || false, |held| gate.hold(|| held.clone()).is_some(), &mut typed);
         assert_eq!(ids(&typed), ["digest notice"]);
     }
+    #[test]
+    fn resume_room_notice_keeps_its_body_and_id_and_bypasses_only_the_owner() {
+        let id = "resume-id";
+        let body = crate::claude_notice::nudged("seat");
+        let launch = crate::claude_resume::Launch { topic: "topic".into(), account: "owner".into(), nonce: "current".into(), pty: "pty".into() };
+        let mut notice = post(id);
+        notice.text = body.clone();
+        notice.post.as_mut().unwrap().content = body.clone();
+        notice.resume = Some(launch);
+        let mut queue = Queue::new();
+        assert!(queue.pass(true, notice.clone()).is_none());
+        assert!(!queue.begin(true));
+        assert!(queue.begin(false));
+        let held = queue.next(false).unwrap();
+        assert_eq!(held.message_id, id);
+        assert_eq!(held.post.as_ref().unwrap().message_id, id);
+        assert_eq!(held.post.as_ref().unwrap().content, body);
+        assert_eq!(deliver(held, |_| panic!("owner notice must bypass the limit hold"), |text| text == body), Ok(Delivered::Typed));
+        let mut other_seat = notice.clone();
+        other_seat.resume = None;
+        assert_eq!(deliver(other_seat, |_| true, |_| panic!("other limited seat must keep the same notice")), Ok(Delivered::ToLimit));
+        let mut forged = post(id);
+        forged.text = body.clone();
+        forged.post.as_mut().unwrap().content = body;
+        assert_eq!(deliver(forged, |_| true, |_| false), Ok(Delivered::ToLimit));
+        let mut stale_queue = Queue::new();
+        stale_queue.pass(true, notice.clone());
+        assert!(stale_queue.carry().is_empty());
+        let mut new_queue = Queue::new();
+        new_queue.put_first(notice);
+        assert!(new_queue.is_empty());
+    }
+
 }
