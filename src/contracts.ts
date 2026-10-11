@@ -9,6 +9,7 @@ export interface RoomMessage {
   topic_id: string;
   message_id: string;
   speaker: string;
+  full_name?: string | null;
   /** The hue the speaker declared, or null when they declared none. Stamped by
    *  the room from the connection the post arrived on, so it is that speaker's
    *  and not whoever else currently answers to the same name. */
@@ -42,6 +43,7 @@ export interface PostOutcome {
 export interface MissedPost {
   message_id: string;
   speaker: string;
+  full_name?: string | null;
   /** The hue it was said in, or null when the speaker declared none. Carried
    *  so the drawn line is the line it would have been. */
   hue: number | null;
@@ -59,6 +61,7 @@ export interface MissedPost {
 export interface LoggedPost {
   message_id: string;
   speaker: string;
+  full_name?: string | null;
   /** The account it was said as. Absent when the speaker declared none, and on
    *  every line written before the log carried it (#193). What lets a line read
    *  back fold the way it did live (`foldOf`). */
@@ -95,6 +98,7 @@ export interface TopicRef {
 }
 
 export interface Participant {
+  full_name?: string | null;
   id: string;
   name: string;
   hue: number | null;
@@ -173,8 +177,9 @@ export interface SeatActivity {
 export type AccountKind = "admin" | "claude_code" | "codex_cli" | "cli" | "mcp";
 
 export interface Account {
+  nickname?: string | null;
   id: string;
-  /** What the room lists this account under, and what a post is addressed to. */
+  /** Original display name; addressing falls back here only without a nickname. */
   name: string;
   command: string;
   args: string[];

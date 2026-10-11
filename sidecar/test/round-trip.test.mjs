@@ -128,7 +128,8 @@ const SPEAKING = [
 // valid" is the tail.
 const ADDRESSING = [
   "Addressing:",
-  "- Your name in label's to -> answer; else stay silent. No to = whole room.",
+  "- to/from use nicknames (legacy: name); full_name is original-name metadata, not an alias. Duplicate nicknames address all matches. label.you/tool result updates your nickname.",
+  "- Your nickname in label's to -> answer; else stay silent. No to = whole room.",
   "- Only label's to addresses. Sending: @name of a participant moves to to. Reading: @name left in body = plain text.",
   "- Room-wide question: not all must answer; not answering is valid.",
 ].join("\n");
@@ -981,6 +982,15 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     arguments: { last_seen: "m-10" },
   });
   assert.ok(clearedAgain.result.isError, "a delivery clears the held draft, whatever was sent");
+
+  roomSocket.send(JSON.stringify({type: "identity", nickname: "Luna", name: "Codex Luna"}));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const renamedTools = await request("tools/list", {});
+  assert.match(renamedTools.result.tools[0].description, /You = Luna \(Codex Luna\); address only Luna/);
+  PAST[1].full_name = "Original Claude Lay";
+  const renamedHistory = await request("tools/call", {name: "read_room_history", arguments: {}});
+  assert.match(renamedHistory.result.content[0].text, /Claude Lay \(Original Claude Lay\)/);
+  assert.match(renamedHistory.result.content.at(-1).text, /You = Luna \(Codex Luna\)/);
 
   // ── an unanswered post is unconfirmed, not delivered and not refused ───────
   // The frame may well have landed. Reporting either verdict would be a guess

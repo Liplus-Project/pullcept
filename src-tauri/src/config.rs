@@ -102,9 +102,11 @@ pub struct Account {
     /// derives from this rather than from the name, so a rename cannot move the
     /// key out from under a session already running under it.
     pub id: String,
-    /// What the room lists this account under and what a post is addressed to.
-    /// Display and addressing; never identity.
+    /// Original name for display/recognition, and addressing only without a nickname.
+    /// Never identity.
     pub name: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
@@ -328,6 +330,7 @@ impl Default for AppConfig {
             accounts: vec![Account {
                 id: "account-1".to_string(),
                 name: "Claude Code".to_string(),
+                nickname: None,
                 command: "claude".to_string(),
                 args: vec![],
                 cwd: None,
@@ -448,6 +451,7 @@ fn read_saved(path: &PathBuf) -> Result<Value, String> {
 
 /// Who a server's posts are said as (#193).
 pub struct McpSpeaker {
+    pub full_name: Option<String>,
     pub account_id: String,
     pub name: String,
     pub hue: Option<f64>,
@@ -475,11 +479,13 @@ pub fn mcp_speaker(app: &AppHandle, server: &str) -> McpSpeaker {
     });
     match found {
         Some(account) => McpSpeaker {
-            account_id: account.id,
-            name: account.name,
+            full_name: (account.address_name() != account.name.trim()).then(|| account.name.trim().to_string()),
+            account_id: account.id.clone(),
+            name: account.address_name().to_string(),
             hue: account.hue,
         },
         None => McpSpeaker {
+            full_name: None,
             account_id: mcp_servers::account_id(server),
             name: server.to_string(),
             hue: None,
@@ -532,14 +538,16 @@ fn kind_value(kind: AccountKind) -> Value {
 }
 
 #[tauri::command]
-pub fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
+pub fn save_config(app: AppHandle, room: tauri::State<crate::room::RoomState>, config: AppConfig) -> Result<(), String> {
     let path = config_path(&app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {e}"))?;
     }
     let content = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {e}"))?;
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
+    room.refresh_accounts(&app, &config.accounts);
+    Ok(())
 }
 
 /// The environment field as the account form draws it: `NAME=<mask>` per line
@@ -715,4 +723,10 @@ pub fn load_sessions(app: AppHandle) -> Result<Vec<TabSessions>, String> {
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read sessions: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse sessions: {e}"))
+}
+
+impl Account {
+    pub fn address_name(&self) -> &str {
+        mcp_config::address_name(&self.name, self.nickname.as_deref())
+    }
 }

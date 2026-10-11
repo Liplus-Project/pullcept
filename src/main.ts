@@ -1,3 +1,4 @@
+import { accountName, speakerLabel } from "./account-name";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -692,6 +693,7 @@ function fullDateTime(iso: string): string {
  */
 function roomLine(line: {
   speaker: string;
+  full_name?: string | null;
   /** The account it was said as, or null when none was declared — what the
    *  circle's image is looked up by (#236). */
   account: string | null;
@@ -723,7 +725,7 @@ function roomLine(line: {
     article.appendChild(avatar(line.speaker, line.account, line.app));
     const speaker = document.createElement("span");
     speaker.className = "speaker";
-    speaker.textContent = line.speaker;
+    speaker.textContent = speakerLabel(line.speaker, line.full_name);
     head.appendChild(speaker);
   }
 
@@ -1085,6 +1087,7 @@ function appendMessage(message: RoomMessage): void {
   placeDay(message.ts);
   const line = roomLine({
     speaker: message.speaker,
+    full_name: message.full_name,
     account: message.account,
     app: message.from_app,
     // `own` rather than a name test: the room decides self on the connection
@@ -1152,6 +1155,7 @@ function drawTopic(posts: LoggedPost[]): void {
     placeLine(
       roomLine({
         speaker: post.speaker,
+        full_name: post.full_name,
         account: post.account ?? null,
         // Read back as the app's when the log says it was (#340).
         app: post.from_app ?? false,
@@ -1836,6 +1840,7 @@ function drawMissed(missed: MissedPost[]): number {
       topic_id: shownTopicId(),
       message_id: one.message_id,
       speaker: one.speaker,
+      full_name: one.full_name,
       hue: one.hue,
       account: one.account,
       from_app: one.from_app ?? false,
@@ -1911,7 +1916,7 @@ function members(): Member[] {
 
 /** What a row is called: the room's name while it is in the room. */
 function memberName(row: Member): string {
-  return row.participant?.name ?? row.account?.name ?? "";
+  return row.participant?.name ?? (row.account ? accountName(row.account) : "");
 }
 
 /**
@@ -2082,6 +2087,13 @@ function memberRow(row: Member): HTMLLIElement {
   const who = document.createElement("span");
   who.className = "who";
   who.textContent = name;
+  const original = row.participant?.full_name ?? row.account?.name;
+  if (original && original !== name) {
+    const full = document.createElement("small");
+    full.className = "original-name";
+    full.textContent = original;
+    who.appendChild(full);
+  }
   who.title = name;
 
   // Asked for and not back yet. The view exists from the moment 開始 is pressed
@@ -2643,7 +2655,8 @@ function renderRoster(topicId: string, joined: Participant[]): void {
 
 /** The name this screen posts under, and is listed in the roster under. */
 function localName(): string {
-  return localAccount()?.name.trim() || "human";
+  const account = localAccount();
+  return account ? accountName(account) : "human";
 }
 
 /**
@@ -2853,7 +2866,8 @@ function renderMentions(): void {
     // In the colour the room draws them in, so the name picked is recognisably
     // the participant on the roster.
     item.style.setProperty("--speaker", speakerColor(one.name, one.hue, false));
-    item.textContent = one.name;
+    const duplicates = shownRoster().filter((seat) => seat.name === one.name).length;
+    item.textContent = duplicates > 1 ? `${one.name}（同名の全参加者宛て）` : one.name;
     // mousedown rather than click: by the time a click lands the box has
     // lost focus, and the caret the pick goes in at with it.
     item.addEventListener("mousedown", (event) => {

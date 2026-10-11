@@ -1395,7 +1395,7 @@ pub fn start_session(
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
-    let name = account.name.trim().to_string();
+    let name = account.address_name().to_string();
     if name.is_empty() {
         return Err(
             "This account has no name. Give it one before starting: it is what the room \
@@ -1945,6 +1945,7 @@ fn launch(
     // `disabledMcpjsonServers` could not name starts that entry's sidecar too,
     // and without this it would take a seat under the other account's id.
     env.push((LAUNCHED_AS_ENV, account.id.clone()));
+    env.push(("PULLCEPT_ACCOUNT_NAME", account.name.trim().to_string()));
     // The topic this CLI is launched into, beside the account (#264). The
     // token is the address's and does not tell topics apart, and one account
     // can hold several registrations at once, so something reading only this
@@ -2069,6 +2070,7 @@ fn launch_codex_app_server(
             (mcp_config::codex::LAUNCH_ROOM_ENV, topic_id.to_string()),
             ("PULLCEPT_ROOM_URL", room_url.to_string()),
             ("PULLCEPT_AGENT_NAME", name.to_string()),
+            ("PULLCEPT_ACCOUNT_NAME", account.name.trim().to_string()),
             ("PULLCEPT_ACCOUNT_ID", account.id.clone()),
             ("PULLCEPT_AGENT_HUE", account.hue.map(|h| format!("{h:.1}")).unwrap_or_default()),
             ("PULLCEPT_UNSEEN_HISTORY", if unseen_history { "1" } else { "0" }.into()),

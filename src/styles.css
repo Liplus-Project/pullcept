@@ -3494,3 +3494,5 @@ button svg.icon {
     opacity: 1;
   }
 }
+
+.who .original-name { display: block; font-size: 0.8em; opacity: 0.7; }
