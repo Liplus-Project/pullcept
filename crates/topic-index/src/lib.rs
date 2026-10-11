@@ -48,8 +48,8 @@ pub const TOPIC_EXTENSION: &str = "jsonl";
 /// further down keeps that scan reading `.jsonl` files and nothing else.
 pub const ATTACHMENTS_DIR: &str = "attachments";
 
-/// The directory, inside the room's, that the stopped Codex seats' mailboxes
-/// are kept under: one file per topic below it (#312). One level down for the
+/// The directory, inside the room's, that the stopped Codex seats' marks
+/// are kept under: one file per topic below it (#312, #403). One level down for the
 /// reason the attachments are.
 pub const MAILBOXES_DIR: &str = "mailboxes";
 
@@ -267,7 +267,7 @@ pub fn attachments_path(dir: &Path, topic_id: &str) -> PathBuf {
     dir.join(ATTACHMENTS_DIR).join(topic_id)
 }
 
-/// Where one topic's mailboxes live (#312). What is in the file is
+/// Where one topic's stopped-seat marks live (#312, #403). What is in the file is
 /// `mcp_config::codex::limit::Mailboxes`; here is only where it is, so that
 /// [`delete`] takes it with the topic.
 pub fn mailboxes_path(dir: &Path, topic_id: &str) -> PathBuf {
@@ -675,7 +675,7 @@ pub fn delete(dir: &Path, index: &mut TopicIndex, topic_id: &str) -> Result<(), 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Failed to delete the topic's attachments: {e}")),
     }
-    // The mailboxes of its stopped seats (#312): ids of posts that are gone.
+    // The marks of its stopped seats (#312): of a topic that is gone.
     match std::fs::remove_file(mailboxes_path(dir, topic_id)) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
