@@ -65,7 +65,7 @@ jobs:
         run: cargo check --target x86_64-pc-windows-gnu
 
       - name: Check native Windows large icon lifetime
-        run: cargo run --locked --manifest-path scripts/window-icon-check/Cargo.toml --target x86_64-pc-windows-gnu
+        run: cargo run --locked --manifest-path scripts/window-icon-check/Cargo.toml
 
       # Not in src-tauri: a test binary that links the tauri dependency tree
       # does not load on the GNU target (STATUS_ENTRYPOINT_NOT_FOUND). The
