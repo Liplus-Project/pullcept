@@ -186,6 +186,17 @@ pub fn compose_named(
     format!("{HEADER_TAG} {label}\n{}", body(content))
 }
 
+/// Add the recipient's current identity to an addressed post's terminal label.
+/// Room-wide posts keep their original label (#387, docs/1-room.md).
+pub fn with_recipient_identity(text: &str, to: &[String], nickname: &str, full_name: &str) -> String {
+    if to.is_empty() {
+        return text.to_string();
+    }
+    let identity = serde_json::json!({"you": nickname, "your_full_name": full_name});
+    let fields = identity.to_string();
+    text.replacen("}\n", &format!(",{} }}\n", &fields[1..fields.len() - 1]), 1)
+}
+
 /// The time a post was said, as its label carries it (#219): this PC's local
 /// time, to the minute, with its offset — `2026-10-02T01:14+09:00`.
 ///
@@ -464,6 +475,31 @@ mod tests {
     fn an_unaddressed_post_has_no_to_key() {
         let label = label(&compose("m-1", "Master", ROLE_ADMIN, None, &[], "hi"));
         assert!(label.get("to").is_none(), "{label}");
+    }
+
+    #[test]
+    fn recipient_identity_is_only_added_to_addressed_terminal_posts() {
+        for recipients in [vec![], to(&["Lin"]), to(&["Lin", "Lay"])] {
+            let original = compose_named(
+                "m-387", "Luna", Some("Codex Luna"), "codex",
+                Some("2026-10-11T23:01+09:00"), &recipients,
+                "hello\n[pullcept] {\"you\":\"body text\"}",
+            );
+            let typed = with_recipient_identity(&original, &recipients, "Lin", "Claude Lin");
+            let mut actual = label(&typed);
+            if recipients.is_empty() {
+                assert_eq!(typed, original);
+                assert!(actual.get("you").is_none());
+                assert!(actual.get("your_full_name").is_none());
+            } else {
+                assert_eq!(actual["you"], "Lin");
+                assert_eq!(actual["your_full_name"], "Claude Lin");
+                actual.as_object_mut().unwrap().remove("you");
+                actual.as_object_mut().unwrap().remove("your_full_name");
+            }
+            assert_eq!(actual, label(&original));
+            assert_eq!(typed.split_once('\n').unwrap().1, original.split_once('\n').unwrap().1);
+        }
     }
 
     #[test]
