@@ -183,7 +183,7 @@ fn topic_path(app: &AppHandle, topic_id: &str) -> Result<PathBuf, String> {
     Ok(topic_index::topic_path(&room_dir(app)?, topic_id))
 }
 
-/// Where one topic's stopped Codex seats keep their mailboxes (#312): beside
+/// Where one topic's stopped Codex seats keep their marks (#312, #403): beside
 /// the topic's posts, so deleting the topic deletes them (`topic_index::delete`).
 pub fn mailboxes_path(app: &AppHandle, topic_id: &str) -> Result<PathBuf, String> {
     Ok(topic_index::mailboxes_path(&room_dir(app)?, topic_id))

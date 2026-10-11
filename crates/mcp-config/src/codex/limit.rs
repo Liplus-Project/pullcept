@@ -1,4 +1,4 @@
-//! A Codex CLI seat stopped on its usage limit, held, and handed back (#294).
+//! A Codex CLI seat stopped on its usage limit, and resumed (#294, #403).
 //! See docs/3-accounts.md, "Codex の席が利用上限で止まったとき".
 //!
 //! Three readings and one state machine, all free of the app so that a test
@@ -18,17 +18,16 @@
 //!   and a broken answer are all [`Answer::Unavailable`], which keeps the seat
 //!   limited.
 //!
-//! [`Limit`] is one seat: free, or stopped with the posts the room held for it
-//! and when to ask next. Times are Unix seconds, passed in.
+//! [`Limit`] is one seat: free, or stopped with when to ask next. Times are
+//! Unix seconds, passed in. Nothing is held back from a stopped seat (#403):
+//! the room types into it as into any seat, and a post typed there while it is
+//! stopped stays in its conversation as a turn the limit refused.
 //!
-//! A stopped seat has a mailbox ([`Mailboxes`], #312): the ids of the posts
-//! held for it, kept in a small file beside its topic's record so that they
-//! outlive the session and the app. What the seat is handed at the recovery is
-//! those posts, read again from the room's record ([`mailbox`]). A seat
-//! launched while its mailbox is still there starts stopped
-//! ([`Limit::resumed`]).
+//! A stopped seat has a mark ([`Mailboxes`], #312): a small file beside its
+//! topic's record that outlives the session and the app. A seat launched while
+//! its mark is still there starts stopped ([`Limit::resumed`]), so the resume
+//! is typed by whichever launch holds the seat when the recovery is confirmed.
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// How a turn ended, as its `task_complete` line says.
@@ -166,36 +165,28 @@ pub const GRACE: i64 = 30;
 /// still no, or no answer came. The last one repeats.
 pub const BACKOFF: [i64; 5] = [60, 120, 300, 600, 900];
 
-/// The least time between two questions when a held post brings the next one
-/// forward (#377): posts arriving together ask once.
-pub const HELD_GAP: i64 = 60;
+/// How long the resume input waits for the seat's answer (a turn starting or
+/// ending) before the seat counts as stopped on something other than the
+/// limit (#403, the same wait as a Claude seat's, #401).
+pub const ANSWER_WAIT: i64 = 120;
 
-/// One room post the room did not type into a stopped seat.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Held {
-    pub message_id: String,
-    pub speaker: String,
-    /// The label's `at`, when the post's time could be read.
-    pub at: Option<String>,
-    pub content: String,
-    /// Its `to` names this seat.
-    pub addressed: bool,
-}
+/// What is typed into the seat once its recovery is confirmed (#389).
+pub const CONTINUE: &str = "利用上限の解除を確認しました。中断していた作業を再開してください。中断していた作業がなければ、そのまま待機してください。";
 
 #[derive(Debug, Clone, PartialEq)]
 struct Stopped {
     resets_at: Option<i64>,
     next_query: i64,
     misses: u32,
-    /// When the last question was answered, if one has been.
-    asked: Option<i64>,
 }
 
-/// One Codex seat: free, or stopped with what the room held for it.
+/// One Codex seat: free or stopped, and whether the resume typed into it is
+/// still waiting for its answer.
 #[derive(Debug, Default)]
 pub struct Limit {
     stopped: Option<Stopped>,
-    held: Vec<Held>,
+    /// When [`CONTINUE`] was typed, until a turn starts or ends.
+    typed: Option<i64>,
 }
 
 fn first_query(now: i64, resets_at: Option<i64>) -> i64 {
@@ -206,18 +197,17 @@ fn first_query(now: i64, resets_at: Option<i64>) -> i64 {
 }
 
 impl Limit {
-    /// A seat launched while its mailbox is still there (#312): stopped from
-    /// the start, with its first question due now. Not at a reset: none is
-    /// known, and the one the stop was told may long have passed.
+    /// A seat launched while its mark is still there (#312): stopped from the
+    /// start, with its first question due now. Not at a reset: none is known,
+    /// and the one the stop was told may long have passed.
     pub fn resumed(now: i64) -> Self {
         Limit {
             stopped: Some(Stopped {
                 resets_at: None,
                 next_query: now,
                 misses: 0,
-                asked: None,
             }),
-            held: Vec::new(),
+            typed: None,
         }
     }
 
@@ -229,15 +219,13 @@ impl Limit {
         self.stopped.as_ref().and_then(|s| s.resets_at)
     }
 
-    /// What has been held so far, oldest first.
-    pub fn held(&self) -> &[Held] {
-        &self.held
-    }
-
     /// The rollout said a turn ended on the limit. Whether that stopped a seat
     /// that was free — the moment the room is told. A seat already stopped
-    /// stays as it is: its schedule is the app-server's to move.
+    /// stays as it is: its schedule is the app-server's to move. A resume
+    /// answered by the limit is answered: the stop starts the cycle again, and
+    /// the next confirmed recovery types it again.
     pub fn stop(&mut self, now: i64, resets_at: Option<i64>) -> bool {
+        self.typed = None;
         if self.stopped.is_some() {
             return false;
         }
@@ -245,7 +233,6 @@ impl Limit {
             resets_at,
             next_query: first_query(now, resets_at),
             misses: 0,
-            asked: None,
         });
         true
     }
@@ -263,47 +250,26 @@ impl Limit {
         }
     }
 
-    /// Keep a post back from a stopped seat. `false`, and nothing kept, when
-    /// the seat is free: the post is to be typed.
-    pub fn hold(&mut self, post: impl FnOnce() -> Held) -> bool {
-        if self.stopped.is_none() {
-            return false;
-        }
-        self.held.push(post());
-        true
-    }
-
     /// Whether a question is due now.
     pub fn due(&self, now: i64) -> bool {
         self.stopped.as_ref().is_some_and(|s| now >= s.next_query)
     }
 
-    /// A turn finished without error while stopped (a person typed into the
-    /// terminal). Not a recovery by itself; it brings the next question to now.
+    /// A turn finished without error while stopped — a post typed in by the
+    /// room or a person after the limit was reset by hand (#377). Not a
+    /// recovery by itself; it brings the next question to now.
     pub fn turn_completed(&mut self, now: i64) {
         if let Some(stopped) = self.stopped.as_mut() {
             stopped.next_query = stopped.next_query.min(now);
         }
     }
 
-    /// A post has just been held (#377): the room has something for the seat,
-    /// so whether it is free is worth asking now rather than at the reset —
-    /// the limit may have been reset by hand. Not sooner than [`HELD_GAP`]
-    /// after the last question.
-    pub fn post_held(&mut self, now: i64) {
-        if let Some(stopped) = self.stopped.as_mut() {
-            let earliest = stopped.asked.map_or(now, |asked| (asked + HELD_GAP).max(now));
-            stopped.next_query = stopped.next_query.min(earliest);
-        }
-    }
-
     /// The answer of a due question. Whether it confirmed the recovery; the
-    /// seat stays stopped, still holding, until [`Limit::release`].
+    /// seat stays stopped until [`Limit::free`].
     pub fn answer(&mut self, now: i64, answer: Answer) -> bool {
         let Some(stopped) = self.stopped.as_mut() else {
             return false;
         };
-        stopped.asked = Some(now);
         match answer {
             Answer::Allowed => return true,
             Answer::Denied { resets_at: Some(reset) } if reset + GRACE > now => {
@@ -320,129 +286,43 @@ impl Limit {
         false
     }
 
-    /// Free the seat and hand over what was held, oldest first.
-    pub fn release(&mut self) -> Vec<Held> {
+    /// The recovery is confirmed and the resume goes in: the seat is free.
+    pub fn free(&mut self) {
         self.stopped = None;
-        std::mem::take(&mut self.held)
     }
-}
 
-/// The one line handed to a seat on its recovery, or `None` when nothing was
-/// held: the count, the way to read them, and in full only the posts whose
-/// `to` named the seat.
-pub fn digest(held: &[Held]) -> Option<String> {
-    if held.is_empty() {
-        return None;
+    /// [`CONTINUE`] was typed into the seat now: its answer is awaited.
+    pub fn resume_typed(&mut self, now: i64) {
+        self.typed = Some(now);
     }
-    let mut text = format!(
-        "制限中に部屋で {} 件の発言がありました。必要なら read_room_history で読んでください。",
-        held.len()
-    );
-    let addressed: Vec<&Held> = held.iter().filter(|post| post.addressed).collect();
-    if !addressed.is_empty() {
-        text.push_str(&format!("\n\nそのうちあなた宛ての {} 件:", addressed.len()));
-        for post in addressed {
-            let at = post.at.as_deref().map(|at| format!("、{at}")).unwrap_or_default();
-            text.push_str(&format!(
-                "\n\n--- {}{}（message_id {}）\n{}",
-                post.speaker, at, post.message_id, post.content
-            ));
+
+    /// A turn of the seat started or ended: the resume has its answer.
+    pub fn answered(&mut self) {
+        self.typed = None;
+    }
+
+    /// Whether the resume drew no answer within [`ANSWER_WAIT`]: the seat is
+    /// stopped on something else (a selection screen, an expired login, a
+    /// trust prompt), where a submit key could pick a choice. `true` once;
+    /// nothing is typed again for it.
+    pub fn unanswered(&mut self, now: i64) -> bool {
+        if self.typed.is_some_and(|typed| now >= typed + ANSWER_WAIT) {
+            self.typed = None;
+            return true;
         }
+        false
     }
-    Some(text)
 }
 
-/// One post of the topic's record, as [`mailbox`] reads it. `at` is the
-/// post's time already read the way a label carries it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recorded {
-    pub message_id: String,
-    pub speaker: String,
-    pub account: Option<String>,
-    pub content: String,
-    pub to: Vec<String>,
-    pub at: Option<String>,
-}
-
-/// The seat a mailbox is read for.
-#[derive(Debug, Clone, Copy)]
-pub struct Seat<'a> {
-    /// Its name now.
-    pub name: &'a str,
-    pub account_id: &'a str,
-}
-
-/// The names the seat is known by in the record: its name now, and every name
-/// its account has spoken under there — what a post addressed to the seat
-/// before a rename carries. A name some other account has spoken under is not
-/// taken from the record: it would read posts to that seat as to this one.
-fn names_of(record: &[Recorded], seat: &Seat) -> Vec<String> {
-    let mut names = vec![seat.name.to_string()];
-    for post in record {
-        if post.account.as_deref() == Some(seat.account_id) && !names.contains(&post.speaker) {
-            names.push(post.speaker.clone());
-        }
-    }
-    let others: Vec<&str> = record
-        .iter()
-        .filter(|post| post.account.as_deref().is_some_and(|id| id != seat.account_id))
-        .map(|post| post.speaker.as_str())
-        .collect();
-    names.retain(|name| name == seat.name || !others.contains(&name.as_str()));
-    names
-}
-
-/// What the seat is handed at its recovery, in the order held (#312): the
-/// posts whose ids its mailbox holds, and nothing else. `ids` is the mailbox as
-/// its file keeps it; `held` is what this launch's memory held, whose ids the
-/// file normally holds too, and any it does not are kept after them.
-///
-/// Each post is read from the record, with `addressed` read against every name
-/// the seat is known by there. A post the record does not show is taken as
-/// memory held it, and one neither shows is left out: there is nothing of it
-/// to hand over. Nothing else in the record is looked at — no notice, no range
-/// between two ids: a post said while the seat was closed, or while the app was
-/// down, was never held, and is not the seat's to be handed.
-pub fn mailbox(record: &[Recorded], seat: &Seat, ids: &[String], held: Vec<Held>) -> Vec<Held> {
-    let names = names_of(record, seat);
-    let by_id: HashMap<&str, &Recorded> = record
-        .iter()
-        .map(|post| (post.message_id.as_str(), post))
-        .collect();
-    let mut order: Vec<String> = Vec::new();
-    for id in ids.iter().chain(held.iter().map(|post| &post.message_id)) {
-        if !order.contains(id) {
-            order.push(id.clone());
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|id| {
-            let memory = held.iter().find(|post| post.message_id == id);
-            match by_id.get(id.as_str()) {
-                Some(post) => Some(Held {
-                    message_id: post.message_id.clone(),
-                    speaker: post.speaker.clone(),
-                    at: post.at.clone(),
-                    content: post.content.clone(),
-                    addressed: memory.is_some_and(|m| m.addressed)
-                        || post.to.iter().any(|to| names.contains(to)),
-                }),
-                None => memory.cloned(),
-            }
-        })
-        .collect()
-}
-
-/// The mailboxes of one topic's stopped seats, as the small file beside the
+/// The marks of one topic's stopped seats, as the small file beside the
 /// topic's record keeps them across a session's end and the app's (#312): by
-/// account, the ids of the posts held for that seat, oldest first. Ids only —
-/// what was said is the record's. A seat has a mailbox from its stop until its
-/// recovery has been handed over, empty while nothing has been held. The file
-/// goes with its topic (`topic_index::delete`).
+/// account, from the seat's stop until its resume is typed. The file goes with
+/// its topic (`topic_index::delete`). A seat's value is an empty list; a file
+/// written before #403 carries the ids of posts held then, and is read as the
+/// same mark.
 ///
 /// A file that is missing, cannot be read, or is not what this writes is no
-/// mailbox at all.
+/// mark at all.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Mailboxes {
     seats: serde_json::Map<String, Value>,
@@ -462,7 +342,7 @@ impl Mailboxes {
     }
 
     /// Written whole, through a file beside it renamed over it, so a write cut
-    /// short leaves the last one standing. No mailbox left is no file.
+    /// short leaves the last one standing. No mark left is no file.
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
         if self.seats.is_empty() {
             return match std::fs::remove_file(path) {
@@ -478,44 +358,20 @@ impl Mailboxes {
         std::fs::rename(&next, path)
     }
 
-    /// The seat's mailbox, or `None` when it has none.
-    pub fn get(&self, account_id: &str) -> Option<Vec<String>> {
-        let ids = self.seats.get(account_id)?.as_array()?;
-        Some(
-            ids.iter()
-                .filter_map(|id| id.as_str().map(str::to_string))
-                .collect(),
-        )
+    /// Whether the seat is marked stopped.
+    pub fn has(&self, account_id: &str) -> bool {
+        self.seats.contains_key(account_id)
     }
 
-    fn ids_mut(&mut self, account_id: &str) -> &mut Vec<Value> {
-        let ids = self
-            .seats
+    /// The seat has stopped: it is marked from now. A mark already there is
+    /// kept as it is.
+    pub fn open(&mut self, account_id: &str) {
+        self.seats
             .entry(account_id.to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
-        if !ids.is_array() {
-            *ids = Value::Array(Vec::new());
-        }
-        match ids {
-            Value::Array(ids) => ids,
-            _ => unreachable!("made an array above"),
-        }
     }
 
-    /// The seat has stopped: it has a mailbox from now, empty if it had none.
-    pub fn open(&mut self, account_id: &str) {
-        self.ids_mut(account_id);
-    }
-
-    /// One more post held for the seat.
-    pub fn push(&mut self, account_id: &str, message_id: &str) {
-        let ids = self.ids_mut(account_id);
-        if !ids.iter().any(|id| id == message_id) {
-            ids.push(Value::String(message_id.to_string()));
-        }
-    }
-
-    /// The seat's recovery is being handed over: its mailbox goes.
+    /// The seat's resume is being typed: its mark goes.
     pub fn close(&mut self, account_id: &str) {
         self.seats.remove(account_id);
     }
@@ -528,20 +384,23 @@ pub fn stop_notice(name: &str, reset: Option<&str>) -> String {
         Some(reset) => format!("解除予定は {reset} です。"),
         None => "解除予定は分かっていません。".to_string(),
     };
-    format!(
-        "{name} は利用上限で止まりました。{when}解除を確かめるまで、{name} への部屋の発言は Pullcept が預かります。"
-    )
+    format!("{name} は利用上限で止まりました。{when}")
 }
 
-/// What the room is told when the recovery is confirmed.
-pub fn recovery_notice(name: &str, held: usize) -> String {
-    if held == 0 {
-        format!("{name} の利用上限の解除を確かめました。")
-    } else {
-        format!(
-            "{name} の利用上限の解除を確かめました。預かっていた {held} 件の発言は、一通にまとめて {name} に渡します。"
-        )
-    }
+/// What the room is told when the recovery is confirmed and the resume is
+/// about to be typed into the seat.
+pub fn recovery_notice(name: &str) -> String {
+    format!("{name} の利用上限の解除を確かめました。{name} の端末へ再開の指示を打ちます。")
+}
+
+/// The resume drew no answer within [`ANSWER_WAIT`] (#403).
+pub fn other_cause(name: &str) -> String {
+    format!("{name} は、再開の指示を打ってから応答がありません。利用上限以外の理由（起動時の選択画面、ログイン切れ、信頼の確認など）で止まっているようです。指示は打ち直しません。端末を見てください。")
+}
+
+/// A seat the room was told of with [`other_cause`] finished a turn again.
+pub fn back_after_other_cause(name: &str) -> String {
+    format!("{name} は再開しました（正常な応答を確認）。先の「端末を見てください」は解消しています。")
 }
 
 #[cfg(test)]
@@ -640,23 +499,12 @@ mod tests {
         assert_eq!(json(&lines[2])["id"], READ_ID);
     }
 
-    fn post(id: &str, addressed: bool) -> Held {
-        Held {
-            message_id: id.into(),
-            speaker: "Master".into(),
-            at: Some("2026-10-05T22:10+09:00".into()),
-            content: format!("body {id}"),
-            addressed,
-        }
-    }
-
     #[test]
-    fn a_free_seat_holds_nothing_and_is_never_due() {
+    fn a_free_seat_is_never_due() {
         let mut limit = Limit::default();
-        assert!(!limit.hold(|| post("a", false)));
+        assert!(!limit.is_limited());
         assert!(!limit.due(i64::MAX));
         assert!(!limit.answer(0, Answer::Allowed));
-        assert_eq!(limit.release(), Vec::new());
     }
 
     #[test]
@@ -717,6 +565,7 @@ mod tests {
 
     #[test]
     fn a_turn_that_worked_brings_the_question_forward_but_is_not_a_recovery() {
+        // A room post typed into a seat whose limit was reset by hand (#377).
         let mut limit = Limit::default();
         limit.stop(0, Some(10_000));
         limit.turn_completed(50);
@@ -725,92 +574,56 @@ mod tests {
     }
 
     #[test]
-    fn a_held_post_asks_before_the_reset_but_not_twice_a_minute() {
+    fn a_confirmed_recovery_frees_the_seat_once() {
         let mut limit = Limit::default();
-        limit.stop(0, Some(10_000));
-        assert!(!limit.due(100));
-        limit.post_held(100);
-        assert!(limit.due(100));
-        assert!(!limit.answer(100, Answer::Denied { resets_at: Some(10_000) }));
-        assert!(!limit.due(130));
-        limit.post_held(130);
-        assert!(!limit.due(130));
-        assert!(limit.due(160));
-        assert!(limit.answer(160, Answer::Allowed));
-    }
-
-    #[test]
-    fn the_recovery_hands_over_what_was_held_in_order() {
-        let mut limit = Limit::default();
-        limit.stop(0, Some(100));
-        assert!(limit.hold(|| post("a", false)));
-        assert!(limit.hold(|| post("b", true)));
-        assert_eq!(limit.held().len(), 2);
-        assert!(limit.answer(200, Answer::Allowed));
-        // Confirmed, but still holding until released.
+        limit.stop(100, Some(200));
+        assert!(!limit.answer(201, Answer::Unavailable));
+        assert!(!limit.answer(202, Answer::Denied { resets_at: Some(200) }));
+        assert!(limit.answer(204, Answer::Allowed));
+        // Confirmed, but stopped until freed.
         assert!(limit.is_limited());
-        assert!(limit.hold(|| post("c", false)));
-        let held = limit.release();
-        assert_eq!(
-            held.iter().map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
-            ["a", "b", "c"]
-        );
+        limit.free();
         assert!(!limit.is_limited());
-        assert!(!limit.hold(|| post("d", false)));
+        assert!(!limit.answer(205, Answer::Allowed));
     }
 
     #[test]
-    fn the_digest_counts_all_and_carries_only_the_addressed() {
-        assert_eq!(digest(&[]), None);
-        let text = digest(&[post("a", false), post("b", true), post("c", false)]).unwrap();
-        assert!(text.starts_with(
-            "制限中に部屋で 3 件の発言がありました。必要なら read_room_history で読んでください。"
-        ));
-        assert!(text.contains("あなた宛ての 1 件"));
-        assert!(text.contains("body b"));
-        assert!(text.contains("message_id b"));
-        assert!(!text.contains("body a"));
-        assert!(!text.contains("body c"));
-        let none_addressed = digest(&[post("a", false)]).unwrap();
-        assert!(!none_addressed.contains("あなた宛て"));
+    fn the_resume_is_answered_by_a_turn_or_by_the_limit_or_counts_as_another_cause() {
+        // A turn starts or ends: answered, nothing more.
+        let mut limit = Limit::default();
+        limit.resume_typed(1000);
+        limit.answered();
+        assert!(!limit.unanswered(1000 + ANSWER_WAIT));
+        // The limit again: a new stop, and no other cause.
+        let mut limit = Limit::default();
+        limit.resume_typed(1000);
+        assert!(limit.stop(1010, Some(5000)));
+        assert!(!limit.unanswered(1000 + ANSWER_WAIT));
+        // Nothing: once, at the wait's end, and not again.
+        let mut limit = Limit::default();
+        limit.resume_typed(1000);
+        assert!(!limit.unanswered(1000 + ANSWER_WAIT - 1));
+        assert!(limit.unanswered(1000 + ANSWER_WAIT));
+        assert!(!limit.unanswered(1000 + 2 * ANSWER_WAIT));
+        assert!(!limit.is_limited());
     }
 
     #[test]
-    fn the_notices_name_the_seat_and_the_reset() {
+    fn the_notices_name_the_seat_and_the_reset_and_hold_nothing() {
         assert_eq!(
             stop_notice("Codex Luna", Some("10月5日 22:45")),
-            "Codex Luna は利用上限で止まりました。解除予定は 10月5日 22:45 です。解除を確かめるまで、Codex Luna への部屋の発言は Pullcept が預かります。"
+            "Codex Luna は利用上限で止まりました。解除予定は 10月5日 22:45 です。"
         );
         assert!(stop_notice("L", None).contains("解除予定は分かっていません。"));
-        assert!(recovery_notice("L", 3).contains("3 件"));
-        assert!(!recovery_notice("L", 0).contains("件"));
-    }
-    const SEAT: Seat = Seat {
-        name: "Codex Luna",
-        account_id: "luna",
-    };
-
-    fn said(id: &str, speaker: &str, account: Option<&str>, to: &[&str], content: &str) -> Recorded {
-        Recorded {
-            message_id: id.into(),
-            speaker: speaker.into(),
-            account: account.map(str::to_string),
-            content: content.into(),
-            to: to.iter().map(|t| t.to_string()).collect(),
-            at: Some(format!("at {id}")),
+        for text in [stop_notice("L", None), recovery_notice("L")] {
+            assert!(!text.contains("預か"), "{text}");
         }
-    }
-
-    fn by_master(id: &str, to: &[&str]) -> Recorded {
-        said(id, "Master", None, to, &format!("body {id}"))
-    }
-
-    fn ids(posts: &[Held]) -> Vec<&str> {
-        posts.iter().map(|p| p.message_id.as_str()).collect()
-    }
-
-    fn strings(ids: &[&str]) -> Vec<String> {
-        ids.iter().map(|id| id.to_string()).collect()
+        assert!(recovery_notice("L").contains("再開の指示を打ちます"));
+        assert!(other_cause("L").contains("端末を見てください"));
+        assert!(back_after_other_cause("L").contains("解消"));
+        assert!(CONTINUE.contains("中断していた作業を再開してください"));
+        assert!(CONTINUE.contains("作業がなければ、そのまま待機"));
+        assert!(!CONTINUE.contains("read_room_history"));
     }
 
     #[test]
@@ -819,82 +632,13 @@ mod tests {
         assert!(limit.is_limited());
         assert_eq!(limit.resets_at(), None);
         assert!(limit.due(1000));
-        assert!(limit.hold(|| post("a", false)));
         assert!(!limit.stop(1001, Some(9000)), "already stopped: no second notice");
-        // Still no: held, and asked again on the backoff.
+        // Still no: asked again on the backoff.
         assert!(!limit.answer(1000, Answer::Unavailable));
         assert!(limit.is_limited());
         assert!(!limit.due(1000 + BACKOFF[0] - 1));
         assert!(limit.due(1000 + BACKOFF[0]));
         assert!(limit.answer(1000 + BACKOFF[0], Answer::Allowed));
-        assert_eq!(ids(&limit.release()), ["a"]);
-    }
-
-    #[test]
-    fn the_mailbox_is_its_ids_and_nothing_between_them() {
-        // The seat stopped and held m1; the app went down; m2 was said while
-        // it was down; the relaunched seat, still stopped, held m3.
-        let record = vec![
-            by_master("before", &["Codex Luna"]),
-            by_master("m1", &["Codex Luna"]),
-            said("lin", "Claude Lin", Some("lin"), &[], "body lin"),
-            by_master("m2", &["Codex Luna"]),
-            by_master("m3", &["Codex Luna", "Claude Lin"]),
-        ];
-        let held = vec![Held {
-            message_id: "m3".into(),
-            speaker: "Master".into(),
-            at: None,
-            content: "body m3".into(),
-            addressed: true,
-        }];
-        let posts = mailbox(&record, &SEAT, &strings(&["m1", "lin", "m3"]), held);
-        assert_eq!(ids(&posts), ["m1", "lin", "m3"]);
-        assert_eq!(
-            posts.iter().filter(|p| p.addressed).map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
-            ["m1", "m3"]
-        );
-        // Read from the record: its time, not memory's missing one.
-        assert_eq!(posts[2].at.as_deref(), Some("at m3"));
-        let text = digest(&posts).unwrap();
-        assert!(text.starts_with("制限中に部屋で 3 件の発言がありました。"));
-        assert!(text.contains("body m1"));
-        assert!(!text.contains("body m2"));
-        assert!(!text.contains("body before"));
-        // The restart's memory is empty: the file alone carries it.
-        assert_eq!(ids(&mailbox(&record, &SEAT, &strings(&["m1", "lin"]), Vec::new())), ["m1", "lin"]);
-    }
-
-    #[test]
-    fn what_memory_held_outside_the_file_or_the_record_is_kept() {
-        let record = vec![by_master("m", &[]), by_master("n", &[])];
-        // "n" was held but its id did not reach the file; "late" reached the
-        // record after it was read; "gone" is in neither and is left out.
-        let held = vec![post("m", false), post("n", false), post("late", true)];
-        let posts = mailbox(&record, &SEAT, &strings(&["m", "gone"]), held);
-        assert_eq!(ids(&posts), ["m", "n", "late"]);
-        assert!(posts[2].addressed);
-        assert_eq!(mailbox(&record, &SEAT, &[], Vec::new()), Vec::new());
-    }
-
-    #[test]
-    fn a_renamed_seat_is_followed_by_its_account() {
-        // Held as "Luna", handed over as "Codex Luna".
-        let record = vec![
-            said("hi", "Luna", Some("luna"), &[], "hello"),
-            by_master("m1", &["Luna"]),
-            by_master("m2", &["Codex Luna"]),
-        ];
-        let posts = mailbox(&record, &SEAT, &strings(&["m1", "m2"]), Vec::new());
-        assert!(posts.iter().all(|p| p.addressed));
-        // A name another account has spoken under is not taken as the seat's.
-        let record = vec![
-            said("hi", "Luna", Some("luna"), &[], "hello"),
-            said("sol", "Luna", Some("sol"), &[], "I am Luna now"),
-            by_master("m1", &["Luna"]),
-        ];
-        let posts = mailbox(&record, &SEAT, &strings(&["m1"]), Vec::new());
-        assert!(!posts[0].addressed);
     }
 
     struct Scratch(std::path::PathBuf);
@@ -913,41 +657,32 @@ mod tests {
     }
 
     #[test]
-    fn the_mailboxes_outlive_a_restart_and_go_at_the_recovery() {
+    fn the_marks_outlive_a_restart_and_go_at_the_resume() {
         let scratch = Scratch::new();
         let path = scratch.0.join("mailboxes").join("topic.json");
         assert_eq!(Mailboxes::read(&path), Mailboxes::default());
         let mut boxes = Mailboxes::default();
         boxes.open("luna");
-        boxes.write(&path).unwrap();
-        // Stopped with nothing held is still a mailbox.
-        assert_eq!(Mailboxes::read(&path).get("luna"), Some(Vec::new()));
-        boxes.push("luna", "a");
-        boxes.push("luna", "b");
-        boxes.push("luna", "a");
-        boxes.push("sol", "c");
+        boxes.open("sol");
         boxes.write(&path).unwrap();
         let mut read = Mailboxes::read(&path);
-        assert_eq!(read.get("luna"), Some(strings(&["a", "b"])));
-        assert_eq!(read.get("sol"), Some(strings(&["c"])));
-        assert_eq!(read.get("other"), None);
-        // Opening again keeps what is there.
-        read.open("luna");
-        assert_eq!(read.get("luna"), Some(strings(&["a", "b"])));
+        assert!(read.has("luna") && read.has("sol"));
+        assert!(!read.has("other"));
         read.close("luna");
         read.write(&path).unwrap();
-        assert_eq!(Mailboxes::read(&path).get("luna"), None);
+        assert!(!Mailboxes::read(&path).has("luna"));
         read.close("sol");
         read.write(&path).unwrap();
-        assert!(!path.exists(), "no mailbox left is no file");
+        assert!(!path.exists(), "no mark left is no file");
         read.write(&path).unwrap();
-        // A file that is not what this writes is no mailbox.
+        // A file written before #403, with held ids, is the same mark.
+        std::fs::write(&path, r#"{"luna":["a","b"]}"#).unwrap();
+        let mut old = Mailboxes::read(&path);
+        assert!(old.has("luna"));
+        old.open("luna");
+        assert!(old.has("luna"));
+        // A file that is not what this writes is no mark.
         std::fs::write(&path, "[1,2]").unwrap();
         assert_eq!(Mailboxes::read(&path), Mailboxes::default());
-        std::fs::write(&path, r#"{"luna":"x"}"#).unwrap();
-        let mut odd = Mailboxes::read(&path);
-        assert_eq!(odd.get("luna"), None);
-        odd.push("luna", "a");
-        assert_eq!(odd.get("luna"), Some(strings(&["a"])));
     }
 }
