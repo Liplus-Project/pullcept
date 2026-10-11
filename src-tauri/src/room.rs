@@ -1136,13 +1136,11 @@ fn type_into_sessions(
         let held = limits.hold(&target.pty_id, post_for_hold)
             || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold);
         if held { continue; }
-        // The recipient's current call-name supersedes launch-time instructions.
+        // For addressed posts, the recipient's current call-name supersedes launch-time instructions.
         // A live rename does not need a new conversation or a synthetic user post.
         let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
         let text = config::read_config(app).ok().and_then(|config| config.accounts.into_iter().find(|account| Some(account.id.as_str()) == recipient)).map(|account| {
-            let identity = serde_json::json!({"you": account.address_name(), "your_full_name": account.name});
-            let fields = identity.to_string();
-            text.replacen("}\n", &format!(",{} }}\n", &fields[1..fields.len()-1]), 1)
+            terminal_input::with_recipient_identity(&text, &post.to, account.address_name(), &account.name)
         }).unwrap_or_else(|| text.clone());
         crate::hook_activity::type_or_keep(
             app,
