@@ -334,6 +334,8 @@ interface UsageResultFrame {
   /** Absent when the window was not reported. */
   five_hour?: UsageWindow;
   seven_day?: UsageWindow;
+  context?: number;
+  context_received_at?: number;
   /** Unix seconds the app received the figures at; absent when none have
    *  arrived for this seat yet. */
   received_at?: number;
@@ -721,7 +723,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [{ type: "text", text: `Delivered to the room. message_id: ${messageId}` }],
     };
   })();
-  return { ...result, content: [...result.content, { type: "text" as const, text: identityText() }] };
+  let feedback = identityText();
+  if (request.params.name === "say_to_room") {
+    let usageText: string;
+    try {
+      const usage = await readUsage(1500);
+      usageText = usage.isError
+        ? `Usage unavailable: ${usage.content[0].text}; 5h, weekly, context: unknown.`
+        : usage.content[0].text;
+    } catch {
+      usageText = "Usage unavailable; 5h, weekly, context: unknown.";
+    }
+    feedback += `\nnow ${localMinute(Date.now() / 1000, true)}\n${usageText}`;
+  }
+  return { ...result, content: [...result.content, { type: "text" as const, text: feedback }] };
 });
 
 /**
@@ -825,12 +840,12 @@ async function readHistory(args: Record<string, unknown> | undefined): Promise<{
  * Failures are `isError`, as a pull's are. "None received yet" is not one: the
  * room answered, and that is its answer.
  */
-async function readUsage(): Promise<{
+async function readUsage(timeoutMs = POST_RESULT_TIMEOUT): Promise<{
   content: { type: "text"; text: string }[];
   isError?: boolean;
 }> {
   const requestId = randomUUID();
-  const answered = awaitUsageResult(requestId);
+  const answered = awaitUsageResult(requestId, timeoutMs);
   const sent = sendToRoom({ type: "usage", request_id: requestId });
 
   if (!sent) {
@@ -868,34 +883,35 @@ async function readUsage(): Promise<{
  * are local with the UTC offset, as the room's labels write them.
  */
 function describeUsage(result: UsageResultFrame, nowMs: number): string {
-  if (typeof result.received_at !== "number") {
-    return "No usage figures received for this seat yet.";
-  }
+  const age = (seconds: number) => `${localMinute(seconds)} (${Math.max(0, Math.round((nowMs / 1000 - seconds) / 60))} min ago)`;
   const window = (label: string, one: UsageWindow | undefined): string => {
-    if (typeof one?.used_percentage !== "number") return `${label}: not reported`;
+    if (typeof one?.used_percentage !== "number" || !Number.isFinite(one.used_percentage)) return `${label}: not reported`;
     const used = Math.round(one.used_percentage * 10) / 10;
-    const reset = typeof one.resets_at === "number"
-      ? `, resets ${localMinute(one.resets_at)}`
-      : "";
-    return `${label}: ${used}% used${reset}`;
+    const reset = typeof one.resets_at === "number" && Number.isFinite(one.resets_at)
+      ? localMinute(one.resets_at) : "not reported";
+    return `${label}: ${used}% used, resets ${reset}`;
   };
-  const minutes = Math.max(0, Math.round((nowMs / 1000 - result.received_at) / 60));
   return [
     window("5h", result.five_hour),
     window("weekly", result.seven_day),
-    `received ${localMinute(result.received_at)} (${minutes} min ago)`,
+    typeof result.received_at === "number" && Number.isFinite(result.received_at)
+      ? `received ${age(result.received_at)}; last reported figures`
+      : "No usage figures received for this seat yet.",
+    typeof result.context === "number" && Number.isFinite(result.context) && typeof result.context_received_at === "number"
+      ? `context: ${Math.round(result.context * 10) / 10}% used, received ${age(result.context_received_at)}; last reported`
+      : "context: not reported",
   ].join("\n");
 }
 
 /** Unix seconds as `YYYY-MM-DDTHH:MM+09:00`, in this machine's zone. */
-function localMinute(seconds: number): string {
+function localMinute(seconds: number, includeSeconds = false): string {
   const at = new Date(seconds * 1000);
   const two = (n: number) => String(n).padStart(2, "0");
   const offset = -at.getTimezoneOffset();
   const sign = offset < 0 ? "-" : "+";
   const abs = Math.abs(offset);
   return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}` +
-    `T${two(at.getHours())}:${two(at.getMinutes())}` +
+    `T${two(at.getHours())}:${two(at.getMinutes())}${includeSeconds ? `:${two(at.getSeconds())}` : ""}` +
     `${sign}${two(Math.floor(abs / 60))}:${two(abs % 60)}`;
 }
 
@@ -992,12 +1008,12 @@ const awaitingHistory = new Map<string, (result: HistoryResultFrame | null) => v
 /** Reads of this seat's usage waiting for the room's answer, by request id. */
 const awaitingUsage = new Map<string, (result: UsageResultFrame | null) => void>();
 
-function awaitUsageResult(requestId: string): Promise<UsageResultFrame | null> {
+function awaitUsageResult(requestId: string, timeoutMs: number): Promise<UsageResultFrame | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       awaitingUsage.delete(requestId);
       resolve(null);
-    }, POST_RESULT_TIMEOUT);
+    }, timeoutMs);
     timer.unref?.();
     awaitingUsage.set(requestId, (result) => {
       clearTimeout(timer);

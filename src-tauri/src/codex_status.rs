@@ -121,6 +121,9 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
         };
         // When the figures were received, changed or not (#364).
         if let Some(tail) = tail.as_deref_mut() {
+            if tail.take_context_read() {
+                app.state::<crate::room::UsageBook>().record_context(topic_id, account_id, tail.status.context);
+            }
             if tail.take_limits_read() {
                 limiter.received_usage(&tail.status);
             }

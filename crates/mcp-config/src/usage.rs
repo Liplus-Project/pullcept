@@ -40,6 +40,7 @@ pub struct Usage {
 #[derive(Debug, Default)]
 pub struct Book {
     seats: HashMap<(String, String), Usage>,
+    contexts: HashMap<(String, String), (Option<f64>, i64)>,
 }
 
 impl Book {
@@ -51,9 +52,30 @@ impl Book {
         self.seats.get(&(topic.into(), account.into()))
     }
 
+    /// A context belongs to this launch; the account-wide limits may survive it.
+    pub fn begin_session(&mut self, topic: &str, account: &str) {
+        self.contexts.remove(&(topic.into(), account.into()));
+    }
+
+    pub fn record_context(&mut self, topic: &str, account: &str, context: Option<f64>, received_at: i64) {
+        self.contexts.insert((topic.into(), account.into()), (context, received_at));
+    }
+
+    pub fn answer(&self, request_id: &str, topic: &str, account: &str) -> Value {
+        let mut frame = answer(request_id, self.get(topic, account));
+        if let Some((context, at)) = self.contexts.get(&(topic.into(), account.into())) {
+            if let Some(context) = context.filter(|n| n.is_finite()) {
+                frame["context"] = json!(context);
+            }
+            frame["context_received_at"] = json!(at);
+        }
+        frame
+    }
+
     /// The topic is deleted: its seats' figures go with it.
     pub fn forget_topic(&mut self, topic: &str) {
         self.seats.retain(|(t, _), _| t != topic);
+        self.contexts.retain(|(t, _), _| t != topic);
     }
 }
 
@@ -166,6 +188,27 @@ mod tests {
         book.forget_topic("gone");
         assert_eq!(book.get("gone", "lin"), None);
         assert_eq!(book.get("kept", "lin"), Some(&usage(2)));
+    }
+
+    #[test]
+    fn context_is_seat_scoped_replaced_and_cleared_on_new_launch() {
+        let mut book = Book::default();
+        book.record("t", "a", usage(100));
+        book.record_context("t", "a", Some(42.0), 120);
+        book.record_context("t", "b", Some(1.0), 130);
+        assert_eq!(book.answer("r", "t", "a")["context"], 42.0);
+        assert_eq!(book.answer("r", "t", "a")["context_received_at"], 120);
+        book.record_context("t", "a", None, 140);
+        assert!(book.answer("r", "t", "a").get("context").is_none());
+        book.record_context("t", "a", Some(0.0), 150);
+        assert_eq!(book.answer("r", "t", "a")["context"], 0.0);
+        book.begin_session("t", "a");
+        let frame = book.answer("r", "t", "a");
+        assert!(frame.get("context_received_at").is_none());
+        assert_eq!(frame["received_at"], 100);
+        assert_eq!(book.answer("r", "t", "b")["context"], 1.0);
+        book.forget_topic("t");
+        assert!(book.answer("r", "t", "b").get("context").is_none());
     }
 
     #[test]

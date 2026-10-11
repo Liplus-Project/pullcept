@@ -1495,8 +1495,18 @@ impl UsageBook {
         self.0.lock().record(topic, account, usage);
     }
 
+    pub fn begin_session(&self, topic: &str, account: &str) {
+        self.0.lock().begin_session(topic, account);
+    }
+
+    pub fn record_context(&self, topic: &str, account: &str, context: Option<f64>) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64).unwrap_or_default();
+        self.0.lock().record_context(topic, account, context, now);
+    }
+
     fn answer(&self, request_id: &str, topic: &str, account: &str) -> serde_json::Value {
-        mcp_config::usage::answer(request_id, self.0.lock().get(topic, account))
+        self.0.lock().answer(request_id, topic, account)
     }
 
     fn forget_topic(&self, topic: &str) {
@@ -1788,8 +1798,12 @@ async fn read_hook(
             // Stamped on arrival, and kept only for a report the seat's own
             // launch sent — the one the panel takes (#364).
             let usage = stats.as_ref().map(SessionStats::usage);
+            let context = stats.as_ref().map(|stats| stats.context);
             if app.state::<crate::claude_limit::ClaudeLimits>().report(app, &room_id,
                 &account_id, claude_nonce.as_deref(), &body, stats) {
+                if let Some(context) = context {
+                    app.state::<UsageBook>().record_context(&room_id, &account_id, context);
+                }
                 if let Some(usage) = usage {
                     app.state::<UsageBook>().record(&room_id, &account_id, usage);
                 }

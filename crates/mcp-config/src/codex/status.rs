@@ -171,6 +171,7 @@ pub struct Tail {
     /// taken (#364): when the app received the 5-hour and weekly figures, the
     /// same figures or not.
     limits_read: bool,
+    context_read: bool,
 }
 
 impl Tail {
@@ -202,6 +203,7 @@ impl Tail {
                         self.resets_at = Some(reset);
                     }
                     self.limits_read |= rate_limits(&value).is_some();
+                    self.context_read |= value["type"] == "event_msg" && value["payload"]["type"] == "token_count" && value["payload"]["info"].is_object();
                 }
             }
             self.line.clear();
@@ -221,6 +223,10 @@ impl Tail {
     /// Whether the rate limits were read since the previous call (#364).
     pub fn take_limits_read(&mut self) -> bool {
         std::mem::take(&mut self.limits_read)
+    }
+
+    pub fn take_context_read(&mut self) -> bool {
+        std::mem::take(&mut self.context_read)
     }
 
     fn hold(&mut self, part: &[u8]) {
@@ -282,6 +288,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pullcept-rollout-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("rollout.jsonl")
+    }
+
+    #[test]
+    fn context_receipt_tracks_info_without_rate_limits_once() {
+        let mut tail = Tail::default();
+        tail.feed(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":18000},\"model_context_window\":72000}}}\n");
+        assert!(tail.take_context_read());
+        assert!(!tail.take_context_read());
+        assert!(!tail.take_limits_read());
+        assert!(tail.status.context.is_some());
     }
 
     #[test]
