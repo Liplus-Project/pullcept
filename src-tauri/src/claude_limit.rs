@@ -62,6 +62,8 @@ impl Entry {
 #[derive(Default)]
 pub struct ClaudeLimits {
     seats: Mutex<HashMap<Key, Entry>>,
+    /// Seats told of another cause, across their launches (#401).
+    stalled: Mutex<resume::Stalled>,
 }
 impl ClaudeLimits {
     /// Returns the nonce carried only by this Claude launch and its reporters.
@@ -330,6 +332,7 @@ impl ClaudeLimits {
             }
             Some(resume::Action::OtherCause) => {
                 crate::room::post_app_notice(app, &room, topic, &notice::other_cause(&name), Some(pty));
+                self.stalled.lock().told(topic, account);
                 log(app, "other-cause", topic, account, &format!("no_answer_within={}s", resume::ANSWER_WAIT));
             }
             None => {}
@@ -375,20 +378,34 @@ pub fn watch(app: AppHandle, topic: String, account: String, nonce: String, pty:
     });
 }
 
-/// Read what the parent appended, and act on its stop or recovery.
+/// Read what the parent appended, and act on its stop or recovery. A seat
+/// the room was told is stopped on another cause is announced back once its
+/// parent answers normally (#401).
 fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
     let limits = app.state::<ClaudeLimits>();
-    let mut seats = limits.seats.lock();
-    let Some(e) = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
-        e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
-    }) else {
+    let Some(name) = read(app, &limits, topic, account, nonce, pty) else {
         return;
     };
+    if limits.stalled.lock().answered(topic, account) {
+        let room = app.state::<RoomState>();
+        crate::room::post_app_notice(app, &room, topic, &notice::back_after_other_cause(&name), Some(pty));
+        log(app, "recovered", topic, account, "told=back_after_other_cause");
+    }
+}
+
+/// The seat's name when this read applied a normal parent response and left
+/// the parent free.
+fn read(app: &AppHandle, limits: &ClaudeLimits, topic: &str, account: &str, nonce: &str, pty: &str) -> Option<String> {
+    let mut seats = limits.seats.lock();
+    let e = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
+        e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
+    })?;
     let was = e.state.limited;
+    let mut answered = false;
     if let (Some(path), Some(tail)) = (&e.path, &mut e.tail) {
         // Revalidate canonical containment on every read (file replacement).
         if policy::checked(&e.root, &e.parent, path).as_ref() != Some(path) {
-            return;
+            return None;
         }
         if let Ok(events) = tail.read(path, &e.parent) {
             let now = unix_now();
@@ -401,6 +418,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
                     continue;
                 }
                 let Some((reset, at)) = rejected else {
+                    answered = true;
                     continue;
                 };
                 let stop = mcp_config::claude_notice::Stop {
@@ -435,6 +453,7 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         e.pending_notices.retain(|(n, _)| n.subject != "parent");
         e.resume.recovered();
     }
+    (answered && !e.state.limited).then(|| e.name.clone())
 }
 
 fn clock_or_unknown(t: Option<i64>) -> String {

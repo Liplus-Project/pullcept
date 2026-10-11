@@ -261,6 +261,10 @@ pub fn typed(name: &str, retry: bool) -> String {
 pub fn other_cause(name: &str) -> String {
     format!("{name} の親セッションは、再開の指示を打ってから応答がありません。利用上限以外の理由（起動時の選択画面、ログイン切れ、信頼の確認など）で止まっているようです。指示は打ち直しません。端末を見てください。")
 }
+/// A seat the room was told of with [`other_cause`] answered normally again.
+pub fn back_after_other_cause(name: &str) -> String {
+    format!("{name} の親セッションは再開しました（正常な応答を確認）。先の「端末を見てください」は解消しています。")
+}
 
 #[cfg(test)]
 mod tests {
@@ -502,6 +506,9 @@ mod tests {
         assert!(typed("seat", true).contains("まだ利用上限") && typed("seat", true).contains("もう一度"));
         let other = other_cause("seat");
         assert!(other.contains("利用上限以外の理由") && other.contains("打ち直しません") && other.contains("端末を見て"));
+        let back = back_after_other_cause("seat");
+        assert!(back.contains("再開しました") && back.contains("解消"));
+        assert!(!back.contains("（返信不要）") && !back.contains("保留"));
         for text in [known, unknown, child_stop, typed("seat", false), typed("seat", true), other.clone()] {
             assert!(!text.contains("保留"), "{text}");
         }

@@ -136,6 +136,25 @@ impl Resume {
     }
 }
 
+/// The seats the room was told are stopped on another cause ([`Action::OtherCause`]),
+/// kept per seat (topic, account) across its launches. A normal response of
+/// that seat's parent later answers the notice once, so "look at the terminal"
+/// is not left standing.
+#[derive(Debug, Default)]
+pub struct Stalled(std::collections::HashSet<(String, String)>);
+
+impl Stalled {
+    pub fn told(&mut self, topic: &str, account: &str) {
+        self.0.insert((topic.into(), account.into()));
+    }
+
+    /// The seat's parent answered normally. `true` once when the room was
+    /// told of another cause and is now to hear that the seat is back.
+    pub fn answered(&mut self, topic: &str, account: &str) -> bool {
+        self.0.remove(&(topic.to_string(), account.to_string()))
+    }
+}
+
 /// One line of [`LOG_FILE`]: `[claude-resume] <action> room=<topic id>
 /// account=<account id> at=<time> <detail>`. Actions: `typed`, `pending`,
 /// `refused`, `still-limited`, `recovered`, `other-cause`. No conversational
@@ -366,6 +385,25 @@ mod tests {
         assert!(PROMPT.contains("そのまま待機"));
         assert!(!PROMPT.contains("確認しました"));
         assert!(!PROMPT.contains('\n'));
+    }
+
+    #[test]
+    fn a_seat_told_of_another_cause_hears_once_that_it_is_back() {
+        let mut stalled = Stalled::default();
+        // A normal response with no other-cause notice before it says nothing.
+        assert!(!stalled.answered("t", "a"));
+        stalled.told("t", "a");
+        // Another seat's answer does not settle this one.
+        assert!(!stalled.answered("t", "b"));
+        assert!(!stalled.answered("other-topic", "a"));
+        // This seat's answer does, once.
+        assert!(stalled.answered("t", "a"));
+        assert!(!stalled.answered("t", "a"));
+        // Told again on a later stall, answered again.
+        stalled.told("t", "a");
+        stalled.told("t", "a");
+        assert!(stalled.answered("t", "a"));
+        assert!(!stalled.answered("t", "a"));
     }
 
     #[test]
