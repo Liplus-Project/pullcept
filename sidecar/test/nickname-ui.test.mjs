@@ -24,9 +24,9 @@ function header(line) {
  const article = context.roomLine({speaker:"Luna", full_name:"Codex Luna", account:"a", app:false, colour:"blue", to:[], ts:"t", stamp:"t", content:"hi", past:true, mine:false, ...line});
  return article.children.flatMap(e=>e.children).find(e=>e.className === "speaker")?.textContent;
 }
-test("conversation headers retain nickname and original-name snapshot after account changes", () => {
- assert.equal(header({}), "Luna (Codex Luna)");
- assert.equal(header({speaker:"Moon", full_name:"New Name", past:false}), "Moon (New Name)");
+test("conversation headers show the posting nickname in history and new messages", () => {
+ assert.equal(header({}), "Luna");
+ assert.equal(header({speaker:"Moon", full_name:"New Name", past:false}), "Moon");
  assert.equal(header({full_name:undefined}), "Luna");
  assert.equal(header({speaker:"Codex Luna", full_name:"Codex Luna"}), "Codex Luna");
  assert.equal(accountName({name:"Codex Luna", nickname:" Luna "}), "Luna");

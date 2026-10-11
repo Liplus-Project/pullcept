@@ -1,4 +1,4 @@
-import { accountName, speakerLabel } from "./account-name";
+import { accountName } from "./account-name";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -725,7 +725,7 @@ function roomLine(line: {
     article.appendChild(avatar(line.speaker, line.account, line.app));
     const speaker = document.createElement("span");
     speaker.className = "speaker";
-    speaker.textContent = speakerLabel(line.speaker, line.full_name);
+    speaker.textContent = line.speaker;
     head.appendChild(speaker);
   }
 
