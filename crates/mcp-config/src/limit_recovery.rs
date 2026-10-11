@@ -1,5 +1,5 @@
 //! The single input handed to a parent after its limit recovery is confirmed.
-//! Confirmation remains the caller's Codex/Claude gate (docs/3-accounts.md, #389).
+//! Confirmation remains the caller's Codex limit (docs/3-accounts.md, #389).
 use crate::codex::limit::{digest, Held};
 
 pub const CONTINUE: &str = "利用上限の解除を確認しました。中断していた作業を再開してください。中断していた作業がなければ、そのまま待機してください。";
@@ -15,7 +15,6 @@ pub fn input(held: &[Held]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        claude_limit::{Event, Gate},
         codex::limit::{Answer, Limit},
         prompt_hold::{Item, Queue},
     };
@@ -65,33 +64,20 @@ mod tests {
     }
 
     #[test]
-    fn claude_confirmed_response_keeps_one_continuation_through_permission_wait() {
-        let mut gate = Gate::new(100, false);
-        gate.state.apply(Event::Rejected {
-            at: 101,
-            id: "reject".into(),
-            reset: Some(200),
-        });
-        assert!(gate.is_limited());
-        let success = Event::Succeeded {
-            at: 201,
-            id: "success".into(),
-        };
-        assert!(gate.state.apply(success.clone()));
-        gate.keep_holding();
-        assert!(gate.is_limited());
+    fn confirmed_recovery_keeps_one_continuation_through_permission_wait() {
+        let mut limit = Limit::default();
+        limit.stop(100, Some(200));
+        assert!(limit.answer(201, Answer::Allowed));
         let mut queue = Queue::new();
         let item = Item {
             message_id: "recovery".into(),
-            text: input(&gate.release()),
+            text: input(&limit.release()),
             post: None,
-            resume: None,
             launch_bound: true,
             relaunch_text: None,
         };
         assert!(queue.pass(true, item).is_none());
-        assert!(!gate.is_limited());
-        assert!(!gate.state.apply(success));
+        assert!(!limit.is_limited());
         assert!(!queue.begin(true));
         assert!(queue.begin(false));
         assert_eq!(queue.next(false).unwrap().text, CONTINUE);
@@ -105,7 +91,6 @@ mod tests {
             message_id: "recovery".into(),
             text: input(&[]),
             post: None,
-            resume: None,
             launch_bound: true,
             relaunch_text: None,
         };
@@ -113,7 +98,6 @@ mod tests {
             message_id: "post".into(),
             text: "ordinary room post".into(),
             post: None,
-            resume: None,
             launch_bound: false,
             relaunch_text: None,
         };
@@ -144,7 +128,6 @@ mod tests {
             message_id: "recovery-watermark".into(),
             text: input(&held),
             post: None,
-            resume: None,
             launch_bound: true,
             relaunch_text: Some(fallback.clone()),
         };
