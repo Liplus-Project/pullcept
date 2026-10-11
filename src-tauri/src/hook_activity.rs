@@ -261,6 +261,9 @@ impl HookSeats {
                     None => return,
                 }
             };
+            if item.resume.as_ref().is_some_and(|launch| !app.state::<crate::claude_limit::ClaudeLimits>().resume_current(app, launch, &pty_id)) {
+                continue;
+            }
             let id = item.message_id.clone();
             let at = crate::room::now_iso();
             let delivered = prompt_hold::deliver(
@@ -387,6 +390,9 @@ pub fn permission_answer(
 /// (#346). True when it was typed or kept: either way it is on its way, and
 /// the caller hands it nowhere else. False when the terminal is not running.
 pub fn type_or_keep(app: &AppHandle, pty_id: &str, item: Item) -> bool {
+    if item.resume.as_ref().is_some_and(|launch| !app.state::<crate::claude_limit::ClaudeLimits>().resume_current(app, launch, pty_id)) {
+        return false;
+    }
     match app.state::<HookSeats>().pass(app, pty_id, item) {
         Some(item) => app.state::<crate::pty::PtyState>().type_in(pty_id, item.text),
         None => true,

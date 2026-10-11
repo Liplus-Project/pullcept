@@ -313,6 +313,7 @@ impl Limiter {
                     message_id: watermark.clone().unwrap_or_default(),
                     text: compose(&text),
                     post: None,
+                    resume: None,
                     launch_bound: true,
                     relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
                 },

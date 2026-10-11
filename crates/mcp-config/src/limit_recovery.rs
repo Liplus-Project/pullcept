@@ -85,6 +85,7 @@ mod tests {
             message_id: "recovery".into(),
             text: input(&gate.release()),
             post: None,
+            resume: None,
             launch_bound: true,
             relaunch_text: None,
         };
@@ -104,6 +105,7 @@ mod tests {
             message_id: "recovery".into(),
             text: input(&[]),
             post: None,
+            resume: None,
             launch_bound: true,
             relaunch_text: None,
         };
@@ -111,6 +113,7 @@ mod tests {
             message_id: "post".into(),
             text: "ordinary room post".into(),
             post: None,
+            resume: None,
             launch_bound: false,
             relaunch_text: None,
         };
@@ -141,6 +144,7 @@ mod tests {
             message_id: "recovery-watermark".into(),
             text: input(&held),
             post: None,
+            resume: None,
             launch_bound: true,
             relaunch_text: Some(fallback.clone()),
         };
