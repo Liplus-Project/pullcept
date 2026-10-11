@@ -2197,7 +2197,7 @@ button svg.icon {
    It is still not an addressee: that list comes from the room's roster, so an
    offline account cannot appear in it at all. */
 #participants .member.offline .pick {
-  opacity: 0.55;
+  opacity: 0.35;
 }
 
 #participants .empty {

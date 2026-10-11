@@ -69,17 +69,25 @@ const LOCAL_KEY = "pullcept.local-account";
  * colour picker would ask for two values and silently discard them.
  *
  * A short list rather than a continuous dial: what this has to buy is that any
- * two participants can be told apart, and eight positions spread round the
+ * two participants can be told apart, and sixteen positions spread round the
  * wheel buy it without asking anyone to judge degrees.
  */
 const HUES: { label: string; hue: number }[] = [
+  { label: "紅", hue: 7.5 },
   { label: "赤", hue: 25 },
+  { label: "朱", hue: 40 },
   { label: "橙", hue: 55 },
+  { label: "山吹", hue: 75 },
   { label: "黄", hue: 95 },
+  { label: "黄緑", hue: 120 },
   { label: "緑", hue: 145 },
+  { label: "ミント", hue: 170 },
   { label: "青緑", hue: 195 },
+  { label: "水色", hue: 222.5 },
   { label: "青", hue: 250 },
+  { label: "藍", hue: 275 },
   { label: "紫", hue: 300 },
+  { label: "藤", hue: 325 },
   { label: "桃", hue: 350 },
 ];
 
