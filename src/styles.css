@@ -50,8 +50,8 @@
   --composer-line: rgb(0 0 0 / 0.2);
   /* 送信's ground and its drawing (#258): the blue of the app's icon
      (src-tauri/app-icon.svg), in light and dark alike, so it is not
-     redefined below. Not `--accent`, which the participants' colours are
-     measured from (`--speaker-l` / `--speaker-c`). */
+     redefined below. Separate from `--accent` and the participants'
+     colour tokens (`--speaker-l` / `--speaker-c`). */
   --send-ground: #1e9be8;
   --send-ink: #ffffff;
   /* How far a participant's colour is carried into the circle and into one's
@@ -64,15 +64,12 @@
   --avatar-ink-toward: #000000;
   --mine-ground: 9%;
   --mine-edge: 35%;
-  /* One participant is told from another by hue alone: every participant
-     colour is the accent's own lightness and chroma with the hue turned. The
-     pair below is #185fa5 measured in oklch, not a value chosen next to it, so
-     a participant sits at the same weight on the page as the accent does.
-     This pair is what a participant may not choose — declaring a colour
-     declares a hue, and these two hold whatever hue lands on them readable in
-     this theme. */
-  --speaker-l: 0.481;
-  --speaker-c: 0.131;
+  /* Declared and derived participant colours share this theme's lightness
+     and chroma; only hue varies. Slightly lighter and less saturated than
+     the accent's measured pair (#395), for softer display colours.
+     A declaration chooses only hue. An undeclared own colour stays accent. */
+  --speaker-l: 0.54;
+  --speaker-c: 0.09;
   /* The shadow under a control that floats over the room's lines — 最新の発言へ
      (#243) — so it reads as above them and not as one of them. Deeper in dark,
      where a shadow on a dark ground barely shows. */
@@ -152,11 +149,10 @@
     --avatar-ink: 100%;
     --mine-ground: 14%;
     --mine-edge: 14%;
-    /* #7aa7d8 measured the same way. The dark accent is lighter and slightly
-       less saturated, so carrying the light pair over here would leave every
-       participant but oneself too dark to read against #17171a. */
-    --speaker-l: 0.715;
-    --speaker-c: 0.087;
+    /* The softer dark pair (#395) stays lighter than the light theme's
+       colours, for the dark ground. It is independent of the accent. */
+    --speaker-l: 0.76;
+    --speaker-c: 0.065;
     --float-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
   }
 }

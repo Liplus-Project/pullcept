@@ -63,9 +63,9 @@ const LOCAL_KEY = "pullcept.local-account";
 /**
  * The hues a participant can declare.
  *
- * Hue only. Lightness and chroma stay the accent's in whichever theme is
- * showing, so a declared colour sits at the same weight on the page as every
- * other participant's and stays readable in both themes (#43). Offering a full
+ * Hue only. Lightness and chroma use the theme's shared display tokens, so
+ * declared colours share one weight on the page. The softer pair (#395) is
+ * independent of accent; the hue-only contract stays (#43). Offering a full
  * colour picker would ask for two values and silently discard them.
  *
  * A short list rather than a continuous dial: what this has to buy is that any
@@ -616,8 +616,8 @@ function hueFor(name: string): number {
 /**
  * The colour a participant is drawn in.
  *
- * Lightness and chroma are the accent's, in whichever theme is showing; only
- * the hue turns. One ladder, in this order:
+ * Declared and derived colours use the theme's shared display lightness and
+ * chroma; only hue turns. Undeclared oneself keeps accent. One ladder:
  *
  *   declared > oneself's accent > derived from the name
  *
