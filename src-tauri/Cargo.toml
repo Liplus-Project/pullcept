@@ -41,4 +41,4 @@ futures-util = "0.3"
 sha2 = "0.10"
 
 [target."cfg(windows)".dependencies]
-winapi = { version = "0.3", features = ["jobapi2", "winnt", "handleapi"] }
+winapi = { version = "0.3", features = ["jobapi2", "winnt", "handleapi", "libloaderapi", "winuser"] }
