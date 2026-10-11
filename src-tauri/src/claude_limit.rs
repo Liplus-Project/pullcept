@@ -345,6 +345,7 @@ impl ClaudeLimits {
                     text,
                     post: None,
                     launch_bound: false,
+                    relaunch_text: None,
                 };
                 crate::hook_activity::type_or_keep(app, pty, item);
             }
@@ -535,22 +536,23 @@ fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         let text = mcp_config::limit_recovery::input(&held);
         let watermark = notice.or_else(|| held.last().map(|p| p.message_id.clone()));
         let at = terminal_input::at(&crate::room::now_iso());
-        let typed = terminal_input::compose(
+        let compose = |text: &str| terminal_input::compose(
             watermark.as_deref().unwrap_or_default(),
             crate::room::APP_SPEAKER,
             terminal_input::ROLE_APP,
             at.as_deref(),
             &[],
-            &text,
+            text,
         );
         // A seat waiting on a permission prompt keeps this input until the
         // wait ends (#346): its submit key would answer the prompt. Kept
         // counts as enqueued; it is this release, and is typed once.
         let item = mcp_config::prompt_hold::Item {
             message_id: watermark.clone().unwrap_or_default(),
-            text: typed,
+            text: compose(&text),
             post: None,
             launch_bound: true,
+            relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
         };
         if !crate::hook_activity::type_or_keep(app, pty, item) {
             // No input was enqueued: retain the mailbox for the next launch.

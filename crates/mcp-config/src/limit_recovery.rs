@@ -86,6 +86,7 @@ mod tests {
             text: input(&gate.release()),
             post: None,
             launch_bound: true,
+            relaunch_text: None,
         };
         assert!(queue.pass(true, item).is_none());
         assert!(!gate.is_limited());
@@ -104,12 +105,14 @@ mod tests {
             text: input(&[]),
             post: None,
             launch_bound: true,
+            relaunch_text: None,
         };
         let ordinary = Item {
             message_id: "post".into(),
             text: "ordinary room post".into(),
             post: None,
             launch_bound: false,
+            relaunch_text: None,
         };
         let mut queue = Queue::new();
         queue.pass(true, recovery.clone());
@@ -122,5 +125,39 @@ mod tests {
         assert!(next_launch.begin(false));
         assert_eq!(next_launch.next(false), Some(ordinary));
         assert!(next_launch.next(false).is_none());
+    }
+
+    #[test]
+    fn relaunch_keeps_the_existing_digest_and_watermark_without_continuation() {
+        let held = [Held {
+            message_id: "post-1".into(),
+            speaker: "Master".into(),
+            at: None,
+            content: "same issue".into(),
+            addressed: true,
+        }];
+        let fallback = digest(&held).unwrap();
+        let item = Item {
+            message_id: "recovery-watermark".into(),
+            text: input(&held),
+            post: None,
+            launch_bound: true,
+            relaunch_text: Some(fallback.clone()),
+        };
+        let mut queue = Queue::new();
+        queue.pass(true, item.clone());
+        let mut next_launch = queue.carry();
+        assert!(next_launch.begin(false));
+        let carried = next_launch.next(false).unwrap();
+        assert_eq!(carried.message_id, "recovery-watermark");
+        assert_eq!(carried.text, fallback);
+        assert!(!carried.text.contains(CONTINUE));
+        assert!(next_launch.next(false).is_none());
+        // A refusal of an item already taken by the old launch has the same fallback.
+        next_launch.put_first(item);
+        let mut third_launch = next_launch.carry();
+        assert!(third_launch.begin(false));
+        assert_eq!(third_launch.next(false), Some(carried));
+        assert!(third_launch.next(false).is_none());
     }
 }

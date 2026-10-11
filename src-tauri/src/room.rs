@@ -1150,6 +1150,7 @@ fn type_into_sessions(
                 text: text.clone(),
                 post: Some(post_for_hold()),
                 launch_bound: false,
+                relaunch_text: None,
             },
         );
     }

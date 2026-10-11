@@ -58,6 +58,18 @@ pub struct Item {
     pub post: Option<Held>,
     /// Recovery continuation belongs only to the launch that confirmed it.
     pub launch_bound: bool,
+    /// The existing held-post digest carried across relaunch, without continuation.
+    pub relaunch_text: Option<String>,
+}
+
+impl Item {
+    fn for_relaunch(mut self) -> Option<Self> {
+        if self.launch_bound {
+            self.text = self.relaunch_text.take()?;
+            self.launch_bound = false;
+        }
+        Some(self)
+    }
 }
 
 /// One seat's kept posts.
@@ -119,7 +131,7 @@ impl Queue {
     /// front of the queue the launch after it carried (`carry`). A hand-over of
     /// that launch, if one is under way, is not ended by it.
     pub fn put_first(&mut self, item: Item) {
-        if !item.launch_bound {
+        if let Some(item) = item.for_relaunch() {
             self.items.push_front(item);
         }
     }
@@ -129,7 +141,7 @@ impl Queue {
     /// hand-over that was under way for the old one ends.
     pub fn carry(self) -> Queue {
         Queue {
-            items: self.items.into_iter().filter(|item| !item.launch_bound).collect(),
+            items: self.items.into_iter().filter_map(Item::for_relaunch).collect(),
             handing: false,
         }
     }
@@ -204,6 +216,7 @@ mod tests {
             message_id: id.into(),
             text: format!("[pullcept] {id}"),
             launch_bound: false,
+            relaunch_text: None,
             post: Some(Held {
                 message_id: id.into(),
                 speaker: "Lin".into(),
@@ -220,6 +233,7 @@ mod tests {
             text: format!("[pullcept] digest {id}"),
             post: None,
             launch_bound: false,
+            relaunch_text: None,
         }
     }
 

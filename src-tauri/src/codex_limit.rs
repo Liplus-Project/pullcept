@@ -298,22 +298,23 @@ impl Limiter {
             // everything it was told of here (#47).
             let watermark = notice.or_else(|| held.last().map(|p| p.message_id.clone()));
             let at = terminal_input::at(&crate::room::now_iso());
-            let typed = terminal_input::compose(
+            let compose = |text: &str| terminal_input::compose(
                 watermark.as_deref().unwrap_or_default(),
                 crate::room::APP_SPEAKER,
                 terminal_input::ROLE_APP,
                 at.as_deref(),
                 &[],
-                &text,
+                text,
             );
             crate::hook_activity::type_or_keep(
                 &self.app,
                 &self.pty_id,
                 mcp_config::prompt_hold::Item {
-                    message_id: watermark.unwrap_or_default(),
-                    text: typed,
+                    message_id: watermark.clone().unwrap_or_default(),
+                    text: compose(&text),
                     post: None,
                     launch_bound: true,
+                    relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
                 },
             );
         });
