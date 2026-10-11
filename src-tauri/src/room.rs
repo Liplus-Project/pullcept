@@ -864,7 +864,7 @@ fn deliver(
     post: Post,
     last_seen: Option<&str>,
 ) -> Result<PostOutcome, String> {
-    deliver_except(app, room, room_id, origin, post, last_seen, None, None)
+    deliver_except(app, room, room_id, origin, post, last_seen, None)
 }
 
 /// [`deliver`], leaving one terminal untyped: the seat an app notice is about
@@ -879,7 +879,6 @@ fn deliver_except(
     mut post: Post,
     last_seen: Option<&str>,
     except_pty: Option<&str>,
-    resume: Option<&mcp_config::claude_resume::Launch>,
 ) -> Result<PostOutcome, String> {
     let message_id = post.message_id.clone();
 
@@ -1001,7 +1000,7 @@ fn deliver_except(
     // No session in the room is not an error — the room accepts what is said
     // in it; a later joiner simply missed it, and can pull it.
     let role = role_of(app, room, origin, post.account.as_deref());
-    type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty, resume);
+    type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty);
 
     let _ = app.emit(
         "room-message",
@@ -1071,15 +1070,16 @@ fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str
 /// **A Codex seat stopped on its usage limit is not typed into** (#294): the
 /// post is kept for it (`codex_limit::CodexLimits`), its id written to the
 /// seat's mailbox (#312), and handed over as one line when the recovery is
-/// confirmed. A Claude Code seat stopped on its parent's limit is held the
-/// same way (#342, `claude_limit::ClaudeLimits`).
+/// confirmed. A Claude Code seat stopped on its parent's limit is typed into
+/// as any seat is (#401): its resume is the prompt `claude_limit` types at the
+/// reset, and what was said meanwhile is in the topic's history.
 ///
 /// **A Claude Code seat waiting on a permission prompt is not typed into
 /// either** (#346): the post's submit key would answer the prompt. It is kept
 /// for the seat (`hook_activity::type_or_keep`) and typed once the wait has
-/// ended — or given to the limit hold then, if the seat is stopped on its
-/// limit by that time. The limit hold is asked first, so a post for a seat
-/// stopped on its limit stays that hold's, as before.
+/// ended — or given to the Codex limit hold then, if the seat is stopped on
+/// its limit by that time. The limit hold is asked first, so a post for a
+/// seat stopped on its limit stays that hold's, as before.
 fn type_into_sessions(
     app: &AppHandle,
     room_id: &str,
@@ -1088,7 +1088,6 @@ fn type_into_sessions(
     role: &str,
     post: &Post,
     except_pty: Option<&str>,
-    resume: Option<&mcp_config::claude_resume::Launch>,
 ) {
     let ptys = app.state::<PtyState>();
     let running = app.state::<RoomSeats>().seated(&ptys);
@@ -1135,22 +1134,12 @@ fn type_into_sessions(
                 .filter(|(origin, _, _)| target.origins.contains(origin))
                 .any(|(_, _, name)| post.to.contains(name)),
         };
-        let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
-        let resume_for_target = resume.filter(|launch| {
-            launch.topic == room_id && recipient == Some(launch.account.as_str())
-                && app.state::<crate::claude_limit::ClaudeLimits>()
-                    .resume_current(app, launch, &target.pty_id)
-        });
-        // A replacement of the owner must not keep an old-launch check as an ordinary post.
-        if resume.is_some_and(|launch| launch.topic == room_id && recipient == Some(launch.account.as_str()))
-            && resume_for_target.is_none() {
+        if limits.hold(&target.pty_id, post_for_hold) {
             continue;
         }
-        let held = resume_for_target.is_none() && (limits.hold(&target.pty_id, post_for_hold)
-            || app.state::<crate::claude_limit::ClaudeLimits>().hold(&target.pty_id, post_for_hold));
-        if held { continue; }
         // For addressed posts, the recipient's current call-name supersedes launch-time instructions.
         // A live rename does not need a new conversation or a synthetic user post.
+        let recipient = seats.iter().find(|(origin, _, _)| target.origins.contains(origin)).and_then(|(_, account, _)| account.as_deref());
         let text = config::read_config(app).ok().and_then(|config| config.accounts.into_iter().find(|account| Some(account.id.as_str()) == recipient)).map(|account| {
             terminal_input::with_recipient_identity(&text, &post.to, account.address_name(), &account.name)
         }).unwrap_or_else(|| text.clone());
@@ -1161,7 +1150,6 @@ fn type_into_sessions(
                 message_id: post.message_id.clone(),
                 text: text.clone(),
                 post: Some(post_for_hold()),
-                resume: resume_for_target.cloned(),
                 launch_bound: false,
                 relaunch_text: None,
             },
@@ -1170,11 +1158,10 @@ fn type_into_sessions(
 }
 
 /// Give `post` to the usage-limit hold of the seat on `pty_id`, if that seat
-/// is stopped on its limit (Codex #294, Claude #342). True when it was taken.
-/// The hand-over of posts kept for a permission wait asks this first (#346).
+/// is a Codex seat stopped on its limit (#294). True when it was taken. The
+/// hand-over of posts kept for a permission wait asks this first (#346).
 pub fn limit_hold(app: &AppHandle, pty_id: &str, post: &mcp_config::codex::limit::Held) -> bool {
     app.state::<crate::codex_limit::CodexLimits>().hold(pty_id, || post.clone())
-        || app.state::<crate::claude_limit::ClaudeLimits>().hold(pty_id, || post.clone())
 }
 
 /// Say one notice of the app's own into one room (#294), typed into every
@@ -1189,20 +1176,6 @@ pub fn post_app_notice(
     content: &str,
     except_pty: Option<&str>,
 ) -> Option<String> {
-    post_app_notice_routed(app, room, room_id, content, except_pty, None)
-}
-
-pub(crate) fn post_claude_resume_notice(app: &AppHandle, room: &RoomState, content: &str,
-    launch: mcp_config::claude_resume::Launch) -> Option<String> {
-    if !app.state::<crate::claude_limit::ClaudeLimits>().resume_current(app, &launch, &launch.pty) {
-        return None;
-    }
-    let topic = launch.topic.clone();
-    post_app_notice_routed(app, room, &topic, content, None, Some(launch))
-}
-
-fn post_app_notice_routed(app: &AppHandle, room: &RoomState, room_id: &str, content: &str,
-    except_pty: Option<&str>, resume: Option<mcp_config::claude_resume::Launch>) -> Option<String> {
     let outcome = deliver_except(
         app,
         room,
@@ -1216,13 +1189,12 @@ fn post_app_notice_routed(app: &AppHandle, room: &RoomState, room_id: &str, cont
             account: None,
             // Stamped by `deliver` off `app_origin`, as every post's is (#340).
             from_app: false,
-            content: if resume.is_some() { content.to_string() } else { room_floor::app_notice_content(content) },
+            content: room_floor::app_notice_content(content),
             to: Vec::new(),
             ts: now_iso(),
         },
         None,
         except_pty,
-        resume.as_ref(),
     );
     match outcome {
         Ok(outcome) if outcome.delivered => outcome.message_id,

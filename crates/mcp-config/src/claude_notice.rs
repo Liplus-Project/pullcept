@@ -1,4 +1,4 @@
-//! Notification only (#355). Neither a reset nor a child changes the parent gate.
+//! Notification only (#355). Neither a reset nor a child changes the parent state.
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -219,9 +219,9 @@ pub fn stopped(name: &str, stop: &Stop, clock: Option<&str>) -> String {
         .map(|c| format!("解除予定は {c} です。"))
         .unwrap_or_else(|| "解除予定は不明です。".into());
     let action = match (stop.subject == "parent", clock.is_some()) {
-        (true, true) => "親への部屋の投稿を保留します。解除予定時刻を過ぎたら Pullcept が端末へ再開の合図を一度打ち、正常親応答を確認した後にまとめを渡します。",
-        (true, false) => "親への部屋の投稿を保留します。解除予定が分からないため自動では再開を試しません。端末で手動再開し、正常親応答を確認した後にまとめを渡します。",
-        (false, _) => "子の停止だけでは親への部屋の投稿を保留しません。",
+        (true, true) => "解除予定時刻を過ぎたら、Pullcept が端末へ再開の指示を一度打ちます。",
+        (true, false) => "解除予定が分からないため、自動では再開を試しません。端末で手動再開できます。",
+        (false, _) => "子の停止だけでは親の停止・回復を判定しません。",
     };
     format!("{who} は利用上限で停止しました。{reset}{action}")
 }
@@ -236,7 +236,7 @@ pub fn reset_known(name: &str, stop: &Stop, clock: &str) -> String {
     let (who, action) = if stop.subject == "parent" {
         (
             format!("{name} の親セッション"),
-            "解除予定時刻を過ぎたら端末へ再開の合図を一度打ちます。",
+            "解除予定時刻を過ぎたら端末へ再開の指示を一度打ちます。",
         )
     } else {
         (
@@ -249,27 +249,17 @@ pub fn reset_known(name: &str, stop: &Stop, clock: &str) -> String {
     };
     format!("{who} の解除予定は {clock} と分かりました。回復は未確認です。{action}")
 }
-/// The parent resume check delivered as one room notice (#399).
-pub fn nudged(name: &str) -> String {
-    format!("{name} の親セッションの解除予定時刻を過ぎたため、利用上限の解除を確認します。{name} の親セッションだけが作業を始めず、部屋にも返信せず、端末で一言だけ応答してください。正常親応答を確認するまで投稿の保留を続けます。")
-}
-/// The confirmed recovery, whether the nudge or a person's input drew it.
-pub fn resumed(name: &str, held: usize) -> String {
-    let base = format!("{name} の親セッションは再開しました（正常親応答を確認）。");
-    if held == 0 {
-        base
+/// Said as the resume prompt is typed into the seat's terminal (#401).
+pub fn typed(name: &str, retry: bool) -> String {
+    if retry {
+        format!("{name} の親セッションはまだ利用上限で止まっていたため、端末へ再開の指示をもう一度打ちます。")
     } else {
-        format!("{base}預かっていた {held} 件の発言は、一通にまとめて {name} に渡します。")
+        format!("{name} の親セッションの解除予定時刻を過ぎたため、端末へ再開の指示を打ちます。")
     }
 }
-pub fn still_limited(name: &str, reset: Option<&str>, next: &str) -> String {
-    let reset = reset
-        .map(|c| format!("解除予定は {c} です。"))
-        .unwrap_or_else(|| "解除予定は不明です。".into());
-    format!("{name} の親セッションはまだ利用上限で止まっています。{reset}投稿の保留を続け、{next} にもう一度再開を試します。")
-}
-pub fn no_answer(name: &str) -> String {
-    format!("{name} の親セッションから再開の合図への応答を確認できませんでした。自動の再開はここで止め、投稿の保留を続けます。端末で手動再開できます。")
+/// The typed prompt drew neither a rejection nor a response (#401).
+pub fn other_cause(name: &str) -> String {
+    format!("{name} の親セッションは、再開の指示を打ってから応答がありません。利用上限以外の理由（起動時の選択画面、ログイン切れ、信頼の確認など）で止まっているようです。指示は打ち直しません。端末を見てください。")
 }
 
 #[cfg(test)]
@@ -401,22 +391,22 @@ mod tests {
                     ..
                 }
             ));
-            let mut gate = super::super::claude_limit::Gate::new(100000, false);
+            let mut state = super::super::claude_limit::State::new(100000, false);
             let mut notices = Notices::default();
             let hook=serde_json::to_vec(&json!({"session_id":"parent","hook_event_name":"StopFailure","error":"rate_limit"})).unwrap();
             assert!(child(&hook).is_none()); // Hook first creates no parent announcement.
-            assert!(gate.state.apply(event.clone()));
+            assert!(state.apply(event.clone()));
             let stop = Stop {
                 subject: "parent".into(),
                 reset: Some(110),
                 episode: None,
             };
             assert!(notices.stop(&stop));
-            assert!(!gate.state.apply(event));
+            assert!(!state.apply(event));
             assert!(!notices.stop(&stop));
             assert!(child(&hook).is_none()); // Watcher first also creates no second notice.
             assert_eq!(notices.due(110), vec!["parent"]);
-            assert!(gate.is_limited());
+            assert!(state.limited);
             assert!(notices.due(111).is_empty());
         }
     }
@@ -470,24 +460,28 @@ mod tests {
             Some("old"),
             &body
         ));
-        let gate = super::super::claude_limit::Gate::new(100000, false);
+        let state = super::super::claude_limit::State::new(100000, false);
         let mut notices = Notices::default();
         assert!(notices.stop(&stop));
         assert!(!notices.stop(&stop));
         notices.due(110);
-        assert!(!gate.is_limited());
+        assert!(!state.limited);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn parent_resume_notices_name_the_attempt_and_both_outcomes() {
+    fn parent_resume_notices_name_the_attempt_and_the_other_cause() {
         let parent = Stop {
             subject: "parent".into(),
             reset: Some(110),
             episode: None,
         };
         // A known reset announces the automatic attempt; an unknown one says
-        // it will not be tried and points at the manual path.
-        assert!(stopped("seat", &parent, Some("10月10日 01:20")).contains("再開の合図を一度打ち"));
+        // it will not be tried and points at the manual path. Neither speaks
+        // of holding posts (#401).
+        let known = stopped("seat", &parent, Some("10月10日 01:20"));
+        // The stop itself is still told to the whole room (#401 item 5).
+        assert!(known.starts_with("seat の親セッション は利用上限で停止しました。解除予定は 10月10日 01:20 です。"), "{known}");
+        assert!(known.contains("再開の指示を一度打ちます"));
         let unknown = stopped(
             "seat",
             &Stop {
@@ -497,41 +491,24 @@ mod tests {
             None,
         );
         assert!(unknown.contains("自動では再開を試しません"));
-        assert!(reset_known("seat", &parent, "10月10日 01:20").contains("再開の合図"));
+        assert!(reset_known("seat", &parent, "10月10日 01:20").contains("再開の指示"));
         let child = Stop {
             subject: "child:a".into(),
             ..parent
         };
-        assert!(!reset_known("seat", &child, "10月10日 01:20").contains("再開の合図"));
-        assert!(nudged("seat").contains("保留を続けます"));
-        assert_eq!(
-            resumed("seat", 0),
-            "seat の親セッションは再開しました（正常親応答を確認）。"
-        );
-        assert!(resumed("seat", 48).contains("預かっていた 48 件"));
-        let still = still_limited("seat", Some("10月10日 06:20"), "10月10日 06:20");
-        assert!(still.contains("まだ利用上限") && still.contains("もう一度再開を試します"));
-        assert!(still_limited("seat", None, "10月10日 01:21").contains("解除予定は不明"));
-        assert!(no_answer("seat").contains("自動の再開はここで止め"));
+        assert!(!reset_known("seat", &child, "10月10日 01:20").contains("再開の指示"));
+        let child_stop = stopped("seat", &child, None);
+        assert!(typed("seat", false).contains("再開の指示を打ちます"));
+        assert!(typed("seat", true).contains("まだ利用上限") && typed("seat", true).contains("もう一度"));
+        let other = other_cause("seat");
+        assert!(other.contains("利用上限以外の理由") && other.contains("打ち直しません") && other.contains("端末を見て"));
+        for text in [known, unknown, child_stop, typed("seat", false), typed("seat", true), other.clone()] {
+            assert!(!text.contains("保留"), "{text}");
+        }
         // The unified format (#356) is added once by the app's notice layer.
-        for text in [
-            nudged("seat"),
-            resumed("seat", 1),
-            still,
-            no_answer("seat"),
-            reached("seat", "child:a"),
-        ] {
+        for text in [typed("seat", false), other, reached("seat", "child:a")] {
             assert!(!text.contains("（返信不要）"));
         }
-    }
-    #[test]
-    fn resume_notice_requests_terminal_answer_without_claiming_delivery() {
-        let text = nudged("seat");
-        assert!(text.contains("解除予定時刻を過ぎた"));
-        assert!(text.contains("一言だけ応答"));
-        assert!(text.contains("作業を始めず、部屋にも返信せず"));
-        assert!(!text.contains("打ちました"));
-        assert!(!text.contains("（返信不要）"));
     }
 
 }

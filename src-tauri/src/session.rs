@@ -1767,7 +1767,7 @@ pub fn start_session(
             // Nothing is running, so nothing holds the seat. Without this the
             // account would stay locked out by a launch that never happened.
             if let Some(nonce) = &claude_nonce {
-                app.state::<crate::claude_limit::ClaudeLimits>().forget(&topic.topic_id, &account.id, nonce);
+                app.state::<crate::claude_limit::ClaudeLimits>().forget(&app, &topic.topic_id, &account.id, nonce);
             }
             seats.release(&topic.topic_id, &account.id);
             Err(err)

@@ -22,8 +22,9 @@
 //! to end. An item the terminal refused is put back at the front and the
 //! hand-over ends: nothing is dropped.
 //!
-//! **The usage-limit hold comes first** (#294, #342). A post for a seat stopped
+//! **The usage-limit hold comes first** (#294). A post for a Codex seat stopped
 //! on its usage limit is that hold's, as before, and never reaches this queue.
+//! A Claude Code seat has no such hold (#401): its posts come here like any.
 //! A kept post whose hand-over finds the seat stopped on its limit is given to
 //! that hold (`deliver`) rather than typed, and goes out with its digest at the
 //! recovery. The digest itself, typed at a recovery that finds the seat
@@ -58,17 +59,12 @@ pub struct Item {
     pub post: Option<Held>,
     /// Recovery continuation belongs only to the launch that confirmed it.
     pub launch_bound: bool,
-    /// Only the app resume-notice route supplies this authority.
-    pub resume: Option<crate::claude_resume::Launch>,
     /// The existing held-post digest carried across relaunch, without continuation.
     pub relaunch_text: Option<String>,
 }
 
 impl Item {
     fn for_relaunch(mut self) -> Option<Self> {
-        if self.resume.is_some() {
-            return None;
-        }
         if self.launch_bound {
             self.text = self.relaunch_text.take()?;
             self.launch_bound = false;
@@ -200,7 +196,7 @@ pub fn deliver(
     limit: impl FnOnce(&Held) -> bool,
     type_in: impl FnOnce(&str) -> bool,
 ) -> Result<Delivered, Item> {
-    if item.resume.is_none() && item.post.as_ref().is_some_and(limit) {
+    if item.post.as_ref().is_some_and(limit) {
         return Ok(Delivered::ToLimit);
     }
     if type_in(&item.text) {
@@ -213,14 +209,12 @@ pub fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude_limit::{event, Gate};
-    use serde_json::json;
+    use crate::codex::limit::Limit;
 
     fn post(id: &str) -> Item {
         Item {
             message_id: id.into(),
             text: format!("[pullcept] {id}"),
-            resume: None,
             launch_bound: false,
             relaunch_text: None,
             post: Some(Held {
@@ -238,7 +232,6 @@ mod tests {
             message_id: id.into(),
             text: format!("[pullcept] digest {id}"),
             post: None,
-            resume: None,
             launch_bound: false,
             relaunch_text: None,
         }
@@ -405,135 +398,84 @@ mod tests {
         assert_eq!(q.next(false).unwrap().message_id, "b");
     }
 
-    const PARENT: &str = "512c102e-fe28-4e8e-8f23-6cc4226ce2fc";
-
-    fn line(second: u32, rejected: bool) -> serde_json::Value {
-        let mut v = json!({"type":"assistant", "sessionId":PARENT, "session_id":PARENT,
-            "isSidechain":false, "timestamp":format!("2026-10-09T14:00:{second:02}.000Z"),
-            "uuid":format!("event-{second}"), "requestId":format!("request-{second}"),
-            "message":{"model":"claude-opus-5-5"}});
-        if rejected {
-            v["isApiErrorMessage"] = json!(true);
-            v["error"] = json!("rate_limit");
-            v["apiErrorStatus"] = json!(429);
-            v["message"]["model"] = json!("<synthetic>");
-        }
-        v
-    }
-
     #[test]
     fn a_wait_ending_on_a_limited_seat_gives_its_posts_to_the_limit_hold() {
-        // The permission wait and the usage limit at once (#342). The posts
-        // kept for the prompt are not typed while the seat is stopped on its
-        // limit; they go to the limit hold, and out once with its release.
-        let mut gate = Gate::new(0, false);
+        // The permission wait and a Codex seat's usage limit at once (#294).
+        // The posts kept for the prompt are not typed while the seat is
+        // stopped on its limit; they go to the limit hold, and out once with
+        // its release.
+        let mut limit = Limit::default();
         let mut q = Queue::new();
         // The prompt first: the seat is free of its limit, so the queue keeps.
-        assert!(gate.hold(|| post("a").post.unwrap()).is_none());
+        assert!(!limit.hold(|| post("a").post.unwrap()));
         for id in ["a", "b"] {
             assert_eq!(q.pass(true, post(id)), None);
         }
-        // The limit begins during the wait (another agent's call): the limit
-        // hold is asked before the queue, and takes what comes now.
-        gate.state.apply(event(PARENT, &line(1, true)).unwrap());
-        assert!(gate.hold(|| post("c").post.unwrap()).is_some());
+        // The limit begins during the wait: the limit hold is asked before
+        // the queue, and takes what comes now.
+        limit.stop(1, None);
+        assert!(limit.hold(|| post("c").post.unwrap()));
         // The wait ends while the seat is still stopped.
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| gate.hold(|| held.clone()).is_some(), &mut typed);
+        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
         assert!(typed.is_empty(), "nothing is typed into a limited seat");
         assert!(q.is_empty(), "the queue let them go to the limit hold");
         // The one order not kept: the limit's own first (module docs).
         assert_eq!(
-            gate.held().iter().map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
+            limit.held().iter().map(|p| p.message_id.as_str()).collect::<Vec<_>>(),
             ["c", "a", "b"]
         );
         // The recovery releases each one once.
-        gate.state.apply(event(PARENT, &line(2, false)).unwrap());
-        assert_eq!(gate.release().len(), 3);
-        assert!(gate.release().is_empty());
+        assert_eq!(limit.release().len(), 3);
+        assert!(limit.release().is_empty());
     }
 
     #[test]
     fn a_limit_on_a_seat_that_then_waits_keeps_its_hold() {
         // The limit first, then a prompt: every post is the limit hold's, the
         // queue keeps nothing, and the wait's end types nothing.
-        let mut gate = Gate::new(0, false);
-        let q = Queue::new();
-        gate.state.apply(event(PARENT, &line(1, true)).unwrap());
+        let mut limit = Limit::default();
+        let mut q = Queue::new();
+        limit.stop(1, None);
         for id in ["a", "b"] {
-            assert!(gate.hold(|| post(id).post.unwrap()).is_some());
+            assert!(limit.hold(|| post(id).post.unwrap()));
         }
         assert!(q.is_empty());
-        let mut q = q;
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| gate.hold(|| held.clone()).is_some(), &mut typed);
+        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
         assert!(typed.is_empty());
-        assert_eq!(gate.held().len(), 2);
+        assert_eq!(limit.held().len(), 2);
     }
 
     #[test]
     fn a_recovery_during_a_wait_keeps_its_digest_for_after_the_wait() {
-        let mut gate = Gate::new(0, false);
+        let mut limit = Limit::default();
         let mut q = Queue::new();
-        gate.state.apply(event(PARENT, &line(1, true)).unwrap());
-        gate.hold(|| post("early").post.unwrap());
+        limit.stop(1, None);
+        limit.hold(|| post("early").post.unwrap());
         // The recovery comes while a prompt is up: its digest is kept here
         // rather than typed onto the prompt.
-        gate.state.apply(event(PARENT, &line(2, false)).unwrap());
-        assert_eq!(gate.release().len(), 1);
+        assert_eq!(limit.release().len(), 1);
         assert_eq!(q.pass(true, digest("notice")), None);
         // A post after the recovery, still during the wait: the limit hold no
         // longer takes it, the queue does.
-        assert!(gate.hold(|| post("b").post.unwrap()).is_none());
+        assert!(!limit.hold(|| post("b").post.unwrap()));
         assert_eq!(q.pass(true, post("b")), None);
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| gate.hold(|| held.clone()).is_some(), &mut typed);
+        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
         assert_eq!(ids(&typed), ["digest notice", "b"]);
-        assert!(gate.held().is_empty());
+        assert!(limit.held().is_empty());
     }
 
     #[test]
     fn a_digest_is_typed_even_if_a_new_limit_began_during_the_wait() {
         // The digest is the limit hold's release already: it is not given back.
-        let mut gate = Gate::new(0, false);
+        let mut limit = Limit::default();
         let mut q = Queue::new();
         q.pass(true, digest("notice"));
-        gate.state.apply(event(PARENT, &line(3, true)).unwrap());
+        limit.stop(3, None);
         let mut typed = Vec::new();
-        hand_over(&mut q, || false, |held| gate.hold(|| held.clone()).is_some(), &mut typed);
+        hand_over(&mut q, || false, |held| limit.hold(|| held.clone()), &mut typed);
         assert_eq!(ids(&typed), ["digest notice"]);
     }
-    #[test]
-    fn resume_room_notice_keeps_its_body_and_id_and_bypasses_only_the_owner() {
-        let id = "resume-id";
-        let body = crate::claude_notice::nudged("seat");
-        let launch = crate::claude_resume::Launch { topic: "topic".into(), account: "owner".into(), nonce: "current".into(), pty: "pty".into() };
-        let mut notice = post(id);
-        notice.text = body.clone();
-        notice.post.as_mut().unwrap().content = body.clone();
-        notice.resume = Some(launch);
-        let mut queue = Queue::new();
-        assert!(queue.pass(true, notice.clone()).is_none());
-        assert!(!queue.begin(true));
-        assert!(queue.begin(false));
-        let held = queue.next(false).unwrap();
-        assert_eq!(held.message_id, id);
-        assert_eq!(held.post.as_ref().unwrap().message_id, id);
-        assert_eq!(held.post.as_ref().unwrap().content, body);
-        assert_eq!(deliver(held, |_| panic!("owner notice must bypass the limit hold"), |text| text == body), Ok(Delivered::Typed));
-        let mut other_seat = notice.clone();
-        other_seat.resume = None;
-        assert_eq!(deliver(other_seat, |_| true, |_| panic!("other limited seat must keep the same notice")), Ok(Delivered::ToLimit));
-        let mut forged = post(id);
-        forged.text = body.clone();
-        forged.post.as_mut().unwrap().content = body;
-        assert_eq!(deliver(forged, |_| true, |_| false), Ok(Delivered::ToLimit));
-        let mut stale_queue = Queue::new();
-        stale_queue.pass(true, notice.clone());
-        assert!(stale_queue.carry().is_empty());
-        let mut new_queue = Queue::new();
-        new_queue.put_first(notice);
-        assert!(new_queue.is_empty());
-    }
-
 }

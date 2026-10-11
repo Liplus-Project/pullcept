@@ -238,9 +238,11 @@ pub struct State {
     order: VecDeque<String>,
 }
 impl State {
-    pub fn new(floor: i64, persisted: bool) -> Self {
+    /// `limited` = the launch starts stopped: its parent's last event before
+    /// it is an unanswered rejection (#366, `last_rejection`).
+    pub fn new(floor: i64, limited: bool) -> Self {
         Self {
-            limited: persisted,
+            limited,
             floor,
             latest: floor - 1,
             rejected: None,
@@ -274,48 +276,6 @@ impl State {
     }
 }
 
-/// The room delivery gate. Kept held through the recovery notice and closed
-/// only while enqueuing its one digest, under the shared Claude table lock.
-pub struct Gate {
-    pub state: State,
-    held: Vec<super::codex::limit::Held>,
-    recovery_hold: bool,
-}
-impl Gate {
-    pub fn new(floor: i64, persisted: bool) -> Self {
-        Self {
-            state: State::new(floor, persisted),
-            held: Vec::new(),
-            recovery_hold: false,
-        }
-    }
-    pub fn hold(&mut self, post: impl FnOnce() -> super::codex::limit::Held) -> Option<String> {
-        if !self.is_limited() {
-            return None;
-        }
-        let post = post();
-        let id = post.message_id.clone();
-        if !self.held.iter().any(|p| p.message_id == id) {
-            self.held.push(post);
-        }
-        Some(id)
-    }
-    pub fn is_limited(&self) -> bool {
-        self.state.limited || self.recovery_hold
-    }
-    pub fn keep_holding(&mut self) {
-        self.recovery_hold = true;
-    }
-    pub fn held(&self) -> Vec<super::codex::limit::Held> {
-        self.held.clone()
-    }
-    pub fn release(&mut self) -> Vec<super::codex::limit::Held> {
-        self.state.limited = false;
-        self.recovery_hold = false;
-        std::mem::take(&mut self.held)
-    }
-}
-
 /// Incremental, bounded reader, retaining only an incomplete metadata line.
 /// Missing files leave the state alone. Replacement restarts reading, while
 /// launch timestamp and UUID guards prevent historical/duplicate recovery.
@@ -324,7 +284,6 @@ pub struct Tail {
     partial: Vec<u8>,
     skipping: bool,
     checkpoint: Option<u64>,
-    caught_up: bool,
     created: Option<std::time::SystemTime>,
     modified: Option<std::time::SystemTime>,
 }
@@ -334,16 +293,12 @@ impl Tail {
             offset,
             partial: Vec::new(),
             skipping: false,
-            caught_up: false,
             created: std::fs::metadata(path).ok().and_then(|m| m.created().ok()),
             modified: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
             checkpoint: std::fs::File::open(path)
                 .ok()
                 .and_then(|mut f| fingerprint(&mut f, offset).ok()),
         }
-    }
-    pub fn caught_up(&self) -> bool {
-        self.caught_up
     }
     pub fn feed(&mut self, parent: &str, bytes: &[u8]) -> Vec<Event> {
         let mut events = Vec::new();
@@ -370,7 +325,6 @@ impl Tail {
         events
     }
     pub fn read(&mut self, path: &Path, parent: &str) -> std::io::Result<Vec<Event>> {
-        self.caught_up = false;
         let mut f = std::fs::File::open(path)?;
         let meta = f.metadata()?;
         if meta.len() < self.offset
@@ -397,8 +351,6 @@ impl Tail {
         self.modified = meta.modified().ok();
         self.checkpoint = Some(fingerprint(&mut f, self.offset)?);
         let events = self.feed(parent, &bytes);
-        self.caught_up =
-            self.offset == f.metadata()?.len() && self.partial.is_empty() && !self.skipping;
         Ok(events)
     }
 }
@@ -419,7 +371,6 @@ fn fingerprint(f: &mut std::fs::File, offset: u64) -> std::io::Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::codex::limit::{Held, Mailboxes};
     use super::*;
     use serde_json::json;
     const PARENT: &str = "512c102e-fe28-4e8e-8f23-6cc4226ce2fc";
@@ -446,15 +397,6 @@ mod tests {
         let p = std::env::temp_dir().join(format!("pullcept-claude-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).unwrap();
         p
-    }
-    fn held(id: &str) -> Held {
-        Held {
-            message_id: id.into(),
-            speaker: "other".into(),
-            at: None,
-            content: id.into(),
-            addressed: true,
-        }
     }
 
     #[test]
@@ -617,7 +559,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn catch_up_does_not_release_success_before_rejection_in_next_chunk_or_partial() {
+    fn a_success_then_a_rejection_in_the_next_chunk_or_a_partial_line_is_read_in_order() {
         let root = dir();
         let path = root.join("catchup.jsonl");
         let mut all = bytes(&line(2, false));
@@ -626,20 +568,15 @@ mod tests {
         all.extend(bytes(&line(3, true)));
         std::fs::write(&path, all).unwrap();
         let mut tail = Tail::new(&path, 0);
-        let mut gate = Gate::new(0, true);
+        let mut state = State::new(0, true);
         for e in tail.read(&path, PARENT).unwrap() {
-            gate.state.apply(e);
+            state.apply(e);
         }
-        assert!(!gate.state.limited);
-        assert!(!tail.caught_up());
-        gate.keep_holding();
-        assert!(gate.hold(|| held("still-held")).is_some());
+        assert!(!state.limited);
         for e in tail.read(&path, PARENT).unwrap() {
-            gate.state.apply(e);
+            state.apply(e);
         }
-        assert!(tail.caught_up());
-        assert!(gate.is_limited());
-        assert!(gate.state.limited);
+        assert!(state.limited);
         let normal = bytes(&line(4, false));
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -648,18 +585,13 @@ mod tests {
             .unwrap();
         file.write_all(&normal[..normal.len() - 1]).unwrap();
         assert!(tail.read(&path, PARENT).unwrap().is_empty());
-        assert!(!tail.caught_up());
+        assert!(state.limited);
         file.write_all(b"\n").unwrap();
         drop(file);
         for e in tail.read(&path, PARENT).unwrap() {
-            gate.state.apply(e);
+            state.apply(e);
         }
-        assert!(tail.caught_up());
-        assert!(!gate.state.limited);
-        assert!(gate.is_limited());
-        assert_eq!(gate.release().len(), 1);
-        assert!(!gate.is_limited());
-        assert!(gate.release().is_empty());
+        assert!(!state.limited);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -753,85 +685,6 @@ mod tests {
         oversized.extend(bytes(&line(3, false)));
         assert!(tail.feed(PARENT, &oversized).is_empty());
         assert_eq!(tail.feed(PARENT, &bytes(&line(4, false))).len(), 1);
-    }
-    #[test]
-    fn only_stopped_seats_hold_ordered_deduplicated_posts_across_restart_then_release_once() {
-        let root = dir();
-        let path = root.join("claude-mailboxes.json");
-        let mut a = Gate::new(0, false);
-        let mut b = Gate::new(0, false);
-        a.state.apply(event(PARENT, &line(1, true)).unwrap());
-        let mut boxes = Mailboxes::read(&path);
-        boxes.open("a");
-        boxes.write(&path).unwrap();
-        for id in ["one", "two", "one"] {
-            let held = a.hold(|| held(id)).unwrap();
-            boxes.push("a", &held);
-        }
-        assert!(b
-            .hold(|| panic!("free seat must deliver normally"))
-            .is_none());
-        b.state.apply(event(PARENT, &line(1, true)).unwrap());
-        boxes.open("b");
-        let id = b.hold(|| held("three")).unwrap();
-        boxes.push("b", &id);
-        boxes.write(&path).unwrap();
-        assert_eq!(
-            a.held()
-                .iter()
-                .map(|p| p.message_id.as_str())
-                .collect::<Vec<_>>(),
-            ["one", "two"]
-        );
-        drop(a);
-        drop(b); // New app/launch retains only the file's ids.
-        let mut boxes = Mailboxes::read(&path);
-        let ids = boxes.get("a").unwrap();
-        assert_eq!(ids, ["one", "two"]);
-        assert_eq!(boxes.get("b").unwrap(), ["three"]);
-        let mut a = Gate::new(0, boxes.get("a").is_some());
-        assert!(a.state.limited);
-        a.state.apply(event(PARENT, &line(2, false)).unwrap());
-        assert!(!a.state.limited);
-        // Production holds through the notice, then releases under the lock.
-        a.state.limited = true;
-        a.hold(|| held("four"));
-        let released = a.release();
-        let record: Vec<_> = ["one", "two"]
-            .into_iter()
-            .map(|id| super::super::codex::limit::Recorded {
-                message_id: id.into(),
-                speaker: "other".into(),
-                account: None,
-                at: None,
-                content: id.into(),
-                to: vec!["seat-a".into()],
-            })
-            .collect();
-        let payload = super::super::codex::limit::mailbox(
-            &record,
-            &super::super::codex::limit::Seat {
-                name: "seat-a",
-                account_id: "a",
-            },
-            &ids,
-            released.clone(),
-        );
-        assert_eq!(
-            payload
-                .iter()
-                .map(|p| p.message_id.as_str())
-                .collect::<Vec<_>>(),
-            ["one", "two", "four"]
-        );
-        assert!(super::super::codex::limit::digest(&payload).is_some());
-        boxes.close("a");
-        boxes.write(&path).unwrap();
-        assert_eq!(released[0].message_id, "four");
-        assert!(a.release().is_empty());
-        assert!(Mailboxes::read(&path).get("a").is_none());
-        assert!(Mailboxes::read(&path).get("b").is_some());
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn restart_reads_the_parents_last_rejection_and_its_reset() {

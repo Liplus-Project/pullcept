@@ -1,12 +1,10 @@
-//! Claude parent rejection and response recovery (#342), with a resume
-//! attempt typed at the known reset (#357).
-//! Each launch is registered before spawn, then bound to its own PTY. The
-//! Claude mailbox is separate from Codex's, with one lock for every Claude seat.
+//! Claude parent rejection and response recovery (#342), with the resume
+//! prompt typed at the known reset (#357, simplified by #401).
+//! Each launch is registered before spawn, then bound to its own PTY. Room
+//! posts are not held for a limited Claude seat (#401): they reach its
+//! terminal as for any seat. One lock covers every Claude seat.
 use crate::room::{RoomState, SessionStats};
-use mcp_config::{
-    claude_limit as policy, claude_notice as notice, claude_resume as resume,
-    codex::limit::{self, Held, Mailboxes},
-};
+use mcp_config::{claude_limit as policy, claude_notice as notice, claude_resume as resume};
 use parking_lot::Mutex;
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager};
@@ -21,14 +19,12 @@ struct Entry {
     path: Option<PathBuf>,
     tail: Option<policy::Tail>,
     baseline: Option<(PathBuf, u64)>,
-    gate: policy::Gate,
+    state: policy::State,
     notices: mcp_config::claude_notice::Notices,
     pending_notices: Vec<(mcp_config::claude_notice::Stop, bool)>,
-    /// The parent's resume attempt at its reset (#357), and what it has to tell.
-    resume: mcp_config::claude_resume::Resume,
-    resume_notices: Vec<String>,
+    /// The resume prompt at the parent's reset (#357, #401).
+    resume: resume::Resume,
     floor: i64,
-    mailbox: Option<PathBuf>,
     stats: SessionStats,
 }
 impl Entry {
@@ -59,20 +55,8 @@ impl Entry {
             app.state::<crate::pty::PtyState>().is_running(pty),
         )
     }
-    fn persist(&self, account: &str, change: impl FnOnce(&mut Mailboxes, &str)) {
-        if let Some(path) = &self.mailbox {
-            let mut boxes = Mailboxes::read(path);
-            change(&mut boxes, account);
-            if boxes.write(path).is_err() {
-                eprintln!("[claude-limit] mailbox write failed");
-            }
-        }
-    }
-    fn stored(&self, account: &str) -> Vec<String> {
-        self.mailbox
-            .as_deref()
-            .and_then(|p| Mailboxes::read(p).get(account))
-            .unwrap_or_default()
+    fn limited(&self) -> Option<bool> {
+        (!self.parent.is_empty()).then_some(self.state.limited)
     }
 }
 #[derive(Default)]
@@ -94,21 +78,27 @@ impl ClaudeLimits {
         let nonce = uuid::Uuid::new_v4().to_string();
         let baseline = policy::existing(&root, parent)
             .and_then(|p| Some((p.clone(), std::fs::metadata(p).ok()?.len())));
-        let mailbox = crate::room_log::mailboxes_path(app, topic)
-            .ok()
-            .map(|p| p.with_extension("claude-mailboxes.json"));
-        // A seat restarted while still limited keeps its reset-time attempt
-        // (#366): re-read from this parent's own last rejection, never from
-        // another seat's. The rejection lies before the baseline, so the
-        // tail never applies it a second time. Read before the table lock.
+        // The pending resume of a seat that had no terminal at its reset
+        // (#366, #401): its parent's last event before this launch is an
+        // unanswered rejection. Re-read from this parent's own transcript,
+        // never from another seat's. The rejection lies before the baseline,
+        // so the tail never applies it a second time. Read before the lock.
         let last = baseline
             .as_ref()
             .and_then(|(p, end)| policy::last_rejection(p, parent, *end));
-        let mut seats = self.seats.lock();
-        let persisted = !parent.is_empty()
-            && mailbox
-                .as_deref()
-                .is_some_and(|p| Mailboxes::read(p).get(account).is_some());
+        let limited = !parent.is_empty() && last.is_some();
+        let resume = match last.filter(|_| limited) {
+            Some((_, reset)) => {
+                let restored = resume::Resume::restored(reset, unix_now());
+                let detail = match restored.next() {
+                    Some(next) => format!("restored=launch type_at={}", clock_or_unknown(Some(next))),
+                    None => "restored=launch reset=unknown not_typed".into(),
+                };
+                log(app, "pending", topic, account, &detail);
+                restored
+            }
+            None => Default::default(),
+        };
         let stats = SessionStats {
             topic_id: topic.into(),
             account_id: account.into(),
@@ -117,29 +107,17 @@ impl ClaudeLimits {
             five_hour: None,
             seven_day: None,
             context: None,
-            limited: if parent.is_empty() {
-                None
-            } else {
-                Some(persisted)
-            },
-            limited_source: if parent.is_empty() {
-                None
-            } else {
-                Some("claude-parent".into())
-            },
+            limited: (!parent.is_empty()).then_some(limited),
+            limited_source: (!parent.is_empty()).then(|| "claude-parent".into()),
             pty_id: None,
             five_hour_resets_at: None,
             seven_day_resets_at: None,
-        };
-        let resume = match last.filter(|_| persisted) {
-            Some((_, reset)) => resume::Resume::restored(reset, unix_now()),
-            None => Default::default(),
         };
         let (path, tail) = match &baseline {
             Some((p, offset)) => (Some(p.clone()), Some(policy::Tail::new(p, *offset))),
             None => (None, None),
         };
-        seats.insert(
+        self.seats.lock().insert(
             (topic.into(), account.into()),
             Entry {
                 nonce: nonce.clone(),
@@ -150,23 +128,27 @@ impl ClaudeLimits {
                 path,
                 tail,
                 baseline,
-                gate: policy::Gate::new(floor, persisted),
+                state: policy::State::new(floor, limited),
                 notices: Default::default(),
                 pending_notices: Vec::new(),
                 resume,
-                resume_notices: Vec::new(),
                 floor,
-                mailbox,
                 stats,
             },
         );
         nonce
     }
-    pub fn forget(&self, topic: &str, account: &str, nonce: &str) {
+    /// The launch is gone. A resume still to be typed stays pending in the
+    /// parent's transcript, for the seat's next launch (#401).
+    pub fn forget(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str) {
         let mut seats = self.seats.lock();
         let key = (topic.into(), account.into());
         if seats.get(&key).is_some_and(|e| e.nonce == nonce) {
-            seats.remove(&key);
+            if let Some(e) = seats.remove(&key) {
+                if e.state.limited && e.resume.pending() {
+                    log(app, "pending", topic, account, "terminal_left=launch typed_at_next_launch");
+                }
+            }
         }
     }
     /// Reporter arrival binds a parent transcript, never stop/recovery itself.
@@ -205,16 +187,8 @@ impl ClaudeLimits {
             }
         }
         if let Some(mut stats) = stats {
-            stats.limited = if e.parent.is_empty() {
-                None
-            } else {
-                Some(e.gate.is_limited())
-            };
-            stats.limited_source = if e.parent.is_empty() {
-                None
-            } else {
-                Some("claude-parent".into())
-            };
+            stats.limited = e.limited();
+            stats.limited_source = (!e.parent.is_empty()).then(|| "claude-parent".into());
             stats.pty_id = e.pty.clone();
             e.stats = stats;
         }
@@ -223,7 +197,7 @@ impl ClaudeLimits {
         }
         true
     }
-    /// Replayed by the watcher so a reloaded webview can adopt the same gate.
+    /// Replayed by the watcher so a reloaded webview can adopt the same state.
     fn emit_current(
         &self,
         app: &AppHandle,
@@ -239,11 +213,7 @@ impl ClaudeLimits {
             return false;
         };
         let mut stats = e.stats.clone();
-        stats.limited = if e.parent.is_empty() {
-            None
-        } else {
-            Some(e.gate.is_limited())
-        };
+        stats.limited = e.limited();
         stats.emit(app);
         true
     }
@@ -273,6 +243,9 @@ impl ClaudeLimits {
         }
         true
     }
+    /// The watcher's notices, and the resume prompt typed into this launch's
+    /// own terminal — the one occupying the seat, since the watcher runs only
+    /// while it does (#401). No other launch's identity is compared.
     fn flush_notices(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         let (messages, action, name) = {
             let mut seats = self.seats.lock();
@@ -297,7 +270,7 @@ impl ClaudeLimits {
                 })
                 .collect();
             let now = unix_now();
-            // The parent's reset is the resume attempt's to tell (#357).
+            // The parent's reset is the resume prompt's to act on (#357).
             messages.extend(
                 e.notices
                     .due(now)
@@ -305,10 +278,7 @@ impl ClaudeLimits {
                     .filter(|subject| subject != "parent")
                     .map(|subject| mcp_config::claude_notice::reached(&e.name, &subject)),
             );
-            messages.append(&mut e.resume_notices);
-            // Only a rejection-limited parent is nudged, never one kept held
-            // while its recovery is still being read.
-            let action = if e.gate.state.limited {
+            let action = if e.state.limited {
                 e.resume.tick(now)
             } else {
                 None
@@ -320,41 +290,50 @@ impl ClaudeLimits {
             crate::room::post_app_notice(app, &room, topic, &message, Some(pty));
         }
         match action {
-            Some(resume::Action::Nudge) => {
-                crate::room::post_claude_resume_notice(app, &room, &notice::nudged(&name),
-                    resume::Launch { topic: topic.into(), account: account.into(), nonce: nonce.into(), pty: pty.into() });
-            }
-            Some(resume::Action::NoAnswer) => {
-                crate::room::post_app_notice(
+            Some(resume::Action::Type { retry }) => {
+                // Said to the room first, its id the label's watermark; not
+                // typed into this seat, which gets the prompt instead.
+                let notice = crate::room::post_app_notice(
                     app,
                     &room,
                     topic,
-                    &notice::no_answer(&name),
+                    &notice::typed(&name, retry),
                     Some(pty),
                 );
+                let at = terminal_input::at(&crate::room::now_iso());
+                let text = terminal_input::compose(
+                    notice.as_deref().unwrap_or_default(),
+                    crate::room::APP_SPEAKER,
+                    terminal_input::ROLE_APP,
+                    at.as_deref(),
+                    &[],
+                    resume::PROMPT,
+                );
+                // A seat waiting on a permission prompt keeps it until the
+                // wait ends (#346). Bound to this launch: not carried to the
+                // next, which reads its own pending resume back (#366).
+                let item = mcp_config::prompt_hold::Item {
+                    message_id: notice.unwrap_or_default(),
+                    text,
+                    post: None,
+                    launch_bound: true,
+                    relaunch_text: None,
+                };
+                let typed = crate::hook_activity::type_or_keep(app, pty, item);
+                log(
+                    app,
+                    if typed { "typed" } else { "refused" },
+                    topic,
+                    account,
+                    &format!("retry={retry} pty={pty}"),
+                );
+            }
+            Some(resume::Action::OtherCause) => {
+                crate::room::post_app_notice(app, &room, topic, &notice::other_cause(&name), Some(pty));
+                log(app, "other-cause", topic, account, &format!("no_answer_within={}s", resume::ANSWER_WAIT));
             }
             None => {}
         }
-    }
-    pub fn resume_current(&self, app: &AppHandle, launch: &resume::Launch, pty: &str) -> bool {
-        self.seats.lock().get(&(launch.topic.clone(), launch.account.clone())).is_some_and(|e| {
-            launch.matches(&launch.topic, &launch.account, &e.nonce, pty)
-                && e.pty.as_deref() == Some(pty) && e.current(app, &launch.topic, &launch.account)
-        })
-    }
-    pub fn hold(&self, pty: &str, post: impl FnOnce() -> Held) -> bool {
-        let mut seats = self.seats.lock();
-        let Some(((_, account), e)) = seats
-            .iter_mut()
-            .find(|(_, e)| e.pty.as_deref() == Some(pty))
-        else {
-            return false;
-        };
-        let Some(id) = e.gate.hold(post) else {
-            return false;
-        };
-        e.persist(account, |boxes, account| boxes.push(account, &id));
-        true
     }
     pub fn bind(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
         let mut seats = self.seats.lock();
@@ -392,168 +371,84 @@ pub fn watch(app: AppHandle, topic: String, account: String, nonce: String, pty:
             }
             std::thread::sleep(Duration::from_secs(1));
         }
-        app.state::<ClaudeLimits>().forget(&topic, &account, &nonce);
+        app.state::<ClaudeLimits>().forget(&app, &topic, &account, &nonce);
     });
 }
 
+/// Read what the parent appended, and act on its stop or recovery.
 fn round(app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
     let limits = app.state::<ClaudeLimits>();
-    let key = (topic.into(), account.into());
-    // Finish the entire appended batch before deciding to release: a new
-    // rejection after a successful response in this same batch still holds.
-    let change = {
-        let mut seats = limits.seats.lock();
-        let Some(e) = seats.get_mut(&key).filter(|e| {
-            e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
-        }) else {
-            return;
-        };
-        let was = e.gate.is_limited();
-        if let (Some(path), Some(tail)) = (&e.path, &mut e.tail) {
-            // Revalidate canonical containment on every read (file replacement).
-            if policy::checked(&e.root, &e.parent, path).as_ref() != Some(path) {
-                return;
-            }
-            if let Ok(events) = tail.read(path, &e.parent) {
-                let now = unix_now();
-                for event in events {
-                    let rejected = match &event {
-                        policy::Event::Rejected { reset, at, .. } => Some((*reset, *at)),
-                        _ => None,
-                    };
-                    if e.gate.state.apply(event) {
-                        if let Some((reset, at)) = rejected {
-                            let stop = mcp_config::claude_notice::Stop {
-                                subject: "parent".into(),
-                                reset,
-                                episode: None,
-                            };
-                            // A rejection after the nudge answers it (#357).
-                            // Its notice names the reset, so no second one.
-                            if let Some(still) = e.resume.rejected(at, reset, now) {
-                                let clock = |t| terminal_input::clock(t);
-                                e.resume_notices.push(notice::still_limited(
-                                    &e.name,
-                                    still.reset.and_then(clock).as_deref(),
-                                    &clock(still.next).unwrap_or_else(|| "不明".into()),
-                                ));
-                                e.notices.stop(&stop);
-                            } else {
-                                e.remember_notice(stop);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !e.gate.state.limited && was && !e.tail.as_ref().is_some_and(|tail| tail.caught_up()) {
-            e.gate.keep_holding();
-            return;
-        }
-        if !was && !e.gate.state.limited && e.tail.as_ref().is_some_and(|t| t.caught_up()) {
-            e.notices.recovered_parent();
-            e.pending_notices.retain(|(n, _)| n.subject != "parent");
-            e.resume.recovered();
-        }
-        if was == e.gate.state.limited {
-            return;
-        }
-        let stopped = e.gate.state.limited;
-        if stopped {
-            e.persist(account, |boxes, id| boxes.open(id));
-        }
-        // Until the digest is enqueued, posts continue to be held.
-        if !stopped {
-            e.gate.keep_holding();
-        }
-        Some((stopped, e.name.clone()))
-    };
-    let Some((stopped, name)) = change else {
+    let mut seats = limits.seats.lock();
+    let Some(e) = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
+        e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
+    }) else {
         return;
     };
-    let room = app.state::<RoomState>();
-    if !stopped {
-        let record: Vec<_> = crate::room_log::topic_posts(app, topic)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|p| limit::Recorded {
-                at: terminal_input::at(&p.ts),
-                message_id: p.message_id,
-                speaker: p.speaker,
-                account: p.account,
-                content: p.content,
-                to: p.to,
-            })
-            .collect();
-        let seat = limit::Seat {
-            name: &name,
-            account_id: account,
-        };
-        let count = {
-            let seats = limits.seats.lock();
-            let Some(e) = seats.get(&key).filter(|e| e.nonce == nonce) else {
-                return;
-            };
-            limit::mailbox(&record, &seat, &e.stored(account), e.gate.held()).len()
-        };
-        let notice = crate::room::post_app_notice(
-            app,
-            &room,
-            topic,
-            &notice::resumed(&name, count),
-            Some(pty),
-        );
-        let mut seats = limits.seats.lock();
-        let Some(e) = seats.get_mut(&key).filter(|e| {
-            e.nonce == nonce && e.pty.as_deref() == Some(pty) && e.current(app, topic, account)
-        }) else {
+    let was = e.state.limited;
+    if let (Some(path), Some(tail)) = (&e.path, &mut e.tail) {
+        // Revalidate canonical containment on every read (file replacement).
+        if policy::checked(&e.root, &e.parent, path).as_ref() != Some(path) {
             return;
-        };
-        e.notices.recovered_parent();
-        e.pending_notices.retain(|(n, _)| n.subject != "parent");
-        e.resume.recovered();
-        let held = limit::mailbox(&record, &seat, &e.stored(account), e.gate.release());
-        e.persist(account, |boxes, id| boxes.close(id));
-        let text = mcp_config::limit_recovery::input(&held);
-        let watermark = notice.or_else(|| held.last().map(|p| p.message_id.clone()));
-        let at = terminal_input::at(&crate::room::now_iso());
-        let compose = |text: &str| terminal_input::compose(
-            watermark.as_deref().unwrap_or_default(),
-            crate::room::APP_SPEAKER,
-            terminal_input::ROLE_APP,
-            at.as_deref(),
-            &[],
-            text,
-        );
-        // A seat waiting on a permission prompt keeps this input until the
-        // wait ends (#346): its submit key would answer the prompt. Kept
-        // counts as enqueued; it is this release, and is typed once.
-        let item = mcp_config::prompt_hold::Item {
-            message_id: watermark.clone().unwrap_or_default(),
-            text: compose(&text),
-            post: None,
-            resume: None,
-            launch_bound: true,
-            relaunch_text: limit::digest(&held).map(|digest| compose(&digest)),
-        };
-        if !crate::hook_activity::type_or_keep(app, pty, item) {
-            // No input was enqueued: retain the mailbox for the next launch.
-            e.gate.keep_holding();
-            e.persist(account, |boxes, id| {
-                boxes.open(id);
-                for post in &held {
-                    boxes.push(id, &post.message_id);
+        }
+        if let Ok(events) = tail.read(path, &e.parent) {
+            let now = unix_now();
+            for event in events {
+                let rejected = match &event {
+                    policy::Event::Rejected { reset, at, .. } => Some((*reset, *at)),
+                    _ => None,
+                };
+                if !e.state.apply(event) {
+                    continue;
                 }
-            });
-            for post in held {
-                e.gate.hold(|| post);
+                let Some((reset, at)) = rejected else {
+                    continue;
+                };
+                let stop = mcp_config::claude_notice::Stop {
+                    subject: "parent".into(),
+                    reset,
+                    episode: None,
+                };
+                // A rejection after the typed prompt answers it (#357): still
+                // limited, typed again later. The room hears of it only when
+                // the next prompt is typed (#401).
+                if let Some(still) = e.resume.rejected(at, reset, now) {
+                    e.notices.stop(&stop);
+                    log(
+                        app,
+                        "still-limited",
+                        topic,
+                        account,
+                        &format!("next={}", clock_or_unknown(Some(still.next))),
+                    );
+                } else {
+                    e.remember_notice(stop);
+                }
             }
         }
     }
-    let mut seats = limits.seats.lock();
-    if let Some(e) = seats.get_mut(&key).filter(|e| e.nonce == nonce) {
-        e.stats.limited = Some(e.gate.is_limited());
-        e.stats.clone().emit(app);
+    if !e.state.limited {
+        if was {
+            let detail = if e.resume.pending() { "after=prompt" } else { "after=other_input" };
+            log(app, "recovered", topic, account, detail);
+        }
+        e.notices.recovered_parent();
+        e.pending_notices.retain(|(n, _)| n.subject != "parent");
+        e.resume.recovered();
+    }
+}
+
+fn clock_or_unknown(t: Option<i64>) -> String {
+    t.and_then(terminal_input::clock).unwrap_or_else(|| "unknown".into())
+}
+
+/// One line of `logs/claude-resume.log` (#401), written whole in one call. A
+/// failure to open or write is dropped, as the probe's is
+/// (`room_log::open_probe`): the log observes.
+fn log(app: &AppHandle, action: &str, topic: &str, account: &str, detail: &str) {
+    use std::io::Write;
+    if let Some(mut file) = crate::room_log::open_probe(app, resume::LOG_FILE) {
+        let line = resume::log_line(action, topic, account, &crate::room::now_iso(), detail);
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
