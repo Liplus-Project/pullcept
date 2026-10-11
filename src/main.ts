@@ -64,7 +64,7 @@ const LOCAL_KEY = "pullcept.local-account";
  * The hues a participant can declare.
  *
  * Hue only. Lightness and chroma use the theme's shared display tokens, so
- * declared colours share one weight on the page. The softer pair (#395) is
+ * declared colours share one weight on the page. The vivid pair (#397) is
  * independent of accent; the hue-only contract stays (#43). Offering a full
  * colour picker would ask for two values and silently discard them.
  *

@@ -65,11 +65,11 @@
   --mine-ground: 9%;
   --mine-edge: 35%;
   /* Declared and derived participant colours share this theme's lightness
-     and chroma; only hue varies. Slightly lighter and less saturated than
-     the accent's measured pair (#395), for softer display colours.
+     and chroma; only hue varies. Lightness stays at the #395 setting;
+     chroma is higher than the original measured pair (#397), for vivid colours.
      A declaration chooses only hue. An undeclared own colour stays accent. */
   --speaker-l: 0.54;
-  --speaker-c: 0.09;
+  --speaker-c: 0.16;
   /* The shadow under a control that floats over the room's lines — 最新の発言へ
      (#243) — so it reads as above them and not as one of them. Deeper in dark,
      where a shadow on a dark ground barely shows. */
@@ -149,10 +149,10 @@
     --avatar-ink: 100%;
     --mine-ground: 14%;
     --mine-edge: 14%;
-    /* The softer dark pair (#395) stays lighter than the light theme's
+    /* The vivid dark pair (#397) stays lighter than the light theme's
        colours, for the dark ground. It is independent of the accent. */
     --speaker-l: 0.76;
-    --speaker-c: 0.065;
+    --speaker-c: 0.11;
     --float-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
   }
 }
