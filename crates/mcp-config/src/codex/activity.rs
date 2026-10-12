@@ -6,7 +6,8 @@
 //! thread is doing, and this turns that into the one word the participant
 //! panel's row has room for, and the longer form the line under the room says.
 //! Nothing here reads the terminal, a command line, a tool's arguments or any
-//! message body: only an item's kind and, for a tool, its server and name.
+//! message body: only an item's kind and, for a tool, its server and name,
+//! and for a sub-agent call, which operation it is (#406).
 //!
 //! **Method names and shapes are the generated schema's** (`codex app-server
 //! generate-json-schema`, Codex CLI 0.160.1, with and without
@@ -16,7 +17,7 @@
 //! |---|---|
 //! | `thread/status/changed` | `threadId`, `status.type` (`active` / `idle` / `systemError` / `notLoaded`), `status.activeFlags` (`waitingOnApproval` / `waitingOnUserInput`) |
 //! | `turn/started`, `turn/completed` | `threadId` |
-//! | `item/started`, `item/completed` | `threadId`, `item.id`, `item.type`; `item.server` / `item.tool` (`mcpToolCall`), `item.namespace` / `item.tool` (`dynamicToolCall`) |
+//! | `item/started`, `item/completed` | `threadId`, `item.id`, `item.type`; `item.server` / `item.tool` (`mcpToolCall`), `item.namespace` / `item.tool` (`dynamicToolCall`), `item.tool` (`collabAgentToolCall`, Codex CLI 0.162.1, #406) |
 //! | `thread/closed` | `threadId` |
 //!
 //! The start and resume answers carry `thread.status` in the same shape
@@ -89,12 +90,17 @@ enum Kind {
     Compaction,
     ImageGeneration,
     ImageView,
+    /// A sub-agent call of the seat's own thread (`collabAgentToolCall`,
+    /// #406), by its operation (`spawnAgent`, `wait`, ...) when named.
+    Delegate(Option<String>),
 }
 
 impl Kind {
-    /// The kinds shown. Every other item — a message, reasoning, a plan, a
-    /// sub-agent — is not a state this says: the first three are what 考え中…
-    /// and 出力中 already cover, and a sub-agent's activity was not measured (#324).
+    /// The kinds shown. Every other item — a message, reasoning, a plan — is
+    /// not a state this says: those are what 考え中… and 出力中 already cover.
+    /// A sub-agent is said by the parent's own call to it (`collabAgentToolCall`,
+    /// #406); what the sub-agent's thread does is not this seat's and is dropped
+    /// with every other thread's notifications.
     fn of(item: &Value) -> Option<Kind> {
         let name = |first: &str| {
             let tool = text(&item["tool"])?;
@@ -112,6 +118,7 @@ impl Kind {
             "contextCompaction" => Kind::Compaction,
             "imageGeneration" => Kind::ImageGeneration,
             "imageView" => Kind::ImageView,
+            "collabAgentToolCall" => Kind::Delegate(text(&item["tool"])),
             _ => return None,
         })
     }
@@ -127,6 +134,8 @@ impl Kind {
             Kind::Compaction => "要約中",
             Kind::ImageGeneration => "画像生成",
             Kind::ImageView => "画像参照",
+            // The Claude seat's word for the same state (#406).
+            Kind::Delegate(_) => crate::hook_activity::SUBAGENT_WORD,
         }
     }
 
@@ -141,6 +150,8 @@ impl Kind {
             Kind::Compaction => "要約中".into(),
             Kind::ImageGeneration => "画像生成中".into(),
             Kind::ImageView => "画像参照中".into(),
+            Kind::Delegate(Some(tool)) => format!("サブエージェント実行中（{tool}）"),
+            Kind::Delegate(None) => "サブエージェント実行中".into(),
         }
     }
 }
@@ -539,6 +550,42 @@ mod tests {
         a.feed(&started("m1", json!({"type": "agentMessage", "text": "hi"})));
         a.feed(&started("r1", json!({"type": "reasoning"})));
         a.feed(&started("s1", json!({"type": "subAgentActivity", "agentPath": "x", "agentThreadId": "y", "kind": "started"})));
+        assert_eq!(a.display(), None);
+    }
+
+    fn collab(tool: &str) -> Value {
+        json!({"type": "collabAgentToolCall", "tool": tool, "senderThreadId": T, "receiverThreadIds": ["sub-1"], "prompt": "secret task", "status": "inProgress"})
+    }
+
+    #[test]
+    fn a_sub_agent_call_says_delegating_until_it_completes() {
+        let mut a = seat();
+        a.feed(&started("g1", collab("spawnAgent")));
+        let d = a.display().unwrap();
+        assert_eq!((d.word, d.line.as_str(), d.waiting), ("委任中", "サブエージェント実行中（spawnAgent）", false));
+        assert!(!d.line.contains("secret"));
+        a.feed(&completed("g1"));
+        assert_eq!(a.display(), None);
+        a.feed(&started("g2", json!({"type": "collabAgentToolCall", "status": "inProgress"})));
+        assert_eq!(words(&a), Some(("委任中", "サブエージェント実行中".into())));
+    }
+
+    #[test]
+    fn approval_outranks_a_sub_agent_call() {
+        let mut a = seat();
+        a.feed(&started("g1", collab("wait")));
+        a.feed(&status(json!({"type": "active", "activeFlags": ["waitingOnApproval"]})));
+        assert_eq!(words(&a), Some(("許可待ち", "許可待ち".into())));
+        a.feed(&status(json!({"type": "active", "activeFlags": []})));
+        assert_eq!(words(&a), Some(("委任中", "サブエージェント実行中（wait）".into())));
+    }
+
+    #[test]
+    fn a_child_threads_sub_agent_call_is_not_this_seats() {
+        let mut a = seat();
+        let mut item = collab("spawnAgent");
+        item["id"] = json!("g9");
+        a.feed(&note("item/started", json!({"threadId": "sub-1", "turnId": "x", "startedAtMs": 1, "item": item})));
         assert_eq!(a.display(), None);
     }
 
