@@ -75,11 +75,18 @@ impl Queue {
     /// seat is not `waiting`, and nothing is kept or being handed over. `None`
     /// is the post kept.
     pub fn pass(&mut self, waiting: bool, item: Item) -> Option<Item> {
-        if waiting || self.handing || !self.items.is_empty() {
+        if self.would_keep(waiting) {
             self.items.push_back(item);
             return None;
         }
         Some(item)
+    }
+
+    /// Whether a post handed over now would be kept rather than typed: the
+    /// seat is `waiting`, or something is kept or being handed over. The status
+    /// line a busy seat is typed (#412) is dropped, not kept, when this holds.
+    pub fn would_keep(&self, waiting: bool) -> bool {
+        waiting || self.handing || !self.items.is_empty()
     }
 
     /// Whether a hand-over begins now: something is kept, the seat is not
@@ -288,6 +295,22 @@ mod tests {
         assert_eq!(q.next(false).unwrap().message_id, "b");
         assert_eq!(q.next(false).unwrap().message_id, "c");
         assert_eq!(q.next(false), None);
+    }
+
+    #[test]
+    fn would_keep_says_what_pass_would_do() {
+        let mut q = Queue::new();
+        assert!(!q.would_keep(false));
+        assert!(q.would_keep(true));
+        q.pass(true, post("a"));
+        // Not waiting any more, but something is kept.
+        assert!(q.would_keep(false));
+        assert!(q.begin(false));
+        q.next(false);
+        // Mid hand-over, nothing left in the queue.
+        assert!(q.would_keep(false));
+        assert_eq!(q.next(false), None);
+        assert!(!q.would_keep(false));
     }
 
     #[test]
