@@ -10,7 +10,6 @@ mod post_link;
 mod pty;
 mod room;
 mod room_log;
-mod seat_status;
 mod session;
 mod webhook;
 #[cfg(windows)]
@@ -45,8 +44,6 @@ pub fn run() {
         .manage(codex_app_server::CodexServers::new())
         // What each Claude Code seat is doing, as its hooks tell it (#331).
         .manage(hook_activity::HookSeats::new())
-        // What each busy seat was last typed about the other seats (#412).
-        .manage(seat_status::SeatStatus::default())
         .setup(|app| {
             #[cfg(windows)]
             for window in app.webview_windows().values() {
@@ -123,7 +120,6 @@ pub fn run() {
             character_editor::character_file_wearers,
             hook_activity::permission_answer,
             hook_activity::permission_requests,
-            seat_status::seat_words,
             post_link::open_post_url,
             post_link::open_post_path,
         ])

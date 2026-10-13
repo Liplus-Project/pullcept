@@ -55,9 +55,6 @@ type InputMap = Arc<Mutex<HashMap<String, InputBox>>>;
 enum Typing {
     /// Type this post into the session on this id, or hold it.
     Post(String, String),
-    /// Type this status line (#412) into the session on this id now, or drop
-    /// it: one held until the box empties would be stale by then.
-    Status(String, String),
     /// The session on this id may have an empty input box again: type what
     /// was held for it.
     Release(String),
@@ -101,12 +98,6 @@ impl PtyState {
                         }
                         type_one(&typist, &boxes, &id, &text);
                     }
-                    Typing::Status(id, text) => {
-                        if occupied(&boxes, &id) {
-                            continue;
-                        }
-                        type_one(&typist, &boxes, &id, &text);
-                    }
                     Typing::Release(id) => {
                         while let Some(text) = next_held(&boxes, &id) {
                             type_one(&typist, &boxes, &id, &text);
@@ -145,19 +136,6 @@ impl PtyState {
             return false;
         }
         self.typing.send(Typing::Post(id.to_string(), text)).is_ok()
-    }
-
-    /// Type the status line `text` (#412) into the session on `id`, through
-    /// the same queue as the posts, or drop it when it cannot go now: the
-    /// person has something unsent in that input box, or posts are held for
-    /// it. Never held: by the time the box is free the line would be stale.
-    /// Answers whether it was queued, as `type_in` does; the drop is decided
-    /// on the queue's thread, at the moment of typing.
-    pub fn type_status(&self, id: &str, text: String) -> bool {
-        if !self.is_running(id) {
-            return false;
-        }
-        self.typing.send(Typing::Status(id.to_string(), text)).is_ok()
     }
 
     /// Read one write the terminal pane made to the session on `id`, and
@@ -265,16 +243,6 @@ fn hold(boxes: &InputMap, id: &str, text: String) -> bool {
         }
         _ => false,
     }
-}
-
-/// Whether the session on `id` has something unsent in its input box or
-/// posts held for it: what `hold` would hold a post for. A status line is
-/// dropped then (#412).
-fn occupied(boxes: &InputMap, id: &str) -> bool {
-    boxes
-        .lock()
-        .get(id)
-        .is_some_and(|input| !input.unsent.is_empty() || !input.held.is_empty())
 }
 
 /// The oldest post held for the session on `id`, when its input box is empty
