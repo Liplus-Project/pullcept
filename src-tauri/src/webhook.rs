@@ -29,6 +29,11 @@
 //! read, how the answer is read, and the order notices keep while one is read
 //! are `webhook_bridge::Notices`.
 //!
+//! **Every notice carries one line naming its event id for `mark_processed`
+//! (#410).** The session that reads a notice of its own operation is to mark it
+//! there and then; the app itself still marks nothing (#180). Where the line
+//! goes is `webhook_bridge::prompted`, applied by `Notices`.
+//!
 //! **What sessions already receive is unchanged.** A session that loads its own
 //! `github-webhook-mcp` channel keeps it; this is a second path beside it, not a
 //! replacement (#169 constraints).

@@ -255,6 +255,37 @@ pub fn signed(content: &str, name: &str) -> String {
     format!("{SIGNED_PREFIX}{name}\n{content}")
 }
 
+// ── Marking it processed (#410) ──────────────────────────────────────────────
+//
+// The room's notice is the mail notification; the bridge's queue is the inbox.
+// A session that reads a notice of its own operation is to open the inbox and
+// mark it, there and then — a reminder placed anywhere but on the notice itself
+// was read past (2026-10-13/14, pending grew to 377). The app still marks
+// nothing (#180): the line only names the id the session hands `mark_processed`.
+
+/// The line every relayed notice carries, before the event id.
+pub const MARK_PROMPT: &str = "If this is your own operation, mark it processed now: event_id=";
+
+/// A notice with the mark-processed line for `event_id`.
+///
+/// The line goes just before the URL when the notice ends with one — the
+/// bridge's summary does — and at the end otherwise.
+pub fn prompted(content: &str, event_id: &str) -> String {
+    let line = format!("{MARK_PROMPT}{event_id}");
+    let body = content.trim_end_matches(['\r', '\n']);
+    match body.rsplit_once('\n') {
+        Some((head, last)) if is_url(last) => format!("{head}\n{line}\n{last}"),
+        None if is_url(body) => format!("{line}\n{body}"),
+        _ => format!("{body}\n{line}"),
+    }
+}
+
+fn is_url(line: &str) -> bool {
+    let line = line.trim();
+    (line.starts_with("https://") || line.starts_with("http://"))
+        && !line.contains(char::is_whitespace)
+}
+
 /// One event waiting to be posted.
 struct Waiting {
     event: Event,
@@ -360,13 +391,17 @@ impl Notices {
         self.waiting.drain(..).map(Self::notice).collect()
     }
 
+    /// The notice as posted: signed when a name was read, and carrying the
+    /// mark-processed line either way.
     fn notice(one: Waiting) -> Event {
-        match one.name {
-            Some(name) => Event {
-                content: signed(&one.event.content, &name),
-                event_id: one.event.event_id,
-            },
-            None => one.event,
+        let content = prompted(&one.event.content, &one.event.event_id);
+        let content = match one.name {
+            Some(name) => signed(&content, &name),
+            None => content,
+        };
+        Event {
+            content,
+            event_id: one.event.event_id,
         }
     }
 }
@@ -508,7 +543,10 @@ mod tests {
         // GitHub keeps the trailing newline, and Windows writes \r\n.
         assert_eq!(signature("本文\r\n— Lay\r\n\r\n"), Some("Lay".to_string()));
         // A name with a space in it is still one name.
-        assert_eq!(signature("x\n— Claude Lin  "), Some("Claude Lin".to_string()));
+        assert_eq!(
+            signature("x\n— Claude Lin  "),
+            Some("Claude Lin".to_string())
+        );
         // A body that is only the signature is signed.
         assert_eq!(signature("— Lin"), Some("Lin".to_string()));
     }
@@ -590,7 +628,11 @@ mod tests {
         ] {
             let mut payload = json!({ "action": action });
             payload[key] = json!({ "body": body });
-            assert_eq!(signer(&stored(kind, payload)), Some("Lin".to_string()), "{kind}");
+            assert_eq!(
+                signer(&stored(kind, payload)),
+                Some("Lin".to_string()),
+                "{kind}"
+            );
         }
         // An issue_comment carries the issue too, whose body is not this one.
         let both = json!({
@@ -642,6 +684,11 @@ mod tests {
         }
     }
 
+    /// The event as the room is handed it, unsigned.
+    fn posted(id: &str, content: &str) -> Event {
+        event(id, &prompted(content, id))
+    }
+
     fn ids(events: &[Event]) -> Vec<&str> {
         events.iter().map(|e| e.event_id.as_str()).collect()
     }
@@ -653,7 +700,7 @@ mod tests {
         assert_eq!(notices.push(event("p", "[push] repo"), true, now), None);
         assert_eq!(notices.next_deadline(), None);
         let due = notices.due(now);
-        assert_eq!(due, vec![event("p", "[push] repo")]);
+        assert_eq!(due, vec![posted("p", "[push] repo")]);
     }
 
     #[test]
@@ -662,7 +709,10 @@ mod tests {
         let now = Instant::now();
         let content = summary("issue_comment", "created");
         let (id, line) = notices.push(event("c", &content), true, now).expect("read");
-        assert_ne!(id, INITIALIZE_ID, "a request id must not be taken for initialize's answer");
+        assert_ne!(
+            id, INITIALIZE_ID,
+            "a request id must not be taken for initialize's answer"
+        );
         assert_eq!(parsed(&line)["params"]["arguments"]["event_id"], "c");
         assert!(notices.due(now).is_empty(), "waits for its body");
 
@@ -673,7 +723,10 @@ mod tests {
         notices.answer(id, None, Some(&answer));
         let due = notices.due(now);
         assert_eq!(due.len(), 1);
-        assert_eq!(due[0].content, format!("署名: Lay\n{content}"));
+        assert_eq!(
+            due[0].content,
+            format!("署名: Lay\n{}", prompted(&content, "c"))
+        );
     }
 
     #[test]
@@ -685,28 +738,34 @@ mod tests {
         let mut notices = Notices::new();
         let (id, _) = notices.push(event("a", &content), true, now).expect("read");
         notices.answer(id, Some("Failed to reach worker"), None);
-        assert_eq!(notices.due(now), vec![event("a", &content)]);
+        assert_eq!(notices.due(now), vec![posted("a", &content)]);
 
         // Unsigned body.
         let (id, _) = notices.push(event("b", &content), true, now).expect("read");
-        let answer = stored("issues", json!({ "action": "opened", "issue": { "body": "x" } }));
+        let answer = stored(
+            "issues",
+            json!({ "action": "opened", "issue": { "body": "x" } }),
+        );
         notices.answer(id, None, Some(&answer));
-        assert_eq!(notices.due(now), vec![event("b", &content)]);
+        assert_eq!(notices.due(now), vec![posted("b", &content)]);
 
         // No answer at all: out at the deadline, unsigned.
         notices.push(event("c", &content), true, now).expect("read");
         assert_eq!(notices.next_deadline(), Some(now + SIGNATURE_WAIT));
         assert!(notices.due(now + SIGNATURE_WAIT / 2).is_empty());
-        assert_eq!(notices.due(now + SIGNATURE_WAIT), vec![event("c", &content)]);
+        assert_eq!(
+            notices.due(now + SIGNATURE_WAIT),
+            vec![posted("c", &content)]
+        );
 
         // Not sent.
         let (id, _) = notices.push(event("d", &content), true, now).expect("read");
         notices.abandon(id);
-        assert_eq!(notices.due(now), vec![event("d", &content)]);
+        assert_eq!(notices.due(now), vec![posted("d", &content)]);
 
         // Before the session is open, nothing is asked.
         assert_eq!(notices.push(event("e", &content), false, now), None);
-        assert_eq!(notices.due(now), vec![event("e", &content)]);
+        assert_eq!(notices.due(now), vec![posted("e", &content)]);
     }
 
     #[test]
@@ -747,5 +806,91 @@ mod tests {
         notices.push(event("2", "[push] repo"), true, now);
         assert_eq!(ids(&notices.drain()), vec!["1", "2"]);
         assert!(notices.due(now + SIGNATURE_WAIT).is_empty());
+    }
+
+    // ── the mark-processed line (#410) ────────────────────────────────────
+
+    fn prompts(content: &str) -> Vec<&str> {
+        content
+            .lines()
+            .filter(|l| l.starts_with(MARK_PROMPT))
+            .collect()
+    }
+
+    #[test]
+    fn the_mark_line_goes_just_before_the_url() {
+        let content = summary("issues", "closed");
+        let out = prompted(&content, "delivery-9");
+        assert_eq!(
+            out,
+            "[issues] Liplus-Project/pullcept\naction: closed\n#1 title\nby liplus-lin-lay\n\
+             If this is your own operation, mark it processed now: event_id=delivery-9\n\
+             https://github.com/x"
+        );
+    }
+
+    #[test]
+    fn without_a_url_the_mark_line_goes_at_the_end() {
+        assert_eq!(
+            prompted("[push] repo\nby someone\n", "p"),
+            "[push] repo\nby someone\nIf this is your own operation, mark it processed now: event_id=p"
+        );
+        assert_eq!(
+            prompted("[push] repo", "p"),
+            "[push] repo\nIf this is your own operation, mark it processed now: event_id=p"
+        );
+        // A last line that only mentions a URL is not the URL line.
+        assert!(prompted("see https://x y", "p").ends_with("event_id=p"));
+    }
+
+    #[test]
+    fn every_notice_carries_the_mark_line_once_with_its_own_id() {
+        let now = Instant::now();
+        let comment = summary("issue_comment", "created");
+        let mut notices = Notices::new();
+        // Signed.
+        let (id, _) = notices.push(event("s", &comment), true, now).expect("read");
+        let answer = stored(
+            "issue_comment",
+            json!({ "action": "created", "comment": { "body": "x\n— Lin" } }),
+        );
+        notices.answer(id, None, Some(&answer));
+        // Unsigned, with no read.
+        notices.push(event("u", "[push] repo"), true, now);
+        let mut out = notices.due(now);
+        // Held when the bridge ends.
+        notices.push(event("h", &comment), true, now).expect("read");
+        out.extend(notices.drain());
+
+        assert_eq!(ids(&out), vec!["s", "u", "h"]);
+        for one in &out {
+            let id = one.event_id.as_str();
+            assert_eq!(
+                prompts(&one.content),
+                vec![format!("{MARK_PROMPT}{id}").as_str()],
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signed_notice_still_opens_with_the_signature() {
+        let now = Instant::now();
+        let comment = summary("issue_comment", "created");
+        let mut notices = Notices::new();
+        let (id, _) = notices.push(event("s", &comment), true, now).expect("read");
+        let answer = stored(
+            "issue_comment",
+            json!({ "action": "created", "comment": { "body": "x\n— Lay" } }),
+        );
+        notices.answer(id, None, Some(&answer));
+        let due = notices.due(now);
+        let mut lines = due[0].content.lines();
+        assert_eq!(lines.next(), Some("署名: Lay"));
+        assert_eq!(
+            lines.next(),
+            Some("[issue_comment] Liplus-Project/pullcept")
+        );
+        assert_eq!(due[0].content.lines().last(), Some("https://github.com/x"));
     }
 }
