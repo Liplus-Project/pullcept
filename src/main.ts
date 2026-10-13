@@ -415,11 +415,6 @@ const drawnIds = new Set<string>();
  */
 const awaiting = new Map<string, Set<string>>();
 /**
- * What each topic's seats last read as when it was handed to the app (#412),
- * so the same reading is not handed over again (`reportSeatWords`).
- */
-const seatWordsSent = new Map<string, string>();
-/**
  * The terminal the open 終了 dialog is asking about, by `seatKey`, or null while
  * it is closed.
  *
@@ -1965,7 +1960,6 @@ function trackAddress(message: RoomMessage): void {
     }
   }
   if (moved && message.topic_id === shownTopicId()) renderPanel();
-  if (moved) reportSeatWords();
 }
 
 /**
@@ -2002,30 +1996,6 @@ function rowActivity(row: Member): RowWord {
   const view = row.account ? sessions.getView(seatKey(shownTopicId(), row.account.id)) : undefined;
   if (view != null && view.ended === null && view.ptyId === "") return NO_WORD;
   return activityNote(view, awaiting.get(view?.topicId ?? "")?.has(memberName(row)) ?? false);
-}
-
-/**
- * Hand the app each room's seats' badges, when they read differently from the
- * last time (#412): every topic this screen has a roster for, not only the one
- * on the glass. The badge is the one `rowActivity` reads for a row — the same
- * `activityNote`, the same room waiting on the name — so the line a busy seat is
- * typed about the others says what the panel would. What is typed to whom is
- * the app's (`seat_status`).
- */
-function reportSeatWords(): void {
-  for (const [topicId, roster] of rosters) {
-    const seats = roster.flatMap((one) => {
-      if (one.own || !one.account) return [];
-      const view = sessions.getView(seatKey(topicId, one.account));
-      if (!view || view.ended !== null || view.ptyId === "") return [];
-      const word = activityNote(view, awaiting.get(topicId)?.has(one.name) ?? false).word;
-      return [{ account_id: one.account, word }];
-    });
-    const key = JSON.stringify(seats);
-    if (seatWordsSent.get(topicId) === key) continue;
-    seatWordsSent.set(topicId, key);
-    void invoke("seat_words", { topicId, seats }).catch(() => {});
-  }
 }
 
 /**
@@ -2629,9 +2599,6 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
-  // Every change a badge can follow redraws the panel, so the badges are read
-  // for the seats' status lines here too (#412).
-  reportSeatWords();
   // The title bar's count is this roster's length (#225).
   renderRoomTitle();
   // The tabs are redrawn here rather than on their own schedule. Both surfaces
