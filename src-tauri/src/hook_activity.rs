@@ -42,7 +42,9 @@
 //! handed over once the wait has ended, whichever of its ends came:
 //! `prompt_hold::RELEASE_GRACE` after it, if no wait has begun again. A seat
 //! launched again carries its queue to the new launch. Each kept post and how
-//! its hand-over went is a line in the same log.
+//! its hand-over went is a line in the same log. The status line a busy seat
+//! is typed about the other seats (#412, `seat_status`) is not kept: where a
+//! post would be kept, it is dropped (`type_status`).
 
 use crate::session::RoomSeats;
 use mcp_config::hook_activity::{Activity, Reporter};
@@ -233,6 +235,17 @@ impl HookSeats {
         None
     }
 
+    /// Whether a post for the terminal `pty_id` would be typed now rather
+    /// than kept (`prompt_hold::Queue::would_keep`). A terminal that is no
+    /// Claude Code seat heard by its hooks is never kept for.
+    fn free(&self, pty_id: &str) -> bool {
+        let seats = self.seats.lock();
+        match seats.values().find(|seat| seat.reporter.pty_id() == pty_id) {
+            Some(seat) => !seat.posts.would_keep(seat.activity.any_waiting()),
+            None => true,
+        }
+    }
+
     /// Hand the posts kept for one seat over, once its wait has ended
     /// (`prompt_hold`). Each item is taken under the lock and typed outside
     /// it.
@@ -383,6 +396,17 @@ pub fn type_or_keep(app: &AppHandle, pty_id: &str, item: Item) -> bool {
         Some(item) => app.state::<crate::pty::PtyState>().type_in(pty_id, item.text),
         None => true,
     }
+}
+
+/// Type the status line `text` (#412) into the terminal `pty_id`, the way a
+/// post is typed, or drop it where a post would be kept: a Claude Code seat
+/// waiting on a prompt, or one with posts kept for it. Never kept — by the
+/// time the wait ends the line would be stale. True when it was handed to the
+/// terminal's typing queue, which may still drop it for a box the person is
+/// typing in (`PtyState::type_status`).
+pub fn type_status(app: &AppHandle, pty_id: &str, text: String) -> bool {
+    app.state::<HookSeats>().free(pty_id)
+        && app.state::<crate::pty::PtyState>().type_status(pty_id, text)
 }
 
 /// Begin a seat's hand-over `prompt_hold::RELEASE_GRACE` after its wait

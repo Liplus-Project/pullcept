@@ -16,7 +16,7 @@ class Element {
   get childElementCount() {return this.children.length;}
 }
 const awaiting = new Map(); const rosters = new Map();
-const context = vm.createContext({speakerLabel, awaiting, rosters, shownTopicId: () => "topic", renderPanel(){},
+const context = vm.createContext({speakerLabel, awaiting, rosters, shownTopicId: () => "topic", renderPanel(){}, reportSeatWords(){},
   document:{createElement:()=>new Element()}, avatar:()=>new Element(), fullDateTime:()=>"time",
   splitAttachments:content=>({text:content, paths:[]}), appendPostWords(){}, MINE_SPEAKER:"blue"});
 vm.runInContext(compiled, context);
