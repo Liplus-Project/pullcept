@@ -3852,6 +3852,10 @@ async function main(): Promise<void> {
   // (#82). A report arrives on every assistant message, and the two that cross
   // the threshold are the only ones the row has anything to say about — the
   // rest move the facts column alone.
+  await listen("session-seats-changed", () => void refreshSeats());
+  await listen<{ status: string; error?: string }>("session-operation", (event) => {
+    if (event.payload.error) status(`セッション操作 ${event.payload.status}: ${event.payload.error}`, "error");
+  });
   await listen<SessionStats>("session-stats", (event) => sessions.receiveStats(event.payload));
   // A Codex app-server seat (#326) or a Claude Code seat's hooks (#331) said
   // what it is doing. Keyed on the seat
@@ -4079,7 +4083,7 @@ async function main(): Promise<void> {
   // and a room that fails to answer is no reason to leave it unreachable — the
   // failure this is here for is the screen having been reloaded, which the room
   // knows nothing about (#84). It swallows its own errors, so it needs none.
-  await refreshSeats();
+  await refreshSeats(true);
 
   try {
     await join();

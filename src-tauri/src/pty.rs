@@ -161,6 +161,13 @@ impl PtyState {
         self.procs.lock().contains_key(id)
     }
 
+    pub fn kill_exact(&self, id: &str) -> Result<(), String> {
+        if let Some(mut pty) = self.procs.lock().remove(id) {
+            pty.child.kill().map_err(|e| format!("Kill failed: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// Kill every session that is running.
     ///
     /// One acquisition of the lock over the whole map, for the same reason
@@ -489,12 +496,10 @@ pub fn resize_pty(
 }
 
 #[tauri::command]
-pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String> {
-    let mut map = state.procs.lock();
-    if let Some(mut pty) = map.remove(&id) {
-        pty.child.kill().map_err(|e| format!("Kill failed: {e}"))?;
-    }
-    Ok(())
+pub fn kill_pty(app: AppHandle, state: tauri::State<PtyState>, id: String) -> Result<(), String> {
+    let seats = app.state::<crate::session::RoomSeats>();
+    let _guard = seats.lifecycle.lock();
+    state.kill_exact(&id)
 }
 
 /// End every running session at once, for the app being closed (#85).
@@ -522,6 +527,9 @@ pub fn kill_pty(state: tauri::State<PtyState>, id: String) -> Result<(), String>
 /// wait for (#299).
 #[tauri::command]
 pub fn kill_all_ptys(app: AppHandle, state: tauri::State<PtyState>) {
+    app.state::<crate::session_control::SessionControl>().close(&app);
+    let seats = app.state::<crate::session::RoomSeats>();
+    let _guard = seats.lifecycle.lock();
     state.kill_all();
     crate::codex_app_server::stop_all(&app);
 }

@@ -182,7 +182,8 @@ use uuid::Uuid;
 /// 9: `post` carries `to` as a list of names (#204).
 /// 10: `usage` / `usage_result` — a participant may read its own seat's
 ///    usage-limit figures (#364). Its own only, read off the connection.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// 11: app-owned session operations and operation status (#415).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// One post of the room, as the frontend sees it.
 ///
@@ -322,6 +323,8 @@ struct IncomingFrame {
     request_id: Option<String>,
     limit: Option<usize>,
     before: Option<String>,
+    operation_id: Option<String>,
+    operation: Option<serde_json::Value>,
 }
 
 /// One room: a topic, the floor of what has been said in it this run, and who
@@ -613,6 +616,10 @@ impl RoomState {
             .rooms
             .get(room_id)
             .map(|room| room.topic.clone())
+    }
+
+    pub fn open_topics(&self) -> Vec<TopicRef> {
+        self.inner.lock().rooms.values().map(|room| room.topic.clone()).collect()
     }
 
     /// The topic the screen has open.
@@ -2061,6 +2068,10 @@ async fn serve_participant(
                     account.as_deref(),
                 );
                 if let Ok(config) = config::read_config(&app) { room.refresh_accounts(&app, &config.accounts); }
+                if let Some(account) = &account {
+                    app.state::<crate::session_control::SessionControl>().connected(&app, &origin, &socket_id, &room_id, account,
+                        admitted_claim.as_ref().map(|claim| claim.launch_id.as_str()));
+                }
                 joined_as = Some(name);
                 joined_account = account;
                 let _ = app.emit("room-participants", room.roster(&room_id));
@@ -2203,11 +2214,33 @@ async fn serve_participant(
                     frame: answer.to_string(),
                 });
             }
+            "session_list" | "session_status" | "session_control" => {
+                let request_id = frame.request_id.unwrap_or_default();
+                let control = app.state::<crate::session_control::SessionControl>();
+                let result = (|| -> Result<serde_json::Value, String> {
+                    control.authorize(&app, &origin, &socket_id)?;
+                    match frame.kind.as_str() {
+                        "session_list" => control.list(&app),
+                        "session_status" => control.status(&app, frame.operation_id.as_deref().ok_or("operation_id required")?),
+                        _ => {
+                            let request = serde_json::from_value(frame.operation.ok_or("operation required")?).map_err(|e| format!("Invalid operation: {e}"))?;
+                            control.accept(&app, request, joined_account.as_deref().ok_or("No requester account")?,
+                                joined_room.get().ok_or("No requester topic")?, joined_as.as_deref().ok_or("No requester name")?)
+                        }
+                    }
+                })();
+                let answer = match result {
+                    Ok(result) => serde_json::json!({ "type": "session_result", "request_id": request_id, "result": result }),
+                    Err(error) => serde_json::json!({ "type": "session_result", "request_id": request_id, "error": error }),
+                };
+                let _ = room.to_participants.send(Fanout { target: origin.clone(), frame: answer.to_string() });
+            }
             _ => {}
         }
     }
 
     pump.abort();
+    app.state::<crate::session_control::SessionControl>().disconnected(&origin, &socket_id);
     if joined_as.is_some() && admitted_claim.as_ref().is_none_or(|claim| app.state::<RoomSeats>().may_unseat_sidecar(claim, &socket_id)) {
         // By connection. Removing by name took every participant answering to
         // that name off the roster, so one session ending emptied the other's
@@ -2342,6 +2375,7 @@ pub fn room_delete_topic(
     seats: tauri::State<RoomSeats>,
     topic_id: String,
 ) -> Result<Option<TopicRef>, String> {
+    let _guard = seats.lifecycle.lock();
     pty_state.kill_each(&seats.running_in_topic(&topic_id, &pty_state));
 
     room_log::delete_topic(&app, &topic_id)?;

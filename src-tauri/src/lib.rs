@@ -11,6 +11,7 @@ mod pty;
 mod room;
 mod room_log;
 mod session;
+mod session_control;
 mod webhook;
 #[cfg(windows)]
 mod window_icon;
@@ -31,6 +32,7 @@ pub fn run() {
         // Which account is in the room, so a second launch of one account is
         // refused rather than seating one identity twice (session::RoomSeats).
         .manage(RoomSeats::new())
+        .manage(session_control::SessionControl::default())
         // The MCP servers the app runs itself, by name (#172).
         .manage(McpServers::new())
         // The Codex seats stopped on their usage limit, and the posts the room
@@ -45,6 +47,9 @@ pub fn run() {
         // What each Claude Code seat is doing, as its hooks tell it (#331).
         .manage(hook_activity::HookSeats::new())
         .setup(|app| {
+            if let Err(error) = app.state::<session_control::SessionControl>().initialize(app.handle()) {
+                eprintln!("[session-control] {error}");
+            }
             #[cfg(windows)]
             for window in app.webview_windows().values() {
                 let result = window
@@ -128,6 +133,10 @@ pub fn run() {
         .run(|app, event| {
             // However the app is left, no seat's app-server outlives it (#299).
             if let tauri::RunEvent::Exit = event {
+                app.state::<session_control::SessionControl>().close(app);
+                let seats = app.state::<RoomSeats>();
+                let _guard = seats.lifecycle.lock();
+                app.state::<PtyState>().kill_all();
                 codex_app_server::stop_all(app);
             }
         });

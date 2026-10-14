@@ -102,6 +102,11 @@ fn stop_tree(child: &mut Child) {
 }
 
 /// End every seat server, for the app being closed.
+pub fn stop_one(app: &AppHandle, pty_id: &str) {
+    let server = app.state::<CodexServers>().servers.lock().remove(pty_id);
+    if let Some(server) = server { server.stop(); }
+}
+
 pub fn stop_all(app: &AppHandle) {
     let drained: Vec<Server> = app
         .state::<CodexServers>()

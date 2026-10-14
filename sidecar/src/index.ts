@@ -173,7 +173,7 @@ if (SEAT_REFUSAL === null && ADMISSION_REQUIRED &&
  */
 const UNSEEN_HISTORY = process.env.PULLCEPT_UNSEEN_HISTORY === "1";
 
-const PROTOCOL_VERSION = 10;
+const PROTOCOL_VERSION = 11;
 
 /**
  * What the first line of a post typed into this session's terminal opens with
@@ -562,6 +562,30 @@ const TOOLS = [
       required: [] as string[],
     },
   },
+  {
+    name: "list_account_sessions",
+    description: "List configured account IDs, launchable kinds, open topic IDs, current PTY IDs and room connection state. No commands or environment secrets. Authenticated room participants may control their own and other sessions.",
+    inputSchema: { type: "object" as const, properties: {}, required: [] as string[] },
+  },
+  {
+    name: "account_session_status",
+    description: "Read a persisted operation by operation_id. process_started means launch only; check process_running and room_connected separately. App exit marks unfinished operations interrupted; never replays them. Restart does not prove Li+ version or hooks loaded: the new seat must verify those itself.",
+    inputSchema: { type: "object" as const, properties: { operation_id: { type: "string" } }, required: ["operation_id"] },
+  },
+  {
+    name: "control_account_session",
+    description: "Ask Pullcept to start, stop or restart a configured account in an open topic, including yourself or another seat. Supply your own unique operation_id BEFORE calling; identical retries with that ID are not repeated. start requires explicit fresh/resume mode; stop/restart require the current expected_pty_id from list_account_sessions and no mode. Restart strictly resumes; unavailable conversation fails, never substitutes fresh. App owns execution after acceptance even if your sidecar dies. Timeout/disconnect means unconfirmed: query or retry the SAME ID. No arbitrary commands. Requester, exact target, result/error are recorded in the room.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        operation_id: { type: "string", minLength: 1, maxLength: 200 },
+        action: { type: "string", enum: ["start", "stop", "restart"] },
+        account_id: { type: "string" }, topic_id: { type: "string" },
+        expected_pty_id: { type: "string" }, mode: { type: "string", enum: ["fresh", "resume"] },
+      },
+      required: ["operation_id", "action", "account_id", "topic_id"], additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -599,6 +623,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "read_room_history") return await readHistory(args);
     if (name === "my_usage") return await readUsage();
+    if (name === "list_account_sessions") return await sessionRequest("session_list", {});
+    if (name === "account_session_status") {
+      if (typeof args?.operation_id !== "string" || !args.operation_id.trim()) return sessionError("operation_id required");
+      return await sessionRequest("session_status", { operation_id: args.operation_id });
+    }
+    if (name === "control_account_session") {
+      if (!args || typeof args.operation_id !== "string" || !args.operation_id.trim()) return sessionError("Supply operation_id before calling; keep it for retries and status");
+      return await sessionRequest("session_control", { operation: args });
+    }
 
     if (name !== "say_to_room") {
       return {
@@ -1005,6 +1038,23 @@ const awaitingResult = new Map<string, (result: PostResultFrame | null) => void>
  */
 const awaitingHistory = new Map<string, (result: HistoryResultFrame | null) => void>();
 
+interface SessionResultFrame { type: "session_result"; request_id?: string; result?: unknown; error?: string; }
+const awaitingSessions = new Map<string, (result: SessionResultFrame | null) => void>();
+function sessionError(text: string) { return { content: [{ type: "text" as const, text }], isError: true }; }
+async function sessionRequest(type: string, fields: Record<string, unknown>) {
+  const requestId = randomUUID();
+  const answer = new Promise<SessionResultFrame | null>((resolve) => {
+    const timer = setTimeout(() => { awaitingSessions.delete(requestId); resolve(null); }, POST_RESULT_TIMEOUT);
+    timer.unref?.();
+    awaitingSessions.set(requestId, (result) => { clearTimeout(timer); awaitingSessions.delete(requestId); resolve(result); });
+  });
+  if (!sendToRoom({ type, request_id: requestId, ...fields })) awaitingSessions.get(requestId)?.(null);
+  const result = await answer;
+  if (result === null) return sessionError("Session request unconfirmed (disconnected or timed out). Query operation_id or retry with the SAME operation_id; do not create a new ID.");
+  if (result.error) return sessionError(result.error);
+  return { content: [{ type: "text" as const, text: JSON.stringify(result.result) }] };
+}
+
 /** Reads of this seat's usage waiting for the room's answer, by request id. */
 const awaitingUsage = new Map<string, (result: UsageResultFrame | null) => void>();
 
@@ -1096,6 +1146,7 @@ function abandonPendingPosts(): void {
   for (const settle of [...awaitingResult.values()]) settle(null);
   for (const settle of [...awaitingHistory.values()]) settle(null);
   for (const settle of [...awaitingUsage.values()]) settle(null);
+  for (const settle of [...awaitingSessions.values()]) settle(null);
 }
 
 function sendToRoom(frame: Record<string, unknown>): boolean {
@@ -1173,6 +1224,10 @@ function connectRoom(): void {
     // in order not to do.
     else if (frame.type === "history_result") settleHistoryResult(frame as HistoryResultFrame);
     else if (frame.type === "usage_result") settleUsageResult(frame as UsageResultFrame);
+    else if (frame.type === "session_result") {
+      const result = frame as SessionResultFrame;
+      if (typeof result.request_id === "string") awaitingSessions.get(result.request_id)?.(result);
+    }
     // Unknown frame kinds are ignored on purpose; see the frame comment above.
     // A `post` frame from a room older than protocol 8 is one of them: the
     // session is typed its posts by the app, and there is nowhere here to put
