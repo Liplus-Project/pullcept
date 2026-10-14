@@ -1859,7 +1859,7 @@ async fn serve_participant(
     // The token is what makes this room, and not merely this machine.
     let socket_id = Uuid::new_v4().to_string();
     let mut admitted: Option<(mcp_config::codex::admission::Claim, String)> = None;
-    let mut control_bound: Option<(String, String, String)> = None;
+    let mut control_bound: Option<mcp_config::session_control::ControlBinding> = None;
     let check = |req: &Request, res: Response| -> Result<Response, ErrorResponse> {
         let ok = req
             .headers()
@@ -1873,7 +1873,7 @@ async fn serve_participant(
                 let binding = field("x-pullcept-control-room").zip(field("x-pullcept-control-account")).zip(field("x-pullcept-control"));
                 match binding {
                     Some(((topic, account), capability)) if app.state::<RoomSeats>().control_binding(topic, account, capability, &app.state::<PtyState>()) => {
-                        control_bound = Some((topic.into(), account.into(), capability.into()));
+                        control_bound = Some(mcp_config::session_control::ControlBinding { topic: topic.into(), account: account.into(), capability: capability.into() });
                     },
                     _ => {
                         let mut deny = ErrorResponse::new(Some("session control capability rejected".into()));
@@ -2034,9 +2034,9 @@ async fn serve_participant(
                     }),
                 };
                 if !valid { break; }
-                if control_bound.as_ref().is_some_and(|(topic, account, capability)| {
-                    declared_room != Some(topic.as_str()) || declared_account != Some(account.as_str()) ||
-                    !app.state::<RoomSeats>().control_binding(topic, account, capability, &app.state::<PtyState>())
+                if control_bound.as_ref().is_some_and(|binding| {
+                    !binding.matches_hello(declared_room, declared_account) ||
+                    !app.state::<RoomSeats>().control_binding(&binding.topic, &binding.account, &binding.capability, &app.state::<PtyState>())
                 }) { break; }
                 let name = frame.name.unwrap_or_else(|| "session".to_string());
                 if frame.protocol != Some(PROTOCOL_VERSION) {
@@ -2086,8 +2086,8 @@ async fn serve_participant(
                     account.as_deref(),
                 );
                 if let Ok(config) = config::read_config(&app) { room.refresh_accounts(&app, &config.accounts); }
-                if let Some(account) = account.as_ref().filter(|_| control_bound.is_some()) {
-                    app.state::<crate::session_control::SessionControl>().connected(&app, &origin, &socket_id, &room_id, account,
+                if let (Some(account), Some(binding)) = (account.as_ref(), control_bound.as_ref()) {
+                    app.state::<crate::session_control::SessionControl>().connected(&origin, &socket_id, &room_id, account, &binding.capability,
                         admitted_claim.as_ref().map(|claim| claim.launch_id.as_str()));
                 }
                 joined_as = Some(name);

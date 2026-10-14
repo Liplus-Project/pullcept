@@ -78,11 +78,11 @@ impl SessionControl {
     }
     pub fn connected(
         &self,
-        app: &AppHandle,
         origin: &str,
         socket: &str,
         topic: &str,
         account: &str,
+        capability: &str,
         launch: Option<&str>,
     ) {
         self.connections.lock().insert(
@@ -91,7 +91,7 @@ impl SessionControl {
                 socket: socket.into(),
                 topic: topic.into(),
                 account: account.into(),
-                generation: app.state::<RoomSeats>().generation_of(topic, account),
+                generation: Some(capability.to_owned()),
                 launch: launch.map(str::to_owned),
             },
         );

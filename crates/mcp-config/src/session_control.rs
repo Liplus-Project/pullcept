@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CAPABILITY_ENV: &str = "PULLCEPT_CONTROL_CAPABILITY";
+pub struct ControlBinding {
+    pub topic: String,
+    pub account: String,
+    pub capability: String,
+}
+impl ControlBinding {
+    pub fn matches_hello(&self, topic: Option<&str>, account: Option<&str>) -> bool {
+        topic == Some(self.topic.as_str()) && account == Some(self.account.as_str())
+    }
+}
 pub fn capability_matches(
     supplied: Option<&str>,
     expected: Option<&str>,
@@ -285,6 +295,36 @@ mod tests {
             .is_ok());
         assert!(caller
             .authorize("socket", true, Some("old"), Some("other-launch"))
+            .is_err());
+    }
+
+    #[test]
+    fn hello_cannot_change_capability_scope_and_early_connection_survives_hold() {
+        let binding = ControlBinding {
+            topic: "topic".into(),
+            account: "account".into(),
+            capability: "capability".into(),
+        };
+        assert!(binding.matches_hello(Some("topic"), Some("account")));
+        assert!(!binding.matches_hello(Some("other-topic"), Some("account")));
+        assert!(!binding.matches_hello(Some("topic"), Some("other-account")));
+        assert!(!binding.matches_hello(None, Some("account")));
+        let connection = Connection {
+            socket: "socket".into(),
+            topic: binding.topic,
+            account: binding.account,
+            generation: Some(binding.capability),
+            launch: None,
+        };
+        // Captured during Starting: no PTY is part of this connection record.
+        assert!(connection
+            .authorize("socket", false, Some("capability"), None)
+            .is_err());
+        assert!(connection
+            .authorize("socket", true, Some("capability"), None)
+            .is_ok());
+        assert!(connection
+            .authorize("socket", true, Some("new-capability"), None)
             .is_err());
     }
 
