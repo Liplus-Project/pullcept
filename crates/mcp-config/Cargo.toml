@@ -12,6 +12,7 @@ edition = "2021"
 # GNU target (see the CI note in docs/5-development.md).
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 toml_edit = "0.20.2"

@@ -299,6 +299,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     },
   ];
   const historyFrames = [];
+  const sessionFrames = [];
+  let sessionAnswer = "normal";
 
   // What the room answers the next reads of this seat's usage with (#364),
   // in order: figures, then none received yet, then a room that cannot say
@@ -316,12 +318,25 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   let explicitUsage = false;
   let feedbackUsage = { five_hour: { used_percentage: 78, resets_at: 1791207909 }, seven_day: { used_percentage: 12 }, received_at: RECEIVED, context: 42, context_received_at: RECEIVED };
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, req) => {
+    assert.equal(req.headers["x-pullcept-control"], "synthetic-control-only");
+    assert.equal(req.headers["x-pullcept-control-account"], TEST_ACCOUNT);
+    assert.equal(req.headers["x-pullcept-control-room"], "test-room");
     roomSocket = socket;
     connected.resolve(socket);
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
+      if (["session_list", "session_status", "session_control"].includes(frame.type)) {
+        sessionFrames.push(frame);
+        socket.send(JSON.stringify({ type: "session_result", request_id: "unrelated", result: { wrong: true } }));
+        if (sessionAnswer === "disconnect") { socket.close(); return; }
+        socket.send(JSON.stringify({ type: "session_result", request_id: frame.request_id,
+          ...(sessionAnswer === "denied" ? { error: "Only a connected account session may control sessions" } :
+            { result: frame.type === "session_list" ? { accounts: [{ account_id: TEST_ACCOUNT }], topics: [{ topic_id: "room" }] } :
+              { operation_id: frame.operation?.operation_id ?? frame.operation_id, status: "accepted", room_connected: false } }) }));
+        return;
+      }
       if (frame.type === "usage") {
         usageFrames.push(frame);
         if (!explicitUsage && feedbackUsage === null) return;
@@ -431,8 +446,12 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "test-agent",
+        PULLCEPT_CONTROL_CAPABILITY: "synthetic-control-only",
+        PULLCEPT_ACCOUNT_NAME: "test-agent",
+        PULLCEPT_UNSEEN_HISTORY: "0",
         PULLCEPT_AGENT_HUE: "145",
         PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,
         // Launched as the account its entry names, which is what every launch
@@ -594,8 +613,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // `my_usage` reads too, and only this seat's own figures (#364).
   assert.deepEqual(
     toolNames,
-    ["say_to_room", "read_room_history", "my_usage"],
-    "one posting tool and two reading tools, and nothing else",
+    ["say_to_room", "read_room_history", "my_usage", "list_account_sessions", "account_session_status", "control_account_session"],
+    "one posting tool plus room reads and account lifecycle controls",
   );
   assert.equal(
     toolNames.filter((name) => name === "say_to_room").length,
@@ -624,6 +643,25 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // The manners that moved off the instructions (#273), each asserted whole
   // where it now lives. Nothing here may be lost to the move: these are the
   // lines the 2048 cut had taken from every session.
+  assert.ok(!JSON.stringify(tools).includes("synthetic-control-only"), "launch capability must not appear in tools/list");
+  const listed = await request("tools/call", { name: "list_account_sessions", arguments: {} });
+  assert.match(listed.result.content[0].text, new RegExp(TEST_ACCOUNT));
+  const operation = { operation_id: "self-restart-415", action: "restart", account_id: TEST_ACCOUNT, topic_id: "room", expected_pty_id: "old" };
+  const accepted = await request("tools/call", { name: "control_account_session", arguments: operation });
+  assert.match(accepted.result.content[0].text, /accepted/);
+  assert.deepEqual(sessionFrames.at(-1).operation, operation);
+  const retry = await request("tools/call", { name: "control_account_session", arguments: operation });
+  assert.match(retry.result.content[0].text, /self-restart-415/);
+  const checked = await request("tools/call", { name: "account_session_status", arguments: { operation_id: operation.operation_id } });
+  assert.match(checked.result.content[0].text, /self-restart-415/);
+  sessionAnswer = "denied";
+  const denied = await request("tools/call", { name: "list_account_sessions", arguments: {} });
+  assert.equal(denied.result.isError, true); assert.match(denied.result.content[0].text, /connected account/);
+  sessionAnswer = "normal";
+  const beforeMissingId = sessionFrames.length;
+  const missingId = await request("tools/call", { name: "control_account_session", arguments: { action: "restart" } });
+  assert.equal(missingId.result.isError, true); assert.equal(sessionFrames.length, beforeMissingId);
+
   const say = tools.result.tools.find((tool) => tool.name === "say_to_room");
   assertContains(say.description, REPLY, "say_to_room must say it is the only way to be heard");
   assertContains(
@@ -684,7 +722,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // The room it was started into. One socket serves every topic open in the
   // app, so this is what puts the connection in one of them (#141).
   assert.equal(hello.room, "test-room");
-  assert.equal(hello.protocol, 10);
+  assert.equal(hello.protocol, 11);
 
   // A `post` frame, as a room older than protocol 8 would send. The session
   // is typed its posts by the app now (#195): this process pushes nothing into
@@ -1045,7 +1083,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "still waiting",
     "say_to_room must not resolve before the room answers; a call that returns on send is not a boundary",
   );
-  roomSocket.close();
+  sessionAnswer = "disconnect";
+  const operationUnconfirmed = await request("tools/call", { name: "control_account_session", arguments: operation });
+  assert.equal(operationUnconfirmed.result.isError, true);
+  assert.match(operationUnconfirmed.result.content[0].text, /unconfirmed/);
+  assert.match(operationUnconfirmed.result.content[0].text, /SAME operation_id/);
   const unconfirmed = await unanswered;
   assert.ok(
     unconfirmed.result.isError,
@@ -1077,6 +1119,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     "Not delivered: the room socket is not connected",
     "a send with no socket must say so rather than wait out the answer it will never get",
   );
+
+
 });
 
 test("a session launched without a hue or an account says so by omission", async (t) => {
@@ -1099,6 +1143,7 @@ test("a session launched without a hue or an account says so by omission", async
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
+
     });
   });
 
@@ -1111,6 +1156,7 @@ test("a session launched without a hue or an account says so by omission", async
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "no-colour",
         PULLCEPT_AGENT_HUE: "",
@@ -1163,6 +1209,7 @@ test("a session seated in a topic that already holds posts is told so", async (t
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         // Unset on purpose: no room to connect to, and the sidecar stays
         // offline and serving rather than exiting.
         PULLCEPT_ROOM_URL: "",
@@ -1272,6 +1319,7 @@ for (const [label, launchedAs, launchedRoom] of [
           ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
           PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
           PULLCEPT_AGENT_NAME: "test-agent",
           PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,

@@ -41,6 +41,7 @@ pub mod claude_resume;
 pub mod permission_prompt;
 pub mod prompt_hold;
 pub mod usage;
+pub mod session_control;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.
 ///
@@ -801,6 +802,7 @@ pub const ROOM_ID_ENV: &str = "PULLCEPT_ROOM_ID";
 /// when the CLI is spawned, so the app's value holds even if that refusal
 /// were bypassed.
 pub const APP_LAUNCH_ENV: &[&str] = &[
+    session_control::CAPABILITY_ENV,
     ROOM_TOKEN_ENV,
     LAUNCHED_AS_ENV,
     ROOM_ID_ENV,

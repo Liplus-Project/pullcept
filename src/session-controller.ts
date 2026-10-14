@@ -85,7 +85,7 @@ export function createSessionController(deps: Dependencies) {
    * that otherwise belongs entirely to the session (#84).
    */
   const RESUMED_NOTICE =
-    "\x1b[2m[pullcept] 画面が再読み込みされました。セッションは走ったままで、この端末はそこへ繋ぎ直したものです。これより前の出力は残っていません。\x1b[0m";
+    "\x1b[2m[pullcept] 稼働中のセッションに接続しました。端末への接続より前の出力は復元されません。\x1b[0m";
 
   /**
    * How long a terminal must stay silent before its row stops saying that it is
@@ -443,7 +443,7 @@ export function createSessionController(deps: Dependencies) {
    * after a launch and after a session exits, which are the two moments the
    * answer changes.
    */
-  async function refreshSeats(): Promise<void> {
+  async function refreshSeats(restoreDiagnostics = false): Promise<void> {
     try {
       const held = await deps.invoke<SeatedAccount[]>("seated_accounts");
       seated = new Map(held.map((seat) => [deps.seatKey(seat.topic_id, seat.account_id), seat]));
@@ -452,7 +452,7 @@ export function createSessionController(deps: Dependencies) {
       // on a failed read. It still redraws: what failed is this one value, and
       // whatever else moved since the last draw is not held back by it.
     }
-    await adoptSeats();
+    await adoptSeats(restoreDiagnostics);
     deps.renderPanel();
     // The list marks the topics holding a seat, and this is the answer that
     // changed (#141, AI 判断5).
@@ -476,16 +476,21 @@ export function createSessionController(deps: Dependencies) {
    * a session that has printed nothing, and reading what a session last printed
    * is how the person decides whether to end it (#57).
    *
-   * Only ever after a reload, never after a restart: the seats are the app's own
-   * memory and go with it, so an app that has just started holds none.
+   * Also used after app-owned MCP launches and restarts. Their new PTY replaces
+   * an older view for the same seat; app restart itself still holds no live seats.
    */
-  async function adoptSeats(): Promise<void> {
+  async function adoptSeats(restoreDiagnostics: boolean): Promise<void> {
     const adopted: string[] = [];
     for (const seat of seated.values()) {
       // No session yet: the seat is claimed and the launch is still in flight.
-      // Nothing to subscribe to, and it is this screen's own launch in every case
-      // but a reload landing inside that window.
-      if (!seat.session || views.has(deps.seatKey(seat.topic_id, seat.account_id))) continue;
+      // Nothing to subscribe to until either a UI or MCP launch has a PTY.
+      if (!seat.session) continue;
+      const existing = views.get(deps.seatKey(seat.topic_id, seat.account_id));
+      if (existing) {
+        // Same process already adopted or the UI's own launch still attaching.
+        if (!existing.ptyId || existing.ptyId === seat.session.pty_id) continue;
+        discardView(existing);
+      }
       const account = deps.accounts.find((one) => one.id === seat.account_id);
       // An account this screen does not have is one it cannot draw a row for, and
       // the row is the only way that terminal could be reached. The app refuses
@@ -497,10 +502,8 @@ export function createSessionController(deps: Dependencies) {
       adopted.push(viewName(view));
     }
     if (!adopted.length) return;
-    // Open, because open is where it was: a session is reloaded out from under
-    // while it is being watched, which is to say while this pane is showing it.
-    deps.revealDiagnostics();
-    deps.status(`${adopted.join("、")} の端末に繋ぎ直しました。再読み込みより前の出力は残っていません。`);
+    if (restoreDiagnostics) deps.revealDiagnostics();
+    deps.status(`${adopted.join("、")} の稼働中の端末に接続しました。接続より前の出力は復元されません。`);
   }
 
   /**

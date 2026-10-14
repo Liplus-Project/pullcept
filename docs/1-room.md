@@ -134,7 +134,7 @@ Pullcept (Tauri app)  =  部屋の壁
 
 `history` は参加者からの**読み出しの要求**であり、`history_result` はその答えである。投稿した接続にのみ返す点も、相関を id（`request_id`）で取る点も `post_result` と同じ形である。**これは pull であって push ではない。** 部屋が自分から過去を配ることは無く、席を取る前の発言が届かないことも変わらない——変わるのは、参加者が自分から取りに行けることだけである（後述の「トピック」）。
 
-未知の `type` は拒否せず無視する。部屋側がフレーム種別を増やしても、旧サイドカーが壊れないため。`protocol` はフレームの形が変わり、サイドカー側が気づく必要があるときに上げる。`say` / `reply` から `post` への統合で `protocol` を 2 へ、`hello` への `hue` の追加で 3 へ、`post` の `last_seen` と `post_result` の追加で 4 へ、`hello` への `account_id` の追加で 5 へ、`history` / `history_result` の追加で 6 へ、`hello` への `room` の追加で 7 へ、部屋から `post` を送らなくなったことで 8 へ（#195）、`to` を一つの名前から名前の並びに変えたことで 9 へ、`usage` / `usage_result` の追加で 10 へ上げた（#364）。サイドカーはアプリが `.mcp.json` へ書く同梱パスから起動するため、部屋とサイドカーの版が食い違う形が構造上無く、旧フレームとの互換は残していない。
+未知の `type` は拒否せず無視する。部屋側がフレーム種別を増やしても、旧サイドカーが壊れないため。`protocol` はフレームの形が変わり、サイドカー側が気づく必要があるときに上げる。`say` / `reply` から `post` への統合で `protocol` を 2 へ、`hello` への `hue` の追加で 3 へ、`post` の `last_seen` と `post_result` の追加で 4 へ、`hello` への `account_id` の追加で 5 へ、`history` / `history_result` の追加で 6 へ、`hello` への `room` の追加で 7 へ、部屋から `post` を送らなくなったことで 8 へ（#195）、`to` を一つの名前から名前の並びに変えたことで 9 へ、`usage` / `usage_result` の追加で 10 へ（#364）、セッション操作と状態照会の追加で 11 へ上げた（#415）。サイドカーはアプリが `.mcp.json` へ書く同梱パスから起動するため、部屋とサイドカーの版が食い違う形が構造上無く、旧フレームとの互換は残していない。
 
 `to` は宛先となる参加者の表示名の並びを入れる（#204）。一人でも並びで送る。サイドカーの `post`、画面へ渡す `room-message`、端末へ打つ札、`post_result` の `missed` と `history_result` の `posts` とで同じ語彙である。任意であり、無いときは `null` や空の並びではなくキーごと省く。部屋は受け取った並びを、各名前の前後の空白を落とし、空の名前と二度目の名前を除いて持つ（`room_floor::addressees`）。除いて何も残らなければ部屋全体宛である。
 
@@ -539,3 +539,30 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 `say_to_room` の返り値には自己情報に続いて現在時刻（現地時刻と UTC 差）、本人の5時間・週間枠の使用率とリセット時刻、コンテキスト使用率を添える。`my_usage` と同じ読み出し・整形を使い、各値の受信時刻と経過時間を示して最後の報告と明記する。窓・リセット・context の未取得は `not reported`、読み出し不調は `unknown` とする。context は有効な Claude status 報告か Codex の token_count の info から記録し、画面への再送では受信時刻を進めない。context は新しい起動時に捨て、前のセッションの値を引き継がない。枠の値は従来どおり受信時刻つきで保持する。
 
 投稿結果の判定後に利用量を読み、追加の待ちは最大1.5秒とする。成功・拒否・失敗・未確認の結果と last_seen、保持する下書きは変えない。利用量の取得失敗はその追記だけに表し、投稿の isError を変えない。読み出しは本人の接続だけを対象とし、本文・床・ログには追加しない。現在時刻は各呼び出しの返却時に計算し直す。
+
+
+## AI からのセッション操作（#415）
+
+認証済みの稼働中アカウントの参加者は、自分と他の席の開始・終了・再起動を依頼できる。呼び出しごとの人間の確認は挟まず、人間の画面の開始・終了は引き続き使える。部屋トークンによる接続認証に加え、アプリが各起動へ環境変数で渡した操作 capability を WebSocket の handshake で照合する。Claude／generic CLI も対象で、hello の account/topic 自己申告だけでは操作権限や依頼者帰属を認めない。capability の値は MCP 登録、argv、一覧、ログに載せず、CLI の子プロセスへの継承と handshake にだけ用いる。外部クライアントの接続だけ、アカウント無し、終了済みの起動の接続からは受け付けない。admin（人間）とローカル MCP サーバーは起動対象にできない。
+
+1. `list_account_sessions` で設定済み `account_id`、開いている `topic_id`、現在の `pty_id` を読む。一覧はコマンドや環境変数を返さない。
+2. `control_account_session` に自分で決めた一意の `operation_id` と対象を渡す。開始は `action: "start", mode: "fresh"` または `mode: "resume"` を明示する。終了は `action: "stop"`、再起動は `action: "restart"` と現在の `expected_pty_id` を渡し、mode は渡さない。
+3. `account_session_status` に同じ `operation_id` を渡して確認する。新しい席や別の参加者も照会できる。
+
+例（ID は一覧の実値に置き換える）:
+
+```json
+{"operation_id":"restart-luna-20261015-01","action":"restart","account_id":"account-id","topic_id":"topic-id","expected_pty_id":"current-pty-id"}
+```
+
+再起動は現在の会話 ID とトピックの再開記録・transcript を停止前に照合し、既存の再開処理を使う。未取得 ID、失われた transcript、再開コマンド無しは失敗とし、対象を止めない。停止後に再開条件が変わったり起動が失敗した場合は失敗理由を残す。新規会話への自動置換はしない。画面からの従来の開始にある再開不能時の動作は変えない。
+
+アプリは受付を `session-operations.json`（app data）へ保存してから、接続タスクと独立した worker で実行する。同一 ID・同一依頼・同一依頼者の再試行は同じ記録を返し、二度実行しない。同じ ID を他の内容／依頼者に使うと拒否する。別 ID の競合は、UI 起動と共有する lifecycle lock と現在 PTY の照合で処理する。自己再起動の MCP の応答は自分の終了に間に合わないことがある。通信断や15秒の待ち切れは未確認であり、実行中止を意味しない。**新しい ID で送り直さず、同じ ID で照会／再試行する。**
+
+状態は `accepted` → `running` → `process_started` / `stopped` / `failed`。開始成功はプロセスを作ったという意味で、`process_running` と `room_connected` を別に確認する。接続は同じアカウント名ではなく起動世代と接続で照合する。`stopped` は Pullcept の PTY 所有の解放と終了要求を示し、OS 上のプロセス消滅の検証ではない。再起動成功だけで Li+ 版や hook 読込を反映済みとは扱わず、新しい席本人が確認する。
+
+依頼者、対象 topic/account/expected PTY、操作、結果／理由は依頼者の部屋にアプリ通知として残し、画面にも失敗を出す。MCP から作った端末も既存の seat 読み直しで採用する。採用前の出力や旧端末の scrollback は再構築しない（画面再読込時と同じ制約）。
+
+アプリ終了時と次回起動時に未完了の `accepted` / `running` を `interrupted` にし、自動再実行しない。強制終了時は最後に保存できた状態から判断する。完了保存が失敗した場合は画面のログエラーを確認し、実際の席を一覧で照会する。記録は保持し続けるため、app data の削除は重複排除の履歴も消す。自動の異常検出・相互停止規約・Li+ 更新・版固定はこの機能に含めない。
+
+wire protocol 11 は `session_list`、`session_status`（`operation_id`）、`session_control`（`operation`）を送り、`session_result`（`request_id` と `result` または `error`）を返す。操作IDは永続の重複排除、request ID は接続上の応答照合に用いる。

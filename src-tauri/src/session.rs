@@ -482,6 +482,7 @@ fn status_command(port: Option<u16>, topic_id: &str, account_id: &str) -> Option
 /// its meaning.
 #[derive(Clone)]
 pub struct RoomSeats {
+    pub lifecycle: Arc<Mutex<()>>,
     seats: Arc<Mutex<BTreeMap<SeatKey, Seat>>>,
 }
 
@@ -501,7 +502,7 @@ enum Seat {
     /// being spawned. Held so that two launches racing for one account cannot
     /// both find the seat empty — the loser is refused before a second process
     /// exists, rather than after.
-    Starting { requires_admission: bool, sidecar: Option<StartingSidecar> },
+    Starting { generation: String, requires_admission: bool, sidecar: Option<StartingSidecar> },
     /// A session is running. The PTY id is what says so, and asking the PTY is
     /// the only liveness question anyone asks here.
     Running(RunningSession),
@@ -534,6 +535,8 @@ impl StartingSidecar {
 /// would use now, not what this one used.
 #[derive(Clone, serde::Serialize)]
 pub struct RunningSession {
+    #[serde(skip)]
+    generation: String,
     #[serde(skip)]
     launch_id: Option<String>,
     #[serde(skip)]
@@ -598,7 +601,7 @@ impl RoomSeats {
     // App-server prepares MCP before it has a PTY. Bind only after its process
     // exists, and carry this owner into Running rather than reopening admission.
     fn starting_sidecar(&self, topic: &str, account: &str, launch: &str, child: Arc<Mutex<std::process::Child>>) {
-        if let Some(Seat::Starting { requires_admission: true, sidecar: slot }) = self.seats.lock().get_mut(&seat_key(topic, account)) {
+        if let Some(Seat::Starting { requires_admission: true, sidecar: slot, .. }) = self.seats.lock().get_mut(&seat_key(topic, account)) {
             *slot = Some(StartingSidecar { launch_id: launch.into(), child, sidecar: Default::default() });
         }
     }
@@ -606,7 +609,7 @@ impl RoomSeats {
     pub fn admit_sidecar(&self, ptys: &PtyState, claim: &mcp_config::codex::admission::Claim) -> u16 {
         let mut seats = self.seats.lock();
         let (launch, live, sidecar) = match seats.get_mut(&seat_key(&claim.room_id, &claim.account_id)) {
-            Some(Seat::Starting { requires_admission: true, sidecar: None }) => return 425,
+            Some(Seat::Starting { requires_admission: true, sidecar: None, .. }) => return 425,
             Some(Seat::Starting { requires_admission: false, .. }) => return 409,
             Some(Seat::Starting { sidecar: Some(starting), .. }) => {
                 (starting.launch_id.clone(), starting.is_live(), &mut starting.sidecar)
@@ -745,8 +748,34 @@ impl RoomSeats {
         }
     }
 
+    pub fn control_binding(&self, topic: &str, account: &str, supplied: &str, ptys: &PtyState) -> bool {
+        let seats = self.seats.lock();
+        let (expected, live) = match seats.get(&seat_key(topic, account)) {
+            Some(Seat::Starting { generation, .. }) => (Some(generation.as_str()), true),
+            Some(Seat::Running(session)) => (Some(session.generation.as_str()), ptys.is_running(&session.pty_id)),
+            None => (None, false),
+        };
+        mcp_config::session_control::capability_matches(Some(supplied), expected, live)
+    }
+
+    pub fn generation_of(&self, topic: &str, account: &str) -> Option<String> {
+        match self.seats.lock().get(&seat_key(topic, account)) {
+            Some(Seat::Starting { generation, .. }) => Some(generation.clone()),
+            Some(Seat::Running(session)) => Some(session.generation.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn launch_id_of(&self, topic: &str, account: &str, pty: &str) -> Option<String> {
+        match self.seats.lock().get(&seat_key(topic, account)) {
+            Some(Seat::Running(session)) if session.pty_id == pty => session.launch_id.clone(),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         RoomSeats {
+            lifecycle: Arc::new(Mutex::new(())),
             seats: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -792,7 +821,7 @@ impl RoomSeats {
         if taken {
             return Err(());
         }
-        seats.insert(key, Seat::Starting { requires_admission: mcp_config::codex::admission::required_for(cli), sidecar: None });
+        seats.insert(key, Seat::Starting { generation: uuid::Uuid::new_v4().to_string(), requires_admission: mcp_config::codex::admission::required_for(cli), sidecar: None });
         Ok(())
     }
 
@@ -826,9 +855,12 @@ impl RoomSeats {
     fn hold(&self, account_id: &str, mut session: RunningSession) {
         let key = seat_key(&session.topic_id, account_id);
         let mut seats = self.seats.lock();
-        if let Some(Seat::Starting { sidecar: Some(starting), .. }) = seats.remove(&key) {
-            session.sidecar = mcp_config::codex::admission::Admission::inherit(
-                starting.sidecar, &starting.launch_id, session.launch_id.as_deref());
+        if let Some(Seat::Starting { generation, sidecar, .. }) = seats.remove(&key) {
+            session.generation = generation;
+            if let Some(starting) = sidecar {
+                session.sidecar = mcp_config::codex::admission::Admission::inherit(
+                    starting.sidecar, &starting.launch_id, session.launch_id.as_deref());
+            }
         }
         seats.insert(key, Seat::Running(session));
     }
@@ -1206,14 +1238,23 @@ fn codex_home(user_home: &Path, account_env: &[(String, String)], cwd: &Path) ->
 /// (#156, 決定6). A kind naming a CLI holds the way back into one of its
 /// sessions, so that is the line; a kind naming none has only the field, which
 /// is the one the person writes and the one the form shows for that kind.
+#[derive(Clone)]
+pub(crate) enum LaunchPolicy { Ui, Fresh, Resume(Option<String>) }
+
 fn resolve_launch(
     app: &AppHandle,
     account: &Account,
     topic: &TopicRef,
     cwd: &Path,
+    policy: &LaunchPolicy,
 ) -> Result<LaunchLine, String> {
     let cli = account.kind.cli();
-    let recorded = room_log::session_of(app, &topic.topic_id, &account.id);
+    let recorded = if matches!(policy, LaunchPolicy::Fresh) { None } else { room_log::session_of(app, &topic.topic_id, &account.id) };
+    if let LaunchPolicy::Resume(expected) = policy {
+        if recorded.is_none() || expected.as_ref().is_some_and(|id| recorded.as_ref() != Some(id)) {
+            return Err("No matching recorded conversation to resume; start fresh explicitly if intended".into());
+        }
+    }
     let resume = match cli {
         Some(cli) => cli.resume_command(),
         None => account
@@ -1223,6 +1264,10 @@ fn resolve_launch(
             .filter(|line| !line.is_empty()),
     };
 
+    if matches!(policy, LaunchPolicy::Resume(_)) && resume.is_none() { return Err("This account has no resume command".into()); }
+    if matches!(policy, LaunchPolicy::Resume(_)) && cli.is_none() && !resume.is_some_and(|line| declares_session_id(&split_launch_options(line))) {
+        return Err("The configured resume command must carry {session_id}; no fresh conversation started".into());
+    }
     let mut dropped_resume = None;
     if let (Some(session_id), Some(line)) = (recorded.as_deref(), resume) {
         if transcript_found(app, account, cli, cwd, session_id) {
@@ -1269,6 +1314,9 @@ fn resolve_launch(
             });
         }
 
+        if matches!(policy, LaunchPolicy::Resume(_)) {
+            return Err(format!("Conversation {session_id} cannot be resumed: transcript is missing; no fresh conversation started"));
+        }
         // The id is named, so what goes is this record and not one a relaunch
         // wrote in between (`room_log::forget_session`). Answering false is
         // that check having held, not a failure, and nothing is claimed in that
@@ -1395,6 +1443,24 @@ pub fn start_session(
     cols: u16,
     rows: u16,
 ) -> Result<StartedSession, String> {
+    let lifecycle = seats.lifecycle.clone();
+    let _guard = lifecycle.lock();
+    start_session_with_policy(app, room, pty_state, seats, account, topic_id, cols, rows, LaunchPolicy::Ui)
+}
+
+pub(crate) fn preflight_resume(app: &AppHandle, account: &Account, topic: &TopicRef) -> Result<String, String> {
+    let cwd = PathBuf::from(account.cwd.as_deref().unwrap_or_default());
+    if !cwd.is_dir() { return Err("Account working directory is missing".into()); }
+    let line = resolve_launch(app, account, topic, &cwd, &LaunchPolicy::Resume(None))?;
+    line.resumed_from.ok_or_else(|| "No conversation to resume".into())
+}
+
+pub(crate) fn start_session_with_policy(
+    app: AppHandle, room: tauri::State<RoomState>, pty_state: tauri::State<PtyState>,
+    seats: tauri::State<RoomSeats>, account: Account, topic_id: String, cols: u16, rows: u16,
+    policy: LaunchPolicy,
+) -> Result<StartedSession, String> {
+    if app.state::<crate::session_control::SessionControl>().is_closing() { return Err("Pullcept is closing".into()); }
     let name = account.address_name().to_string();
     if name.is_empty() {
         return Err(
@@ -1464,7 +1530,7 @@ pub fn start_session(
     // Resume or fresh, decided here so every check below runs against the line
     // that will actually be spawned. Checking the account's own options and
     // then spawning the resume line would be checking the wrong line.
-    let launch_line = resolve_launch(&app, &account, &topic, &cwd)?;
+    let launch_line = resolve_launch(&app, &account, &topic, &cwd, &policy)?;
 
     // Whether this seat is being taken in front of posts it does not have.
     //
@@ -1730,10 +1796,11 @@ pub fn start_session(
             seats.hold(
                 &account.id,
                 RunningSession {
+                    generation: String::new(),
                     launch_id: started.launch_id.clone(),
                     sidecar: Default::default(),
                     native_id: started.native_id.clone().or_else(|| launch_line.resumed_from.clone())
-                        .or_else(|| if account.kind == AccountKind::ClaudeCode { launch_line.session_id.clone() } else { None }),
+                        .or_else(|| if matches!(account.kind, AccountKind::ClaudeCode | AccountKind::Cli) { launch_line.session_id.clone() } else { None }),
                     pty_id: started.pty_id.clone(),
                     started_at: started.started_at.clone(),
                     // The line that ran, which on a resume is not the account's
@@ -1945,6 +2012,7 @@ fn launch(
     // shared `.mcp.json` after another launch had added an entry its
     // `disabledMcpjsonServers` could not name starts that entry's sidecar too,
     // and without this it would take a seat under the other account's id.
+    env.push((mcp_config::session_control::CAPABILITY_ENV, app.state::<RoomSeats>().generation_of(topic_id, &account.id).ok_or("Launch control capability unavailable")?));
     env.push((LAUNCHED_AS_ENV, account.id.clone()));
     env.push(("PULLCEPT_ACCOUNT_NAME", account.name.trim().to_string()));
     // The topic this CLI is launched into, beside the account (#264). The
@@ -2063,6 +2131,7 @@ fn launch_codex_app_server(
         .collect();
     server_env.extend(
         [
+            (mcp_config::session_control::CAPABILITY_ENV, app.state::<RoomSeats>().generation_of(topic_id, &account.id).ok_or("Launch control capability unavailable")?),
             (mcp_config::codex::LAUNCH_ID_ENV, launch_id.clone()),
             (mcp_config::codex::admission::REQUIRED_ENV, "1".into()),
             (ROOM_TOKEN_ENV, room.token()),
