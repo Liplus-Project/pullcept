@@ -748,6 +748,16 @@ impl RoomSeats {
         }
     }
 
+    pub fn control_binding(&self, topic: &str, account: &str, supplied: &str, ptys: &PtyState) -> bool {
+        let seats = self.seats.lock();
+        let (expected, live) = match seats.get(&seat_key(topic, account)) {
+            Some(Seat::Starting { generation, .. }) => (Some(generation.as_str()), true),
+            Some(Seat::Running(session)) => (Some(session.generation.as_str()), ptys.is_running(&session.pty_id)),
+            None => (None, false),
+        };
+        mcp_config::session_control::capability_matches(Some(supplied), expected, live)
+    }
+
     pub fn generation_of(&self, topic: &str, account: &str) -> Option<String> {
         match self.seats.lock().get(&seat_key(topic, account)) {
             Some(Seat::Starting { generation, .. }) => Some(generation.clone()),
@@ -2002,6 +2012,7 @@ fn launch(
     // shared `.mcp.json` after another launch had added an entry its
     // `disabledMcpjsonServers` could not name starts that entry's sidecar too,
     // and without this it would take a seat under the other account's id.
+    env.push((mcp_config::session_control::CAPABILITY_ENV, app.state::<RoomSeats>().generation_of(topic_id, &account.id).ok_or("Launch control capability unavailable")?));
     env.push((LAUNCHED_AS_ENV, account.id.clone()));
     env.push(("PULLCEPT_ACCOUNT_NAME", account.name.trim().to_string()));
     // The topic this CLI is launched into, beside the account (#264). The
@@ -2120,6 +2131,7 @@ fn launch_codex_app_server(
         .collect();
     server_env.extend(
         [
+            (mcp_config::session_control::CAPABILITY_ENV, app.state::<RoomSeats>().generation_of(topic_id, &account.id).ok_or("Launch control capability unavailable")?),
             (mcp_config::codex::LAUNCH_ID_ENV, launch_id.clone()),
             (mcp_config::codex::admission::REQUIRED_ENV, "1".into()),
             (ROOM_TOKEN_ENV, room.token()),

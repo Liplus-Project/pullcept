@@ -543,7 +543,7 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 
 ## AI からのセッション操作（#415）
 
-認証済みの稼働中アカウントの参加者は、自分と他の席の開始・終了・再起動を依頼できる。呼び出しごとの人間の確認は挟まず、人間の画面の開始・終了は引き続き使える。部屋トークンを持つことは、この操作権限を持つことでもある。外部クライアントの接続だけ、アカウント無し、終了済みの起動の接続からは受け付けない。admin（人間）とローカル MCP サーバーは起動対象にできない。
+認証済みの稼働中アカウントの参加者は、自分と他の席の開始・終了・再起動を依頼できる。呼び出しごとの人間の確認は挟まず、人間の画面の開始・終了は引き続き使える。部屋トークンによる接続認証に加え、アプリが各起動へ環境変数で渡した操作 capability を WebSocket の handshake で照合する。Claude／generic CLI も対象で、hello の account/topic 自己申告だけでは操作権限や依頼者帰属を認めない。capability の値は MCP 登録、argv、一覧、ログに載せず、CLI の子プロセスへの継承と handshake にだけ用いる。外部クライアントの接続だけ、アカウント無し、終了済みの起動の接続からは受け付けない。admin（人間）とローカル MCP サーバーは起動対象にできない。
 
 1. `list_account_sessions` で設定済み `account_id`、開いている `topic_id`、現在の `pty_id` を読む。一覧はコマンドや環境変数を返さない。
 2. `control_account_session` に自分で決めた一意の `operation_id` と対象を渡す。開始は `action: "start", mode: "fresh"` または `mode: "resume"` を明示する。終了は `action: "stop"`、再起動は `action: "restart"` と現在の `expected_pty_id` を渡し、mode は渡さない。

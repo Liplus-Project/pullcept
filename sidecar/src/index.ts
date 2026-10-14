@@ -1177,6 +1177,13 @@ function connectRoom(): void {
     headers["x-pullcept-room"] = ROOM_ID;
   }
 
+  const capability = process.env.PULLCEPT_CONTROL_CAPABILITY?.trim();
+  if (capability && ACCOUNT_ID && ROOM_ID) {
+    headers["x-pullcept-control"] = capability;
+    headers["x-pullcept-control-account"] = ACCOUNT_ID;
+    headers["x-pullcept-control-room"] = ROOM_ID;
+  }
+
   const socket = new WebSocket(ROOM_URL, { headers });
   ws = socket;
 

@@ -318,7 +318,10 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   let explicitUsage = false;
   let feedbackUsage = { five_hour: { used_percentage: 78, resets_at: 1791207909 }, seven_day: { used_percentage: 12 }, received_at: RECEIVED, context: 42, context_received_at: RECEIVED };
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, req) => {
+    assert.equal(req.headers["x-pullcept-control"], "synthetic-control-only");
+    assert.equal(req.headers["x-pullcept-control-account"], TEST_ACCOUNT);
+    assert.equal(req.headers["x-pullcept-control-room"], "test-room");
     roomSocket = socket;
     connected.resolve(socket);
     socket.on("message", (raw) => {
@@ -443,8 +446,10 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "test-agent",
+        PULLCEPT_CONTROL_CAPABILITY: "synthetic-control-only",
         PULLCEPT_ACCOUNT_NAME: "test-agent",
         PULLCEPT_UNSEEN_HISTORY: "0",
         PULLCEPT_AGENT_HUE: "145",
@@ -638,6 +643,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // The manners that moved off the instructions (#273), each asserted whole
   // where it now lives. Nothing here may be lost to the move: these are the
   // lines the 2048 cut had taken from every session.
+  assert.ok(!JSON.stringify(tools).includes("synthetic-control-only"), "launch capability must not appear in tools/list");
   const listed = await request("tools/call", { name: "list_account_sessions", arguments: {} });
   assert.match(listed.result.content[0].text, new RegExp(TEST_ACCOUNT));
   const operation = { operation_id: "self-restart-415", action: "restart", account_id: TEST_ACCOUNT, topic_id: "room", expected_pty_id: "old" };
@@ -1150,6 +1156,7 @@ test("a session launched without a hue or an account says so by omission", async
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
         PULLCEPT_AGENT_NAME: "no-colour",
         PULLCEPT_AGENT_HUE: "",
@@ -1202,6 +1209,7 @@ test("a session seated in a topic that already holds posts is told so", async (t
         ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
         // Unset on purpose: no room to connect to, and the sidecar stays
         // offline and serving rather than exiting.
         PULLCEPT_ROOM_URL: "",
@@ -1311,6 +1319,7 @@ for (const [label, launchedAs, launchedRoom] of [
           ...process.env,
         PULLCEPT_LAUNCH_ID: "",
         PULLCEPT_ROOM_ADMISSION: "0",
+        PULLCEPT_CONTROL_CAPABILITY: "",
           PULLCEPT_ROOM_URL: `ws://127.0.0.1:${port}`,
           PULLCEPT_AGENT_NAME: "test-agent",
           PULLCEPT_ACCOUNT_ID: TEST_ACCOUNT,

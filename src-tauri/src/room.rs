@@ -1859,6 +1859,7 @@ async fn serve_participant(
     // The token is what makes this room, and not merely this machine.
     let socket_id = Uuid::new_v4().to_string();
     let mut admitted: Option<(mcp_config::codex::admission::Claim, String)> = None;
+    let mut control_bound: Option<(String, String, String)> = None;
     let check = |req: &Request, res: Response| -> Result<Response, ErrorResponse> {
         let ok = req
             .headers()
@@ -1867,6 +1868,19 @@ async fn serve_participant(
             .map(|v| v == expected)
             .unwrap_or(false);
         if ok {
+            if req.headers().contains_key("x-pullcept-control") {
+                let field = |key| req.headers().get(key).and_then(|v| v.to_str().ok());
+                let binding = field("x-pullcept-control-room").zip(field("x-pullcept-control-account")).zip(field("x-pullcept-control"));
+                match binding {
+                    Some(((topic, account), capability)) if app.state::<RoomSeats>().control_binding(topic, account, capability, &app.state::<PtyState>()) => {
+                        control_bound = Some((topic.into(), account.into(), capability.into()));
+                    },
+                    _ => {
+                        let mut deny = ErrorResponse::new(Some("session control capability rejected".into()));
+                        *deny.status_mut() = StatusCode::FORBIDDEN; return Err(deny);
+                    }
+                }
+            }
             if req.headers().contains_key("x-pullcept-launch") {
                 let header = |key| req.headers().get(key).and_then(|v| v.to_str().ok());
                 let body = serde_json::json!({
@@ -2020,6 +2034,10 @@ async fn serve_participant(
                     }),
                 };
                 if !valid { break; }
+                if control_bound.as_ref().is_some_and(|(topic, account, capability)| {
+                    declared_room != Some(topic.as_str()) || declared_account != Some(account.as_str()) ||
+                    !app.state::<RoomSeats>().control_binding(topic, account, capability, &app.state::<PtyState>())
+                }) { break; }
                 let name = frame.name.unwrap_or_else(|| "session".to_string());
                 if frame.protocol != Some(PROTOCOL_VERSION) {
                     // Legible mismatch beats a silent half-working room.
@@ -2068,7 +2086,7 @@ async fn serve_participant(
                     account.as_deref(),
                 );
                 if let Ok(config) = config::read_config(&app) { room.refresh_accounts(&app, &config.accounts); }
-                if let Some(account) = &account {
+                if let Some(account) = account.as_ref().filter(|_| control_bound.is_some()) {
                     app.state::<crate::session_control::SessionControl>().connected(&app, &origin, &socket_id, &room_id, account,
                         admitted_claim.as_ref().map(|claim| claim.launch_id.as_str()));
                 }

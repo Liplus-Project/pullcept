@@ -2,6 +2,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const CAPABILITY_ENV: &str = "PULLCEPT_CONTROL_CAPABILITY";
+pub fn capability_matches(
+    supplied: Option<&str>,
+    expected: Option<&str>,
+    live_or_starting: bool,
+) -> bool {
+    live_or_starting && supplied.is_some_and(|token| !token.is_empty() && expected == Some(token))
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -240,6 +249,20 @@ mod tests {
     }
     #[test]
     fn caller_authority_is_live_launch_and_current_socket_bound() {
+        // A bearer-token client cannot gain control by naming a live account.
+        assert!(!capability_matches(None, Some("secret"), true));
+        assert!(!capability_matches(
+            Some("other-secret"),
+            Some("secret"),
+            true
+        ));
+        assert!(!capability_matches(
+            Some("old-secret"),
+            Some("new-secret"),
+            true
+        ));
+        assert!(!capability_matches(Some("secret"), Some("secret"), false));
+        assert!(capability_matches(Some("secret"), Some("secret"), true));
         let mut caller = Connection {
             socket: "socket".into(),
             topic: "room".into(),

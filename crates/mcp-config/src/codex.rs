@@ -15,6 +15,7 @@ pub const NATIVE_URL_ENV: &str = "PULLCEPT_NATIVE_URL";
 pub const OUTPUT_STYLE_ENV: &str = "LI_PLUS_OUTPUT_STYLE";
 pub const NATIVE_PATH: &str = "/hooks/codex-session";
 pub const SIDECAR_ENV: &[&str] = &[
+    crate::session_control::CAPABILITY_ENV,
     LAUNCH_ID_ENV,
     admission::REQUIRED_ENV,
     ROOM_TOKEN_ENV,
