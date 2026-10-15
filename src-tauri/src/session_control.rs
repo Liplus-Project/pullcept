@@ -222,7 +222,6 @@ impl SessionControl {
             )?
         };
         if is_new {
-            self.notice(app, &id);
             let worker_app = app.clone();
             let worker_id = id.clone();
             // Owned by the app runtime, never by serve_participant or a sidecar.
