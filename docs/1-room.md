@@ -561,7 +561,7 @@ liplus-desktop の `stream_parser.rs` および `spawn_stream_pty` / `spawn_stre
 
 状態は `accepted` → `running` → `process_started` / `stopped` / `failed`。開始成功はプロセスを作ったという意味で、`process_running` と `room_connected` を別に確認する。接続は同じアカウント名ではなく起動世代と接続で照合する。`stopped` は Pullcept の PTY 所有の解放と終了要求を示し、OS 上のプロセス消滅の検証ではない。再起動成功だけで Li+ 版や hook 読込を反映済みとは扱わず、新しい席本人が確認する。
 
-依頼者、対象 topic/account/expected PTY、操作、結果／理由は依頼者の部屋にアプリ通知として残し、画面にも失敗を出す。MCP から作った端末も既存の seat 読み直しで採用する。採用前の出力や旧端末の scrollback は再構築しない（画面再読込時と同じ制約）。
+依頼者、対象 topic/account/expected PTY、操作、結果／理由は、成功または失敗の実行結果のアプリ通知1通として依頼者の部屋に残す。受付時には部屋へ投稿せず、受付の永続記録と accepted/running の状態照会は維持する（#417）。画面にも失敗を出す。MCP から作った端末も既存の seat 読み直しで採用する。採用前の出力や旧端末の scrollback は再構築しない（画面再読込時と同じ制約）。
 
 アプリ終了時と次回起動時に未完了の `accepted` / `running` を `interrupted` にし、自動再実行しない。強制終了時は最後に保存できた状態から判断する。完了保存が失敗した場合は画面のログエラーを確認し、実際の席を一覧で照会する。記録は保持し続けるため、app data の削除は重複排除の履歴も消す。自動の異常検出・相互停止規約・Li+ 更新・版固定はこの機能に含めない。
 
