@@ -2103,6 +2103,14 @@ fn launch_codex_app_server(
     sidecar_runner: &Path,
 ) -> Result<StartedSession, String> {
     use mcp_config::codex::app_server;
+    // Validate the whole DB/journal path before discovery or the seat's
+    // backend can spawn. Opt-out seats do not resolve this root at all.
+    let remote_sqlite_home = if account.codex_remote_control {
+        let root = app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
+        Some(mcp_config::codex::remote::sqlite_home(&root, topic_id, &account.id)?)
+    } else {
+        None
+    };
     let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
     // The `.codex` folder native discovery lists a project layer for, and the
     // removal of what builds before #297 left in it.
@@ -2119,9 +2127,7 @@ fn launch_codex_app_server(
         &delivery.hook_keys,
         &crate::codex_app_server::token_sha256(&token),
     )?;
-    if account.codex_remote_control {
-        let root = app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
-        let path = mcp_config::codex::remote::sqlite_home(&root, topic_id, &account.id);
+    if let Some(path) = remote_sqlite_home {
         std::fs::create_dir_all(&path).map_err(|_| "リモート接続用の席の保存先を作れません。")?;
         mcp_config::codex::remote::isolate(&mut server_args, &path)?;
     }
