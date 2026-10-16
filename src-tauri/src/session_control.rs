@@ -272,9 +272,24 @@ impl SessionControl {
         let Some(op) = self.journal.lock().book.operations.get(id).cloned() else {
             return;
         };
-        let content = format!("Session operation {id}: requester {} ({}, topic {}), target {}/{} {:?} expected {:?}; {} new_pty {:?}{}",
-            op.requester_name, op.requester_account, op.requester_topic, op.request.topic_id, op.request.account_id,
-            op.request.action, op.request.expected_pty_id, op.status, op.new_pty_id, op.error.as_ref().map(|e| format!(": {e}")).unwrap_or_default());
+        let target = config::read_config(app)
+            .ok()
+            .and_then(|c| {
+                c.accounts
+                    .into_iter()
+                    .find(|a| a.id == op.request.account_id)
+                    .map(|a| a.address_name().to_string())
+            })
+            .unwrap_or_else(|| "不明なアカウント".into());
+        let content = mcp_config::session_control::notice_text(
+            &op.requester_name,
+            &target,
+            op.requester_account == op.request.account_id,
+            op.request.action,
+            &op.status,
+            op.error.as_deref(),
+            id,
+        );
         room::post_app_notice(
             app,
             &app.state::<RoomState>(),
