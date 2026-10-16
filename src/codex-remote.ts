@@ -5,7 +5,8 @@ interface Pairing { pairingCode: string; manualPairingCode: string | null; expir
 interface Reply { epoch: string; status: string | null; error: string | null; pairing: Pairing | null }
 
 /** Private, transient screen. No storage, room event, URL navigation or logging. */
-export function openCodexRemote(ptyId: string, name: string, isLive: () => boolean): void {
+export function openCodexRemote(ptyId: string, name: string, isLive: () => boolean,
+  deps = { invoke, renderQr: QRCode.toCanvas }): void {
   const dialog = document.createElement("dialog");
   dialog.className = "codex-remote-dialog";
   const heading = document.createElement("h2");
@@ -49,7 +50,7 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
     if (action !== "status") { clearPrivate(); error.textContent = ""; }
     const requestGeneration = generation;
     try {
-      const reply = await invoke<Reply>("codex_remote_control", { ptyId, epoch, action });
+      const reply = await deps.invoke<Reply>("codex_remote_control", { ptyId, epoch, action });
       if (!alive || !isLive()) { if (alive) ended(); return; }
       if (epoch && epoch !== reply.epoch) { ended(); return; }
       epoch = reply.epoch;
@@ -74,7 +75,7 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
         privateArea.append(canvas, code, expiry);
         const url = new URL("https://chatgpt.com/codex/pair");
         url.searchParams.set("pairing_code", pairData.pairingCode);
-        await QRCode.toCanvas(canvas, url.toString(), { width: 280, margin: 4, errorCorrectionLevel: "M" });
+        await deps.renderQr(canvas, url.toString(), { width: 280, margin: 4, errorCorrectionLevel: "M" });
         if (!alive || generation !== requestGeneration || document.hidden) { canvas.width=0; canvas.height=0; canvas.remove(); }
       }
     } catch (reason) {

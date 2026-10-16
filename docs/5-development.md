@@ -159,3 +159,12 @@ git add --renormalize src-tauri/Cargo.toml
 ```
 
 これは索引だけを書き直し、作業ツリーのファイルには触れない。動いているアプリは作り直されない。`git checkout -- src-tauri/Cargo.toml` は使わない——ファイルを書き換えるので、作り直しと再起動が起きる。
+
+
+## Native relay の回帰境界（#419）
+
+`cargo test --manifest-path crates/codex-remote/Cargo.toml` は実際の control transport をローカル偽 WebSocket backend に接続する。Bearer header と experimental initialize、応答 ID の照合、通知と承認要求を応答と取り違えないこと、timeout 後に socket を捨てること、遅延応答と席終了の拒否、起動時 enable より前／後に届く明示 disable の順序、非対応 API をサニタイズして再試行可能に保つことを検証する。実 Codex・認証・モデルは使わない。
+
+`mcp-config` の `codex::remote` は安定して衝突しない保存先、最後の global `sqlite_home` 設定、ephemeral 操作、純粋な ID 相関と秘密を含まない失敗、期限の正規化を検証する。`sidecar/test/codex-remote-ui.test.mjs` は実画面モジュールへ invoke / QR renderer / DOM / 時計を代入し、閉じた後の private reply、QR の遅延完了、期限切れ、非表示、席終了、epoch 変更、非対応の再試行を検証する。`frontend-lifecycle.test.mjs` は旧アカウントの既定 OFF と opt-in の保存・再読込、app-server 解除時の remote 解除を含む。
+
+これらは合成試験である。Tauri invoke と実 CLI の組合せ、分離 SQLite での既存会話 resume と writer lock、DB 再構築の一覧への影響、公式アプリでの複数席選択・入力・承認・再接続は、隔離した実環境と実機で別途確認する。製品の稼働席はこの PR の検証で更新しない。

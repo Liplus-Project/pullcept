@@ -456,7 +456,7 @@ pub fn start(request: Request) -> Result<Started, String> {
     let url = format!("ws://127.0.0.1:{port}");
     let server = Server {
         child: Arc::new(Mutex::new(child)),
-        remote: request.remote_enabled.then(|| Arc::new(remote::Control::new(&url, request.token))),
+        remote: request.remote_enabled.then(|| Arc::new(remote::Control::new(&url, request.token, uuid::Uuid::new_v4().to_string()))),
     };
     if let Some(on_spawn) = request.on_spawn { on_spawn(Arc::clone(&server.child)); }
     let socket = match connect(&url, request.token) {

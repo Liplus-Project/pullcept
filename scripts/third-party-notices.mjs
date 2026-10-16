@@ -5,7 +5,7 @@
 //   node scripts/third-party-notices.mjs          write the file
 //   node scripts/third-party-notices.mjs --check  fail when the file is stale
 //
-// The roots are the packages src/composer.ts imports. Their dependencies are
+// The roots are the packages src/composer.ts and src/codex-remote.ts import. Their dependencies are
 // followed through package-lock.json, peers included, and each package's
 // licence is read from the LICENSE file it ships in node_modules. A package
 // with no licence file, or with a licence outside ALLOWED, stops the run: it is
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const NOTICES = join(REPO, "THIRD-PARTY-NOTICES.txt");
 
-/** What src/composer.ts imports. */
+/** Browser libraries imported by composer and the local pairing screen. */
 export const ROOTS = [
   "@tiptap/core",
   "@tiptap/pm",

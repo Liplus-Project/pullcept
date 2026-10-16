@@ -34,6 +34,7 @@ jobs:
             ~/.cargo/git
             src-tauri/target
             crates/mcp-config/target
+            crates/codex-remote/target
             crates/room-floor/target
             crates/account-env/target
             crates/webhook-bridge/target
@@ -74,6 +75,9 @@ jobs:
       - name: Test the mcp-config crate
         working-directory: crates/mcp-config
         run: cargo test
+
+      - name: Test the native relay control boundary
+        run: cargo test --manifest-path crates/codex-remote/Cargo.toml
 
       - name: Test the room-floor crate
         working-directory: crates/room-floor

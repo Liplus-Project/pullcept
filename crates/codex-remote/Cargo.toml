@@ -1,0 +1,12 @@
+[package]
+name = "codex-remote"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Seat-scoped authenticated native Codex relay control transport"
+
+[dependencies]
+mcp-config = { path = "../mcp-config" }
+parking_lot = "0.12"
+serde_json = "1"
+tungstenite = "0.24"
