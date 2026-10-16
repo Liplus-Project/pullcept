@@ -244,6 +244,35 @@ impl Book {
     }
 }
 
+/// Room notice body for a finished operation: who did what to whom and how it
+/// ended, by name (#421). Failure adds one reason line; the operation id stays
+/// last so the requesting seat can match it. No UUIDs or debug forms.
+pub fn notice_text(
+    requester: &str,
+    target: &str,
+    action: Action,
+    status: &str,
+    error: Option<&str>,
+    id: &str,
+) -> String {
+    let verb = match action {
+        Action::Start => "起動",
+        Action::Stop => "停止",
+        Action::Restart => "再起動",
+    };
+    let ok = matches!(status, "process_started" | "stopped");
+    let mut text = format!(
+        "{requester} が {target} を{verb}しました（{}）",
+        if ok { "成功" } else { "失敗" }
+    );
+    if !ok {
+        let reason = error.unwrap_or(status).replace(['\r', '\n'], " ");
+        text.push_str(&format!("\n理由: {reason}"));
+    }
+    text.push_str(&format!("\noperation_id: {id}"));
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,5 +552,35 @@ mod tests {
         assert!(!restored
             .accept(request(Action::Restart), "target", "room", "Self", "later")
             .unwrap());
+    }
+
+    #[test]
+    fn notice_names_who_did_what() {
+        assert_eq!(
+            notice_text(
+                "Lin",
+                "Lin",
+                Action::Restart,
+                "process_started",
+                None,
+                "op-1"
+            ),
+            "Lin が Lin を再起動しました（成功）\noperation_id: op-1"
+        );
+        assert_eq!(
+            notice_text("Lin", "Lay", Action::Start, "failed", None, "op-3"),
+            "Lin が Lay を起動しました（失敗）\n理由: failed\noperation_id: op-3"
+        );
+        assert_eq!(
+            notice_text(
+                "Lay",
+                "Lin",
+                Action::Stop,
+                "failed",
+                Some("Target topic\nis not open"),
+                "op-2"
+            ),
+            "Lay が Lin を停止しました（失敗）\n理由: Target topic is not open\noperation_id: op-2"
+        );
     }
 }
