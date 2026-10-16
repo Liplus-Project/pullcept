@@ -284,6 +284,7 @@ impl SessionControl {
         let content = mcp_config::session_control::notice_text(
             &op.requester_name,
             &target,
+            op.requester_account == op.request.account_id,
             op.request.action,
             &op.status,
             op.error.as_deref(),
