@@ -3496,7 +3496,7 @@ button svg.icon {
 
 .codex-remote-dialog {
   max-width: 520px; width: calc(100vw - 64px); padding: 24px;
-  background: var(--bg, #202124); color: var(--text, #eee);
+  background: var(--bg, #202124); color: var(--fg);
   border: 1px solid var(--line, #555); border-radius: 12px;
 }
 .codex-remote-dialog::backdrop { background: #0009; }
