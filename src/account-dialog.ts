@@ -183,6 +183,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
     document.getElementById("dialog-codex-note")!.hidden = !codex;
     dialogCodexAppServerFieldEl.hidden = !codex;
+    dialogCodexRemoteFieldEl.hidden = !codex;
     if (launchesKind(kind)) refreshDialogLine();
     // The kind picks the folder the character file is in, or that there is none (#100).
     void refreshCharacterFile();
@@ -452,6 +453,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogCwdEl.value = draft.cwd ?? "";
     dialogCharacterEl.value = draft.character ?? "";
     dialogCodexAppServerEl.checked = draft.codex_app_server === true;
+    dialogCodexRemoteEl.checked = draft.codex_remote_control === true;
     dialogCommandEl.value = draft.command;
     dialogOptionsEl.value = deps.joinArgs(draft.args);
     dialogResumeEl.value = draft.resume_command ?? "";
@@ -991,6 +993,7 @@ export function createAccountDialog(deps: Dependencies) {
       resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
       // Kept only where it is read (#299).
       codex_app_server: kind === "codex_cli" && dialogCodexAppServerEl.checked,
+      codex_remote_control: kind === "codex_cli" && dialogCodexAppServerEl.checked && dialogCodexRemoteEl.checked,
       args,
       env,
     };
@@ -1489,6 +1492,9 @@ export function createAccountDialog(deps: Dependencies) {
 
   const dialogCharacterReloadEl = document.getElementById("dialog-character-reload") as HTMLButtonElement;
 
+  const dialogCodexRemoteEl = document.getElementById("dialog-codex-remote") as HTMLInputElement;
+  const dialogCodexRemoteFieldEl = document.getElementById("dialog-codex-remote-field") as HTMLElement;
+
   const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
 
   const dialogCodexAppServerFieldEl = document.getElementById("dialog-codex-app-server-field") as HTMLElement;
@@ -1580,7 +1586,14 @@ export function createAccountDialog(deps: Dependencies) {
     dialogCharacterEl.addEventListener("input", () => scheduleCharacterFile());
     dialogCwdEl.addEventListener("input", () => scheduleCharacterFile());
     dialogCharacterReloadEl.addEventListener("click", () => void refreshCharacterFile(true));
-    dialogCodexAppServerEl.addEventListener("change", () => refreshDialogLine());
+    dialogCodexAppServerEl.addEventListener("change", () => {
+      if (!dialogCodexAppServerEl.checked) dialogCodexRemoteEl.checked = false;
+      refreshDialogLine();
+    });
+    dialogCodexRemoteEl.addEventListener("change", () => {
+      if (dialogCodexRemoteEl.checked) dialogCodexAppServerEl.checked = true;
+      refreshDialogLine();
+    });
     // So does the working directory: which registrations the line stops is read
     // out of the directory it is pointed at (#103).
     dialogCwdEl.addEventListener("input", () => refreshDialogLine());

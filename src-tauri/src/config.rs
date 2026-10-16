@@ -239,6 +239,9 @@ pub struct Account {
     /// Codex CLI account.
     #[serde(default)]
     pub codex_app_server: bool,
+    /// Opt-in relay; only these seats use their own SQLite directory (#419).
+    #[serde(default)]
+    pub codex_remote_control: bool,
 }
 
 /// Which of the two panels flanking the room are open.
@@ -346,6 +349,7 @@ impl Default for AppConfig {
                 server: None,
                 avatar: false,
                 codex_app_server: false,
+                codex_remote_control: false,
             }],
             panels: PanelState::default(),
         }

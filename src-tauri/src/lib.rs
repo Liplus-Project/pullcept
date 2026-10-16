@@ -109,6 +109,7 @@ pub fn run() {
             room_log::room_attach_bytes,
             room_log::room_attachments_dir,
             room_log::room_attachment,
+            codex_app_server::remote::codex_remote_control,
             session::seated_accounts,
             session::parse_launch_options,
             session::launch_field_report,

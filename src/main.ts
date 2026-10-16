@@ -1,3 +1,4 @@
+import { openCodexRemote } from "./codex-remote";
 import { accountName } from "./account-name";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -2415,6 +2416,9 @@ function openAccountMenu(account: Account, at: { x: number; y: number }): void {
 
   if (view) {
     item("端末を開く", icon("terminal"), () => openTerminalOf(account.id));
+  }
+  if (view && view.ended === null && view.ptyId && account.kind === "codex_cli") {
+    item("スマホから接続", icon("terminal"), () => openCodexRemote(view.ptyId, accountName(account), () => view.ended === null && sessions.getView(seatKey(view.topicId, account.id)) === view));
   }
   item("編集", icon("edit"), () => openAccountFrom(account.id, "name"));
   // A swatch in the account's own colour where the others have a drawing: it

@@ -2111,7 +2111,7 @@ fn launch_codex_app_server(
     let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name)?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let token = crate::codex_app_server::new_token();
-    let server_args = app_server::server_args(
+    let mut server_args = app_server::server_args(
         &plan,
         server_name,
         sidecar_runner,
@@ -2119,6 +2119,12 @@ fn launch_codex_app_server(
         &delivery.hook_keys,
         &crate::codex_app_server::token_sha256(&token),
     )?;
+    if account.codex_remote_control {
+        let root = app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
+        let path = mcp_config::codex::remote::sqlite_home(&root, topic_id, &account.id);
+        std::fs::create_dir_all(&path).map_err(|_| "リモート接続用の席の保存先を作れません。")?;
+        mcp_config::codex::remote::isolate(&mut server_args, &path)?;
+    }
     mcp_config::codex::check_command_length(&account.command, &server_args)?;
 
     // The server is the process that starts MCP servers and runs hooks, so
@@ -2161,6 +2167,7 @@ fn launch_codex_app_server(
         settings: &plan.thread,
         resume: line.resumed_from.as_deref(),
         token: &token,
+        remote_enabled: account.codex_remote_control,
     })?;
 
     let started_at = crate::room::now_iso();

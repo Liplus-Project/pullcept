@@ -646,6 +646,11 @@
                   app-server 方式
                   <input id="dialog-codex-app-server" type="checkbox" />
                 </label>
+                <label id="dialog-codex-remote-field" class="field" hidden>
+                  スマホから接続（app-server 方式が必要）
+                  <input id="dialog-codex-remote" type="checkbox" />
+                  <span>次の起動から有効。会話一覧の見え方が変わる場合があります。稼働中の席の ⋯ から接続画面を開けます。</span>
+                </label>
                 <!-- 起動オプション。**その人が足したいものだけを書く欄である**
                      （#156、決定3）。セッション id の渡し方は種別が持つため、
                      `Claude Code` では `--session-id {session_id}` をここへ書かな

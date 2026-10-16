@@ -3492,3 +3492,15 @@ button svg.icon {
 }
 
 .who .original-name { display: block; font-size: 0.8em; opacity: 0.7; }
+
+
+.codex-remote-dialog {
+  max-width: 520px; width: calc(100vw - 64px); padding: 24px;
+  background: var(--bg, #202124); color: var(--text, #eee);
+  border: 1px solid var(--line, #555); border-radius: 12px;
+}
+.codex-remote-dialog::backdrop { background: #0009; }
+.codex-remote-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.codex-remote-dialog canvas { display: block; max-width: 100%; margin: 16px auto; }
+.codex-remote-dialog [role="alert"] { color: var(--danger, #ffaaaa); }
+.codex-remote-actions { display: flex; flex-wrap: wrap; gap: 8px; }
