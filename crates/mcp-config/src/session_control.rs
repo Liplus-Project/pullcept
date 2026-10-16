@@ -247,9 +247,12 @@ impl Book {
 /// Room notice body for a finished operation: who did what to whom and how it
 /// ended, by name (#421). Failure adds one reason line; the operation id stays
 /// last so the requesting seat can match it. No UUIDs or debug forms.
+/// `same_account` (requester account id == target account id) writes the
+/// target as 「自分」 (#424).
 pub fn notice_text(
     requester: &str,
     target: &str,
+    same_account: bool,
     action: Action,
     status: &str,
     error: Option<&str>,
@@ -261,8 +264,13 @@ pub fn notice_text(
         Action::Restart => "再起動",
     };
     let ok = matches!(status, "process_started" | "stopped");
+    let whom = if same_account {
+        "自分を".to_string()
+    } else {
+        format!(" {target} を")
+    };
     let mut text = format!(
-        "{requester} が {target} を{verb}しました（{}）",
+        "{requester} が{whom}{verb}しました（{}）",
         if ok { "成功" } else { "失敗" }
     );
     if !ok {
@@ -560,21 +568,48 @@ mod tests {
             notice_text(
                 "Lin",
                 "Lin",
+                true,
                 Action::Restart,
                 "process_started",
                 None,
                 "op-1"
             ),
-            "Lin が Lin を再起動しました（成功）\noperation_id: op-1"
+            "Lin が自分を再起動しました（成功）\noperation_id: op-1"
+        );
+        // Same name on different accounts is not self (#424).
+        assert_eq!(
+            notice_text(
+                "Lin",
+                "Lin",
+                false,
+                Action::Restart,
+                "process_started",
+                None,
+                "op-4"
+            ),
+            "Lin が Lin を再起動しました（成功）\noperation_id: op-4"
         );
         assert_eq!(
-            notice_text("Lin", "Lay", Action::Start, "failed", None, "op-3"),
+            notice_text("Lin", "Lay", false, Action::Start, "failed", None, "op-3"),
             "Lin が Lay を起動しました（失敗）\n理由: failed\noperation_id: op-3"
         );
         assert_eq!(
             notice_text(
                 "Lay",
+                "Lay",
+                true,
+                Action::Stop,
+                "failed",
+                Some("Target topic\nis not open"),
+                "op-2"
+            ),
+            "Lay が自分を停止しました（失敗）\n理由: Target topic is not open\noperation_id: op-2"
+        );
+        assert_eq!(
+            notice_text(
+                "Lay",
                 "Lin",
+                false,
                 Action::Stop,
                 "failed",
                 Some("Target topic\nis not open"),
