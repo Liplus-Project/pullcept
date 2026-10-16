@@ -172,3 +172,31 @@ test("account form saves, reloads and clears optional nickname", async t => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(saved[0].nickname, null);
 });
+
+
+test("legacy accounts default remote off; opting in requires app-server and round-trips on save", async t => {
+  const {get}=dom(t);
+  const accounts=[{...structuredClone(account),kind:"codex_cli",name:"Codex Luna"}];
+  let saved;
+  const dialog=createAccountDialog({
+    invoke: async command => command === "parse_launch_options" ? [] : "", listen: async () => noop,
+    accounts, shownTopicId: () => "first", joinArgs: args => args.join(" "), homeDir: "D:/work", localAccountId: "human",
+    speakerColor: () => "red", declaredHue: () => null, initialOf: name => name[0], avatarImages: new Map(), drawAvatar: noop,
+    asciiJson: text => text, setAvatarImage: noop, saveConfig: async () => {saved=JSON.parse(JSON.stringify(accounts));return true;}, renderPanel: noop, status: noop,
+    seatedAnywhere: () => false, renderSessionFacts: noop, join: async () => {}, allViews: () => [], discardView: noop, fillHues: noop,
+  });
+  dialog.wireForm(); dialog.openAccountDialog(accounts[0]); await new Promise(r=>setImmediate(r));
+  assert.equal(get("dialog-codex-remote").checked,false);
+  assert.equal(get("dialog-codex-app-server").checked,false);
+  get("dialog-codex-remote").checked=true;get("dialog-codex-remote").emit("change");
+  assert.equal(get("dialog-codex-app-server").checked,true);
+  get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
+  assert.equal(saved?.[0].codex_remote_control,true);
+  assert.equal(saved?.[0].codex_app_server,true);
+  accounts[0]=saved[0];dialog.openAccountDialog(accounts[0]);
+  assert.equal(get("dialog-codex-remote").checked,true);
+  get("dialog-codex-app-server").checked=false;get("dialog-codex-app-server").emit("change");
+  assert.equal(get("dialog-codex-remote").checked,false);
+  get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
+  assert.equal(saved[0].codex_remote_control,false);
+});

@@ -46,6 +46,9 @@ use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream, Message, WebSocket,
 };
 
+#[path = "codex_remote.rs"]
+pub mod remote;
+
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
 /// How long the server has to print the port it bound.
@@ -75,10 +78,12 @@ impl CodexServers {
 /// The process tree of one seat's server.
 struct Server {
     child: Arc<Mutex<Child>>,
+    remote: Option<Arc<remote::Control>>,
 }
 
 impl Server {
     fn stop(self) {
+        if let Some(control) = &self.remote { control.end(); }
         stop_tree(&mut self.child.lock());
     }
 }
@@ -136,6 +141,7 @@ pub struct Request<'a> {
     pub settings: &'a plan::ThreadSettings,
     pub resume: Option<&'a str>,
     pub token: &'a str,
+    pub remote_enabled: bool,
 }
 
 /// A server up, its thread ready, and the terminal not yet attached.
@@ -415,6 +421,10 @@ impl Started {
             activity.disconnect();
             seat.tell(&activity);
         });
+        if let Some(control) = &server.remote {
+            let control = Arc::clone(control);
+            std::thread::spawn(move || control.enable_on_start());
+        }
         app.state::<CodexServers>()
             .servers
             .lock()
@@ -444,7 +454,10 @@ impl Started {
 pub fn start(request: Request) -> Result<Started, String> {
     let (child, port) = spawn(&request)?;
     let url = format!("ws://127.0.0.1:{port}");
-    let server = Server { child: Arc::new(Mutex::new(child)) };
+    let server = Server {
+        child: Arc::new(Mutex::new(child)),
+        remote: request.remote_enabled.then(|| Arc::new(remote::Control::new(&url, request.token, uuid::Uuid::new_v4().to_string()))),
+    };
     if let Some(on_spawn) = request.on_spawn { on_spawn(Arc::clone(&server.child)); }
     let socket = match connect(&url, request.token) {
         Ok(socket) => socket,

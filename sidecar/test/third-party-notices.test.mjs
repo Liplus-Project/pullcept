@@ -31,3 +31,13 @@ test("the installer carries the notices", () => {
   assert.equal(resources["../THIRD-PARTY-NOTICES.txt"], "THIRD-PARTY-NOTICES.txt");
   assert.equal(resources["../NOTICE.txt"], "NOTICE.txt");
 });
+
+
+test("local QR's browser renderer and browser dependency carry notices", () => {
+  const packages=collect().map(p=>p.name);
+  assert.ok(ROOTS.includes("qrcode"));
+  assert.ok(packages.includes("qrcode"));
+  assert.ok(packages.includes("dijkstrajs"));
+  assert.ok(!packages.includes("yargs"));
+  assert.ok(!packages.includes("pngjs"));
+});

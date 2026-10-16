@@ -224,6 +224,7 @@ export interface Account {
    *  character as `developerInstructions` (#299). Absent or false: the Li+
    *  output style hook, which stays the default. */
   codex_app_server?: boolean;
+  codex_remote_control?: boolean;
 }
 
 export interface EnvVar {
