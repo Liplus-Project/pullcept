@@ -737,8 +737,17 @@ Codex CLI アカウントの「起動」で「スマホから接続」を選び�
 
 QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サービスへ送らない。`https://chatgpt.com/codex/pair?pairing_code=…` の公式ペアリング形式を使う。QR とコードは保存しない。画面を閉じる、隠す、有効期限を迎える、席が終了する、接続を止めると表示を消す。画面を閉じるだけでは接続済み端末を失効させず、relay も停止しない。「接続を停止」で今の backend の relay を停止する。次の席の起動ではアカウントの選択に従って接続を試みる。接続希望の変更は `ephemeral:true` で native 設定に保存しないが、native enrollment は専用 DB へ保存され得る。
 
-接続する席だけは Pullcept のアプリデータ内 `codex-seat-sqlite/<topic>/<account>`（ID は UTF-8 バイトの hex 表現）を安定した `sqlite_home` として使う。分離対象は relay 登録だけでなく SQLite 群全体で、既存の一覧・検索・キャッシュの見え方が変わる場合がある。既存 DB をコピー・削除で移行しない。`CODEX_HOME` は変えず、認証・rollout 履歴ファイル・writer lock の範囲を保つ。トピックに保存された会話 ID は従来どおり明示して resume する。設定を外した次の起動は元の保存先を使い、専用 DB を削除しない。
+接続する席だけは Pullcept のアプリデータ内 `codex-seat-sqlite/<SHA-256>`（topic/account の UTF-8 バイト長を8byte big-endianで区切り、版付きnamespaceと両IDから導出する完全長64桁hexの単一component）を安定した `sqlite_home` として使う。分離対象は relay 登録だけでなく SQLite 群全体で、既存の一覧・検索・キャッシュの見え方が変わる場合がある。既存 DB をコピー・削除で移行しない。`CODEX_HOME` は変えず、認証・rollout 履歴ファイル・writer lock の範囲を保つ。トピックに保存された会話 ID は従来どおり明示して resume する。設定を外した次の起動は元の保存先を使い、専用 DB を削除しない。
 
 制御は席の既存の認証済み loopback backend に短命の専用接続で送り、activity を読む接続は変更しない。要求ごとの接続と ID、最大 30 秒の応答期限、席の起動世代、PTY 生存の前後照合で遅延応答を隔離する。起動時 enable より後に届いた明示操作を優先する。承認要求にはこの接続から答えず、既存の承認所有・権限分割を保つ。remote TUI の行に権限上書き引数を追加しない。
 
 検証範囲: 2026-10-16 の CLI 0.162.1 で、隔離した単一 WS + TUI + Android の同一試験会話入力、および同一 CODEX_HOME / 別 SQLite の二 backend の約16秒の connected 共存を確認した。製品コードの合成試験は起動計画・相関・秘密除外・画面寿命を扱う。製品への実適用、分離後の既存会話 resume / writer lock、複数端末表示と選択 routing、承認、切断再接続、長時間の共存は別途実機確認が必要。connected 表示や CI 成功をこれらの実証とは扱わない。
+
+
+### Windows の専用DB保存先（#426）
+
+#423 の旧形式 `id-<topic hex>/id-<account hex>` は、標準のアプリデータrootとUUIDの組合せでも保存先が長くなり、Codex CLI 0.162.1の新規履歴DB初期化でSQLite14を起こす条件があった。#426から固定長SHA-256形式を使う。最長DB名 `thread_history_1.sqlite` と `-journal` を含む全pathをWindowsのUTF-16単位で数え、248単位を超える場合は実spawn前にアプリデータ保存先の短縮を促す。DB本体だけで判定せず、長いユーザー名や非ASCIIrootにも同じ検証を行う。
+
+旧専用DBは削除・コピー・再利用せず残す。新しい保存先ではrelayの再登録・ペアリングが必要になり得る。`CODEX_HOME`と明示resumeの会話IDは変更しない。接続を選んでいない席の保存先・起動は変更しない。
+
+2026-10-16の隔離native0.162.1試験では、developer fixtureをモデルturnなしで永続化したあと、履歴DB本体251字で取得成功、252字で失敗した。slash／extended prefix指定でも252字の失敗は変わらず、同じ252字の新規fixture DBをINCREMENTAL/WALで事前初期化すると成功した。nativeはINCREMENTALをWAL切替より先に設定するため、初期rollback journal（+8字）が失敗する説明と合うが、個別OS syscallは追跡していない。失敗したfixtureを同じ隔離HOME・別の短いSQLiteへcold resumeし、元thread ID一致と履歴取得成功も確認した。修正後の実Rust保存先関数を呼んで得た188字のDB本体pathでも、同じ失敗fixtureのcold resumeと履歴取得が成功した。Pythonで長いDBが開けることやこのfixtureの成功を、製品の元のLuna会話の実証とは扱わない。
