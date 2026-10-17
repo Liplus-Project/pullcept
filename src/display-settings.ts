@@ -1,4 +1,4 @@
-
+import type { TerminalCursorStyle } from "./contracts";
 
 export interface Dependencies {
   roomEl: HTMLElement;
@@ -6,6 +6,7 @@ export interface Dependencies {
   participantsEl: HTMLElement;
   syncScrollLatest: () => void;
   setTerminalFontSize: (size: number) => void;
+  setTerminalCursorStyle: (style: TerminalCursorStyle) => void;
   fitTerminal: () => void;
 }
 
@@ -113,6 +114,27 @@ export function createDisplaySettings(deps: Dependencies) {
    * nobody.
    */
   const DEFAULT_TERMINAL_FONT_SIZE = 13;
+
+  /**
+   * The shape a terminal's cursor is drawn in (#448).
+   *
+   * A matter of taste with no right answer, so it is the screen's choice: kept
+   * beside the terminal size in `localStorage`, for the same reason. The CLIs do
+   * not pick one — Claude Code sends no `CSI Ps SP q` and Codex sends only `0`,
+   * which xterm reads as "the option's shape" — so what is chosen here is what
+   * is drawn.
+   */
+  const TERMINAL_CURSOR_STYLE_KEY = "pullcept.terminal-cursor-style";
+
+  /** The shapes on offer, in xterm's names, with the labels the picker shows. */
+  const TERMINAL_CURSOR_STYLES: [TerminalCursorStyle, string][] = [
+    ["block", "四角"],
+    ["bar", "縦線"],
+    ["underline", "下線"],
+  ];
+
+  /** xterm's own default and what every terminal has been drawn with. */
+  const DEFAULT_TERMINAL_CURSOR_STYLE: TerminalCursorStyle = "block";
 
   /**
    * How large everything but the conversation and the terminal is drawn, as a
@@ -284,6 +306,33 @@ export function createDisplaySettings(deps: Dependencies) {
 
   }
 
+  /** Fill the cursor shape picker. */
+  function fillTerminalCursorStyles(): void {
+    for (const [style, label] of TERMINAL_CURSOR_STYLES) {
+      const option = document.createElement("option");
+      option.value = style;
+      option.textContent = label;
+      settingsTerminalCursorStyleEl.appendChild(option);
+    }
+  }
+
+  /** The stored cursor shape, or the default when none or an unknown one is stored. */
+  function storedTerminalCursorStyle(): TerminalCursorStyle {
+    const stored = localStorage.getItem(TERMINAL_CURSOR_STYLE_KEY);
+    const known = TERMINAL_CURSOR_STYLES.find(([style]) => style === stored);
+    return known ? known[0] : DEFAULT_TERMINAL_CURSOR_STYLE;
+  }
+
+  /**
+   * Draw every terminal's cursor as `style`, and remember it if it was chosen.
+   * Nothing is re-fitted: the shape does not change a cell's size.
+   */
+  function applyTerminalCursorStyle(style: TerminalCursorStyle, save: boolean): void {
+    deps.setTerminalCursorStyle(style);
+    settingsTerminalCursorStyleEl.value = style;
+    if (save) localStorage.setItem(TERMINAL_CURSOR_STYLE_KEY, style);
+  }
+
   /** Fill the UI scale picker. Labelled as a percentage, as #60's is. */
   function fillUiScales(): void {
     for (const scale of UI_SCALES) {
@@ -337,6 +386,10 @@ export function createDisplaySettings(deps: Dependencies) {
     "settings-terminal-font-size",
   ) as HTMLSelectElement;
 
+  const settingsTerminalCursorStyleEl = document.getElementById(
+    "settings-terminal-cursor-style",
+  ) as HTMLSelectElement;
+
   const settingsUiScaleEl = document.getElementById("settings-ui-scale") as HTMLSelectElement;
   function initialize(): void {
     fillUiScales();
@@ -370,6 +423,12 @@ export function createDisplaySettings(deps: Dependencies) {
     applyTerminalFontSize(storedTerminalFontSize(), false);
     settingsTerminalFontSizeEl.addEventListener("change", () => {
       applyTerminalFontSize(Number(settingsTerminalFontSizeEl.value), true);
+    });
+
+    fillTerminalCursorStyles();
+    applyTerminalCursorStyle(storedTerminalCursorStyle(), false);
+    settingsTerminalCursorStyleEl.addEventListener("change", () => {
+      applyTerminalCursorStyle(settingsTerminalCursorStyleEl.value as TerminalCursorStyle, true);
     });
 
   }

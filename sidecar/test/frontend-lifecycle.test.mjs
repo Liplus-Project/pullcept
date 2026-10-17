@@ -131,11 +131,11 @@ test("account cancellation rejects a pending environment read and leaves stored 
 });
 
 test("display initialization restores fonts before wiring changes without writing defaults", t => {
-  const {get} = dom(t); const before = globalThis.localStorage; const stored = new Map([["pullcept.terminal-font-size", "18"]]); const writes = [];
+  const {get} = dom(t); const before = globalThis.localStorage; const stored = new Map([["pullcept.terminal-font-size", "18"], ["pullcept.terminal-cursor-style", "bar"]]); const writes = [];
   globalThis.localStorage = {getItem: key => stored.get(key) ?? null, setItem: (key, value) => writes.push([key, value])};
   t.after(() => { globalThis.localStorage = before; });
-  const sizes = [], fitted = [];
-  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size), fitTerminal: () => fitted.push({picker: get("settings-terminal-font-size").value, writes: [...writes]})});
+  const sizes = [], cursors = [], fitted = [];
+  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size), setTerminalCursorStyle: style => cursors.push(style), fitTerminal: () => fitted.push({picker: get("settings-terminal-font-size").value, writes: [...writes]})});
   assert.deepEqual(sizes, []);
   display.initialize();
   assert.deepEqual(sizes, [18]);
@@ -144,6 +144,21 @@ test("display initialization restores fonts before wiring changes without writin
   assert.deepEqual(sizes, [18, 16]);
   assert.deepEqual(writes, [["pullcept.terminal-font-size", "16"]]);
   assert.deepEqual(fitted, [{picker: "18", writes: []}, {picker: "16", writes: [["pullcept.terminal-font-size", "16"]]}]);
+  assert.deepEqual(cursors, ["bar"]);
+  assert.equal(get("settings-terminal-cursor-style").value, "bar");
+  get("settings-terminal-cursor-style").value = "underline"; get("settings-terminal-cursor-style").emit("change");
+  assert.deepEqual(cursors, ["bar", "underline"]);
+  assert.deepEqual(writes.at(-1), ["pullcept.terminal-cursor-style", "underline"]);
+  assert.equal(fitted.length, 2);
+});
+
+test("an unknown stored cursor shape falls back to the block default", t => {
+  const {get} = dom(t); const before = globalThis.localStorage; const stored = new Map([["pullcept.terminal-cursor-style", "beam"]]);
+  globalThis.localStorage = {getItem: key => stored.get(key) ?? null, setItem: noop};
+  t.after(() => { globalThis.localStorage = before; });
+  const cursors = [];
+  createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: noop, setTerminalCursorStyle: style => cursors.push(style), fitTerminal: noop}).initialize();
+  assert.deepEqual(cursors, ["block"]);
 });
 
 test("account form saves, reloads and clears optional nickname", async t => {
