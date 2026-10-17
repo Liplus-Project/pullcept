@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-codex-remote-control"
+description = "Enables the codex_remote_control command without any pre-configured scope."
+commands.allow = ["codex_remote_control"]
+
+[[permission]]
+identifier = "deny-codex-remote-control"
+description = "Denies the codex_remote_control command without any pre-configured scope."
+commands.deny = ["codex_remote_control"]

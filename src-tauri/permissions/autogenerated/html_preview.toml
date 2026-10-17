@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-html-preview"
+description = "Enables the html_preview command without any pre-configured scope."
+commands.allow = ["html_preview"]
+
+[[permission]]
+identifier = "deny-html-preview"
+description = "Denies the html_preview command without any pre-configured scope."
+commands.deny = ["html_preview"]

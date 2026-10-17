@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-topic-log"
+description = "Enables the room_topic_log command without any pre-configured scope."
+commands.allow = ["room_topic_log"]
+
+[[permission]]
+identifier = "deny-room-topic-log"
+description = "Denies the room_topic_log command without any pre-configured scope."
+commands.deny = ["room_topic_log"]

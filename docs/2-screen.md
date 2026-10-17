@@ -240,7 +240,7 @@
 
 `src/html-preview-document.ts` は DOM を作らない `parse5` で投稿を読み、静的な HTML 要素と表示用属性だけを組み直す。見出し、段落、表、リスト、レイアウト用要素、style 要素とインライン CSS を扱う。script・イベント属性・URL属性・フォーム・画像・外部 CSS・meta/base・iframe/object/embed・SVG/MathML は残さない。リンクとボタンは表示だけである。`html` と `body` の安全な class/id 等と body のインライン CSS は保持する。html のインライン CSS は CSP より後の `html` ルールへ移すため、元のインライン指定より詳細度が低くなる場合がある。
 
-既知の文書の先頭に固定 CSP を置き、その後だけに投稿の CSS と要素を置く。通信・画像・フォント・フレーム・スクリプト・フォーム・base を禁止し、インライン CSS だけを許す。CSS の URL も許可しない。空の sandbox を持つ opaque-origin iframe を両方の表示で共用し、投稿を親 DOM へ挿入しない。独立ウィンドウのトップ文書は固定の `html-preview.html` であり、投稿の文書へ移動しない。専用 Rust コマンドは main からだけ受け付ける。アプリの既存 capability と全体 CSP は広げない。静的表示であり JavaScript と外部通信を使う内容には対応しないことを領域内で伝える。
+既知の文書の先頭に固定 CSP を置き、その後だけに投稿の CSS と要素を置く。通信・画像・フォント・フレーム・スクリプト・フォーム・base を禁止し、インライン CSS だけを許す。CSS の URL も許可しない。空の sandbox を持つ opaque-origin iframe を両方の表示で共用し、投稿を親 DOM へ挿入しない。独立ウィンドウのトップ文書は固定の `html-preview.html` であり、投稿の文書へ移動しない。専用 Rust コマンドは main からだけ受け付ける。アプリの command はどれも main の capability だけが許し、独立ウィンドウには何も許さない（[アプリの command の権限](5-development.md#アプリの-command-の権限449)）。アプリの既存 capability と全体 CSP は広げない。静的表示であり JavaScript と外部通信を使う内容には対応しないことを領域内で伝える。
 
 部屋のフレーム・ログ・端末配送・保存形式は変えない。追加の実行時依存 `parse5` とその `entities` は MIT であり、notice 生成の対象に含める。ブラウザ試験と native 試験の確認範囲は [開発・テスト](5-development.md#html-プレビューの境界試験436) に記す。
 

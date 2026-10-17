@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-post"
+description = "Enables the room_post command without any pre-configured scope."
+commands.allow = ["room_post"]
+
+[[permission]]
+identifier = "deny-room-post"
+description = "Denies the room_post command without any pre-configured scope."
+commands.deny = ["room_post"]

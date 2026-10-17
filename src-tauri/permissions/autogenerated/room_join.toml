@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-join"
+description = "Enables the room_join command without any pre-configured scope."
+commands.allow = ["room_join"]
+
+[[permission]]
+identifier = "deny-room-join"
+description = "Denies the room_join command without any pre-configured scope."
+commands.deny = ["room_join"]

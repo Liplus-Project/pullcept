@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-attach-bytes"
+description = "Enables the room_attach_bytes command without any pre-configured scope."
+commands.allow = ["room_attach_bytes"]
+
+[[permission]]
+identifier = "deny-room-attach-bytes"
+description = "Denies the room_attach_bytes command without any pre-configured scope."
+commands.deny = ["room_attach_bytes"]

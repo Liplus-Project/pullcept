@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-post-url"
+description = "Enables the open_post_url command without any pre-configured scope."
+commands.allow = ["open_post_url"]
+
+[[permission]]
+identifier = "deny-open-post-url"
+description = "Denies the open_post_url command without any pre-configured scope."
+commands.deny = ["open_post_url"]

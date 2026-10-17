@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-account-avatar"
+description = "Enables the save_account_avatar command without any pre-configured scope."
+commands.allow = ["save_account_avatar"]
+
+[[permission]]
+identifier = "deny-save-account-avatar"
+description = "Denies the save_account_avatar command without any pre-configured scope."
+commands.deny = ["save_account_avatar"]
