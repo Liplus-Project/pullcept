@@ -1260,13 +1260,19 @@ export function createSessionController(deps: Dependencies) {
     }
   }
 
-  /** The page's own colours, so a terminal is not a light rectangle in the dark. */
-  function terminalTheme(): { background: string; foreground: string; } {
+  /**
+   * The page's own colours, so a terminal is not a light rectangle in the dark.
+   *
+   * The cursor is named too. A theme that leaves it out gets xterm's default,
+   * `#ffffff`, which is invisible on the light theme's ground (#445). It takes
+   * the text colour, and the cell under it the ground, the way a block cursor
+   * inverts the cell it stands on.
+   */
+  function terminalTheme(): { background: string; foreground: string; cursor: string; cursorAccent: string; } {
     const style = getComputedStyle(document.documentElement);
-    return {
-      background: style.getPropertyValue("--bg").trim() || "#17171a",
-      foreground: style.getPropertyValue("--fg").trim() || "#e8e8ea",
-    };
+    const background = style.getPropertyValue("--bg").trim() || "#17171a";
+    const foreground = style.getPropertyValue("--fg").trim() || "#e8e8ea";
+    return { background, foreground, cursor: foreground, cursorAccent: background };
   }
 
   const sessionStateEl = document.getElementById("session-state") as HTMLElement;
