@@ -5,7 +5,10 @@ use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 const LABEL: &str = "html-preview";
 
 #[derive(Default)]
-pub struct HtmlPreview(pub Mutex<String>);
+pub struct HtmlPreview {
+    document: Mutex<String>,
+    operations: tokio::sync::Mutex<()>,
+}
 
 fn draw(window: &WebviewWindow, document: &str) -> tauri::Result<()> {
     // JSON encoding keeps source out of executable code, including quotes and
@@ -21,15 +24,18 @@ pub async fn html_preview(
     open: bool,
 ) -> Result<(), String> {
     // Custom app commands are otherwise available to every app webview.
-    // No capability or command authority is granted to the detached host.
+    // Existing capabilities stay unchanged; this command checks its own caller.
     if window.label() != "main" {
         return Err("HTML preview is controlled by the main window".into());
     }
     let app = window.app_handle();
     let state = app.state::<HtmlPreview>();
+    // The native window survives JS controller recreation. Serialize across
+    // controllers too, so a reload's clear follows an already in-flight open.
+    let _operation = state.operations.lock().await;
     // Window creation is asynchronous command work, and no state lock spans a
     // native window call (page-load callbacks also read this state).
-    *state.0.lock().map_err(|e| e.to_string())? = document.clone().unwrap_or_default();
+    *state.document.lock().map_err(|e| e.to_string())? = document.clone().unwrap_or_default();
     let Some(document) = document else {
         if let Some(preview) = app.get_webview_window(LABEL) {
             let (sender, destroyed) = tokio::sync::oneshot::channel();
@@ -72,7 +78,7 @@ pub async fn html_preview(
                 if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                     let document = preview
                         .state::<HtmlPreview>()
-                        .0
+                        .document
                         .lock()
                         .ok()
                         .map(|s| s.clone());

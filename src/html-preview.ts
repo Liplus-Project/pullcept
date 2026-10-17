@@ -43,7 +43,9 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
     pane.hidden = true;
     content.replaceChildren();
     error.textContent = "";
-    if (detachedOpen) syncDetached(null);
+    // A native window can survive a main-webview reload. Local state cannot
+    // prove that no detached view exists, so every topic clear closes it.
+    syncDetached(null);
     detachedOpen = false;
     if (restoreFocus && opener?.isConnected) opener.focus();
     opener = null;
@@ -55,6 +57,8 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
     detachedOpen = true;
     syncDetached(doc, true);
   });
+  // Reclaim ownership after startup/reload before accepting any new opens.
+  syncDetached(null);
   return {
     clear,
     addButton(block: HTMLElement, source: string, lang: string) {

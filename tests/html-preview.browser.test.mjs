@@ -27,6 +27,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     import { createHtmlPreview } from '/src/html-preview.ts';
     import { appendMarkdown } from '/src/markdown.ts';
     import { htmlPreviewDocument } from '/src/html-preview-document.ts';
+    window.createHtmlPreview = createHtmlPreview;
     window.detachedCalls = [];
     window.preview = createHtmlPreview(document.querySelector('#conversation'), async doc => {
       window.detachedCalls.push(doc);
@@ -42,6 +43,8 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   </script>` }));
   await page.goto(`${base}/preview-test`);
   await page.waitForFunction(() => window.ready);
+  await page.waitForFunction(() => window.detachedCalls.length === 1 && window.detachedCalls[0] === null);
+  await page.evaluate(() => { window.detachedCalls = []; });
   const requests = [];
   const failures = new Map();
   context.on("requestfailed", request => failures.set(request.url(), request.failure()?.errorText));
@@ -147,6 +150,23 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   assert.equal(await page.getByRole("button", { name: "表示できませんでした（コードをご覧ください）" }).count(), 1);
   assert.ok((await page.locator("#post").textContent()).includes(source));
   assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")));
+
+  // Main-webview reload/recreation starts without knowledge of a surviving
+  // native window. Startup and topic clears must still close that window.
+  await page.evaluate(() => {
+    window.nativeDoc = 'old-topic native document';
+    document.querySelector('.html-preview').remove();
+    window.preview = window.createHtmlPreview(document.querySelector('#conversation'), async doc => {
+      window.nativeDoc = doc;
+      window.detachedCalls.push(doc);
+    });
+  });
+  await page.waitForFunction(() => window.nativeDoc === null);
+  await page.evaluate(() => {
+    window.nativeDoc = 'unknown surviving native document';
+    window.preview.clear();
+  });
+  await page.waitForFunction(() => window.nativeDoc === null);
 
   if (process.env.PREVIEW_SCREENSHOTS) {
     await mkdir(process.env.PREVIEW_SCREENSHOTS, { recursive: true });
