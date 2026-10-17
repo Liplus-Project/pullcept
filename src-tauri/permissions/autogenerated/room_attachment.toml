@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-attachment"
+description = "Enables the room_attachment command without any pre-configured scope."
+commands.allow = ["room_attachment"]
+
+[[permission]]
+identifier = "deny-room-attachment"
+description = "Denies the room_attachment command without any pre-configured scope."
+commands.deny = ["room_attachment"]

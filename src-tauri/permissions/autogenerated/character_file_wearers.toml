@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-character-file-wearers"
+description = "Enables the character_file_wearers command without any pre-configured scope."
+commands.allow = ["character_file_wearers"]
+
+[[permission]]
+identifier = "deny-character-file-wearers"
+description = "Denies the character_file_wearers command without any pre-configured scope."
+commands.deny = ["character_file_wearers"]

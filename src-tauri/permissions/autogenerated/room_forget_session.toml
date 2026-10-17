@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-forget-session"
+description = "Enables the room_forget_session command without any pre-configured scope."
+commands.allow = ["room_forget_session"]
+
+[[permission]]
+identifier = "deny-room-forget-session"
+description = "Denies the room_forget_session command without any pre-configured scope."
+commands.deny = ["room_forget_session"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-current-topic"
+description = "Enables the room_current_topic command without any pre-configured scope."
+commands.allow = ["room_current_topic"]
+
+[[permission]]
+identifier = "deny-room-current-topic"
+description = "Denies the room_current_topic command without any pre-configured scope."
+commands.deny = ["room_current_topic"]

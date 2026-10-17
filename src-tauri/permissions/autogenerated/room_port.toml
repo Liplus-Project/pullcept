@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-port"
+description = "Enables the room_port command without any pre-configured scope."
+commands.allow = ["room_port"]
+
+[[permission]]
+identifier = "deny-room-port"
+description = "Denies the room_port command without any pre-configured scope."
+commands.deny = ["room_port"]

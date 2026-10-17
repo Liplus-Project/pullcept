@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-seal-account-env"
+description = "Enables the seal_account_env command without any pre-configured scope."
+commands.allow = ["seal_account_env"]
+
+[[permission]]
+identifier = "deny-seal-account-env"
+description = "Denies the seal_account_env command without any pre-configured scope."
+commands.deny = ["seal_account_env"]

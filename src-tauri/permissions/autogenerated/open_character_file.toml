@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-character-file"
+description = "Enables the open_character_file command without any pre-configured scope."
+commands.allow = ["open_character_file"]
+
+[[permission]]
+identifier = "deny-open-character-file"
+description = "Denies the open_character_file command without any pre-configured scope."
+commands.deny = ["open_character_file"]

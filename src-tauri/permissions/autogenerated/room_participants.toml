@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-room-participants"
+description = "Enables the room_participants command without any pre-configured scope."
+commands.allow = ["room_participants"]
+
+[[permission]]
+identifier = "deny-room-participants"
+description = "Denies the room_participants command without any pre-configured scope."
+commands.deny = ["room_participants"]

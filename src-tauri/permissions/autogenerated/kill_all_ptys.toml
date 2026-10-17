@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kill-all-ptys"
+description = "Enables the kill_all_ptys command without any pre-configured scope."
+commands.allow = ["kill_all_ptys"]
+
+[[permission]]
+identifier = "deny-kill-all-ptys"
+description = "Denies the kill_all_ptys command without any pre-configured scope."
+commands.deny = ["kill_all_ptys"]

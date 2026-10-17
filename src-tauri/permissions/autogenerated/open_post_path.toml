@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-post-path"
+description = "Enables the open_post_path command without any pre-configured scope."
+commands.allow = ["open_post_path"]
+
+[[permission]]
+identifier = "deny-open-post-path"
+description = "Denies the open_post_path command without any pre-configured scope."
+commands.deny = ["open_post_path"]
