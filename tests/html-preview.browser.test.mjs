@@ -124,7 +124,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await previewToggle.click();
   assert.equal(await page.locator(".html-preview-content").isVisible(), true);
 
-  await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
+  await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
   await page.waitForFunction(() => window.detachedCalls.length === 1);
   // Exercise the shipped trusted detached host document with the exact same
   // prepared source; native window creation/ownership is separately cargo-checked.
@@ -152,7 +152,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await page.setViewportSize({ width: 400, height: 700 });
   await open("Second report").click();
   assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).isVisible(), true);
-  await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
+  await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
   await page.evaluate(() => window.preview.clear()); // enterTopic uses this same boundary
   await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
   assert.equal(await page.locator(".html-preview iframe").count(), 0);

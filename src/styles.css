@@ -374,7 +374,9 @@ button svg.icon {
 .html-preview-views button:hover { opacity: 1; }
 .html-preview-views button[aria-pressed="true"] { background: var(--surface); opacity: 1; box-shadow: 0 1px 2px #0003; }
 .html-preview-close { margin: 0; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 1.25rem; line-height: 1; cursor: pointer; }
-.html-preview-close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+.html-preview-separate { display: inline-flex; align-items: center; gap: .35rem; margin: 0; height: 2rem; padding: 0 .5rem; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: .85rem; cursor: pointer; }
+.html-preview-separate svg { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.html-preview-separate:hover, .html-preview-close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .html-preview > p { margin: 0 .6rem .5rem; font-size: .85rem; }
 .html-preview > p:empty { display: none; }
 .html-preview-content { flex: 1; min-height: 0; display: flex; }
