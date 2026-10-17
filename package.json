@@ -12,6 +12,7 @@
     "sidecar": "tsx sidecar/src/index.ts",
     "sidecar:check": "tsc -p sidecar/tsconfig.json",
     "sidecar:test": "node --test \"sidecar/test/*.test.mjs\"",
+    "preview:test": "node --test tests/html-preview.browser.test.mjs",
     "postinstall": "node scripts/patch-xterm-webgl.mjs"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "lowlight": "^3.3.0",
     "marked": "^18.1.1",
     "mermaid": "~11.17.2",
+    "parse5": "^8.0.1",
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   },
@@ -43,6 +45,7 @@
     "@types/node": "^22.19.17",
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.18.1",
+    "playwright-core": "^1.64.1",
     "tsx": "^4.0.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"

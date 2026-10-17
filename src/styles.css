@@ -356,6 +356,30 @@ button svg.icon {
   min-width: 0;
 }
 
+.html-preview[hidden] { display: none; }
+.html-preview {
+  display: flex;
+  flex: 0 1 48%;
+  min-width: 240px;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+}
+.html-preview header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .6rem; }
+.html-preview header strong { flex: 1; }
+.html-preview > p { margin: 0 .6rem .5rem; font-size: .85rem; }
+.html-preview > p:empty { display: none; }
+.html-preview-content { flex: 1; min-height: 0; display: flex; }
+.html-preview-content iframe { width: 100%; flex: 1; border: 0; background: white; }
+.html-preview-open { margin: .4rem; }
+@media (max-width: 760px) {
+  /* The preview covers only the conversation. Its own close control remains
+     outside posted CSS and returns focus to the source button. */
+  #body { position: relative; }
+  .html-preview { position: absolute; inset: 0; z-index: 15; min-width: 0; }
+}
+
 /* A folded panel takes no width at all — no strip is left where it stood
    (#118, decision 2). A strip would be a signpost back, and the way back is on
    the title bar whether the panel is open or not, so the room takes the whole

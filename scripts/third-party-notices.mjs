@@ -32,6 +32,7 @@ export const ROOTS = [
   "qrcode",
   "marked",
   "mermaid",
+  "parse5",
 ];
 
 /** Permissive licences only (#354: nothing GPL-like goes into the app). */

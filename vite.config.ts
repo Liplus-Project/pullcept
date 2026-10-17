@@ -20,4 +20,7 @@ export default defineConfig({
   },
 
   envPrefix: ["VITE_", "TAURI_"],
+  build: {
+    rollupOptions: { input: ["index.html", "html-preview.html"] },
+  },
 });

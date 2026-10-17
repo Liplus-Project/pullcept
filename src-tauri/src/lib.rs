@@ -6,6 +6,7 @@ mod claude_limit;
 mod codex_status;
 mod config;
 mod hook_activity;
+mod html_preview;
 mod post_link;
 mod pty;
 mod room;
@@ -35,6 +36,7 @@ pub fn run() {
         .manage(session_control::SessionControl::default())
         // The MCP servers the app runs itself, by name (#172).
         .manage(McpServers::new())
+        .manage(html_preview::HtmlPreview::default())
         // The Codex seats stopped on their usage limit, and the posts the room
         // keeps back from them (#294).
         .manage(codex_limit::CodexLimits::new())
@@ -77,7 +79,13 @@ pub fn run() {
             app_mcp::start_all(app.handle());
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                html_preview::close(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            html_preview::html_preview,
             pty::spawn_pty,
             pty::write_pty,
             pty::resize_pty,

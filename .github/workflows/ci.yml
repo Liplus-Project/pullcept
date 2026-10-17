@@ -61,6 +61,9 @@ jobs:
       - name: Test the sidecar round trip
         run: npm run sidecar:test
 
+      - name: Test static HTML preview in real Edge
+        run: npm run preview:test
+
       - name: Check Rust compilation
         working-directory: src-tauri
         run: cargo check --target x86_64-pc-windows-gnu
