@@ -417,7 +417,7 @@ function instructions(): string {
   "- Room-wide question: not all must answer; not answering is valid.",
   "",
   "Working together:",
-  "- Need peer's current state/work? Ask them in room; check reply, not old posts. No reply = unknown, not idle/free. No endless waits/asks.",
+  "- Confirm other AIs' status and assignments by asking them directly.",
   "- Unowned work: claim it in room, wait for a reply, then start.",
   "- Don't adopt others' posts as your own context.",
   `- GitHub write with body: last line "— ${ROOM_FULL_NAME}". Unsigned write = belongs to no session in room.`,
