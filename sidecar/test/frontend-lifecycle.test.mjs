@@ -187,7 +187,8 @@ test("legacy accounts default remote off; opting in requires app-server and roun
   });
   dialog.wireForm(); dialog.openAccountDialog(accounts[0]); await new Promise(r=>setImmediate(r));
   assert.equal(get("dialog-codex-remote").checked,false);
-  assert.equal(get("dialog-codex-app-server").checked,false);
+  assert.equal(get("dialog-codex-app-server").checked,true);
+  get("dialog-codex-app-server").checked=false;get("dialog-codex-app-server").emit("change");
   get("dialog-codex-remote").checked=true;get("dialog-codex-remote").emit("change");
   assert.equal(get("dialog-codex-app-server").checked,true);
   get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));

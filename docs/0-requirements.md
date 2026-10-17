@@ -97,6 +97,8 @@
 
 ## Codex CLI 対応要件（#272）
 
+Codex の新規アカウントと `codex_app_server` が欠落した設定は、席ごとの app-server を既定にする（#299）。明示保存された false は互換の hook 方式、true は app-server 方式として維持する。種別切り替え・編集・保存・プレビュー・実際の起動で揃え、起動中の席は再起動しない。スマホ接続は別の opt-in として既定オフのままにする。
+
 1. `codex_cli` を保存・選択でき、既存アカウントと Claude の起動・再開を保つ。
 2. Codex の対話起動と明示 ID の `resume`、MCP 設定は CLI 作法の責務に置く。プレビューと実際の argv は共通処理を使い、Claude 専用設定を渡さない。
 3. cwd・起動オプション・環境変数・認証設定を保持する。既存 `.codex/config.toml` と hook を保持し、秘密をプレビューへ出さない。同じ cwd の混在・複数アカウント・別トピックでも正しい席だけが接続する。linked worktree は正式な root-checkout mapping と同一 Git 所属の検証を行い、実際の設定／hook ファイルまで境界外 symlink を拒否する。

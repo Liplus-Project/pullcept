@@ -452,7 +452,8 @@ export function createAccountDialog(deps: Dependencies) {
     drawDialogAvatar();
     dialogCwdEl.value = draft.cwd ?? "";
     dialogCharacterEl.value = draft.character ?? "";
-    dialogCodexAppServerEl.checked = draft.codex_app_server === true;
+    // A different kind has no Codex transport choice to preserve.
+    dialogCodexAppServerEl.checked = draft.kind !== "codex_cli" || draft.codex_app_server !== false;
     dialogCodexRemoteEl.checked = draft.codex_remote_control === true;
     dialogCommandEl.value = draft.command;
     dialogOptionsEl.value = deps.joinArgs(draft.args);

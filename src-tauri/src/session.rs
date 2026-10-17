@@ -949,7 +949,7 @@ pub fn launch_field_report(
         // of its two lines (#299).
         options: if kind == Some(AccountKind::CodexCli) {
             mcp_config::codex::transport_options(&options).is_ok_and(|carried| {
-                !codex_app_server.unwrap_or(false) || mcp_config::codex::app_server::plan(&carried).is_ok()
+                !codex_app_server.unwrap_or_else(crate::config::default_codex_app_server) || mcp_config::codex::app_server::plan(&carried).is_ok()
             })
         } else { carried_launch_options(&options).len() == options.len() },
         command: console_safe(&command),
@@ -1038,7 +1038,7 @@ pub async fn preview_launch_args(
         ), character_mode: None, character_name: None, server_args: None, room_prompt: None });
     }
     let (entry, runner) = resolve_sidecar_paths()?;
-    if codex_app_server.unwrap_or(false) {
+    if codex_app_server.unwrap_or_else(crate::config::default_codex_app_server) {
         let command = command.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "codex".into());
         let cwd = cwd.filter(|value| !value.trim().is_empty()).map(PathBuf::from)
             .or_else(|| app.path().home_dir().ok()).ok_or("作業フォルダーが見つかりません。")?;
