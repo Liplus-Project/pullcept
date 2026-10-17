@@ -82,7 +82,8 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   assert.equal(await page.locator(".html-preview iframe").count(), 0, "arrival never opens a preview");
   const open = name => page.getByRole("button", { name: `${name} のプレビューを開く`, exact: true });
   assert.equal(await open("report.html").count(), 1, "the fence's first line names the file");
-  assert.equal(await page.locator("#post .html-file").textContent(), "report.html", "room shows one file-name line, not code");
+  assert.equal(await page.locator("#post .html-file .html-file-name").textContent(), "report.html", "room shows one file-name card, not code");
+  assert.equal(await page.locator("#post .html-file").textContent(), "report.html開く ›", "card carries only the name and the open hint");
   assert.equal((await page.locator("#post").textContent()).includes("probe.invalid/css"), false);
   await open("report.html").click();
   assert.equal(await page.locator(".html-preview header strong").textContent(), "report.html");
@@ -116,9 +117,11 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   const codeToggle = page.getByRole("button", { name: "コード", exact: true });
   await codeToggle.click();
   assert.equal(await codeToggle.getAttribute("aria-pressed"), "true");
+  const previewToggle = page.getByRole("button", { name: "プレビュー", exact: true });
+  assert.equal(await previewToggle.getAttribute("aria-pressed"), "false", "segment pressed states are exclusive");
   assert.ok((await page.locator(".html-preview-code").textContent()).includes(source), "code is read in the preview");
   assert.equal(await page.locator(".html-preview-content").isVisible(), false);
-  await codeToggle.click();
+  await previewToggle.click();
   assert.equal(await page.locator(".html-preview-content").isVisible(), true);
 
   await page.getByRole("button", { name: "別ウィンドウで開く" }).click();

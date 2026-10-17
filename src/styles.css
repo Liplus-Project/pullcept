@@ -366,8 +366,15 @@ button svg.icon {
   border-left: 1px solid var(--line);
   background: var(--surface);
 }
-.html-preview header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .6rem; }
-.html-preview header strong { flex: 1; }
+.html-preview header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+.html-preview header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Segmented "プレビュー｜コード" switch (#439). */
+.html-preview-views { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--code-ground, transparent); }
+.html-preview-views button { margin: 0; padding: .2rem .7rem; border: 0; border-radius: 6px; background: transparent; color: inherit; opacity: .7; cursor: pointer; }
+.html-preview-views button:hover { opacity: 1; }
+.html-preview-views button[aria-pressed="true"] { background: var(--surface); opacity: 1; box-shadow: 0 1px 2px #0003; }
+.html-preview-close { margin: 0; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 1.25rem; line-height: 1; cursor: pointer; }
+.html-preview-close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .html-preview > p { margin: 0 .6rem .5rem; font-size: .85rem; }
 .html-preview > p:empty { display: none; }
 .html-preview-content { flex: 1; min-height: 0; display: flex; }
@@ -3642,6 +3649,13 @@ button svg.icon {
 .codex-remote-dialog canvas { display: block; max-width: 100%; margin: 16px auto; }
 .codex-remote-dialog [role="alert"] { color: var(--danger, #ffaaaa); }
 .codex-remote-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.html-file .html-preview-open { margin: 0; font-family: var(--mono, ui-monospace, monospace); text-align: start; overflow-wrap: anywhere; }
+/* File card (#439): icon, name, "開く ›"; hover tints with the theme line colour. */
+.html-file .html-preview-open { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 28rem; margin: .2rem 0; padding: .55rem .75rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: inherit; text-align: start; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.html-file .html-preview-open:hover { background: color-mix(in srgb, currentColor 7%, var(--surface)); border-color: color-mix(in srgb, currentColor 35%, var(--line)); }
+.html-file-icon { flex: none; position: relative; width: 1.1rem; height: 1.35rem; border: 1.5px solid currentColor; border-radius: 2px 6px 2px 2px; opacity: .65; }
+.html-file-icon::after { content: "</>"; position: absolute; inset: 0; display: grid; place-items: center; font: 700 .45rem/1 var(--mono, ui-monospace, monospace); }
+.html-file-name { flex: 1; min-width: 0; font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.html-file-action { flex: none; font-size: .85rem; opacity: .65; }
+.html-file .html-preview-open:hover .html-file-action { opacity: 1; }
 .html-preview-code[hidden], .html-preview-content[hidden] { display: none; }
 .html-preview-code { flex: 1; min-height: 0; margin: 0; padding: .6rem; overflow: auto; background: var(--code-ground); border-top: 1px solid var(--code-line); }
