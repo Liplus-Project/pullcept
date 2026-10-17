@@ -740,10 +740,19 @@ function roomLine(line: {
     head.appendChild(speaker);
   }
 
+  // Each addressee as `@name`, in that addressee's colour (#452). The form is
+  // the one an addressee is typed in, so the heading reads as what was said to
+  // whom; it is drawn from `to`, and nothing in it is read back as an address.
   if (line.to.length) {
     const to = document.createElement("span");
     to.className = "to";
-    to.textContent = `→ ${line.to.join("、")}`;
+    for (const name of line.to) {
+      const one = document.createElement("span");
+      one.className = "addressee";
+      one.style.setProperty("--addressee", addresseeColour(name));
+      one.textContent = `@${name}`;
+      to.appendChild(one);
+    }
     head.appendChild(to);
   }
 
@@ -993,6 +1002,21 @@ function isMine(speaker: string, fold: Fold | null): boolean {
  * the same cost the side already carries.
  */
 const MINE_SPEAKER = "var(--mine-speaker, var(--accent))";
+
+/**
+ * The colour an addressee's name is drawn in (#452): the colour that name has
+ * where it speaks. This screen's own name takes the screen person's colour; a
+ * participant of the topic on the glass takes their declared hue; an account
+ * that is not in the room takes its own; anything else falls to the name-derived
+ * colour, the same last rung `speakerColor` has.
+ */
+function addresseeColour(name: string): string {
+  if (name === localName()) return MINE_SPEAKER;
+  const present = shownRoster().find((one) => one.name === name);
+  if (present) return speakerColor(name, present.hue, false);
+  const account = accounts.find((one) => one.name === name);
+  return speakerColor(name, account?.hue ?? null, false);
+}
 
 function paintMine(): void {
   roomEl.style.setProperty(
