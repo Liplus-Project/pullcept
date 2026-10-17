@@ -683,10 +683,17 @@ button svg.icon {
   color: var(--speaker, var(--fg));
 }
 
-/* The addressee is written in the speaker's colour, not the addressee's: it is
-   part of what this speaker said. */
+/* Each addressee is `@name` in that addressee's own colour (#452), the colour
+   their name has where they speak. Until #452 the whole `→ name` was in the
+   speaker's colour, as part of what the speaker said. */
 .message .to {
-  color: var(--speaker, var(--accent));
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 0.35em;
+}
+
+.message .to .addressee {
+  color: var(--addressee, var(--accent));
 }
 
 .message .body {
