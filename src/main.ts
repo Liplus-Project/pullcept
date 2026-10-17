@@ -29,6 +29,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { createComposer, findCodeFences, highlightedCode, lineInFence } from "./composer";
 import { appendMarkdown } from "./markdown";
+import { createHtmlPreview } from "./html-preview";
 
 /**
  * Whether this account launches a session.
@@ -1645,6 +1646,7 @@ async function openTopic(topic: Topic): Promise<void> {
  * long ago may have moved while the event was missed.
  */
 async function enterTopic(topic: TopicRef): Promise<void> {
+  htmlPreview.clear();
   // The pane being watched in the topic being left, kept for coming back.
   const leaving = shownTopicId();
   if (leaving !== "") sessions.rememberSelection(leaving);
@@ -3158,6 +3160,9 @@ function markdownLink(href: string, label: Node[]): Node[] {
  * written, inside a frame. The language, when the fence names one, is a small
  * label over the code and never part of it.
  */
+const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
+  (document, open) => invoke("html_preview", { document, open }));
+
 function codeBlock(code: string, lang: string): HTMLElement {
   const block = document.createElement("div");
   block.className = "code-block";
@@ -3173,6 +3178,7 @@ function codeBlock(code: string, lang: string): HTMLElement {
   inner.append(...highlightedCode(code, lang));
   pre.appendChild(inner);
   block.appendChild(pre);
+  htmlPreview.addButton(block, code, lang);
   return block;
 }
 

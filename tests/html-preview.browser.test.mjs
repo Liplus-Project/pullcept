@@ -1,0 +1,188 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { chromium } from "playwright-core";
+import { createServer } from "vite";
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+
+const edge = process.env.PREVIEW_BROWSER ?? [
+  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+  "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome",
+].find(existsSync);
+if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER to its executable (no skipped boundary tests)");
+
+test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, async t => {
+  const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false }, logLevel: "error" });
+  await server.listen();
+  const base = server.resolvedUrls.local[0].replace(/\/$/, "");
+  const browser = await chromium.launch({ executablePath: edge, headless: true });
+  t.after(async () => { await browser.close(); await server.close(); });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // An isolated harness uses the production renderer and controller. No live
+  // app, account, seat, browser profile or runtime checkout is involved.
+  await page.route(`${base}/preview-test`, route => route.fulfill({ contentType: "text/html", body: `<!doctype html><link rel="stylesheet" href="/src/styles.css"><div id="body"><div id="conversation"><div id="post"></div></div></div><script type="module">
+    import { createHtmlPreview } from '/src/html-preview.ts';
+    import { appendMarkdown } from '/src/markdown.ts';
+    import { htmlPreviewDocument } from '/src/html-preview-document.ts';
+    window.createHtmlPreview = createHtmlPreview;
+    window.detachedCalls = [];
+    window.preview = createHtmlPreview(document.querySelector('#conversation'), async doc => {
+      window.detachedCalls.push(doc);
+      if (window.detachDelay) await window.detachDelay;
+    });
+    window.render = text => appendMarkdown(document.querySelector('#post'), text, {
+      prose: text => [document.createTextNode(text)], link: (_, label) => label,
+      code: (source, lang) => { const block = document.createElement('pre'); block.textContent = source; window.preview.addButton(block, source, lang); return block; }
+    });
+    window.htmlPreviewDocument = htmlPreviewDocument;
+    window.__TAURI_INTERNALS__ = { secret: 'parent-only' };
+    window.ready = true;
+  </script>` }));
+  await page.goto(`${base}/preview-test`);
+  await page.waitForFunction(() => window.ready);
+  await page.waitForFunction(() => window.detachedCalls.length === 1 && window.detachedCalls[0] === null);
+  await page.evaluate(() => { window.detachedCalls = []; });
+  const requests = [];
+  const failures = new Map();
+  context.on("requestfailed", request => failures.set(request.url(), request.failure()?.errorText));
+  // Observe BEFORE source parsing, including CSS and initial DOM creation.
+  context.on("request", request => { if (!request.url().startsWith(base + "/")) requests.push(request.url()); });
+  let popups = 0;
+  context.on("page", () => popups++);
+  const source = `<!doctype html><html class="report-root" style="background-image:url(https://probe.invalid/root);border-top:3px solid rgb(1,2,3)"><head>
+    <meta http-equiv="refresh" content="0;url=https://probe.invalid/refresh">
+    <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'">
+    <base href="https://probe.invalid/" target="_top">
+    <link rel="stylesheet" href="https://probe.invalid/css"><link rel="prefetch" href="https://probe.invalid/prefetch">
+    <style>@import url(https://probe.invalid/import); @font-face{font-family:probe;src:url(https://probe.invalid/font)}
+    #card{color:rgb(12, 34, 56);background-image:url(https://probe.invalid/background);font-family:probe,serif}
+    html.report-root #card{text-decoration:underline}body::after{content:'static CSS'}</style></head>
+    <body style="background-color:rgb(230, 240, 250)" onload="parent.pwned=true">
+    <h1 id="card" onclick="parent.pwned=true">Static report</h1><p style="font-weight:700">inline CSS</p>
+    <script>parent.pwned=true;fetch('https://probe.invalid/fetch');parent.document.body.innerHTML='bad';window.__TAURI_INTERNALS__.invoke('bad')</script>
+    <img src="https://probe.invalid/image" srcset="https://probe.invalid/set 2x" onerror="parent.pwned=true">
+    <iframe src="https://probe.invalid/frame"></iframe><object data="file:///C:/secret"></object><embed src="https://probe.invalid/embed">
+    <svg><a href="https://probe.invalid/svg"><text>svg</text></a><image href="https://probe.invalid/svg-image"/></svg>
+    <math><mtext><img src="https://probe.invalid/mutation"></mtext></math>
+    <form action="https://probe.invalid/form"><button formaction="https://probe.invalid/button">submit</button></form>
+    <a id="nav" href="https://probe.invalid/self" ping="https://probe.invalid/ping">navigate</a>
+    <a id="top" href="https://probe.invalid/top" target="_top">top</a>
+    <a id="popup" href="https://probe.invalid/pop" target="_blank">popup</a>
+    <a id="js" href="java&#x73;cript:parent.pwned=true">js</a>
+    <a id="file" href="file:///C:/secret">file</a><a id="app" href="pullcept://network-probe">app</a>
+    <a id="data" href="data:text/html,<script>parent.pwned=true</script>">data</a>
+    <a id="download" href="https://probe.invalid/download" download>download</a>
+    <div style="background:url(file:///C:/secret);cursor:url(pullcept://network-probe),auto">local CSS</div>
+    </body></html>`;
+  await page.evaluate(source => window.render('Raw <img src="https://probe.invalid/raw">\n\n```html\n' + source + '\n```\n\n```css\np{}\n```'), source);
+  assert.equal(await page.locator("#post img").count(), 0);
+  assert.equal(await page.locator(".html-preview iframe").count(), 0, "arrival never opens a preview");
+  assert.equal(await page.getByRole("button", { name: "プレビュー", exact: true }).count(), 1);
+  assert.ok((await page.locator("#post pre").first().textContent()).includes(source));
+  await page.getByRole("button", { name: "プレビュー", exact: true }).click();
+  const frame = page.frameLocator(".html-preview iframe");
+  await frame.locator("#card").waitFor();
+  assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
+  assert.equal(await frame.locator("body").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(230, 240, 250)");
+  assert.equal(await frame.locator("p").evaluate(el => getComputedStyle(el).fontWeight), "700");
+  assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).textDecorationLine), "underline");
+  assert.equal(await frame.locator("html").evaluate(el => getComputedStyle(el).borderTopWidth), "3px");
+  assert.equal(await frame.locator("script,iframe,object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0);
+  assert.equal(await frame.locator("body").evaluate(() => {
+    try { return parent.document.body ? "parent-access" : "missing"; } catch { return "opaque"; }
+  }), "opaque");
+  assert.equal(await frame.locator("body").evaluate(() => typeof window.__TAURI_INTERNALS__), "undefined");
+  for (const id of ["card", "nav", "top", "popup", "js", "file", "app", "data", "download"]) {
+    await frame.locator(`#${id}`).click();
+  }
+  await page.waitForTimeout(600);
+  assert.equal(page.url(), `${base}/preview-test`);
+  assert.equal(page.frames()[1].url(), "about:srcdoc");
+  assert.equal(await page.evaluate(() => window.pwned), undefined);
+  assert.deepEqual(requests.map(url => [url, failures.get(url)]).sort(), [
+    ["https://probe.invalid/root", "csp"],
+    ["https://probe.invalid/background", "csp"],
+    ["file:///C:/secret", "other"],
+    ["pullcept://network-probe", "csp"],
+  ].sort(), "only CSS resource attempts: CSP blocks network/app schemes, opaque frame denies local files");
+  assert.equal(popups, 0);
+  assert.equal(await page.locator("#post pre").count(), 2, "source stays readable");
+
+  await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
+  await page.waitForFunction(() => window.detachedCalls.length === 1);
+  // Exercise the shipped trusted detached host document with the exact same
+  // prepared source; native window creation/ownership is separately cargo-checked.
+  const host = await context.newPage();
+  await host.goto(`${base}/html-preview.html`);
+  await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(() => window.detachedCalls[0]));
+  await host.frameLocator("iframe").locator("#card").waitFor();
+  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(await host.frameLocator("iframe").locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
+  await host.frameLocator("iframe").locator("#nav").click();
+  assert.equal(host.frames()[1].url(), "about:srcdoc");
+
+  await page.evaluate(() => window.render('```HTML\n<h2>Second report</h2>\n```'));
+  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
+  await frame.getByRole("heading", { name: "Second report" }).waitFor();
+  await page.waitForFunction(() => window.detachedCalls.length === 2);
+  assert.equal(await page.locator(".html-preview iframe").count(), 1);
+  await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
+  assert.equal(await page.locator(".html-preview").isVisible(), false);
+  assert.equal(await page.locator(".html-preview iframe").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "プレビュー", exact: true }).last().evaluate(el => el === document.activeElement), true);
+  await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
+
+  await page.setViewportSize({ width: 400, height: 700 });
+  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
+  assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).isVisible(), true);
+  await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
+  await page.evaluate(() => window.preview.clear()); // enterTopic uses this same boundary
+  await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
+  assert.equal(await page.locator(".html-preview iframe").count(), 0);
+
+  // A failed render cannot erase source or leave the previous preview active.
+  await page.evaluate(() => { window.preview.addButton(document.querySelector('#post'), Symbol('invalid source'), 'html'); });
+  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
+  assert.equal(await page.getByRole("button", { name: "表示できませんでした（コードをご覧ください）" }).count(), 1);
+  assert.ok((await page.locator("#post").textContent()).includes(source));
+  assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")));
+
+  // Main-webview reload/recreation starts without knowledge of a surviving
+  // native window. Startup and topic clears must still close that window.
+  await page.evaluate(() => {
+    window.nativeDoc = 'old-topic native document';
+    document.querySelector('.html-preview').remove();
+    window.preview = window.createHtmlPreview(document.querySelector('#conversation'), async doc => {
+      window.nativeDoc = doc;
+      window.detachedCalls.push(doc);
+    });
+  });
+  await page.waitForFunction(() => window.nativeDoc === null);
+  await page.evaluate(() => {
+    window.nativeDoc = 'unknown surviving native document';
+    window.preview.clear();
+  });
+  await page.waitForFunction(() => window.nativeDoc === null);
+
+  if (process.env.PREVIEW_SCREENSHOTS) {
+    await mkdir(process.env.PREVIEW_SCREENSHOTS, { recursive: true });
+    await page.setViewportSize({ width: 1250, height: 850 });
+    await page.bringToFront();
+    await page.addStyleTag({ content: "html,body,#body{height:100%;margin:0}#conversation{padding:20px;overflow:auto}#post pre{white-space:pre-wrap;overflow-wrap:anywhere}.html-preview{flex-basis:56%}" });
+    const report = `<style>body{background:#f5f7fc;color:#202844;line-height:1.6}.eyebrow{color:#657294;font-size:12px;letter-spacing:2px}h1{font-size:30px;margin:8px 0}.cards{display:flex;gap:12px;margin:24px 0}.card{background:white;padding:18px;border-radius:12px;flex:1}.value{font-size:28px;color:#355bc9;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #e8edf6}th{color:#657294;font-size:12px}.badge{color:#20805b}</style><p class="eyebrow">WEEKLY REPORT / 2026.10.17</p><h1>Project overview</h1><p>A quiet space for the work taking shape.</p><section class="cards"><div class="card">Completed<div class="value">24</div></div><div class="card">In progress<div class="value">6</div></div><div class="card">On track<div class="value">92%</div></div></section><h2>This week</h2><table><thead><tr><th>Workstream</th><th>Status</th></tr></thead><tbody><tr><td>Conversation layout</td><td class="badge">Ready</td></tr><tr><td>Static report preview</td><td class="badge">Ready</td></tr><tr><td>Documentation</td><td>In review</td></tr></tbody></table>`;
+    await page.evaluate(report => { document.querySelector('#post').replaceChildren(); window.render('A static report from the room.\n\n```html\n' + report + '\n```'); }, report);
+    await page.getByRole("button", { name: "プレビュー", exact: true }).click();
+    await page.frameLocator(".html-preview iframe").getByRole("heading", { name: "Project overview" }).waitFor();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "side-panel.png") });
+    await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(report => window.htmlPreviewDocument(report), report));
+    await host.setViewportSize({ width: 900, height: 800 });
+    await host.bringToFront();
+    await host.frameLocator("iframe").getByRole("heading", { name: "Project overview" }).waitFor();
+    await host.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "detached-host.png") });
+  }
+});
