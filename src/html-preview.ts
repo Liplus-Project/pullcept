@@ -25,7 +25,21 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   title.textContent = "HTML プレビュー";
   const separate = document.createElement("button");
   separate.type = "button";
-  separate.textContent = "別ウィンドウで開く";
+  separate.className = "html-preview-separate";
+  // Window outline with an up-right arrow, then the label (#441).
+  const svgNs = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(svgNs, "svg");
+  icon.setAttribute("viewBox", "0 0 16 16");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  for (const d of ["M7 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9", "M9.5 2.5h4v4", "M13.5 2.5 8 8"]) {
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", d);
+    icon.append(path);
+  }
+  const separateLabel = document.createElement("span");
+  separateLabel.textContent = "新しいウィンドウで開く";
+  separate.append(icon, separateLabel);
   // "プレビュー｜コード" segmented switch (#439); each side keeps aria-pressed.
   const views = document.createElement("div");
   views.className = "html-preview-views";
