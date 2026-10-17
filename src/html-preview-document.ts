@@ -37,6 +37,17 @@ export function htmlPreviewDocument(source: string): string {
   return `<!doctype html><html${rootAttrs}><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"><style>body{margin:20px;font-family:system-ui,sans-serif;overflow-wrap:anywhere}button,a{cursor:default}html{${rootStyle}}</style></head><body${attributes(body)}>${content}</body></html>`;
 }
 
+/** The document's own `<title>` text, whitespace collapsed; "" when absent. */
+export function htmlTitle(source: string): string {
+  const find = (node: Node): string | null => {
+    if ("tagName" in node && node.tagName === "title" && node.namespaceURI === HTML)
+      return node.childNodes.map(n => n.nodeName === "#text" ? (n as DefaultTreeAdapterMap["textNode"]).value : "").join("");
+    if ("childNodes" in node) for (const child of node.childNodes) { const hit = find(child); if (hit !== null) return hit; }
+    return null;
+  };
+  return (find(parse(source) as unknown as Node) ?? "").replace(/\s+/g, " ").trim();
+}
+
 export function previewFrame(doc: string): HTMLIFrameElement {
   const frame = document.createElement("iframe");
   frame.title = "HTML プレビュー";

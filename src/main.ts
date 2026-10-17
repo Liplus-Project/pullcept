@@ -3161,9 +3161,12 @@ function markdownLink(href: string, label: Node[]): Node[] {
  * label over the code and never part of it.
  */
 const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
-  (document, open) => invoke("html_preview", { document, open }));
+  (document, open) => invoke("html_preview", { document, open }),
+  (code) => highlightedCode(code, "html"));
 
-function codeBlock(code: string, lang: string): HTMLElement {
+function codeBlock(code: string, lang: string, info = ""): HTMLElement {
+  // An html fence is one file-name line in the room; its code is read in the preview (#436).
+  if (lang.toLowerCase() === "html") return htmlPreview.fileBlock(code, info);
   const block = document.createElement("div");
   block.className = "code-block";
   if (lang) {
@@ -3178,7 +3181,6 @@ function codeBlock(code: string, lang: string): HTMLElement {
   inner.append(...highlightedCode(code, lang));
   pre.appendChild(inner);
   block.appendChild(pre);
-  htmlPreview.addButton(block, code, lang);
   return block;
 }
 

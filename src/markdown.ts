@@ -18,7 +18,8 @@ export interface MarkdownHooks {
   /** A Markdown link: its label, made a link to `href` when the screen allows it. */
   link(href: string, label: Node[]): Node[];
   /** A fenced or indented code block (#348). */
-  code(code: string, lang: string): HTMLElement;
+  /** `info` is the fence's whole opening-line text after the backquotes. */
+  code(code: string, lang: string, info?: string): HTMLElement;
 }
 
 /** The fence's language: its first word, as `splitCodeFences` reads it. */
@@ -66,7 +67,7 @@ function block(token: Token, hooks: MarkdownHooks): Node[] {
     case "code": {
       const code = token as Tokens.Code;
       const lang = fenceLang(code.lang);
-      const drawn = hooks.code(code.text, lang);
+      const drawn = hooks.code(code.text, lang, (code.lang ?? "").trim());
       if (lang.toLowerCase() === "mermaid") return [mermaidBlock(code.text, drawn)];
       return [drawn];
     }
