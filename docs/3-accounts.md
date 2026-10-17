@@ -227,7 +227,7 @@ Claude Code の起動する行へアプリが足すのは `--settings` の JSON 
 
 - Li+ のキャラの配送とは衝突しない。Li+ の output style hook は本文を SessionStart の `additionalContext` で配り（`sidecar/src/codex-style.mjs` の `body` が読む `hookSpecificOutput.additionalContext`）、`developer_instructions` とは別の入口である。
 - だが `-c developer_instructions=…` は CLI の全 layer（user・profile・信頼済み project・手動 `-c`）で決まった有効な本文を置き換える。部屋の一文を足すには、起動のたびに有効な本文を読み、それに一文を足した全文を `-c` で載せ直すしかない。
-- それは既定の起動経路（hook 方式の file mode）に、今は走らないモデル不要の `debug prompt-input` 二回（各15秒上限）と、その失敗による起動停止を新たに持ち込む。さらに #281 の file mode は本文を argv にも環境にも載せない契約であり（[要件](0-requirements.md)）、有効な本文の全文（日本語は TOML の Unicode escape で数倍に膨らむ）を起動の行に載せればその契約を破り、Windows の 8191 文字の上限で起動を拒否する席を新たに生む。
+- それは #301 当時の既定の起動経路（hook 方式の file mode）に、今は走らないモデル不要の `debug prompt-input` 二回（各15秒上限）と、その失敗による起動停止を新たに持ち込む。さらに #281 の file mode は本文を argv にも環境にも載せない契約であり（[要件](0-requirements.md)）、有効な本文の全文（日本語は TOML の Unicode escape で数倍に膨らむ）を起動の行に載せればその契約を破り、Windows の 8191 文字の上限で起動を拒否する席を新たに生む。
 
 したがって hook 方式の席は従来どおりサイドカーの `instructions` だけで作法を受け取る。部屋の一文が要る Codex の席は app-server 方式に切り替える。
 
