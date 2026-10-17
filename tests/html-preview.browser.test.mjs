@@ -13,7 +13,7 @@ const edge = process.env.PREVIEW_BROWSER ?? [
 ].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER to its executable (no skipped boundary tests)");
 
-test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, async t => {
+test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, async t => {
   const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false }, logLevel: "error" });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, "");
@@ -62,23 +62,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
     html.report-root #card{text-decoration:underline}body::after{content:'static CSS'}</style></head>
     <body style="background-color:rgb(230, 240, 250)" onload="parent.pwned=true">
     <h1 id="card" onclick="parent.pwned=true">Static report</h1><p style="font-weight:700">inline CSS</p>
-    <script>parent.pwned=true</script>
-    <script>document.getElementById('card').dataset.ran='inline';document.body.append(Object.assign(document.createElement('div'),{id:'made',textContent:'made by script'}))</script>
-    <script>const mark=(k,v)=>document.body.dataset[k]=v;
-      try{parent.document.body.innerHTML='bad';mark('parent','reached')}catch{mark('parent','opaque')}
-      try{top.document.title='bad';mark('top','reached')}catch{mark('top','opaque')}
-      try{mark('parentTauri',typeof parent.__TAURI_INTERNALS__)}catch{mark('parentTauri','denied')}
-      mark('tauri',typeof window.__TAURI_INTERNALS__);
-      fetch('https://probe.invalid/fetch').then(()=>mark('fetch','reached'),()=>mark('fetch','blocked'));
-      new Image().src='https://probe.invalid/js-image';
-      document.body.append(Object.assign(document.createElement('iframe'),{src:'https://probe.invalid/js-frame'}));
-      try{window.open('https://probe.invalid/js-popup');}catch{}</script>
-    <script type="module">document.body.dataset.module='ran'</script>
-    <script src="https://probe.invalid/external.js">document.body.dataset.external='ran'</script>
-    <script type="importmap">{"imports":{"x":"https://probe.invalid/map.js"}}</script>
-    <script type="speculationrules">{"prefetch":[{"source":"list","urls":["https://probe.invalid/speculation"]}]}</script>
-    <script><!--<script>document.body.dataset.escaped='ran'</script>--></script><h2 id="after-script">after script</h2>
-    <button id="handler" onclick="this.dataset.clicked='yes'">handler</button>
+    <script>parent.pwned=true;fetch('https://probe.invalid/fetch');parent.document.body.innerHTML='bad';window.__TAURI_INTERNALS__.invoke('bad')</script>
     <img src="https://probe.invalid/image" srcset="https://probe.invalid/set 2x" onerror="parent.pwned=true">
     <iframe src="https://probe.invalid/frame"></iframe><object data="file:///C:/secret"></object><embed src="https://probe.invalid/embed">
     <svg><a href="https://probe.invalid/svg"><text>svg</text></a><image href="https://probe.invalid/svg-image"/></svg>
@@ -103,28 +87,15 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   assert.equal((await page.locator("#post").textContent()).includes("probe.invalid/css"), false);
   await open("report.html").click();
   assert.equal(await page.locator(".html-preview header strong").textContent(), "report.html");
-  const frame = page.frameLocator(".html-preview iframe").frameLocator("iframe");
+  const frame = page.frameLocator(".html-preview iframe");
   await frame.locator("#card").waitFor();
-  assert.equal(await page.locator("iframe").getAttribute("sandbox"), "allow-scripts");
-  assert.equal(await page.frameLocator(".html-preview iframe").locator("iframe").getAttribute("sandbox"), "allow-scripts");
-  // Inline scripts run inside the opaque frame only (#443).
-  await frame.locator("#made").waitFor();
-  await frame.locator("body[data-fetch]").waitFor();
-  assert.equal(await frame.locator("#card").getAttribute("data-ran"), "inline");
-  assert.deepEqual(await frame.locator("body").evaluate(el => ({ ...el.dataset })), {
-    parent: "opaque", top: "opaque", parentTauri: "denied", tauri: "undefined", fetch: "blocked", module: "ran",
-  }, "fetch stops at CSP; parent/top documents and Tauri internals stay out of reach");
-  assert.equal(await frame.locator("#after-script").textContent(), "after script", "a script cannot swallow following markup");
-  assert.equal(await frame.locator("script[src],script[type=importmap],script[type=speculationrules]").count(), 0);
-  await frame.locator("#handler").click();
-  assert.equal(await frame.locator("#handler").getAttribute("data-clicked"), "yes", "on* handlers run in the frame");
-  assert.equal(await frame.locator("html").evaluate(el => [...el.attributes].some(a => a.name.startsWith("on"))), false);
+  assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
   assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
   assert.equal(await frame.locator("body").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(230, 240, 250)");
   assert.equal(await frame.locator("p").evaluate(el => getComputedStyle(el).fontWeight), "700");
   assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).textDecorationLine), "underline");
   assert.equal(await frame.locator("html").evaluate(el => getComputedStyle(el).borderTopWidth), "3px");
-  assert.equal(await frame.locator("iframe:not([src='https://probe.invalid/js-frame']),object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0, "posted markup never carries these; only the script-made frame exists");
+  assert.equal(await frame.locator("script,iframe,object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0);
   assert.equal(await frame.locator("body").evaluate(() => {
     try { return parent.document.body ? "parent-access" : "missing"; } catch { return "opaque"; }
   }), "opaque");
@@ -134,19 +105,14 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   }
   await page.waitForTimeout(600);
   assert.equal(page.url(), `${base}/preview-test`);
-  assert.deepEqual(page.frames().slice(1, 3).map(f => f.url()), ["about:srcdoc", "about:srcdoc"]);
+  assert.equal(page.frames()[1].url(), "about:srcdoc");
   assert.equal(await page.evaluate(() => window.pwned), undefined);
-  const attempts = requests.map(url => [url, failures.get(url)]);
-  for (const expected of [
+  assert.deepEqual(requests.map(url => [url, failures.get(url)]).sort(), [
     ["https://probe.invalid/root", "csp"],
     ["https://probe.invalid/background", "csp"],
     ["file:///C:/secret", "other"],
     ["pullcept://network-probe", "csp"],
-  ]) assert.ok(attempts.some(a => a[0] === expected[0] && a[1] === expected[1]), `CSS attempt ${expected[0]} is blocked`);
-  // Script-made fetch/image/frame/popup, external and import-map scripts and
-  // speculation rules never reach the network: CSP stops them in the frame.
-  assert.deepEqual(attempts.filter(([url, why]) => !(why === "csp" || (url === "file:///C:/secret" && why === "other"))), [],
-    "every attempt fails at CSP, or at the opaque frame for local files");
+  ].sort(), "only CSS resource attempts: CSP blocks network/app schemes, opaque frame denies local files");
   assert.equal(popups, 0);
   const codeToggle = page.getByRole("button", { name: "コード", exact: true });
   await codeToggle.click();
@@ -165,33 +131,17 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   const host = await context.newPage();
   await host.goto(`${base}/html-preview.html`);
   await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(() => window.detachedCalls[0]));
-  await host.frameLocator("iframe").frameLocator("iframe").locator("#card").waitFor();
-  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "allow-scripts");
-  await host.frameLocator("iframe").frameLocator("iframe").locator("body[data-fetch]").waitFor();
-  assert.deepEqual(await host.frameLocator("iframe").frameLocator("iframe").locator("body").evaluate(el => ({ ...el.dataset })), {
-    parent: "opaque", top: "opaque", parentTauri: "denied", tauri: "undefined", fetch: "blocked", module: "ran",
-  });
-  assert.equal(await host.frameLocator("iframe").frameLocator("iframe").locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
-  await host.frameLocator("iframe").frameLocator("iframe").locator("#nav").click();
-  assert.deepEqual(host.frames().slice(1, 3).map(f => f.url()), ["about:srcdoc", "about:srcdoc"]);
-
-  // A script can navigate its own frame; the scriptless wrapper's frame-src
-  // stops that before any request, in the side panel and the detached host.
-  await page.evaluate(() => window.render('```html nav.html\n<p>nav</p><script>location.href="https://probe.invalid/self-nav"</script>\n```'));
-  await open("nav.html").click();
-  await page.waitForTimeout(800);
-  assert.equal(page.frames().length, 3);
-  assert.notEqual(page.frames()[2].url(), "https://probe.invalid/self-nav");
-  const navDoc = await page.evaluate(() => window.htmlPreviewDocument('<script>location.href="https://probe.invalid/host-self-nav"</script>'));
-  await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, navDoc);
-  await host.waitForTimeout(800);
-  assert.equal(requests.some(url => url.includes("self-nav")), false, "self-navigation never reaches the network");
+  await host.frameLocator("iframe").locator("#card").waitFor();
+  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(await host.frameLocator("iframe").locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
+  await host.frameLocator("iframe").locator("#nav").click();
+  assert.equal(host.frames()[1].url(), "about:srcdoc");
 
   await page.evaluate(() => window.render('```HTML\n<title>  Second\n report </title><h2>Second report</h2>\n```\n\n```html\n<p>untitled</p>\n```'));
   assert.equal(await open("HTML").count(), 1, "no first-line name and no title falls back to HTML");
   await open("Second report").click();
   await frame.getByRole("heading", { name: "Second report" }).waitFor();
-  await page.waitForFunction(() => window.detachedCalls.at(-1)?.includes('Second report'));
+  await page.waitForFunction(() => window.detachedCalls.length === 2);
   assert.equal(await page.locator(".html-preview iframe").count(), 1);
   await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
   assert.equal(await page.locator(".html-preview").isVisible(), false);
@@ -241,13 +191,13 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
     const report = `<style>body{background:#f5f7fc;color:#202844;line-height:1.6}.eyebrow{color:#657294;font-size:12px;letter-spacing:2px}h1{font-size:30px;margin:8px 0}.cards{display:flex;gap:12px;margin:24px 0}.card{background:white;padding:18px;border-radius:12px;flex:1}.value{font-size:28px;color:#355bc9;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #e8edf6}th{color:#657294;font-size:12px}.badge{color:#20805b}</style><p class="eyebrow">WEEKLY REPORT / 2026.10.17</p><h1>Project overview</h1><p>A quiet space for the work taking shape.</p><section class="cards"><div class="card">Completed<div class="value">24</div></div><div class="card">In progress<div class="value">6</div></div><div class="card">On track<div class="value">92%</div></div></section><h2>This week</h2><table><thead><tr><th>Workstream</th><th>Status</th></tr></thead><tbody><tr><td>Conversation layout</td><td class="badge">Ready</td></tr><tr><td>Static report preview</td><td class="badge">Ready</td></tr><tr><td>Documentation</td><td>In review</td></tr></tbody></table>`;
     await page.evaluate(report => { document.querySelector('#post').replaceChildren(); window.render('A static report from the room.\n\n```html weekly-report.html\n' + report + '\n```'); }, report);
     await page.getByRole("button", { name: "weekly-report.html のプレビューを開く" }).click();
-    await page.frameLocator(".html-preview iframe").frameLocator("iframe").getByRole("heading", { name: "Project overview" }).waitFor();
+    await page.frameLocator(".html-preview iframe").getByRole("heading", { name: "Project overview" }).waitFor();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "side-panel.png") });
     await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(report => window.htmlPreviewDocument(report), report));
     await host.setViewportSize({ width: 900, height: 800 });
     await host.bringToFront();
-    await host.frameLocator("iframe").frameLocator("iframe").getByRole("heading", { name: "Project overview" }).waitFor();
+    await host.frameLocator("iframe").getByRole("heading", { name: "Project overview" }).waitFor();
     await host.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "detached-host.png") });
   }
 });
