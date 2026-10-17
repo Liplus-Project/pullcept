@@ -803,6 +803,120 @@ button svg.icon {
   text-decoration-thickness: 2px;
 }
 
+/* A post's words as Markdown (#431). Blocks keep the gap of a line between
+   them and none at the bubble's edges; the body's pre-wrap still draws a
+   single newline inside a paragraph as a line break. */
+.message .body > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, hr, .md-table, .mermaid-holder) {
+  margin: 0.35rem 0;
+}
+
+.message .body > :first-child {
+  margin-top: 0;
+}
+
+.message .body > :last-child {
+  margin-bottom: 0;
+}
+
+.message .body :is(li > p, blockquote > p) {
+  margin: 0.2rem 0;
+}
+
+.message .body :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.message .body h1 {
+  font-size: 1.2em;
+}
+
+.message .body h2 {
+  font-size: 1.1em;
+}
+
+.message .body :is(ul, ol) {
+  padding-left: 1.5em;
+  white-space: normal;
+}
+
+.message .body li {
+  white-space: pre-wrap;
+}
+
+.message .body li.task {
+  list-style: none;
+}
+
+.message .body li.task > input {
+  margin: 0 0.4em 0 -1.3em;
+  vertical-align: middle;
+}
+
+.message .body blockquote {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--code-line);
+  color: var(--muted);
+}
+
+.message .body hr {
+  border: 0;
+  border-top: 1px solid var(--code-line);
+}
+
+.message .body .inline-code {
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+  background: var(--code-ground);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+/* A table scrolls inside its frame, as a line of code does, rather than
+   widening the bubble. */
+.message .body .md-table {
+  overflow-x: auto;
+}
+
+.message .body table {
+  border-collapse: collapse;
+  line-height: 1.5;
+}
+
+.message .body :is(th, td) {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--code-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message .body th {
+  background: var(--code-ground);
+  font-weight: 700;
+}
+
+.message.mine:has(.md-table, .mermaid-block) {
+  max-width: min(46em, 100%);
+}
+
+/* A ```mermaid diagram, once drawn. mermaid's own theme follows the screen's
+   (light or dark) at the first diagram. A wide diagram scrolls inside its
+   frame. */
+.message .mermaid-block {
+  padding: 0.5rem;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: normal;
+  line-height: normal;
+}
+
+.message .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* What a post attached, below its words (#318): a picture as a tile, any other
    file as a chip with its name and its type. The paths the post carries are
    not drawn. A tile is a fixed square cut from the picture, so a line has its

@@ -41,3 +41,17 @@ test("local QR's browser renderer and browser dependency carry notices", () => {
   assert.ok(!packages.includes("yargs"));
   assert.ok(!packages.includes("pngjs"));
 });
+
+test("the post renderer's libraries are roots of the notices and dependencies of the app (#431)", () => {
+  const dependencies = JSON.parse(read("../../package.json")).dependencies;
+  const imported = [...read("../../src/markdown.ts").matchAll(/(?:from |import\()"([^".][^"]*)"/g)].map(([, spec]) => spec);
+  assert.deepEqual([...new Set(imported)].sort(), ["marked", "mermaid"]);
+  for (const name of ["marked", "mermaid"]) {
+    assert.ok(ROOTS.includes(name), `${name} is imported but not in ROOTS`);
+    assert.ok(name in dependencies, `${name} is imported but not a dependency`);
+  }
+  const packages = collect().map(p => p.name);
+  assert.ok(packages.includes("dompurify"));
+  assert.ok(!packages.includes("elkjs"), "EPL-2.0 elkjs is not shipped");
+  assert.ok(!packages.includes("strictdom"), "fastdom-strict is not imported");
+});

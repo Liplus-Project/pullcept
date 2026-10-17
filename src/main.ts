@@ -27,7 +27,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
-import { createComposer, findCodeFences, highlightedCode, lineInFence, splitCodeFences } from "./composer";
+import { createComposer, findCodeFences, highlightedCode, lineInFence } from "./composer";
+import { appendMarkdown } from "./markdown";
 
 /**
  * Whether this account launches a session.
@@ -3117,23 +3118,39 @@ function splitAttachments(content: string): { text: string; paths: string[] } {
 }
 
 /**
- * A post's words into its body (#348): prose as it has always been drawn, each
- * fenced block as code. Text only — nothing is read as HTML.
+ * A post's words into its body (#431): read as Markdown — tables, lists,
+ * emphasis, code blocks (#348) and mermaid diagrams — with every element built
+ * by the screen. Nothing a post says is read as HTML.
  */
 function appendPostWords(body: HTMLElement, text: string): void {
-  for (const piece of splitCodeFences(text)) {
-    if (piece.kind === "text") appendProse(body, piece.text);
-    else body.appendChild(codeBlock(piece.code, piece.lang));
-  }
+  appendMarkdown(body, text, {
+    prose: (words) => linkifyText(words),
+    link: markdownLink,
+    code: codeBlock,
+  });
 }
 
 /**
- * Words outside a fence: text, with its URLs and paths as links (#349). The one
- * place prose is put into a post's body; code blocks do not pass through it, so
- * nothing inside a fence is a link.
+ * A Markdown link (#431): its label, opened as a URL when the address is one
+ * the link rule of #349 accepts whole (http / https). Any other address leaves
+ * the label as plain words.
  */
-function appendProse(parent: HTMLElement, text: string): void {
-  parent.append(...linkifyText(text));
+function markdownLink(href: string, label: Node[]): Node[] {
+  const pieces = linkPieces(href);
+  const piece = pieces.length === 1 && pieces[0].kind === "url" && pieces[0].text === href ? pieces[0] : undefined;
+  if (!piece) return label;
+  // A bare URL is already a link from the label's own words.
+  if (label.length === 1 && label[0] instanceof HTMLAnchorElement) return label;
+  const link = document.createElement("a");
+  link.className = "link";
+  link.setAttribute("role", "link");
+  link.title = href;
+  link.append(...label);
+  link.addEventListener("click", () => {
+    if (!(window.getSelection()?.isCollapsed ?? true)) return;
+    openLink(piece);
+  });
+  return [link];
 }
 
 /**
