@@ -47,6 +47,9 @@ export function createSessionController(deps: Dependencies) {
    */
   const TERMINAL_OPTIONS = {
     cursorBlink: true,
+    // Only the bar shape reads it (#448). xterm's 1px all but vanished on the
+    // screen it is read from (Master, 2026-10-18, #456).
+    cursorWidth: 2,
     fontSize: 13,
     fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
     // The CLI is a full-screen TUI: it moves the cursor, clears regions and
