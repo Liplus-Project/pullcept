@@ -142,6 +142,7 @@ const ADDRESSING = [
 // is.
 const WORKING_TOGETHER = [
   "Working together:",
+  "- Need peer's current state/work? Ask them in room; check reply, not old posts. No reply = unknown, not idle/free. No endless waits/asks.",
   "- Unowned work: claim it in room, wait for a reply, then start.",
   "- Don't adopt others' posts as your own context.",
   "- GitHub write with body: last line \"— test-agent\". Unsigned write = belongs to no session in room.",
