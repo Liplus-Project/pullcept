@@ -33,7 +33,7 @@ pub async fn html_preview(
     // The native window survives JS controller recreation. Serialize across
     // controllers too, so a reload's clear follows an already in-flight open.
     let _operation = state.operations.lock().await;
-    // Window creation is asynchronous command work, and no state lock spans a
+    // Window creation is asynchronous command work, and no document lock spans a
     // native window call (page-load callbacks also read this state).
     *state.document.lock().map_err(|e| e.to_string())? = document.clone().unwrap_or_default();
     let Some(document) = document else {
