@@ -3642,3 +3642,6 @@ button svg.icon {
 .codex-remote-dialog canvas { display: block; max-width: 100%; margin: 16px auto; }
 .codex-remote-dialog [role="alert"] { color: var(--danger, #ffaaaa); }
 .codex-remote-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.html-file .html-preview-open { margin: 0; font-family: var(--mono, ui-monospace, monospace); text-align: start; overflow-wrap: anywhere; }
+.html-preview-code[hidden], .html-preview-content[hidden] { display: none; }
+.html-preview-code { flex: 1; min-height: 0; margin: 0; padding: .6rem; overflow: auto; background: var(--code-ground); border-top: 1px solid var(--code-line); }

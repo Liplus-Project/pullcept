@@ -35,7 +35,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     });
     window.render = text => appendMarkdown(document.querySelector('#post'), text, {
       prose: text => [document.createTextNode(text)], link: (_, label) => label,
-      code: (source, lang) => { const block = document.createElement('pre'); block.textContent = source; window.preview.addButton(block, source, lang); return block; }
+      code: (source, lang, info) => { if (lang.toLowerCase() === 'html') return window.preview.fileBlock(source, info); const block = document.createElement('pre'); block.textContent = source; return block; }
     });
     window.htmlPreviewDocument = htmlPreviewDocument;
     window.__TAURI_INTERNALS__ = { secret: 'parent-only' };
@@ -77,12 +77,15 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     <a id="download" href="https://probe.invalid/download" download>download</a>
     <div style="background:url(file:///C:/secret);cursor:url(pullcept://network-probe),auto">local CSS</div>
     </body></html>`;
-  await page.evaluate(source => window.render('Raw <img src="https://probe.invalid/raw">\n\n```html\n' + source + '\n```\n\n```css\np{}\n```'), source);
+  await page.evaluate(source => window.render('Raw <img src="https://probe.invalid/raw">\n\n```html report.html\n' + source + '\n```\n\n```css\np{}\n```'), source);
   assert.equal(await page.locator("#post img").count(), 0);
   assert.equal(await page.locator(".html-preview iframe").count(), 0, "arrival never opens a preview");
-  assert.equal(await page.getByRole("button", { name: "プレビュー", exact: true }).count(), 1);
-  assert.ok((await page.locator("#post pre").first().textContent()).includes(source));
-  await page.getByRole("button", { name: "プレビュー", exact: true }).click();
+  const open = name => page.getByRole("button", { name: `${name} のプレビューを開く`, exact: true });
+  assert.equal(await open("report.html").count(), 1, "the fence's first line names the file");
+  assert.equal(await page.locator("#post .html-file").textContent(), "report.html", "room shows one file-name line, not code");
+  assert.equal((await page.locator("#post").textContent()).includes("probe.invalid/css"), false);
+  await open("report.html").click();
+  assert.equal(await page.locator(".html-preview header strong").textContent(), "report.html");
   const frame = page.frameLocator(".html-preview iframe");
   await frame.locator("#card").waitFor();
   assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
@@ -110,7 +113,13 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     ["pullcept://network-probe", "csp"],
   ].sort(), "only CSS resource attempts: CSP blocks network/app schemes, opaque frame denies local files");
   assert.equal(popups, 0);
-  assert.equal(await page.locator("#post pre").count(), 2, "source stays readable");
+  const codeToggle = page.getByRole("button", { name: "コード", exact: true });
+  await codeToggle.click();
+  assert.equal(await codeToggle.getAttribute("aria-pressed"), "true");
+  assert.ok((await page.locator(".html-preview-code").textContent()).includes(source), "code is read in the preview");
+  assert.equal(await page.locator(".html-preview-content").isVisible(), false);
+  await codeToggle.click();
+  assert.equal(await page.locator(".html-preview-content").isVisible(), true);
 
   await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
   await page.waitForFunction(() => window.detachedCalls.length === 1);
@@ -125,19 +134,20 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await host.frameLocator("iframe").locator("#nav").click();
   assert.equal(host.frames()[1].url(), "about:srcdoc");
 
-  await page.evaluate(() => window.render('```HTML\n<h2>Second report</h2>\n```'));
-  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
+  await page.evaluate(() => window.render('```HTML\n<title>  Second\n report </title><h2>Second report</h2>\n```\n\n```html\n<p>untitled</p>\n```'));
+  assert.equal(await open("HTML").count(), 1, "no first-line name and no title falls back to HTML");
+  await open("Second report").click();
   await frame.getByRole("heading", { name: "Second report" }).waitFor();
   await page.waitForFunction(() => window.detachedCalls.length === 2);
   assert.equal(await page.locator(".html-preview iframe").count(), 1);
   await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
   assert.equal(await page.locator(".html-preview").isVisible(), false);
   assert.equal(await page.locator(".html-preview iframe").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "プレビュー", exact: true }).last().evaluate(el => el === document.activeElement), true);
+  assert.equal(await open("Second report").evaluate(el => el === document.activeElement), true);
   await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
 
   await page.setViewportSize({ width: 400, height: 700 });
-  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
+  await open("Second report").click();
   assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).isVisible(), true);
   await page.getByRole("button", { name: "別ウィンドウで開く" }).click();
   await page.evaluate(() => window.preview.clear()); // enterTopic uses this same boundary
@@ -145,10 +155,12 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   assert.equal(await page.locator(".html-preview iframe").count(), 0);
 
   // A failed render cannot erase source or leave the previous preview active.
-  await page.evaluate(() => { window.preview.addButton(document.querySelector('#post'), Symbol('invalid source'), 'html'); });
-  await page.getByRole("button", { name: "プレビュー", exact: true }).last().click();
-  assert.equal(await page.getByRole("button", { name: "表示できませんでした（コードをご覧ください）" }).count(), 1);
-  assert.ok((await page.locator("#post").textContent()).includes(source));
+  await page.evaluate(() => { document.querySelector('#post').append(window.preview.fileBlock(Symbol('invalid source'), 'html broken.html')); });
+  await open("broken.html").click();
+  assert.equal(await page.locator(".html-preview [role=status]").textContent(), "表示できませんでした。コードをご覧ください。");
+  assert.equal(await page.locator(".html-preview iframe").count(), 0);
+  assert.ok((await page.locator(".html-preview-code").textContent()).includes("invalid source"), "failed render leaves code readable");
+  await page.evaluate(() => window.preview.clear());
   assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")));
 
   // Main-webview reload/recreation starts without knowledge of a surviving
@@ -174,8 +186,8 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     await page.bringToFront();
     await page.addStyleTag({ content: "html,body,#body{height:100%;margin:0}#conversation{padding:20px;overflow:auto}#post pre{white-space:pre-wrap;overflow-wrap:anywhere}.html-preview{flex-basis:56%}" });
     const report = `<style>body{background:#f5f7fc;color:#202844;line-height:1.6}.eyebrow{color:#657294;font-size:12px;letter-spacing:2px}h1{font-size:30px;margin:8px 0}.cards{display:flex;gap:12px;margin:24px 0}.card{background:white;padding:18px;border-radius:12px;flex:1}.value{font-size:28px;color:#355bc9;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #e8edf6}th{color:#657294;font-size:12px}.badge{color:#20805b}</style><p class="eyebrow">WEEKLY REPORT / 2026.10.17</p><h1>Project overview</h1><p>A quiet space for the work taking shape.</p><section class="cards"><div class="card">Completed<div class="value">24</div></div><div class="card">In progress<div class="value">6</div></div><div class="card">On track<div class="value">92%</div></div></section><h2>This week</h2><table><thead><tr><th>Workstream</th><th>Status</th></tr></thead><tbody><tr><td>Conversation layout</td><td class="badge">Ready</td></tr><tr><td>Static report preview</td><td class="badge">Ready</td></tr><tr><td>Documentation</td><td>In review</td></tr></tbody></table>`;
-    await page.evaluate(report => { document.querySelector('#post').replaceChildren(); window.render('A static report from the room.\n\n```html\n' + report + '\n```'); }, report);
-    await page.getByRole("button", { name: "プレビュー", exact: true }).click();
+    await page.evaluate(report => { document.querySelector('#post').replaceChildren(); window.render('A static report from the room.\n\n```html weekly-report.html\n' + report + '\n```'); }, report);
+    await page.getByRole("button", { name: "weekly-report.html のプレビューを開く" }).click();
     await page.frameLocator(".html-preview iframe").getByRole("heading", { name: "Project overview" }).waitFor();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "side-panel.png") });
