@@ -544,3 +544,6 @@ export interface McpPanelView {
   error: string | null;
   servers: McpServerView[];
 }
+
+/** The shapes a terminal cursor can be drawn in, in xterm's names (#448). */
+export type TerminalCursorStyle = "block" | "bar" | "underline";

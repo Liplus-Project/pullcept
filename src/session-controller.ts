@@ -6,7 +6,7 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITerminalOptions } from "@xterm/xterm";
-import type { Topic, Participant, SessionStats, SeatActivity, Account, StartedSession, RunningSession, SeatedAccount, IconName, SessionView, Member, PtyExit } from "./contracts";
+import type { Topic, Participant, SessionStats, SeatActivity, Account, StartedSession, RunningSession, SeatedAccount, IconName, SessionView, Member, PtyExit, TerminalCursorStyle } from "./contracts";
 
 export interface Dependencies {
   invoke: typeof invoke;
@@ -133,6 +133,9 @@ export function createSessionController(deps: Dependencies) {
 
   /** The size every terminal on this screen is currently drawn at, in `px`. */
   let terminalFontSize = TERMINAL_OPTIONS.fontSize;
+
+  /** The cursor shape every terminal on this screen is drawn with (#448). */
+  let terminalCursorStyle: TerminalCursorStyle = "block";
 
   /**
    * Why an account's last launch failed, by `seatKey`, until it is tried again.
@@ -850,7 +853,7 @@ export function createSessionController(deps: Dependencies) {
     // At the size this screen is set to, not at the default in the options: a
     // terminal opened after the size was changed would otherwise be the one pane
     // that is a different size from the rest.
-    const term = deps.createTerminal({ ...TERMINAL_OPTIONS, fontSize: terminalFontSize });
+    const term = deps.createTerminal({ ...TERMINAL_OPTIONS, fontSize: terminalFontSize, cursorStyle: terminalCursorStyle });
     const fit = deps.createFitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -1312,6 +1315,7 @@ export function createSessionController(deps: Dependencies) {
   function forgetSelection(topicId: string) { shownByTopic.delete(topicId); }
   function launchFailure(key: string) { return launchFailures.get(key); }
   function setTerminalFontSize(size: number) { terminalFontSize = size; for (const view of views.values()) view.term.options.fontSize = size; }
+  function setTerminalCursorStyle(style: TerminalCursorStyle) { terminalCursorStyle = style; for (const view of views.values()) view.term.options.cursorStyle = style; }
   function wireSessionIdCopy() { sessionIdCopyEl.addEventListener("click", () => void copySessionId()); }
   function receiveStats(stats: SessionStats): void {
     const view = getView(deps.seatKey(stats.topic_id, stats.account_id));
@@ -1347,5 +1351,5 @@ export function createSessionController(deps: Dependencies) {
       if (joined.some((one) => one.account === view.accountId)) view.seenInRoom = true;
     }
   }
-  return { receiveStats, receiveActivity, receiveRoster, wireSessionIdCopy, getView, allViews, hasView, allSeats, hasSeat, selectedAccount, rememberSelection, forgetSelection, launchFailure, setTerminalFontSize, seatedAnywhere, shownView, viewName, fitShown, showTopicTerminals, renderTerminalTabs, refreshSeats, renderSessionFacts, renderSessionStats, renderSessionId, endSession, discardView, showView, startSession };
+  return { receiveStats, receiveActivity, receiveRoster, wireSessionIdCopy, getView, allViews, hasView, allSeats, hasSeat, selectedAccount, rememberSelection, forgetSelection, launchFailure, setTerminalFontSize, setTerminalCursorStyle, seatedAnywhere, shownView, viewName, fitShown, showTopicTerminals, renderTerminalTabs, refreshSeats, renderSessionFacts, renderSessionStats, renderSessionId, endSession, discardView, showView, startSession };
 }

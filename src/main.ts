@@ -4172,6 +4172,7 @@ const displaySettings = createDisplaySettings({
   get participantsEl() { return participantsEl; },
   syncScrollLatest: (...args) => syncScrollLatest(...args),
   setTerminalFontSize: (size) => sessions.setTerminalFontSize(size),
+  setTerminalCursorStyle: (style) => sessions.setTerminalCursorStyle(style),
   fitTerminal: () => sessions.fitShown(),
 });
 
