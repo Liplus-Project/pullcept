@@ -26,13 +26,25 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   const separate = document.createElement("button");
   separate.type = "button";
   separate.textContent = "別ウィンドウで開く";
+  // "プレビュー｜コード" segmented switch (#439); each side keeps aria-pressed.
+  const views = document.createElement("div");
+  views.className = "html-preview-views";
+  views.setAttribute("role", "group");
+  views.setAttribute("aria-label", "表示の切り替え");
+  const previewToggle = document.createElement("button");
+  previewToggle.type = "button";
+  previewToggle.textContent = "プレビュー";
+  previewToggle.setAttribute("aria-pressed", "true");
   const codeToggle = document.createElement("button");
   codeToggle.type = "button";
   codeToggle.textContent = "コード";
   codeToggle.setAttribute("aria-pressed", "false");
+  views.append(previewToggle, codeToggle);
   const close = document.createElement("button");
   close.type = "button";
-  close.textContent = "閉じる";
+  close.className = "html-preview-close";
+  close.textContent = "×";
+  close.title = "閉じる";
   close.setAttribute("aria-label", "プレビューを閉じて会話に戻る");
   const note = document.createElement("p");
   note.textContent = "静的な表示です。JavaScript や外部通信を使う内容には対応しません。";
@@ -44,7 +56,7 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   codeView.className = "html-preview-code";
   codeView.hidden = true;
   codeView.tabIndex = 0;
-  header.append(title, codeToggle, separate, close);
+  header.append(title, views, separate, close);
   pane.append(header, note, error, content, codeView);
   conversation.after(pane);
   let doc: string | null = null;
@@ -62,8 +74,10 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
     codeView.hidden = !on;
     content.hidden = on;
     codeToggle.setAttribute("aria-pressed", String(on));
+    previewToggle.setAttribute("aria-pressed", String(!on));
   }
-  codeToggle.addEventListener("click", () => showCode(codeView.hidden));
+  previewToggle.addEventListener("click", () => showCode(false));
+  codeToggle.addEventListener("click", () => showCode(true));
   function clear(restoreFocus = false) {
     doc = null;
     pane.hidden = true;
@@ -98,7 +112,18 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
       const button = document.createElement("button");
       button.type = "button";
       button.className = "html-preview-open";
-      button.textContent = name;
+      // Card: icon, name, "開く ›" (#439). The name is drawn only via textContent.
+      const icon = document.createElement("span");
+      icon.className = "html-file-icon";
+      icon.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.className = "html-file-name";
+      label.textContent = name;
+      const action = document.createElement("span");
+      action.className = "html-file-action";
+      action.setAttribute("aria-hidden", "true");
+      action.textContent = "開く ›";
+      button.append(icon, label, action);
       button.title = `${name} のプレビューを開く`;
       button.setAttribute("aria-label", `${name} のプレビューを開く`);
       button.addEventListener("click", () => {
