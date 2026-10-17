@@ -476,9 +476,36 @@ function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.dataset.kind = kind;
 }
 
+/**
+ * Whether the pane was open, kept across a reload of this screen (#454).
+ *
+ * In `sessionStorage` because the question is only ever asked by the same
+ * window coming back: a reload keeps it, and an app restart has no seats to
+ * re-adopt, so it never reads it. Nothing stored reads as folded, which is how
+ * the page opens.
+ */
+const DIAGNOSTICS_OPEN_KEY = "pullcept.diagnostics-open";
+
+function rememberDiagnostics(open: boolean): void {
+  try {
+    sessionStorage.setItem(DIAGNOSTICS_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Unremembered, the pane comes back folded after a reload.
+  }
+}
+
+function diagnosticsWereOpen(): boolean {
+  try {
+    return sessionStorage.getItem(DIAGNOSTICS_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 function revealDiagnostics(): void {
   diagnosticsEl.hidden = false;
   toggleEl.setAttribute("aria-expanded", "true");
+  rememberDiagnostics(true);
   // The container has no size while hidden, so the fit has to wait for layout.
   requestAnimationFrame(() => fitShown());
 }
@@ -495,6 +522,7 @@ function revealDiagnostics(): void {
 function hideDiagnostics(): void {
   diagnosticsEl.hidden = true;
   toggleEl.setAttribute("aria-expanded", "false");
+  rememberDiagnostics(false);
 }
 
 /**
@@ -4136,7 +4164,9 @@ async function main(): Promise<void> {
   // and a room that fails to answer is no reason to leave it unreachable — the
   // failure this is here for is the screen having been reloaded, which the room
   // knows nothing about (#84). It swallows its own errors, so it needs none.
-  await refreshSeats(true);
+  // The pane comes back as it was before the reload, not forced open (#454):
+  // the notice it was opened for is on the status line as well.
+  await refreshSeats(diagnosticsWereOpen());
 
   try {
     await join();
