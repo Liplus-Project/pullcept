@@ -221,8 +221,8 @@ export interface Account {
    *  (`account_avatar`), read once into `avatarImages`. */
   avatar: boolean;
   /** A Codex CLI account's seat runs through its own app-server and gets its
-   *  character as `developerInstructions` (#299). Absent or false: the Li+
-   *  output style hook, which stays the default. */
+   *  character as `developerInstructions` (#299). Absent: app-server by default. Explicit false:
+   *  the compatibility Li+ output style hook. Read only for Codex CLI. */
   codex_app_server?: boolean;
   codex_remote_control?: boolean;
 }

@@ -71,7 +71,7 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 
 ## Codex の席を app-server 経由で起動する（#299）
 
-**アカウントごとの切り替えであり、既定は今の hook 方式のままである。** アカウントの窓で種別が `Codex CLI` のときだけ「app-server 方式」の欄が出る。入れて決定したアカウントの席は、次の起動から席ごとの `codex app-server` を経由して立つ。外せば次の起動から hook 方式（上の #281）に戻る。走っている席は切り替えても変わらない。既定を切り替えないのは、モデルの一往復で席がキャラどおりに答えることを、まだ確かめていないためである（「[実装状況](4-status.md)」の #299 の検証範囲）。Claude の席は何も変わらない。
+**Codex の標準起動は、席ごとの app-server 方式である。** 新規アカウントと `codex_app_server` が欠落した設定では有効になり、明示保存された false（hook 方式）と true は保持する。他の種別から Codex CLI に変更するときも標準は有効である。アカウントの窓で種別が `Codex CLI` のときだけ「app-server 方式」の欄が出る。外して決定すれば次の起動から互換の hook 方式（上の #281）に戻る。編集・保存・プレビュー・実際の起動で同じ選択を使い、走っている席は切り替えても変わらない。2026-10-17 の実機往復と既定切り替えの依頼を受けて変更した（「[実装状況](4-status.md)」の #299 の検証範囲）。スマホ接続は別の opt-in で既定オフのままであり、Claude など他の種別の起動は変えない。
 
 **一つの席に一つの app-server を立て、その上に本物の TUI を繋ぐ。** 起動は次の順に進む。
 
@@ -227,7 +227,7 @@ Claude Code の起動する行へアプリが足すのは `--settings` の JSON 
 
 - Li+ のキャラの配送とは衝突しない。Li+ の output style hook は本文を SessionStart の `additionalContext` で配り（`sidecar/src/codex-style.mjs` の `body` が読む `hookSpecificOutput.additionalContext`）、`developer_instructions` とは別の入口である。
 - だが `-c developer_instructions=…` は CLI の全 layer（user・profile・信頼済み project・手動 `-c`）で決まった有効な本文を置き換える。部屋の一文を足すには、起動のたびに有効な本文を読み、それに一文を足した全文を `-c` で載せ直すしかない。
-- それは既定の起動経路（hook 方式の file mode）に、今は走らないモデル不要の `debug prompt-input` 二回（各15秒上限）と、その失敗による起動停止を新たに持ち込む。さらに #281 の file mode は本文を argv にも環境にも載せない契約であり（[要件](0-requirements.md)）、有効な本文の全文（日本語は TOML の Unicode escape で数倍に膨らむ）を起動の行に載せればその契約を破り、Windows の 8191 文字の上限で起動を拒否する席を新たに生む。
+- それは #301 当時の既定の起動経路（hook 方式の file mode）に、今は走らないモデル不要の `debug prompt-input` 二回（各15秒上限）と、その失敗による起動停止を新たに持ち込む。さらに #281 の file mode は本文を argv にも環境にも載せない契約であり（[要件](0-requirements.md)）、有効な本文の全文（日本語は TOML の Unicode escape で数倍に膨らむ）を起動の行に載せればその契約を破り、Windows の 8191 文字の上限で起動を拒否する席を新たに生む。
 
 したがって hook 方式の席は従来どおりサイドカーの `instructions` だけで作法を受け取る。部屋の一文が要る Codex の席は app-server 方式に切り替える。
 

@@ -175,3 +175,5 @@ git add --renormalize src-tauri/Cargo.toml
 `mcp-config` の `codex::remote` 試験は、完全長SHA-256の固定vector・安定性・安全なcomponent・topic/accountの境界・空文字・UTF-8 IDを検証する。標準WindowsアプリデータrootとUUID、native0.162.1の全DB名と `-journal` / `-wal` / `-shm` を含むUTF-16長を検証し、同じ予算で旧hex二階層が落ちることも確かめる。長いユーザー名、非ASCIIroot、サロゲート対が予算を超える境界を含む。上限超過は `sqlite_home` が返し、launcherはdiscoveryやbackend起動前に伝播する。
 
 隔離native試験はdeveloper fixtureのinjectだけで履歴を永続化し、モデルturnは送らない。251/252字の比較と初期化条件、旧失敗fixtureから新SQLiteへの同一thread cold resumeを観測した。修正関数から得た保存先でも成功したが、製品の本来の会話・スマホ・relayはこの試験に含まない。
+
+アカウント設定の型は `src-tauri/src/config/account.rs` に置き、Tauri 非依存の `crates/mcp-config/tests/account_config.rs` が同じソースを読み込んで、app-server 設定の欠落・明示 false・明示 true と保存後の再読み取りを確かめる（#299）。画面の新規・種別切り替え・編集・プレビュー・保存は `sidecar/test/codex-account-default.test.mjs` が実際のアカウントダイアログを動かして確かめる。
