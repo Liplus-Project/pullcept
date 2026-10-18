@@ -82,6 +82,10 @@ struct Entry {
     /// The windows the app-server last reported (#496), newer than the
     /// rollout's until the rollout carries rate limits again.
     answered: Option<Windows>,
+    /// The account the app-server last named (#495), and the modified time
+    /// of the seat's `auth.json` last seen: a change there asks again.
+    login: Option<String>,
+    auth_modified: Option<std::time::SystemTime>,
 }
 
 impl Entry {
@@ -154,6 +158,8 @@ impl Limiter {
             account_id: self.account_id.clone(),
             mailboxes: self.mailboxes(),
             answered: None,
+            login: None,
+            auth_modified: None,
         }
     }
 
@@ -226,6 +232,9 @@ impl Limiter {
             }
             None => {}
         }
+        if self.login_changed() {
+            self.recheck();
+        }
         if self.with(|entry| entry.limit.due(now())) {
             let answer = self.ask();
             let recovered = self.with(|entry| entry.limit.answer(now(), answer));
@@ -237,6 +246,31 @@ impl Limiter {
             self.announce_other_cause();
         }
         self.is_limited() != was
+    }
+
+    /// Whether the seat's `auth.json` changed since the last round (#495),
+    /// its first sight at launch included: only its modified time is read,
+    /// never its content, which holds the tokens.
+    fn login_changed(&self) -> bool {
+        let modified = std::fs::metadata(self.asker.home.join("auth.json"))
+            .and_then(|m| m.modified())
+            .ok();
+        self.with(|entry| {
+            let changed = modified.is_some() && entry.auth_modified != modified;
+            entry.auth_modified = modified;
+            changed
+        })
+    }
+
+    /// The login may have changed: ask once, which names the account and
+    /// refreshes the usage. A stopped seat takes the answer as a due question
+    /// would; a running one is not stopped by it — a new account is not
+    /// thereby limited or free, and the rollout says when a turn is refused.
+    fn recheck(&self) {
+        let answer = self.ask();
+        if self.with(|entry| entry.limit.is_limited() && entry.limit.answer(now(), answer)) {
+            self.recover();
+        }
     }
 
     /// The seat has just stopped. One question for the reset the room is
@@ -358,7 +392,7 @@ impl Limiter {
     /// windows the app-server last reported, when newer than the rollout's
     /// (#496), stand in for the rollout's two windows.
     pub fn stats(&self, status: &Status) -> SessionStats {
-        let answered = self.with(|entry| entry.answered);
+        let (answered, login) = self.with(|entry| (entry.answered, entry.login.clone()));
         let mut stats = SessionStats::from_codex(
             self.topic_id.clone(),
             self.account_id.clone(),
@@ -372,6 +406,7 @@ impl Limiter {
             stats.seven_day_resets_at = w.seven_day_resets_at;
         }
         stats.pty_id = Some(self.pty_id.clone());
+        stats.login = login;
         stats
     }
 
@@ -393,7 +428,10 @@ impl Limiter {
     /// rollout's and recorded as received now. An answer without them leaves
     /// the figures held as they were.
     fn ask(&self) -> Answer {
-        let (answer, windows) = ask(&self.asker);
+        let (answer, windows, login) = ask(&self.asker);
+        if login.is_some() {
+            self.with(|entry| entry.login = login);
+        }
         if let Some(windows) = windows {
             self.with(|entry| entry.answered = Some(windows));
             self.app.state::<crate::room::UsageBook>().record(
@@ -409,19 +447,23 @@ impl Limiter {
 /// How long one question may take, start to answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Ask the app-server whether the seat's account may run again, and with
-/// what usage (#496).
-fn ask(asker: &Asker) -> (Answer, Option<Windows>) {
+/// Ask the app-server whether the seat's account may run again, with what
+/// usage (#496), and which account it is (#495).
+fn ask(asker: &Asker) -> (Answer, Option<Windows>, Option<String>) {
     match ask_once(asker) {
-        Ok(response) => (limit::read_answer(&response), limit::read_usage(&response)),
+        Ok((response, account)) => (
+            limit::read_answer(&response),
+            limit::read_usage(&response),
+            account.as_ref().and_then(limit::read_login),
+        ),
         Err(err) => {
             eprintln!("[codex-limit] the app-server could not be asked: {err}");
-            (Answer::Unavailable, None)
+            (Answer::Unavailable, None, None)
         }
     }
 }
 
-fn ask_once(asker: &Asker) -> Result<Value, String> {
+fn ask_once(asker: &Asker) -> Result<(Value, Option<Value>), String> {
     let command = &asker.command;
     let mut cmd = if cfg!(windows) && !command.to_ascii_lowercase().ends_with(".exe") {
         let mut cmd = Command::new("cmd.exe");
@@ -448,8 +490,10 @@ fn ask_once(asker: &Asker) -> Result<Value, String> {
     result
 }
 
-/// The three requests, each answer waited for by id, all inside `ASK_TIMEOUT`.
-fn converse(child: &mut Child) -> Result<Value, String> {
+/// The three requests, each answer waited for by id, then `account/read`
+/// (#495), all inside `ASK_TIMEOUT`. An account question that goes
+/// unanswered costs only the name: the rate limits' answer stands.
+fn converse(child: &mut Child) -> Result<(Value, Option<Value>), String> {
     let deadline = Instant::now() + ASK_TIMEOUT;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
@@ -492,9 +536,12 @@ fn converse(child: &mut Child) -> Result<Value, String> {
     send(&initialized).map_err(|e| e.to_string())?;
     send(&read).map_err(|e| e.to_string())?;
     let answer = wait(limit::READ_ID)?;
+    let account = send(&limit::account_request())
+        .ok()
+        .and_then(|_| wait(limit::ACCOUNT_ID).ok());
     // Closing stdin is how the server is told to go.
     drop(stdin);
-    Ok(answer)
+    Ok((answer, account))
 }
 
 /// Let the server go on its own for a moment, then take its tree down.
