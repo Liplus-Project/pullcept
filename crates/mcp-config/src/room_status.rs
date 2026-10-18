@@ -51,7 +51,7 @@ impl Book {
             return;
         }
         let held = self.seat(topic, account, pty);
-        for key in ["model", "effort", "limited", "limited_source"] {
+        for key in ["model", "effort", "limited", "limited_source", "login"] {
             let Some(value) = stats.get(key).cloned() else {
                 continue;
             };
@@ -217,6 +217,7 @@ impl Book {
         if detail {
             result["model"] = field("model");
             result["effort"] = field("effort");
+            result["login"] = field("login");
             result["usage"] = usage;
         }
         result

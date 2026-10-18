@@ -1384,6 +1384,10 @@ pub struct SessionStats {
     /// 2026-10-07), so a passed reset is not waited on here.
     pub five_hour_resets_at: Option<i64>,
     pub seven_day_resets_at: Option<i64>,
+    /// The account the seat's CLI is logged in to, as the panel names it
+    /// (#495). Read by the app from the CLI's own login file, not reported by
+    /// the CLI; `None` when it was not read.
+    pub login: Option<String>,
 }
 
 impl SessionStats {
@@ -1416,6 +1420,7 @@ impl SessionStats {
             seven_day_resets_at: mcp_config::epoch_seconds(
                 &data["rate_limits"]["seven_day"]["resets_at"],
             ),
+            login: None,
         })
     }
 
@@ -1440,6 +1445,7 @@ impl SessionStats {
             pty_id: None,
             five_hour_resets_at: status.five_hour_resets_at,
             seven_day_resets_at: status.seven_day_resets_at,
+            login: None,
         }
     }
 

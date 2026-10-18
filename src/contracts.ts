@@ -144,6 +144,11 @@ export interface SessionStats {
    */
   five_hour_resets_at: number | null;
   seven_day_resets_at: number | null;
+  /**
+   * The account the seat's CLI is logged in to (#495), read by the app from
+   * the CLI's login file. Null when it was not read.
+   */
+  login: string | null;
 }
 
 export interface SeatActivity {
