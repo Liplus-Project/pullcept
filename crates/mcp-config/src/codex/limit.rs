@@ -111,6 +111,17 @@ pub enum Answer {
     Unavailable,
 }
 
+impl Answer {
+    /// The answer as its resume log line names it (#405).
+    pub fn label(self) -> &'static str {
+        match self {
+            Answer::Allowed => "allowed",
+            Answer::Denied { .. } => "denied",
+            Answer::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// The id the rate-limit request is sent under ([`requests`]).
 pub const READ_ID: u64 = 2;
 
@@ -251,6 +262,20 @@ pub const BACKOFF: [i64; 5] = [60, 120, 300, 600, 900];
 /// limit (#403, the same wait as a Claude seat's, #401).
 pub const ANSWER_WAIT: i64 = 120;
 
+/// One line per decision about a Codex seat's resume (#405), beside the
+/// app's other logs (`logs/<LOG_FILE>`), as `claude-resume.log` is for a
+/// Claude seat (#401).
+pub const LOG_FILE: &str = "codex-resume.log";
+
+/// One line of [`LOG_FILE`]: `[codex-resume] <action> room=<topic id>
+/// account=<account id> at=<time> <detail>`, the shape of
+/// `claude_resume::log_line`. Actions: `stopped`, `pending`, `still-limited`,
+/// `typed`, `refused`, `skipped` (#475), `recovered`, `other-cause`. No
+/// conversational text is written.
+pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
+    crate::claude_resume::tagged_log_line("codex-resume", action, topic_id, account_id, at, detail)
+}
+
 /// What is typed into the seat once its recovery is confirmed (#389).
 pub const CONTINUE: &str = "利用上限の解除を確認しました。中断していた作業を再開してください。中断していた作業がなければ、そのまま待機してください。";
 
@@ -329,6 +354,16 @@ impl Limit {
             stopped.resets_at = Some(reset);
             stopped.next_query = first_query(now, Some(reset));
         }
+    }
+
+    /// When the next question is put, while stopped.
+    pub fn next_query(&self) -> Option<i64> {
+        self.stopped.as_ref().map(|s| s.next_query)
+    }
+
+    /// Whether the resume typed into the seat still waits for its answer.
+    pub fn awaiting(&self) -> bool {
+        self.typed.is_some()
     }
 
     /// Whether a question is due now.
@@ -492,6 +527,42 @@ pub fn back_after_other_cause(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_resume_log_line_has_the_claude_shape_under_its_own_tag() {
+        assert_eq!(LOG_FILE, "codex-resume.log");
+        assert_eq!(
+            log_line("typed", "topic", "acct", "2026-10-19T10:00:00.000+09:00", "pty=p1"),
+            "[codex-resume] typed room=topic account=acct at=2026-10-19T10:00:00.000+09:00 pty=p1"
+        );
+        assert_eq!(
+            log_line("pending", "a b", "", "t", "x
+y"),
+            "[codex-resume] pending room=a_b account=- at=t x y"
+        );
+        assert_eq!(Answer::Allowed.label(), "allowed");
+        assert_eq!(Answer::Denied { resets_at: None }.label(), "denied");
+        assert_eq!(Answer::Unavailable.label(), "unavailable");
+    }
+
+    #[test]
+    fn the_typed_resume_is_awaited_until_a_turn_or_a_stop_answers_it() {
+        let mut limit = Limit::default();
+        assert!(!limit.awaiting());
+        assert_eq!(limit.next_query(), None);
+        assert!(limit.stop(1000, Some(2000)));
+        assert_eq!(limit.next_query(), Some(2000 + GRACE));
+        limit.free();
+        limit.resume_typed(3000);
+        assert!(limit.awaiting());
+        limit.answered();
+        assert!(!limit.awaiting());
+        limit.resume_typed(3000);
+        // A stop answers it too: still limited.
+        assert!(limit.stop(3010, None));
+        assert!(!limit.awaiting());
+        assert_eq!(limit.next_query(), Some(3010 + BACKOFF[0]));
+    }
 
     fn json(text: &str) -> Value {
         serde_json::from_str(text).unwrap()

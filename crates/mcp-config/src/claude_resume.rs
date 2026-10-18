@@ -174,6 +174,12 @@ impl Stalled {
 /// account's switch is off, #475). No conversational
 /// text is written.
 pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
+    tagged_log_line("claude-resume", action, topic_id, account_id, at, detail)
+}
+
+/// [`log_line`] under another bracketed tag: a Codex seat's resume log
+/// (`codex::limit::log_line`, #405) keeps the same shape.
+pub fn tagged_log_line(tag: &str, action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
     let token = |text: &str| -> String {
         let cleaned: String = text
             .chars()
@@ -183,7 +189,8 @@ pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail
         if cleaned.is_empty() { "-".to_string() } else { cleaned }
     };
     let line = format!(
-        "[claude-resume] {} room={} account={} at={}",
+        "[{}] {} room={} account={} at={}",
+        tag,
         token(action),
         token(topic_id),
         token(account_id),
