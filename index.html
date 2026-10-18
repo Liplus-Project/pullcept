@@ -648,24 +648,24 @@
                      Li+ の output style の SessionStart hook はその席の server でだけ
                      止まる。会話 id は起動の時点で決まる。既定は切（hook 方式）：
                      モデルの一往復でキャラどおりに答えることを確かめるまで。 -->
-                <label id="dialog-codex-app-server-field" class="field" hidden>
-                  app-server 方式
+                <label id="dialog-codex-app-server-field" class="field launch-check" hidden>
                   <input id="dialog-codex-app-server" type="checkbox" />
+                  <span>app-server 方式</span>
                 </label>
-                <label id="dialog-codex-remote-field" class="field" hidden>
-                  スマホから接続（app-server 方式が必要）
+                <label id="dialog-codex-remote-field" class="field launch-check" hidden>
                   <input id="dialog-codex-remote" type="checkbox" />
-                  <span>次の起動から有効。会話一覧の見え方が変わる場合があります。稼働中の席の ⋯ から接続画面を開けます。</span>
+                  <span>スマホから接続（app-server 方式が必要）</span>
+                  <span class="launch-check-help">次の起動から有効。会話一覧の見え方が変わる場合があります。稼働中の席の ⋯ から接続画面を開けます。</span>
                 </label>
                 <!-- 利用上限の解除後に、Pullcept がこの席の端末へ再開の指示を打つかどうか
                      （#475）。Claude Code では解除予定時刻の後、Codex CLI では解除を確
                      かめた後の一回。既定は入（それまでの動作）。切っても止まりの知らせ・
                      「制限中」・部屋への知らせは変わらず、打たないだけ。指示を打つ時に
                      読むので、稼働中の席にも効く。 -->
-                <label id="dialog-resume-notice-field" class="field" hidden>
-                  利用上限の解除後に再開の指示を打つ
+                <label id="dialog-resume-notice-field" class="field launch-check" hidden>
                   <input id="dialog-resume-notice" type="checkbox" />
-                  <span>切ると、上限が解けても端末へは打ちません（止まりの知らせと「制限中」の表示は今までどおり）。端末で手動再開します。</span>
+                  <span>利用上限の解除後に再開の指示を打つ</span>
+                  <span class="launch-check-help">切ると、上限が解けても端末へは打ちません（止まりの知らせと「制限中」の表示は今までどおり）。端末で手動再開します。</span>
                 </label>
                 <!-- 起動オプション。**その人が足したいものだけを書く欄である**
                      （#156、決定3）。セッション id の渡し方は種別が持つため、

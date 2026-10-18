@@ -758,6 +758,10 @@ DOM の描画は床として残す。WebGL が使えない環境では読み込�
 
 **閉じるを完了させるのは webview 側の `destroy` であり、そのための権限が要る（#97）。** `onCloseRequested` は購読側が `preventDefault` せずに戻った後、自分で `window.destroy()` を呼ぶ（`@tauri-apps/api/window`）。閉じるを成立させる一手はこれだけである。この呼び出しは Tauri の ACL を通るため、`src-tauri/capabilities/default.json` に `core:window:allow-destroy` が要る。`core:default` の束には入っていない——`core:window` の既定に並ぶのは `allow-title` や `allow-is-visible` のような問い合わせ系だけであり、窓を壊す権限は明示して初めて付く。権限が無ければ `destroy` は ACL に拒否され、その拒否はリスナの中の promise で捨てられるため画面には何も出ない。差し止めだけが残り、`✕` を押しても閉じないアプリになる——#95 が購読を足したとき、購読が要求する権限は権限表へ入っていなかった。購読を足す変更と、その購読が要る権限は、同じ変更に揃える。
 
+## アカウントの起動タブのチェック項目（#486）
+
+app-server 方式・スマホから接続・利用上限の解除後の再開は、チェックボックスを左、項目名を右に並べる。説明は項目名の下段で右側の幅を使う。狭いウィンドウでもこの並びを保ち、項目名と説明を折り返して読む。項目名クリックとキーボード操作、種別に応じた非表示、設定値と保存・起動動作は変えない。
+
 ## UI の方向（2026-08-21 時点、暫定）
 
 設計キャンバス: [Pullcept UI 設計](https://claude.ai/code/artifact/aab6bbbd-0ebc-485e-9538-f63a8e6f40e5)
