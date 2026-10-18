@@ -111,13 +111,9 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
             read(&mut followed, id, home, &resumed);
         }
         let mut tail = followed.as_mut().and_then(|f| f.tail.as_mut());
-        // Every round, read or not, and with no rollout yet: a stopped seat's
-        // due question does not wait for the file to move, or to exist.
-        let _ = match tail.as_deref_mut() {
-            Some(tail) => limiter.round(tail.take_turn_started(), tail.take_turn_end(), tail.resets_at),
-            None => limiter.round(false, None, None),
-        };
-        // When the figures were received, changed or not (#364).
+        // When the figures were received, changed or not (#364). Before the
+        // round: a question the round puts is newer than what was just read,
+        // and its windows stand over the rollout's (#496).
         if let Some(tail) = tail.as_deref_mut() {
             if tail.take_context_read() {
                 app.state::<crate::room::UsageBook>().record_context(topic_id, account_id, tail.status.context);
@@ -126,6 +122,12 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
                 limiter.received_usage(&tail.status);
             }
         }
+        // Every round, read or not, and with no rollout yet: a stopped seat's
+        // due question does not wait for the file to move, or to exist.
+        let _ = match tail.as_deref_mut() {
+            Some(tail) => limiter.round(tail.take_turn_started(), tail.take_turn_end(), tail.resets_at),
+            None => limiter.round(false, None, None),
+        };
         // Every round, changed or not (#374): a reloaded webview has no stats
         // until it is sent them, and 制限中 is one of them. The Claude seat's
         // watcher replays the same way (`claude_limit::emit_current`).

@@ -33,8 +33,21 @@ struct Entry {
     resume: resume::Resume,
     floor: i64,
     stats: SessionStats,
+    /// Where this seat's login is kept, and its last reading keyed on the
+    /// file's modified time, so a status line does not reread it (#495).
+    login_file: Option<PathBuf>,
+    login: Option<(std::time::SystemTime, Option<(String, String)>)>,
 }
 impl Entry {
+    fn read_login(&mut self) -> Option<String> {
+        let file = self.login_file.as_ref()?;
+        let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok()?;
+        if self.login.as_ref().is_none_or(|(at, _)| *at != modified) {
+            let read = std::fs::read_to_string(file).ok().and_then(|text| policy::login(&text));
+            self.login = Some((modified, read));
+        }
+        self.login.as_ref()?.1.as_ref().map(|(_, name)| name.clone())
+    }
     fn remember_notice(&mut self, stop: mcp_config::claude_notice::Stop) {
         let before = self.notices.known_reset(&stop.subject);
         if self.notices.stop(&stop) {
@@ -82,6 +95,7 @@ impl ClaudeLimits {
         parent: &str,
         name: &str,
         root: PathBuf,
+        login_file: Option<PathBuf>,
         floor: i64,
     ) -> String {
         let nonce = uuid::Uuid::new_v4().to_string();
@@ -122,6 +136,7 @@ impl ClaudeLimits {
             pty_id: None,
             five_hour_resets_at: None,
             seven_day_resets_at: None,
+            login: None,
         };
         let (path, tail) = match &baseline {
             Some((p, offset)) => (Some(p.clone()), Some(policy::Tail::new(p, *offset))),
@@ -144,6 +159,8 @@ impl ClaudeLimits {
                 resume,
                 floor,
                 stats,
+                login_file,
+                login: None,
             },
         );
         nonce
@@ -200,6 +217,7 @@ impl ClaudeLimits {
             stats.limited = e.limited();
             stats.limited_source = (!e.parent.is_empty()).then(|| "claude-parent".into());
             stats.pty_id = e.pty.clone();
+            stats.login = e.read_login();
             e.stats = stats;
         }
         if e.pty.is_some() {

@@ -1710,10 +1710,11 @@ pub(crate) fn start_session_with_policy(
         app.path().home_dir().ok().map(|home| {
             let parent = launch_line.session_id.as_deref().or(launch_line.resumed_from.as_deref()).unwrap_or_default();
             let root = mcp_config::claude_limit::projects(&home, &cwd, &account_env);
+            let login = mcp_config::claude_limit::login_file(&home, &root);
             let floor = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64).unwrap_or_default();
             app.state::<crate::claude_limit::ClaudeLimits>().configure(&app,
-                &topic.topic_id, &account.id, parent, &name, root, floor)
+                &topic.topic_id, &account.id, parent, &name, root, login, floor)
         })
     } else { None };
 

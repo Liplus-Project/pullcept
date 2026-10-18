@@ -45,6 +45,8 @@ webhook の通知（#169）のうち、ブリッジへ書く三つの行、ブ�
 
 画面に入れるライブラリを足したり版を上げたりしたら、`node scripts/third-party-notices.mjs` で `THIRD-PARTY-NOTICES.txt` を作り直す（#354）。ファイルは `src/composer.ts` が読み込むパッケージを起点に、`package-lock.json` の依存（peer を含む）をたどり、各パッケージが `node_modules` に持つ LICENSE の本文を写す。許すライセンス（MIT・BSD・ISC・Apache-2.0）の外のものや LICENSE の無いものがあれば、作らずに止まる。`sidecar/test/third-party-notices.test.mjs` は、ファイルが今のロックファイルから作ったものと一致しないとき、`src/composer.ts` が一覧に無いパッケージを読み込んだとき、インストーラーの同梱物（`src-tauri/tauri.conf.json` の `bundle.resources`）から外れたときに落ちる。
 
+開発版の再起動スクリプト `scripts/restart-pullcept.ps1`（#408、使い方は [README.md](../README.md#作り直して再起動する408)）は、`sidecar/test/restart-pullcept.test.mjs` が一時ディレクトリに作った偽のクローンへ `-DryRun` で走らせて確かめる。`.cargo/config.toml` の `target-dir` を読むこと、ログを書くこと、クローンでないディレクトリを拒むことまでであり、プロセスの終了と `tauri dev` の起動は走らせない。実機で通したかは未確認である。
+
 理由は依存の正しさと、テストが実行できることの両方である。これらのロジックが tauri を必要とする理由はそもそも無い。加えて `src-tauri` 側に置くと、テストバイナリが tauri の依存ツリー全体をリンクするため、GNU ターゲットでは `STATUS_ENTRYPOINT_NOT_FOUND`（`0xc0000139`）でプロセスが起動せず、アサーションが一度も実行されない。これはローカル環境固有ではなく CI でも再現する（run 32431917979）。特定の依存クレートまでは切り分けていない。
 
 したがって `src-tauri/src/` に残すのは、tauri の `State` / `AppHandle` に触れる部分だけとする。純粋ロジックをそちらへ書き足すと、書いた時点で検証不能になる。床の順序付けは読んでも確かめられない性質のもの（二人が同時に呼んだとき片方だけが通る）であり、この方針が最も効く箇所である。`src-tauri/src/room.rs` が持つのは、その判定を既存ロックの内側で呼ぶことと、結果をフレームとイベントへ載せることだけである。

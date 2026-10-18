@@ -16,7 +16,9 @@
 //!   times (`app-server-protocol/src/protocol/v2/account.rs:333`). Only
 //!   `ordinaryUsageAllowed: true` is [`Answer::Allowed`]; a `null`, an error
 //!   and a broken answer are all [`Answer::Unavailable`], which keeps the seat
-//!   limited.
+//!   limited;
+//! - **the usage**, off the same answer ([`read_usage`], #496): the two
+//!   windows it reports, for a limited seat whose rollout no longer moves.
 //!
 //! [`Limit`] is one seat: free, or stopped with when to ask next. Times are
 //! Unix seconds, passed in. Nothing is held back from a stopped seat (#403):
@@ -109,6 +111,17 @@ pub enum Answer {
     Unavailable,
 }
 
+impl Answer {
+    /// The answer as its resume log line names it (#405).
+    pub fn label(self) -> &'static str {
+        match self {
+            Answer::Allowed => "allowed",
+            Answer::Denied { .. } => "denied",
+            Answer::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// The id the rate-limit request is sent under ([`requests`]).
 pub const READ_ID: u64 = 2;
 
@@ -127,6 +140,31 @@ pub fn requests(version: &str) -> [String; 3] {
         r#"{"method":"initialized"}"#.to_string(),
         format!(r#"{{"id":{READ_ID},"method":"account/rateLimits/read"}}"#),
     ]
+}
+
+/// The id of `account/read` (#495), asked after [`READ_ID`] on the same
+/// process: which account the seat's `CODEX_HOME` is logged in to.
+pub const ACCOUNT_ID: u64 = 3;
+
+/// `account/read` without a token refresh: the question only reads.
+pub fn account_request() -> String {
+    format!(r#"{{"id":{ACCOUNT_ID},"method":"account/read","params":{{"refreshToken":false}}}}"#)
+}
+
+/// The name the panel shows for the account the response to [`ACCOUNT_ID`]
+/// names (#495): a ChatGPT login's email, else the kind of login. `None`
+/// when no account is logged in or the response is not one.
+pub fn read_login(response: &Value) -> Option<String> {
+    let account = &response["result"]["account"];
+    if let Some(email) = account["email"].as_str().filter(|s| !s.is_empty()) {
+        return Some(email.into());
+    }
+    match account["type"].as_str()? {
+        "chatgpt" => Some("ChatGPT".into()),
+        "apiKey" => Some("API キー".into()),
+        "amazonBedrock" => Some("Amazon Bedrock".into()),
+        _ => None,
+    }
 }
 
 /// Read the response to [`READ_ID`].
@@ -158,6 +196,60 @@ pub fn read_answer(response: &Value) -> Answer {
     }
 }
 
+/// The 5-hour and weekly windows an `account/rateLimits/read` answer reports
+/// (#496): what the panel and `my_usage` show of a seat whose turns, and so
+/// whose rollout, no longer move while it is limited.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Windows {
+    pub five_hour: Option<f64>,
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day: Option<f64>,
+    pub seven_day_resets_at: Option<i64>,
+}
+
+/// The two windows of the response to [`READ_ID`], or `None` when it carries
+/// none to read.
+///
+/// Read as the rollout's are (`status`): by window length (300 / 10080
+/// minutes), not by position, and only from the `codex` bucket — the `codex`
+/// entry of `rateLimitsByLimitId` when it is there, otherwise `rateLimits`
+/// when its `limitId` is `codex` or absent. Both windows are replaced
+/// together, a missing one by `None`.
+///
+/// An answer [`read_answer`] reads as [`Answer::Unavailable`] (no boolean
+/// `ordinaryUsageAllowed`) gives `None`, and so does one with neither window,
+/// so the figures already held stand.
+pub fn read_usage(response: &Value) -> Option<Windows> {
+    let result = &response["result"];
+    result["ordinaryUsageAllowed"].as_bool()?;
+    let bucket = match &result["rateLimitsByLimitId"]["codex"] {
+        Value::Object(_) => &result["rateLimitsByLimitId"]["codex"],
+        _ => {
+            let single = &result["rateLimits"];
+            if !single.is_object() || !single["limitId"].as_str().is_none_or(|id| id == "codex") {
+                return None;
+            }
+            single
+        }
+    };
+    let window = |minutes: u64| {
+        ["primary", "secondary"]
+            .iter()
+            .map(|key| &bucket[key])
+            .find(|w| w["windowDurationMins"].as_u64() == Some(minutes))
+    };
+    let used = |w: Option<&Value>| w.and_then(|w| w["usedPercent"].as_f64().filter(|n| n.is_finite()));
+    let reset = |w: Option<&Value>| w.and_then(|w| crate::epoch_seconds(&w["resetsAt"]));
+    let (five, seven) = (window(300), window(10080));
+    let windows = Windows {
+        five_hour: used(five),
+        five_hour_resets_at: reset(five),
+        seven_day: used(seven),
+        seven_day_resets_at: reset(seven),
+    };
+    (windows.five_hour.is_some() || windows.seven_day.is_some()).then_some(windows)
+}
+
 /// How long after the reset the first question is put: "a little after".
 pub const GRACE: i64 = 30;
 
@@ -169,6 +261,20 @@ pub const BACKOFF: [i64; 5] = [60, 120, 300, 600, 900];
 /// ending) before the seat counts as stopped on something other than the
 /// limit (#403, the same wait as a Claude seat's, #401).
 pub const ANSWER_WAIT: i64 = 120;
+
+/// One line per decision about a Codex seat's resume (#405), beside the
+/// app's other logs (`logs/<LOG_FILE>`), as `claude-resume.log` is for a
+/// Claude seat (#401).
+pub const LOG_FILE: &str = "codex-resume.log";
+
+/// One line of [`LOG_FILE`]: `[codex-resume] <action> room=<topic id>
+/// account=<account id> at=<time> <detail>`, the shape of
+/// `claude_resume::log_line`. Actions: `stopped`, `pending`, `still-limited`,
+/// `typed`, `refused`, `skipped` (#475), `recovered`, `other-cause`. No
+/// conversational text is written.
+pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
+    crate::claude_resume::tagged_log_line("codex-resume", action, topic_id, account_id, at, detail)
+}
 
 /// What is typed into the seat once its recovery is confirmed (#389).
 pub const CONTINUE: &str = "利用上限の解除を確認しました。中断していた作業を再開してください。中断していた作業がなければ、そのまま待機してください。";
@@ -248,6 +354,16 @@ impl Limit {
             stopped.resets_at = Some(reset);
             stopped.next_query = first_query(now, Some(reset));
         }
+    }
+
+    /// When the next question is put, while stopped.
+    pub fn next_query(&self) -> Option<i64> {
+        self.stopped.as_ref().map(|s| s.next_query)
+    }
+
+    /// Whether the resume typed into the seat still waits for its answer.
+    pub fn awaiting(&self) -> bool {
+        self.typed.is_some()
     }
 
     /// Whether a question is due now.
@@ -412,8 +528,56 @@ pub fn back_after_other_cause(name: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_resume_log_line_has_the_claude_shape_under_its_own_tag() {
+        assert_eq!(LOG_FILE, "codex-resume.log");
+        assert_eq!(
+            log_line("typed", "topic", "acct", "2026-10-19T10:00:00.000+09:00", "pty=p1"),
+            "[codex-resume] typed room=topic account=acct at=2026-10-19T10:00:00.000+09:00 pty=p1"
+        );
+        assert_eq!(
+            log_line("pending", "a b", "", "t", "x
+y"),
+            "[codex-resume] pending room=a_b account=- at=t x y"
+        );
+        assert_eq!(Answer::Allowed.label(), "allowed");
+        assert_eq!(Answer::Denied { resets_at: None }.label(), "denied");
+        assert_eq!(Answer::Unavailable.label(), "unavailable");
+    }
+
+    #[test]
+    fn the_typed_resume_is_awaited_until_a_turn_or_a_stop_answers_it() {
+        let mut limit = Limit::default();
+        assert!(!limit.awaiting());
+        assert_eq!(limit.next_query(), None);
+        assert!(limit.stop(1000, Some(2000)));
+        assert_eq!(limit.next_query(), Some(2000 + GRACE));
+        limit.free();
+        limit.resume_typed(3000);
+        assert!(limit.awaiting());
+        limit.answered();
+        assert!(!limit.awaiting());
+        limit.resume_typed(3000);
+        // A stop answers it too: still limited.
+        assert!(limit.stop(3010, None));
+        assert!(!limit.awaiting());
+        assert_eq!(limit.next_query(), Some(3010 + BACKOFF[0]));
+    }
+
     fn json(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn login_is_the_email_else_the_kind_of_login() {
+        let answer = |account: Value| serde_json::json!({"id": ACCOUNT_ID, "result": {"account": account, "requiresOpenaiAuth": true}});
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "chatgpt", "email": "l@example.com", "planType": "pro"}))),
+            Some("l@example.com".into()));
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "chatgpt", "email": null, "planType": "pro"}))),
+            Some("ChatGPT".into()));
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "apiKey"}))), Some("API キー".into()));
+        assert_eq!(read_login(&answer(Value::Null)), None);
+        assert_eq!(read_login(&serde_json::json!({"id": ACCOUNT_ID, "error": {"message": "x"}})), None);
     }
 
     // The task_complete of a turn stopped on the limit, cut down from Luna's
@@ -491,6 +655,49 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_carries_the_two_windows() {
+        // The measured answer: 5 hours full, weekly at 96.
+        assert_eq!(
+            read_usage(&json(DENIED)),
+            Some(Windows {
+                five_hour: Some(100.0),
+                five_hour_resets_at: Some(1791207908),
+                seven_day: Some(96.0),
+                seven_day_resets_at: Some(1791613576),
+            })
+        );
+        // An allowed answer carries them too, told apart by length, not position.
+        assert_eq!(
+            read_usage(&json(r#"{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":12.5,"windowDurationMins":10080,"resetsAt":20},"secondary":{"usedPercent":3,"windowDurationMins":300,"resetsAt":10}}}}"#)),
+            Some(Windows {
+                five_hour: Some(3.0),
+                five_hour_resets_at: Some(10),
+                seven_day: Some(12.5),
+                seven_day_resets_at: Some(20),
+            })
+        );
+        // The codex bucket wins over the single-bucket view.
+        assert_eq!(
+            read_usage(&json(r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"other","primary":{"usedPercent":1,"windowDurationMins":300}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":77,"windowDurationMins":300}}}}}"#)),
+            Some(Windows { five_hour: Some(77.0), ..Windows::default() })
+        );
+        // Nothing to read: unavailable answers, another bucket, no window of
+        // either length. The figures already held stand.
+        for none in [
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":null,"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":50,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"error":{"code":-32600,"message":"no"}}"#,
+            r#"null"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"other","primary":{"usedPercent":50,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":50,"windowDurationMins":60}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":"x","windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false}}"#,
+        ] {
+            assert_eq!(read_usage(&json(none)), None, "{none}");
+        }
+    }
+
+    #[test]
     fn the_requests_are_one_json_object_per_line() {
         let lines = requests("0.1.0");
         for line in &lines {
@@ -502,6 +709,9 @@ mod tests {
         assert!(json(&lines[1]).get("id").is_none());
         assert_eq!(json(&lines[2])["method"], "account/rateLimits/read");
         assert_eq!(json(&lines[2])["id"], READ_ID);
+        assert_eq!(json(&account_request())["id"], ACCOUNT_ID);
+        assert_eq!(json(&account_request())["method"], "account/read");
+        assert_eq!(json(&account_request())["params"]["refreshToken"], false);
     }
 
     #[test]

@@ -26,7 +26,7 @@ hook の場所は同条件の native `config/read` の project layer から決�
 
 native `config/read` が返した有効 project layer のうち、selector 又は style フォルダーを持つ最優先の root を採用する。disabledReason のある layer を参照 root にせず、profile の project_root_markers、手動 -c、--cd、CODEX_HOME の discovery 条件を保持する。style 選択自体は project 設定専用で、profile/global/-c に置いた `[liplus]` との連動は約束しない。
 
-Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex-output-style.py` が必要である。[loader 契約](https://github.com/Liplus-Project/liplus-language/blob/main/adapter/codex/character-config.md) の `resolve --cwd <有効cwd> --root <信頼済みroot> [--style <アカウント名>]` をプレビューと起動・再開で共通に使う。本文を返させず、protocol_version 1、mode、name、root、sha256、byte_count、handler metadata を検証する。本文 parser は Li+ helper だけが持つ。
+Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex-output-style.py` が必要である。Windows では、アプリが helper を走らせる Python を PATH の先頭の `python.exe` から取るが、`Microsoft\WindowsApps` の下のものは飛ばす（#361）。そこには App Installer の別名（実体は "Python" と出して終了コード 49 で終わるリダイレクタ）が、設定でオフにしていても残ることがある。WindowsApps の外に無ければ `python` のままとし、Store 版のようにそこにしか無い Python も走る。Codex 自身が走らせる hook の行（`python "…/codex-output-style.py" hook …`）は Li+ の登録どおりであり、ここでは変えない。[loader 契約](https://github.com/Liplus-Project/liplus-language/blob/main/adapter/codex/character-config.md) の `resolve --cwd <有効cwd> --root <信頼済みroot> [--style <アカウント名>]` をプレビューと起動・再開で共通に使う。本文を返させず、protocol_version 1、mode、name、root、sha256、byte_count、handler metadata を検証する。本文 parser は Li+ helper だけが持つ。
 
 専用 handler は native `hooks/list` の project source、enabled、trusted、同期実行、additionalContextLimit=0、startup/resume/clear/compact の一回ずつの登録を確認する。登録が無い・変更されて再信頼が必要・別 root の style handler と重複する場合は起動を止める。プレビューに方式と選択名を表示する。missing、空本文、不正 UTF-8、frontmatter 不整合、境界外 symlink/junction、上限128 KiB超などは loader と同じ結果で拒否し、旧方式には戻らない。エラーへ本文・CLI stderr・秘密を出さない。
 
@@ -521,6 +521,8 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 | コンテキスト | `context_window.used_percentage` |
 | 5 時間・週次のリセット（#306、#320） | `rate_limits.five_hour.resets_at` / `rate_limits.seven_day.resets_at`（Unix 秒。同 docs、2026-10-07 に読んだ） |
 
+**パネルの「ログイン」欄は、ステータスラインではなく CLI のログイン情報のファイルから出す**（#495）。ステータスラインの JSON はログイン中のアカウントを運ばない。アプリはその席の設定ディレクトリ（会話記録の置き場と同じ解決：アカウントの `CLAUDE_CONFIG_DIR`、アプリの環境、`~/.claude` の順）の `.claude.json` を読む。既定の `~/.claude` だけは、ファイルがホームの `~/.claude.json` に在る。読むのは `oauthAccount` の `accountUuid` と、表示名としてのメールアドレス（`emailAddress`。無ければ `displayName`）だけである。ステータスラインが届くたびにファイルの更新時刻を見て、変わったときだけ読み直す。`CLAUDE_CONFIG_DIR` を持たない席どうしは同じファイルを読むため、同じアカウントと表示される——同じログインを共有しているからである。
+
 **欄はどれも欠けうる。** `rate_limits` は claude.ai の Pro / Max の契約でなければ来ず、契約が在っても最初の API の応答までは来ない。`effort` はその欄を持たないモデルでは来ない。`context_window.used_percentage` はセッションの序盤で null になりうる（同 docs）。**欠けているものは「—」であり、空欄でも 0% でもない。** 0% と、まだ知らないことは別である——「観測していない状態の語は許されない」（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」）と同じ線である。
 
 **受け口は部屋のソケットと同じ一本である**（決定2）。部屋のポートへ POST し、部屋は WebSocket の upgrade（`GET`）で始まるため最初のバイトで二つの呼び手を分けられる。別のポートを開かないのは、起動の行が既に部屋のポートを運んでいるためである——第二のアドレスは、起動のたびに配り、持ち、返す対象が一つ増えることになる。
@@ -587,6 +589,12 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 | 5 時間・週次のリセット（#306、#320） | 同じ二つの窓の `resets_at`（Unix 秒）。使用率と同じ窓から読み、同じ行で置き換える |
 | コンテキスト | 同じ行の `payload.info.last_token_usage.total_tokens` と `payload.info.model_context_window` から、下記の Codex の式で出す |
 
+**「ログイン」欄は app-server の `account/read` から出す**（#495）。`auth.json` は名前やメールを `id_token`（JWT）の中にしか持たず、トークンを読まずには取り出せないため、ファイルの中身は読まない。制限の問い合わせ（下記「Codex の席が利用上限で止まったとき」）と同じ短命の app-server へ、`account/rateLimits/read` の後に `account/read`（`refreshToken: false`）を続けて聞く。出すのは ChatGPT ログインのメールアドレスで、無ければログインの種類（`ChatGPT` / `API キー` / `Amazon Bedrock`）。この問いに答えが無くても、制限の答えはそのまま使う。
+
+**ログイン先が替わったら一度だけ聞き直す**（#495）。watcher は毎回、席の `$CODEX_HOME/auth.json` の更新時刻だけを見る（起動時の最初の確認を含む）。変わっていれば app-server に一度聞き、名前と使用量を新しくする。制限中の席は、その答えを期限の来た問い合わせと同じに扱い、解除されていれば再開する。動いている席は、この答えで制限中にはしない——アカウントが替わったことは、制限されたことも解除されたことも意味しない。止まったかどうかは、これまでどおり rollout のターン終了が言う。
+
+Claude Code の席には、制限を問い合わせる口が無い。ログイン先が替わっても聞き直さず、制限中の印は次の正常な応答で外れる（「[Claude 親の利用上限と手動再開](#claude-親の利用上限と手動再開342)」）。
+
 **コンテキストは Codex の `/status` と同じ式で出す（#285）。** 単純な割り算（`total_tokens` ÷ `model_context_window`）は Codex の表示と合わない——2026-10-05 の実機で、パネルが 11% のとき `/status` は `93% left (29.1K used / 258K)` であった。Codex は使用量と上限の両方から基準量 12000 トークンを引き、残りの割合を整数に丸めて出す（openai/codex の `codex-rs/protocol/src/protocol.rs` の `percent_of_context_window_remaining`、2026-10-05 に読んで確認）。アプリは同じ式で残りを出し、パネルには `100 − 残り` を使用率として出す。上の例では 7% である。
 
 - 上限が 12000 以下なら、残りは 0%。
@@ -624,6 +632,13 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 - 止まっている間にターンがエラー無しで終われば（端末で直接打った、または上限を手でリセットした後に部屋の発言が通った）、次の問い合わせを今に繰り上げる。それ自体を解除とはしない。上限を手でリセットしても、誰かが発言すればそのターンが通り、その場で聞き直して解除に気づく（#377 の「発言を契機にする」は、預かりを外した後はこの形で残る。#377 の `HELD_GAP` は預かった発言の契機だったため無くなった）。
 - app-server に繋がらなければ解除を確かめられず、席は「制限中」のまま、再開の指示は打たれない（「[受容したトレードオフ](6-tradeoffs.md#受容したトレードオフ)」）。
 
+**止まっている間の使用率は、app-server の答えから取る（#496）。** 止まった席はターンが進まないので、rollout に新しい `rate_limits` が載らず、パネルと `my_usage` の 5 時間・週次は止まった時点の値のまま古くなる（2026-10-19、制限中の席が 99% のまま更新されなかった）。アプリは、上の停止時の一回と解除確認の問い合わせ（どちらも既存の `account/rateLimits/read`）の答えから二つの窓を読み（`limit::read_usage`）、その値をパネルの 5 時間・週次・リセット時刻として出し、`my_usage` の値としてその時刻で受け取ったものとする。そのための問い合わせは足さない。
+
+- 読み方は rollout と同じである。窓は位置ではなく長さ（`windowDurationMins` が 300 と 10080）で見分け、`codex` の枠だけを採る（`rateLimitsByLimitId.codex` があればそれ、無ければ `limitId` が `codex` か無い `rateLimits`）。二つの窓を一緒に置き換え、無い方は「—」になる。答えが `ordinaryUsageAllowed: true`（解除）でも同じく読む。
+- 答えが取れない（「応答なし」・エラー・`ordinaryUsageAllowed` が真偽値でない、`Unavailable`）か、どちらの窓も読めない答えなら、持っている値を変えない。
+- 答えの値は、rollout が次に `rate_limits` を運ぶまで rollout の値より新しいものとして扱う。運べば rollout の値に戻る。同じ見張りの一回では rollout を先に受け取り、その後の問い合わせの答えを上に置く。
+- Claude Code の席は対象外である（問い合わせ自体が Codex の席だけにある）。
+
 **解除を確かめたら、部屋に一通、席に一通。** 部屋へは解除を知らせ、その席の端末へ再開の指示を打つと言う（`Pullcept（自動通知）`、`app`。その席の端末へは打たない）。席へは、「利用上限の解除を確認しました。中断していた作業を再開してください。中断していた作業がなければ、そのまま待機してください。」を一度だけ打つ（#389、`limit::CONTINUE`）。まとめは付けない。この一通の札の `message_id` は部屋への解除の知らせの id である——席が次の `say_to_room` の `last_seen` に使えば、その知らせで弾かれない。席を「制限中」から戻すことと一通を打つことは一つの錠の内で行い、その後に届いた発言は一通の後に打たれる。
 
 **打った後の分かれ道（#403、#401 と同じ考え方）。**
@@ -631,6 +646,18 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 - ターンが始まるか終われば、指示への応答である。それ以上は打たない。
 - ターンが利用上限で終われば、まだ解けていなかっただけである。新しい停止として扱い（部屋への停止の知らせも出る）、次に解除を確かめたときにもう一度打つ。
 - どちらも 120 秒無ければ（`limit::ANSWER_WAIT`、Claude の席と同じ）、利用上限以外の理由（起動時の選択画面、ログイン切れ、信頼の確認など）で止まっているとみなし、部屋に一度だけ「端末を見てください」と知らせる。選択肢に入力が入る危険があるため打ち直さない。その席が後でターンを正常に終えたら、戻ったことを一度だけ知らせる（席ごと、起動をまたいで覚える）。
+
+**判断ごとに一行を記録する（#405）。** Claude の席の `claude-resume.log`（「[解除予定時刻に親の再開を試す](#解除予定時刻に親の再開を試す357)」）と同じ形で、`%APPDATA%\org.liplus-project.pullcept\logs\codex-resume.log` に書く：`[codex-resume] <action> room=<トピック id> account=<アカウント id> at=<時刻> <詳細>`。action は次のとおりで、会話の本文は書かない。
+
+- `stopped`：席が止まった（解除予定と最初に聞く時刻を添える。分からなければ `unknown`）。
+- `pending`：打たずに印を残した。起動が印を読み直して止まった状態から始めたとき（`mark=left`）と、解除を確かめた時点でその起動が席を占めていなかったとき（`terminal_left=launch`）。
+- `still-limited`：まだ解けていない。解除確認の問い合わせが「まだ」（`answer=denied`）か答えなし（`answer=unavailable`）だったときに次に聞く時刻を添えて、また、打った指示の後のターンが利用上限で終わったとき（`after=prompt`）。
+- `typed` / `refused`：解除を確かめて指示を打った／端末が受け付けなかった。
+- `skipped`：アカウントの設定で打たなかった（`resume_notice=off`、#475）。
+- `recovered`：打った指示の後にターンが始まるか終わった（`after=prompt`）。「利用上限以外の理由」を知らせた席が戻った知らせを出したときも一行（`told=back_after_other_cause`）。
+- `other-cause`：指示から 120 秒、ターンが始まりも終わりもしなかった。
+
+Claude の席の記録に無い `stopped` を足したのは、Codex の席では止まった時点から問い合わせの予定をアプリが組むためで、その起点が無いと後の行が読み解けない。書き込めなければ捨てる（記録は観測のためで、動作を止めない）。
 
 **止まっている席の印（#312）。** 止まったことがメモリの中だけにあると、止まった席のセッションが終わるか Pullcept が起き直したときに消え、そのあと上限が外れていても、起き直した席は止まっていない状態から始まるので解除の流れに進まず、再開の指示が届かない（2026-10-07 に実際に起きた）。そこで、止まっている席にだけ、再起動をまたいで残る小さな印を持つ。
 
@@ -643,7 +670,7 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 
 **app-server へは、問い合わせのたびに `codex app-server` を一つ起動し、stdio で聞く。** 送るのは一行一つの JSON で、`initialize`・`initialized`・`account/rateLimits/read` の三つだけである。会話（thread）は始めず、モデルは呼ばない。標準入力を閉じればプロセスは終わる（2026-10-05、0.160.0 で実測。全体で 0.5 秒未満）。20 秒で答えが無ければプロセスの木ごと止め、「応答なし」とする。起動の行は席のアカウントの起動コマンドに `app-server` を付けたもの（`.exe` 以外は `cmd.exe /C` 経由）で、席の環境変数・作業ディレクトリ・`CODEX_HOME` をそのまま渡す——聞かれるのはその席のアカウントである。共有 daemon の AF_UNIX ソケット（`~/.codex/app-server-control/app-server-control.sock`）でも聞ける（#290 で実測）が、採らない：Rust の標準ライブラリは Windows で AF_UNIX を持たず、ソケットは WebSocket の枠付けを要し、daemon は起動時の環境を全クライアントで共有するため席ごとのアカウントを区別できない。daemon を起動させる副作用も持たない。
 
-**読み方とその判断はアプリから切り離して置く。** rollout の行から止まり・ターンの始まり・解除時刻を読むこと（`codex::status::Tail`）、app-server の答えの読み方、止まり・問い合わせの予定・解除・再開の指示への応答待ちの状態、印のファイル（`Mailboxes`）、知らせと指示の文面は `crates/mcp-config`（`codex::limit`）にあり、テストで確かめる。印の置き場所とトピックと一緒に消すことは `crates/topic-index`（`mailboxes_path`・`delete`）にある。問い合わせ・知らせ・印の読み書き・起動のときの確認（`Limiter::open`）・再開の指示の打ち込みは `src-tauri/src/codex_limit.rs`、見張りは五欄と同じ `codex_status.rs` の一本である。
+**読み方とその判断はアプリから切り離して置く。** rollout の行から止まり・ターンの始まり・解除時刻を読むこと（`codex::status::Tail`）、app-server の答えの読み方（解除と使用率、#496）、止まり・問い合わせの予定・解除・再開の指示への応答待ちの状態、印のファイル（`Mailboxes`）、知らせと指示の文面は `crates/mcp-config`（`codex::limit`）にあり、テストで確かめる。記録の行の形（`limit::log_line`、Claude の席の `claude_resume::log_line` と共通の書式）もそこにある。印の置き場所とトピックと一緒に消すことは `crates/topic-index`（`mailboxes_path`・`delete`）にある。問い合わせ・知らせ・印の読み書き・起動のときの確認（`Limiter::open`）・再開の指示の打ち込み・記録の書き込みは `src-tauri/src/codex_limit.rs`、見張りは五欄と同じ `codex_status.rs` の一本である。
 
 ### Codex の席は自分の様子を app-server の知らせで知らせる（#326）
 

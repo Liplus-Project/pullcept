@@ -24,6 +24,32 @@ pub fn projects(home: &Path, cwd: &Path, env: &[(String, String)]) -> PathBuf {
     config.join("projects")
 }
 
+/// The file a Claude Code seat's login is kept in (#495), beside the
+/// transcript root `projects` resolved: `.claude.json` inside that config
+/// directory, except for the default `~/.claude`, whose file is
+/// `~/.claude.json` in the home directory.
+pub fn login_file(home: &Path, root: &Path) -> Option<PathBuf> {
+    let config = root.parent()?;
+    Some(if config == home.join(".claude") {
+        home.join(".claude.json")
+    } else {
+        config.join(".claude.json")
+    })
+}
+
+/// The logged-in account in that file's text (#495): its id, and the name the
+/// panel shows for it — the email, else the display name. `None` when no
+/// account is logged in. Only `oauthAccount` is read; no token is in it.
+pub fn login(text: &str) -> Option<(String, String)> {
+    let data: Value = serde_json::from_str(text).ok()?;
+    let account = &data["oauthAccount"];
+    let id = account["accountUuid"].as_str().filter(|s| !s.is_empty())?;
+    let name = ["emailAddress", "displayName"]
+        .iter()
+        .find_map(|key| account[key].as_str().filter(|s| !s.is_empty()))?;
+    Some((id.into(), name.into()))
+}
+
 /// Only a canonical parent file directly under a project directory is adopted.
 /// A subagent path, a traversal or a symlink escaping this root cannot qualify.
 pub fn checked(root: &Path, parent: &str, reported: &Path) -> Option<PathBuf> {
@@ -373,6 +399,26 @@ fn fingerprint(f: &mut std::fs::File, offset: u64) -> std::io::Result<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn login_file_sits_beside_the_config_directory() {
+        let home = Path::new("/h");
+        assert_eq!(login_file(home, &home.join(".claude").join("projects")),
+            Some(home.join(".claude.json")));
+        let other = Path::new("/c/lin");
+        assert_eq!(login_file(home, &other.join("projects")), Some(other.join(".claude.json")));
+    }
+    #[test]
+    fn login_reads_id_and_email_then_display_name() {
+        let text = json!({"oauthAccount": {"accountUuid": "a1", "emailAddress": "x@example.com",
+            "displayName": "X"}}).to_string();
+        assert_eq!(login(&text), Some(("a1".into(), "x@example.com".into())));
+        let text = json!({"oauthAccount": {"accountUuid": "a1", "emailAddress": "",
+            "displayName": "X"}}).to_string();
+        assert_eq!(login(&text), Some(("a1".into(), "X".into())));
+        assert_eq!(login(&json!({"oauthAccount": {"emailAddress": "x@example.com"}}).to_string()), None);
+        assert_eq!(login("{}"), None);
+        assert_eq!(login("not json"), None);
+    }
     const PARENT: &str = "512c102e-fe28-4e8e-8f23-6cc4226ce2fc";
     fn line(second: u32, rejected: bool) -> Value {
         let mut v = json!({"type":"assistant", "sessionId":PARENT, "session_id":PARENT,

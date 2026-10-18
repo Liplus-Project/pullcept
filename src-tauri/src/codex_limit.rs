@@ -41,9 +41,23 @@
 //!
 //! **An account can switch the resume off** (#475, `Account::resume_notice`):
 //! the recovery is still confirmed, told and freed, and nothing is typed.
+//!
+//! **Every decision is one line of `logs/codex-resume.log`** (#405, as
+//! `logs/claude-resume.log` is for a Claude seat, #401): the stop, a mark
+//! read back, each due question that is still no, the resume typed or not,
+//! and the answer or its absence. Written whole outside the table's lock; a
+//! failure to open or write is dropped, the log observes.
+//!
+//! **Every answer the app-server gives refreshes the seat's usage** (#496):
+//! a limited seat's turns do not move, so its rollout carries no new rate
+//! limits. The two windows an answer reports (`limit::read_usage`) stand over
+//! the rollout's on the screen (`Limiter::stats`) and are recorded for
+//! `my_usage`, until the rollout carries rate limits again. An answer with
+//! none (`Unavailable` included) changes nothing. No question is added for
+//! this: only the stop's and the due ones carry it.
 
 use crate::room::{RoomState, SessionStats};
-use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd};
+use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd, Windows};
 use mcp_config::codex::status::Status;
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -71,6 +85,13 @@ struct Entry {
     /// The topic's mark file, or `None` when it could not be placed: the stop
     /// is then known in memory only, as before #312.
     mailboxes: Option<PathBuf>,
+    /// The windows the app-server last reported (#496), newer than the
+    /// rollout's until the rollout carries rate limits again.
+    answered: Option<Windows>,
+    /// The account the app-server last named (#495), and the modified time
+    /// of the seat's `auth.json` last seen: a change there asks again.
+    login: Option<String>,
+    auth_modified: Option<std::time::SystemTime>,
 }
 
 impl Entry {
@@ -119,6 +140,10 @@ pub struct Limiter {
     pub asker: Asker,
 }
 
+fn clock_or_unknown(t: Option<i64>) -> String {
+    t.and_then(terminal_input::clock).unwrap_or_else(|| "unknown".into())
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -142,6 +167,9 @@ impl Limiter {
             limit,
             account_id: self.account_id.clone(),
             mailboxes: self.mailboxes(),
+            answered: None,
+            login: None,
+            auth_modified: None,
         }
     }
 
@@ -172,6 +200,9 @@ impl Limiter {
             ..entry
         };
         self.limits().seats.lock().insert(self.pty_id.clone(), entry);
+        if left {
+            self.log("pending", "mark=left asked_at=launch");
+        }
     }
 
     pub fn is_limited(&self) -> bool {
@@ -184,6 +215,17 @@ impl Limiter {
     /// turned over, for the caller to send to the screen.
     pub fn round(&self, started: bool, end: Option<TurnEnd>, rollout_reset: Option<i64>) -> bool {
         let was = self.is_limited();
+        // The typed resume's answer (#405): a stop answers it as still
+        // limited, any other turn start or end as recovered.
+        let awaiting = self.with(|entry| entry.limit.awaiting());
+        if awaiting && end != Some(TurnEnd::UsageLimit) && (started || end.is_some()) {
+            let turn = match end {
+                Some(TurnEnd::Completed) => "completed",
+                Some(TurnEnd::Failed) => "failed",
+                _ => "started",
+            };
+            self.log("recovered", &format!("after=prompt turn={turn}"));
+        }
         if started {
             self.with(|entry| entry.limit.answered());
         }
@@ -199,7 +241,7 @@ impl Limiter {
                     stopped
                 });
                 if stopped {
-                    self.announce_stop();
+                    self.announce_stop(awaiting);
                 }
             }
             Some(TurnEnd::Completed) => {
@@ -214,11 +256,20 @@ impl Limiter {
             }
             None => {}
         }
+        if self.login_changed() {
+            self.recheck();
+        }
         if self.with(|entry| entry.limit.due(now())) {
-            let answer = ask(&self.asker);
-            let recovered = self.with(|entry| entry.limit.answer(now(), answer));
+            let answer = self.ask();
+            let (recovered, next) =
+                self.with(|entry| (entry.limit.answer(now(), answer), entry.limit.next_query()));
             if recovered {
                 self.recover();
+            } else {
+                self.log(
+                    "still-limited",
+                    &format!("answer={} next={}", answer.label(), clock_or_unknown(next)),
+                );
             }
         }
         if self.with(|entry| entry.limit.unanswered(now())) {
@@ -227,16 +278,49 @@ impl Limiter {
         self.is_limited() != was
     }
 
+    /// Whether the seat's `auth.json` changed since the last round (#495),
+    /// its first sight at launch included: only its modified time is read,
+    /// never its content, which holds the tokens.
+    fn login_changed(&self) -> bool {
+        let modified = std::fs::metadata(self.asker.home.join("auth.json"))
+            .and_then(|m| m.modified())
+            .ok();
+        self.with(|entry| {
+            let changed = modified.is_some() && entry.auth_modified != modified;
+            entry.auth_modified = modified;
+            changed
+        })
+    }
+
+    /// The login may have changed: ask once, which names the account and
+    /// refreshes the usage. A stopped seat takes the answer as a due question
+    /// would; a running one is not stopped by it — a new account is not
+    /// thereby limited or free, and the rollout says when a turn is refused.
+    fn recheck(&self) {
+        let answer = self.ask();
+        if self.with(|entry| entry.limit.is_limited() && entry.limit.answer(now(), answer)) {
+            self.recover();
+        }
+    }
+
     /// The seat has just stopped. One question for the reset the room is
-    /// told, then the notice.
-    fn announce_stop(&self) {
-        let answer = ask(&self.asker);
-        let reset = self.with(|entry| {
+    /// told, then the notice. `after_prompt` when the stop answers a typed
+    /// resume: logged as still limited rather than as a first stop (#405).
+    fn announce_stop(&self, after_prompt: bool) {
+        let answer = self.ask();
+        let (reset, next) = self.with(|entry| {
             entry.limit.refine(now(), answer);
-            entry.limit.resets_at()
+            (entry.limit.resets_at(), entry.limit.next_query())
         });
         let clock = reset.and_then(terminal_input::clock);
         self.notice(&limit::stop_notice(&self.name, clock.as_deref()));
+        let reset = clock.as_deref().unwrap_or("unknown");
+        let next = clock_or_unknown(next);
+        if after_prompt {
+            self.log("still-limited", &format!("after=prompt reset={reset} next={next}"));
+        } else {
+            self.log("stopped", &format!("reset={reset} next={next}"));
+        }
     }
 
     /// The resume drew no answer: told once, and the seat is remembered so a
@@ -247,6 +331,7 @@ impl Limiter {
             .lock()
             .insert((self.topic_id.clone(), self.account_id.clone()));
         self.notice(&limit::other_cause(&self.name));
+        self.log("other-cause", &format!("no_answer_within={}s", limit::ANSWER_WAIT));
     }
 
     /// A turn completed: if the room was told the seat seemed stopped on
@@ -259,6 +344,23 @@ impl Limiter {
             .remove(&(self.topic_id.clone(), self.account_id.clone()));
         if told {
             self.notice(&limit::back_after_other_cause(&self.name));
+            self.log("recovered", "told=back_after_other_cause");
+        }
+    }
+
+    /// One line of `logs/codex-resume.log` (#405), written whole in one call.
+    /// A failure to open or write is dropped, as the probe's is
+    /// (`room_log::open_probe`): the log observes.
+    fn log(&self, action: &str, detail: &str) {
+        if let Some(mut file) = crate::room_log::open_probe(&self.app, limit::LOG_FILE) {
+            let line = limit::log_line(
+                action,
+                &self.topic_id,
+                &self.account_id,
+                &crate::room::now_iso(),
+                detail,
+            );
+            let _ = file.write_all(format!("{line}\n").as_bytes());
         }
     }
 
@@ -282,22 +384,24 @@ impl Limiter {
     /// off, the seat is freed and its mark goes all the same, the room hears
     /// the recovery, and nothing is typed, so no answer is awaited.
     fn recover(&self) {
+        const LEFT: &str = "terminal_left=launch typed_at_next_launch";
         if !self.current() {
+            self.log("pending", LEFT);
             return;
         }
         let resume = crate::config::resume_notice_enabled(&self.app, &self.account_id);
         let notice = self.notice(&limit::recovery_notice(&self.name, resume));
-        self.with(|entry| {
+        let (action, detail) = self.with(|entry| {
             // The app-server query may have outlived this launch.
             if !self.current() {
-                return;
+                return ("pending", LEFT.to_string());
             }
             entry.limit.free();
             // The mark goes before the resume is typed: cut short between the
             // two, the seat misses its resume rather than being typed it twice.
             entry.persist(|boxes, account| boxes.close(account));
             if !resume {
-                return;
+                return ("skipped", "resume_notice=off".to_string());
             }
             // The label carries the recovery notice's id, so the seat's next
             // `last_seen` stands past it (#47).
@@ -324,7 +428,9 @@ impl Limiter {
             if typed {
                 entry.limit.resume_typed(now());
             }
+            (if typed { "typed" } else { "refused" }, format!("pty={}", self.pty_id))
         });
+        self.log(action, &detail);
     }
 
     fn current(&self) -> bool {
@@ -342,44 +448,82 @@ impl Limiter {
         self.limits().forget(&self.pty_id);
     }
 
-    /// The seat's values as the screen gets them, 制限中 included.
+    /// The seat's values as the screen gets them, 制限中 included. The
+    /// windows the app-server last reported, when newer than the rollout's
+    /// (#496), stand in for the rollout's two windows.
     pub fn stats(&self, status: &Status) -> SessionStats {
+        let (answered, login) = self.with(|entry| (entry.answered, entry.login.clone()));
         let mut stats = SessionStats::from_codex(
             self.topic_id.clone(),
             self.account_id.clone(),
             status,
             self.is_limited(),
         );
+        if let Some(w) = answered {
+            stats.five_hour = w.five_hour;
+            stats.five_hour_resets_at = w.five_hour_resets_at;
+            stats.seven_day = w.seven_day;
+            stats.seven_day_resets_at = w.seven_day_resets_at;
+        }
         stats.pty_id = Some(self.pty_id.clone());
+        stats.login = login;
         stats
     }
 
-    /// The rollout has just carried the seat's rate limits (#364): record its
-    /// two windows as received now, for the seat to read back (`my_usage`).
+    /// The rollout has just carried the seat's rate limits (#364): they are
+    /// now the newest, so the app-server's stand down (#496), and the two
+    /// windows are recorded as received now, for the seat to read back
+    /// (`my_usage`).
     pub fn received_usage(&self, status: &Status) {
+        self.with(|entry| entry.answered = None);
         self.app.state::<crate::room::UsageBook>().record(
             &self.topic_id,
             &self.account_id,
             self.stats(status).usage(),
         );
     }
+
+    /// Ask the app-server about the seat's account. The windows its answer
+    /// reports, if any, become the seat's usage (#496): shown over the
+    /// rollout's and recorded as received now. An answer without them leaves
+    /// the figures held as they were.
+    fn ask(&self) -> Answer {
+        let (answer, windows, login) = ask(&self.asker);
+        if login.is_some() {
+            self.with(|entry| entry.login = login);
+        }
+        if let Some(windows) = windows {
+            self.with(|entry| entry.answered = Some(windows));
+            self.app.state::<crate::room::UsageBook>().record(
+                &self.topic_id,
+                &self.account_id,
+                self.stats(&Status::default()).usage(),
+            );
+        }
+        answer
+    }
 }
 
 /// How long one question may take, start to answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Ask the app-server whether the seat's account may run again.
-fn ask(asker: &Asker) -> Answer {
+/// Ask the app-server whether the seat's account may run again, with what
+/// usage (#496), and which account it is (#495).
+fn ask(asker: &Asker) -> (Answer, Option<Windows>, Option<String>) {
     match ask_once(asker) {
-        Ok(response) => limit::read_answer(&response),
+        Ok((response, account)) => (
+            limit::read_answer(&response),
+            limit::read_usage(&response),
+            account.as_ref().and_then(limit::read_login),
+        ),
         Err(err) => {
             eprintln!("[codex-limit] the app-server could not be asked: {err}");
-            Answer::Unavailable
+            (Answer::Unavailable, None, None)
         }
     }
 }
 
-fn ask_once(asker: &Asker) -> Result<Value, String> {
+fn ask_once(asker: &Asker) -> Result<(Value, Option<Value>), String> {
     let command = &asker.command;
     let mut cmd = if cfg!(windows) && !command.to_ascii_lowercase().ends_with(".exe") {
         let mut cmd = Command::new("cmd.exe");
@@ -406,8 +550,10 @@ fn ask_once(asker: &Asker) -> Result<Value, String> {
     result
 }
 
-/// The three requests, each answer waited for by id, all inside `ASK_TIMEOUT`.
-fn converse(child: &mut Child) -> Result<Value, String> {
+/// The three requests, each answer waited for by id, then `account/read`
+/// (#495), all inside `ASK_TIMEOUT`. An account question that goes
+/// unanswered costs only the name: the rate limits' answer stands.
+fn converse(child: &mut Child) -> Result<(Value, Option<Value>), String> {
     let deadline = Instant::now() + ASK_TIMEOUT;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
@@ -450,9 +596,12 @@ fn converse(child: &mut Child) -> Result<Value, String> {
     send(&initialized).map_err(|e| e.to_string())?;
     send(&read).map_err(|e| e.to_string())?;
     let answer = wait(limit::READ_ID)?;
+    let account = send(&limit::account_request())
+        .ok()
+        .and_then(|_| wait(limit::ACCOUNT_ID).ok());
     // Closing stdin is how the server is told to go.
     drop(stdin);
-    Ok(answer)
+    Ok((answer, account))
 }
 
 /// Let the server go on its own for a moment, then take its tree down.
