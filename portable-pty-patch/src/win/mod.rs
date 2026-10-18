@@ -40,20 +40,32 @@ impl WinChild {
 
     fn do_kill(&mut self) -> IoResult<()> {
         let proc = self.proc.lock().unwrap().try_clone().unwrap();
-        let res = unsafe { TerminateProcess(proc.as_raw_handle() as _, 1) };
-        let err = IoError::last_os_error();
-        if res != 0 {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        terminate(&proc)
+    }
+}
+
+/// `TerminateProcess` returns non-zero on success and zero on failure (#96;
+/// the upstream code read it the other way round). A failure on a process
+/// that has already exited is not one: there was nothing left to kill.
+fn terminate(proc: &OwnedHandle) -> IoResult<()> {
+    let res = unsafe { TerminateProcess(proc.as_raw_handle() as _, 1) };
+    if res != 0 {
+        return Ok(());
+    }
+    let err = IoError::last_os_error();
+    let mut status: DWORD = 0;
+    let read = unsafe { GetExitCodeProcess(proc.as_raw_handle() as _, &mut status) };
+    if read != 0 && status != STILL_ACTIVE {
+        Ok(())
+    } else {
+        Err(err)
     }
 }
 
 impl ChildKiller for WinChild {
+    /// The result is passed on (#96): a kill that failed is reported.
     fn kill(&mut self) -> IoResult<()> {
-        self.do_kill().ok();
-        Ok(())
+        self.do_kill()
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
@@ -69,13 +81,7 @@ pub struct WinChildKiller {
 
 impl ChildKiller for WinChildKiller {
     fn kill(&mut self) -> IoResult<()> {
-        let res = unsafe { TerminateProcess(self.proc.as_raw_handle() as _, 1) };
-        let err = IoError::last_os_error();
-        if res != 0 {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        terminate(&self.proc)
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
