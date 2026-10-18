@@ -13,7 +13,7 @@ const edge = process.env.PREVIEW_BROWSER ?? [
 ].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER to its executable (no skipped boundary tests)");
 
-test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, async t => {
+test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t => {
   const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false }, logLevel: "error" });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, "");
@@ -29,11 +29,12 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
     import { htmlPreviewDocument } from '/src/html-preview-document.ts';
     window.createHtmlPreview = createHtmlPreview;
     window.detachedCalls = [];
+    window.paneCalls = [];
     window.preview = createHtmlPreview(document.querySelector('#conversation'), async doc => {
       window.detachedCalls.push(doc);
       if (window.detachDelay) await window.detachDelay;
       if (window.detachFail && doc !== null) throw new Error('native open failed');
-    });
+    }, async placement => { window.paneCalls.push(placement); });
     window.render = text => appendMarkdown(document.querySelector('#post'), text, {
       prose: text => [document.createTextNode(text)], link: (_, label) => label,
       code: (source, lang, info) => { if (lang.toLowerCase() === 'html') return window.preview.fileBlock(source, info); const block = document.createElement('pre'); block.textContent = source; return block; }
@@ -46,6 +47,23 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   await page.waitForFunction(() => window.ready);
   await page.waitForFunction(() => window.detachedCalls.length === 1 && window.detachedCalls[0] === null);
   await page.evaluate(() => { window.detachedCalls = []; });
+  // The side pane's child view (#466) is a native view; this harness records
+  // what the controller asks of it. Startup empties and hides a surviving one.
+  const lastPane = async (check, what) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const last = await page.evaluate(() => window.paneCalls.at(-1));
+      if (last && check(last)) return last;
+      await page.waitForTimeout(50);
+    }
+    throw new Error(`child view never reached: ${what}; calls ${JSON.stringify(await page.evaluate(() => window.paneCalls))}`);
+  };
+  const contentBounds = () => page.evaluate(() => {
+    const rect = document.querySelector(".html-preview-content").getBoundingClientRect();
+    const scale = devicePixelRatio;
+    const x = Math.round(rect.left * scale), y = Math.round(rect.top * scale);
+    return { x, y, width: Math.round(rect.right * scale) - x, height: Math.round(rect.bottom * scale) - y };
+  });
+  assert.deepEqual(await page.evaluate(() => window.paneCalls), [{ document: "", bounds: null }]);
   const requests = [];
   const failures = new Map();
   context.on("requestfailed", request => failures.set(request.url(), request.failure()?.errorText));
@@ -104,41 +122,56 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   assert.equal((await page.locator("#post").textContent()).includes("probe.invalid/css"), false);
   await open("report.html").click();
   assert.equal(await page.locator(".html-preview header strong").textContent(), "report.html");
-  const frame = page.frameLocator(".html-preview iframe");
+  // No frame in the main page (#466): the prepared document and the content
+  // area's bounds, in physical pixels, go to the child view.
+  const prepared = await page.evaluate(source => window.htmlPreviewDocument(source), source);
+  const shown = await lastPane(call => call.document === prepared && call.bounds, "document and bounds");
+  assert.deepEqual(shown.bounds, await contentBounds());
+  assert.ok(shown.bounds.width > 0 && shown.bounds.height > 0);
+  assert.equal(await page.locator(".html-preview iframe").count(), 0, "the main page holds no preview frame");
+  assert.ok((await page.locator(".html-preview > p").first().textContent()).includes("JavaScript は、この表示の中だけで動きます"));
+  // The child view loads the separate window's host page with `?pane`: the frame only.
+  const paneHost = await context.newPage();
+  await paneHost.goto(`${base}/html-preview.html?pane`);
+  popups = 0;
+  assert.equal(await paneHost.getByRole("button", { name: "メインウィンドウで開く" }).isVisible(), false);
+  assert.equal(await paneHost.locator("body > p").isVisible(), false);
+  await paneHost.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, shown.document);
+  const frame = paneHost.frameLocator("iframe");
   await frame.locator("#card").waitFor();
-  assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
-  // The side pane never runs posted scripts or handlers (#443).
+  assert.equal(await paneHost.locator("iframe").getAttribute("sandbox"), "allow-scripts", "the child view's frame adds allow-scripts only");
+  await frame.locator("#made").waitFor();
+  await frame.locator("body[data-fetch]").waitFor();
+  assert.equal(await frame.locator("#card").getAttribute("data-ran"), "inline");
+  assert.deepEqual(await frame.locator("body").evaluate(el => ({ ...el.dataset })), {
+    parent: "opaque", top: "opaque", parentTauri: "denied", tauri: "undefined", fetch: "blocked", module: "ran",
+  }, "scripts run in the child view's frame; fetch stops at CSP; parent/top stay out of reach");
   await frame.locator("#handler").click();
-  await page.waitForTimeout(300);
-  assert.equal(await frame.locator("#made").count(), 0);
-  assert.deepEqual(await frame.locator("body").evaluate(el => ({ ...el.dataset })), {});
-  assert.equal(await frame.locator("#card").getAttribute("data-ran"), null);
-  assert.deepEqual(await frame.locator("#handler").evaluate(el => [...el.attributes].map(a => a.name)), ["id"]);
+  assert.equal(await frame.locator("#handler").getAttribute("data-clicked"), "yes");
   assert.equal(await frame.locator("#after-script").textContent(), "after script");
   assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
   assert.equal(await frame.locator("body").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(230, 240, 250)");
   assert.equal(await frame.locator("p").evaluate(el => getComputedStyle(el).fontWeight), "700");
   assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).textDecorationLine), "underline");
   assert.equal(await frame.locator("html").evaluate(el => getComputedStyle(el).borderTopWidth), "3px");
-  assert.equal(await frame.locator("script,iframe,object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0);
-  assert.equal(await frame.locator("body").evaluate(() => {
-    try { return parent.document.body ? "parent-access" : "missing"; } catch { return "opaque"; }
-  }), "opaque");
-  assert.equal(await frame.locator("body").evaluate(() => typeof window.__TAURI_INTERNALS__), "undefined");
+  assert.equal(await frame.locator("iframe:not([src='https://probe.invalid/js-frame']),object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0);
+  assert.equal(await frame.locator("script[src],script[type=importmap],script[type=speculationrules]").count(), 0);
   for (const id of ["card", "nav", "top", "popup", "js", "file", "app", "data", "download"]) {
     await frame.locator(`#${id}`).click();
   }
-  await page.waitForTimeout(600);
-  assert.equal(page.url(), `${base}/preview-test`);
-  assert.equal(page.frames()[1].url(), "about:srcdoc");
+  await paneHost.waitForTimeout(600);
+  assert.equal(paneHost.url(), `${base}/html-preview.html?pane`);
+  assert.equal(paneHost.frames()[1].url(), "about:srcdoc");
+  assert.equal(await paneHost.evaluate(() => window.pwned), undefined);
   assert.equal(await page.evaluate(() => window.pwned), undefined);
-  assert.deepEqual(requests.map(url => [url, failures.get(url)]).sort(), [
-    ["https://probe.invalid/root", "csp"],
-    ["https://probe.invalid/background", "csp"],
-    ["file:///C:/secret", "other"],
-    ["pullcept://network-probe", "csp"],
-  ].sort(), "only CSS resource attempts: CSP blocks network/app schemes, opaque frame denies local files");
-  assert.equal(popups, 0);
+  const attempted = requests.map(url => [url, failures.get(url)]);
+  for (const css of ["https://probe.invalid/root", "https://probe.invalid/background"]) {
+    assert.ok(attempted.some(([url, failure]) => url === css && failure === "csp"), `${css} blocked by CSP`);
+  }
+  assert.ok(attempted.every(([url, failure]) => failure === "csp" || (url === "file:///C:/secret" && failure === "other")),
+    `CSP blocks network/app schemes, opaque frame denies local files: ${JSON.stringify(attempted)}`);
+  assert.equal(popups, 0, "window.open in the frame opens nothing");
+  await paneHost.close();
   const codeToggle = page.getByRole("button", { name: "コード", exact: true });
   await codeToggle.click();
   assert.equal(await codeToggle.getAttribute("aria-pressed"), "true");
@@ -146,13 +179,27 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   assert.equal(await previewToggle.getAttribute("aria-pressed"), "false", "segment pressed states are exclusive");
   assert.ok((await page.locator(".html-preview-code").textContent()).includes(source), "code is read in the preview");
   assert.equal(await page.locator(".html-preview-content").isVisible(), false);
+  // The code view is this page's DOM: the child view hides, keeping its document.
+  assert.deepEqual(await lastPane(call => call.bounds === null, "hidden for code"), { bounds: null });
   await previewToggle.click();
   assert.equal(await page.locator(".html-preview-content").isVisible(), true);
+  assert.deepEqual(await lastPane(call => call.bounds !== null, "shown again"), { bounds: await contentBounds() });
+  // A dialog over the page hides the native view, which would otherwise sit above it.
+  await page.evaluate(() => { const d = document.createElement("dialog"); d.id = "overlay"; d.textContent = "over"; document.body.append(d); d.showModal(); });
+  await lastPane(call => call.bounds === null, "hidden under a dialog");
+  await page.evaluate(() => { const d = document.getElementById("overlay"); d.close(); d.remove(); });
+  await lastPane(call => call.bounds !== null, "shown after the dialog");
+  // Window size changes move the view with the content area.
+  await page.setViewportSize({ width: 1000, height: 640 });
+  const resized = await contentBounds();
+  await lastPane(call => JSON.stringify(call.bounds) === JSON.stringify(resized), "follows the resize");
+  assert.equal((await page.evaluate(() => window.paneCalls)).filter(call => "document" in call && call.document !== "").length, 1, "the document is sent once");
 
   await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
   await page.waitForFunction(() => window.detachedCalls.length === 1);
   // Success hides the side pane but does not close the separate window (#463).
   await page.waitForFunction(() => document.querySelector('.html-preview').hidden);
+  await lastPane(call => call.bounds === null, "hidden after detach");
   assert.equal(await page.evaluate(() => window.detachedCalls.includes(null)), false);
   // Exercise the shipped trusted detached host document with the exact same
   // prepared source; native window creation/ownership is separately cargo-checked.
@@ -198,7 +245,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   await page.evaluate(() => window.render('```HTML\n<title>  Second\n report </title><h2>Second report</h2>\n```\n\n```html\n<p>untitled</p>\n```'));
   assert.equal(await open("HTML").count(), 1, "no first-line name and no title falls back to HTML");
   await open("Second report").click();
-  await frame.getByRole("heading", { name: "Second report" }).waitFor();
+  await lastPane(call => call.document?.includes("Second report") && call.bounds, "second document shown");
   await page.waitForFunction(() => window.detachedCalls.length === 2);
   // "メインウィンドウで開く" asks the native guard through a fixed navigation (#463).
   await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
@@ -212,10 +259,10 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   await page.evaluate(() => window.preview.returnToMain());
   assert.equal(await page.locator(".html-preview").isVisible(), true, "the same document returns to the side pane");
   assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).evaluate(el => el === document.activeElement), true);
-  assert.equal(await page.locator(".html-preview iframe").count(), 1);
+  await lastPane(call => call.bounds !== null, "shown again after return");
   await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
   assert.equal(await page.locator(".html-preview").isVisible(), false);
-  assert.equal(await page.locator(".html-preview iframe").count(), 0);
+  assert.deepEqual(await lastPane(call => call.bounds === null, "emptied on close"), { document: "", bounds: null });
   assert.equal(await open("Second report").evaluate(el => el === document.activeElement), true);
   await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
 
@@ -250,12 +297,14 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
   await page.evaluate(() => {
     window.nativeDoc = 'old-topic native document';
     document.querySelector('.html-preview').remove();
+    window.paneCalls = [];
     window.preview = window.createHtmlPreview(document.querySelector('#conversation'), async doc => {
       window.nativeDoc = doc;
       window.detachedCalls.push(doc);
-    });
+    }, async placement => { window.paneCalls.push(placement); });
   });
   await page.waitForFunction(() => window.nativeDoc === null);
+  assert.deepEqual(await page.evaluate(() => window.paneCalls), [{ document: "", bounds: null }], "a recreated controller empties a surviving child view");
   await page.evaluate(() => {
     window.nativeDoc = 'unknown surviving native document';
     window.preview.clear();
@@ -270,8 +319,9 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, 
     const report = `<style>body{background:#f5f7fc;color:#202844;line-height:1.6}.eyebrow{color:#657294;font-size:12px;letter-spacing:2px}h1{font-size:30px;margin:8px 0}.cards{display:flex;gap:12px;margin:24px 0}.card{background:white;padding:18px;border-radius:12px;flex:1}.value{font-size:28px;color:#355bc9;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #e8edf6}th{color:#657294;font-size:12px}.badge{color:#20805b}</style><p class="eyebrow">WEEKLY REPORT / 2026.10.17</p><h1>Project overview</h1><p>A quiet space for the work taking shape.</p><section class="cards"><div class="card">Completed<div class="value">24</div></div><div class="card">In progress<div class="value">6</div></div><div class="card">On track<div class="value">92%</div></div></section><h2>This week</h2><table><thead><tr><th>Workstream</th><th>Status</th></tr></thead><tbody><tr><td>Conversation layout</td><td class="badge">Ready</td></tr><tr><td>Static report preview</td><td class="badge">Ready</td></tr><tr><td>Documentation</td><td>In review</td></tr></tbody></table>`;
     await page.evaluate(report => { document.querySelector('#post').replaceChildren(); window.render('A static report from the room.\n\n```html weekly-report.html\n' + report + '\n```'); }, report);
     await page.getByRole("button", { name: "weekly-report.html のプレビューを開く" }).click();
-    await page.frameLocator(".html-preview iframe").getByRole("heading", { name: "Project overview" }).waitFor();
+    await lastPane(call => call.document?.includes("Project overview") && call.bounds, "report shown");
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // The main page's side pane: header and the area the child view covers.
     await page.screenshot({ path: join(process.env.PREVIEW_SCREENSHOTS, "side-panel.png") });
     await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(report => window.htmlPreviewDocument(report), report));
     await host.setViewportSize({ width: 900, height: 800 });

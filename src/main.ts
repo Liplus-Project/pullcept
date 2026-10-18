@@ -25,7 +25,6 @@ import { createSessionController } from "./session-controller";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { createComposer, findCodeFences, highlightedCode, lineInFence } from "./composer";
 import { appendMarkdown } from "./markdown";
@@ -3214,6 +3213,8 @@ function markdownLink(href: string, label: Node[]): Node[] {
  */
 const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
   (document, open) => invoke("html_preview", { document, open }),
+  // The side pane's child view (#466) goes through the same command.
+  (pane) => invoke("html_preview", { document: null, open: false, pane }),
   (code) => highlightedCode(code, "html"));
 void listen("html-preview-return", () => htmlPreview.returnToMain());
 
@@ -4014,8 +4015,11 @@ async function main(): Promise<void> {
   // page — Tauri takes the drop and reports the paths and where it landed
   // (`dragDropEnabled`, on by default) — so the composer is found by the
   // point, not by an element's drop event. A drop anywhere else attaches
-  // nothing.
-  await getCurrentWebview().onDragDropEvent((event) => {
+  // nothing. Heard on the window, not the webview: while the HTML preview's
+  // child view is in this window (#466) the window holds two webviews, and
+  // Tauri then sends this webview's drop to window listeners only (tauri
+  // 2.11.5, `src/manager/window.rs`).
+  await getCurrentWindow().onDragDropEvent((event) => {
     const drag = event.payload;
     if (drag.type === "leave") {
       markDrop(false);

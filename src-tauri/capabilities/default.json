@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main webview (not the main window: the side pane's child view sits in that window, #466)",
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-destroy",

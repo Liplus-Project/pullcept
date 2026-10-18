@@ -1,5 +1,5 @@
 // The app's own commands go through the ACL (#449): src-tauri/build.rs lists
-// them in the app manifest, and only the main window's capability grants them.
+// them in the app manifest, and only the main webview's capability grants them.
 // A command registered in `invoke_handler` but missing from the manifest would
 // not build into a permission; one missing from the capability would be denied
 // to main. Both lists and the capability are kept equal here.
@@ -42,8 +42,10 @@ test("every command in invoke_handler is in the app manifest, and nothing else i
 
 test("the main capability grants exactly the manifest's commands", () => {
   const main = capabilities().find(([name]) => name === "default.json")[1];
-  assert.deepEqual(main.windows, ["main"]);
-  assert.equal(main.webviews, undefined);
+  // The main webview, not the main window: the HTML preview's child view sits
+  // in the main window (#466), and a window grant reaches every webview in it.
+  assert.deepEqual(main.webviews, ["main"]);
+  assert.equal(main.windows, undefined);
   assert.equal(main.remote, undefined);
   const granted = main.permissions.filter((p) => typeof p === "string" && isAppPermission(p));
   assert.deepEqual([...granted].sort(), manifest().map(appPermission).sort());
@@ -56,5 +58,28 @@ test("no other capability grants an app command", () => {
       isAppPermission(typeof p === "string" ? p : p.identifier),
     );
     assert.deepEqual(appGrants, [], `${name} grants app commands`);
+  }
+});
+
+// Tauri matches capability labels as glob patterns (tauri-utils `acl`); `*`,
+// `?` and `[...]` are enough for the labels used here.
+const glob = (pattern) =>
+  new RegExp(`^${pattern.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
+const matches = (patterns, label) => (patterns ?? []).some((pattern) => glob(pattern).test(label));
+
+test("no capability reaches the HTML preview's views", () => {
+  // The side pane's child view (#466) runs posted scripts inside the main
+  // window; the separate window (#443) runs them in a window of its own.
+  const preview = read("../../src-tauri/src/html_preview.rs");
+  const pane = preview.match(/pub const PANE_LABEL: &str = "([^"]+)";/)[1];
+  const window = preview.match(/const LABEL: &str = "([^"]+)";/)[1];
+  assert.notEqual(pane, "main");
+  for (const [name, capability] of capabilities()) {
+    // An invoke is allowed when its webview or its window matches (tauri 2.11.5
+    // `src/ipc/authority.rs`); the child view's window is `main`.
+    assert.equal(matches(capability.windows, "main"), false, `${name} grants the main window, so the child view too`);
+    assert.equal(matches(capability.windows, window), false, `${name} grants the separate preview window`);
+    assert.equal(matches(capability.webviews, pane), false, `${name} grants the side pane's child view`);
+    assert.equal(matches(capability.webviews, window), false, `${name} grants the separate preview window's webview`);
   }
 });
