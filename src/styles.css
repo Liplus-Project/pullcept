@@ -3007,7 +3007,20 @@ button svg.icon {
   padding: 0.3rem 0.45rem;
 }
 
-/* The one switch on the form (#299): a box, not a field-wide input. */
+/* Launch switches (#486) keep the box beside the name at every width.
+   Through `.pane` to override the narrow window's ordinary field layout.
+   Leave `display` to `.field` so its [hidden] rule still wins. */
+#account-dialog .pane .launch-check {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.25rem 0.6rem;
+}
+
+#account-dialog .launch-check-help {
+  grid-column: 2;
+}
+
+/* Checkboxes are boxes, not field-wide inputs. */
 #account-dialog input[type="checkbox"] {
   width: auto;
   justify-self: start;
