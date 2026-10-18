@@ -963,7 +963,7 @@ fn deliver_except(
         // file of the floor that admitted it.
         let topic = inner.topic.clone();
         let logged = match &admission {
-            Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post),
+            Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post, &role_of(app, room, origin, post.account.as_deref())),
             Admission::Unseen(_) => Ok(false),
         };
         // Who is in the room as this post is admitted, with the account each
@@ -2242,7 +2242,7 @@ async fn serve_participant(
                     frame: answer.to_string(),
                 });
             }
-            "room_status" | "session_list" | "session_status" | "session_control" => {
+            "room_status" | "work_status_update" | "session_list" | "session_status" | "session_control" => {
                 let request_id = frame.request_id.unwrap_or_default();
                 let control = app.state::<crate::session_control::SessionControl>();
                 let result = (|| -> Result<serde_json::Value, String> {
@@ -2252,6 +2252,10 @@ async fn serve_participant(
                     }
                     control.authorize(&app, &origin, &socket_id)?;
                     match frame.kind.as_str() {
+                        "work_status_update" => crate::work_status::apply(&app,
+                            joined_room.get().ok_or("No requester topic")?,
+                            serde_json::from_value(frame.operation.ok_or("operation required")?).map_err(|e| format!("Invalid operation: {e}"))?,
+                            mcp_config::work_status::Actor { account: joined_account.as_deref().ok_or("No requester account")?, name: joined_as.as_deref().ok_or("No requester name")?, human: false }, None),
                         "session_list" => control.list(&app),
                         "session_status" => control.status(&app, frame.operation_id.as_deref().ok_or("operation_id required")?),
                         _ => {
@@ -2414,6 +2418,7 @@ pub fn room_delete_topic(
 
     let moved = state.remove(&topic_id);
     app.state::<UsageBook>().forget_topic(&topic_id);
+    app.state::<crate::room_status::PlanBook>().0.lock().retain(|(t,_),_| t != &topic_id);
     app.state::<crate::room_status::StatusBook>().0.lock().forget_topic(&topic_id);
     if let Some(fresh) = &moved {
         let _ = app.emit("room-participants", state.roster(&fresh.topic_id));

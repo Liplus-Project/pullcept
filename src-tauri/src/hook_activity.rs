@@ -147,6 +147,9 @@ impl HookSeats {
         let Some(pty_id) = app.state::<RoomSeats>().running_pty(topic_id, account_id) else {
             return;
         };
+        if let Some(steps) = mcp_config::work_status::claude_plan(event, body) {
+            crate::room_status::plan(app, topic_id, account_id, &pty_id, "claude-todowrite-hook", steps);
+        }
         let (told, hand_over) = {
             let mut seats = self.seats.lock();
             let key = (topic_id.to_string(), account_id.to_string());

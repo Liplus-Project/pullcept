@@ -15,6 +15,7 @@ mod room_log;
 mod session;
 mod session_control;
 mod webhook;
+mod work_status;
 #[cfg(windows)]
 mod window_icon;
 
@@ -46,6 +47,7 @@ pub fn run() {
         // seat itself (#364).
         .manage(room::UsageBook::default())
         .manage(room_status::StatusBook::default())
+        .manage(room_status::PlanBook::default())
         // Each Codex seat's own app-server, by its terminal (#299).
         .manage(codex_app_server::CodexServers::new())
         // What each Claude Code seat is doing, as its hooks tell it (#331).
@@ -105,6 +107,8 @@ pub fn run() {
             config::load_sessions,
             room::room_port,
             room::room_participants,
+            work_status::topic_status,
+            work_status::update_topic_work,
             room::room_join,
             room::room_post,
             room::room_current_topic,

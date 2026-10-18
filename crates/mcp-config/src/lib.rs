@@ -42,6 +42,8 @@ pub mod permission_prompt;
 pub mod prompt_hold;
 pub mod usage;
 pub mod room_status;
+pub mod work_status;
+pub mod mcp_observer;
 pub mod session_control;
 
 /// Prefix of the name the sidecar is registered under in `.mcp.json`.

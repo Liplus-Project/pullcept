@@ -74,7 +74,8 @@ pub fn answer(app: &AppHandle, topic: &str, account_id: Option<&str>) -> Result<
             "full_name": p.full_name, "room_connected": true, "role": role})
         })
         .collect();
-    let mut rows = mcp_config::room_status::select(rows, account_id)?;
+    let mut rows: Vec<Value> = rows;
+    rows.retain(|p| account_id.is_none_or(|a| p["account_id"] == a));
     let now = now_ms();
     for row in &mut rows {
         if row["role"] == "admin" {
@@ -101,7 +102,21 @@ pub fn answer(app: &AppHandle, topic: &str, account_id: Option<&str>) -> Result<
             account_id.is_some(),
         );
     }
-    Ok(
-        json!({"topic_id": topic, "retrieved_at": now, "time_unit": "unix_milliseconds_except_usage_unix_seconds", "participants": rows}),
-    )
+    let work = crate::work_status::snapshot(app, topic, account_id)?;
+    let plans = app.state::<PlanBook>().0.lock().iter().filter(|((t,a),_)| t == topic && account_id.is_none_or(|id| a == id))
+        .map(|((_,a),p)| {
+            let mut value = p.clone(); value["account_id"] = json!(a);
+            value["current_launch"] = json!(value["pty_id"].as_str().is_some_and(|p| current(app,topic,a,p)));
+            value.as_object_mut().unwrap().remove("pty_id"); value
+        }).collect::<Vec<_>>();
+    Ok(json!({"topic_id": topic, "retrieved_at": now, "time_unit": "unix_milliseconds_except_usage_unix_seconds", "participants": rows,
+        "work":work,"plans":plans,"mcp_servers": app.state::<crate::app_mcp::McpServers>().safe_status()}))
+}
+
+#[derive(Default)]
+pub struct PlanBook(pub Mutex<std::collections::BTreeMap<(String,String),Value>>);
+pub fn plan(app: &AppHandle, topic: &str, account: &str, pty: &str, source: &str, steps: Value) {
+    if !current(app, topic, account, pty) { return; }
+    app.state::<PlanBook>().0.lock().insert((topic.into(),account.into()),json!({"source":source,"self_reported":true,"steps":steps,"updated_at":now_ms(),"pty_id":pty}));
+    let _ = tauri::Emitter::emit(app,"work-status-changed",json!({"topic_id":topic}));
 }

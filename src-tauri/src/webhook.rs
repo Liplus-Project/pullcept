@@ -90,10 +90,25 @@ pub async fn receive(
     let mut lines = BufReader::new(stdout).lines();
     let mut notices = Notices::new();
     let mut ready = false;
+    let mut observer_supported = false;
+    let mut observer_wait: Option<Instant> = None;
+    let mut observer_list = false;
+    let mut next_poll = tokio::time::interval(std::time::Duration::from_secs(30));
+    next_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let ended = loop {
         let deadline = notices.next_deadline();
         let line = tokio::select! {
             line = lines.next_line() => line,
+            _ = sleep_until(observer_wait), if observer_wait.is_some() => {
+                observer_wait = None;
+                report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()}));
+                continue;
+            },
+            _ = next_poll.tick(), if ready && observer_supported && observer_wait.is_none() => {
+                send(&mut stdin, &mcp_config::mcp_observer::poll_request()).await?;
+                observer_wait = Some(Instant::now() + std::time::Duration::from_secs(5));
+                continue;
+            },
             // A read the bridge has not answered in time: the notice goes out
             // unsigned rather than waiting on.
             _ = sleep_until(deadline), if deadline.is_some() => {
@@ -106,6 +121,24 @@ pub async fn receive(
             Ok(None) => break Ok(()),
             Err(e) => break Err(format!("reading the server failed: {e}")),
         };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+            // String IDs cannot collide with get_event/initialize numeric replies.
+            if value["method"].is_null() && value["id"] == mcp_config::mcp_observer::LIST_ID {
+                if observer_list && observer_wait.is_some() {
+                    observer_list = false; observer_wait = None;
+                    observer_supported = mcp_config::mcp_observer::supported(&value);
+                    report.observer(serde_json::json!({"state": if observer_supported {"unobserved"} else {"unsupported"}}));
+                }
+                continue;
+            }
+            if value["method"].is_null() && value["id"] == mcp_config::mcp_observer::POLL_ID {
+                if !observer_list && observer_wait.is_some() {
+                    observer_wait = None;
+                    report.observer(mcp_config::mcp_observer::snapshot(&value, crate::room_status::now_ms()));
+                }
+                continue;
+            }
+        }
         match read_line(&line) {
             Line::Answer { id, failure, .. } if id == INITIALIZE_ID => {
                 if let Some(failure) = failure {
@@ -116,6 +149,10 @@ pub async fn receive(
                 }
                 ready = true;
                 report.running();
+                // Discovery is passive. The tool is never called without its explicit raw-mode marker.
+                send(&mut stdin, &mcp_config::mcp_observer::list_request()).await?;
+                observer_list = true;
+                observer_wait = Some(Instant::now() + std::time::Duration::from_secs(5));
             }
             Line::Answer { id, failure, text } => {
                 notices.answer(id, failure.as_deref(), text.as_deref());
