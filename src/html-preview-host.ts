@@ -2,11 +2,13 @@ import { previewFrame } from "./html-preview-document";
 
 declare global { interface Window { __htmlPreviewDocument?: string } }
 // Only the trusted native host writes this property/event. Posted markup is
-// always srcdoc of an opaque, scriptless frame, never this window's document.
+// always srcdoc of an opaque frame, never this window's document. Its inline
+// scripts may run in that frame (#443): this window holds no capability, so
+// nothing reached from the frame can run an app command.
 function draw() {
   const root = document.getElementById("preview")!;
   root.replaceChildren();
-  if (window.__htmlPreviewDocument) root.append(previewFrame(window.__htmlPreviewDocument));
+  if (window.__htmlPreviewDocument) root.append(previewFrame(window.__htmlPreviewDocument, true));
 }
 window.addEventListener("html-preview-update", draw);
 // "メインウィンドウで開く" (#463). This window has no IPC access; the native

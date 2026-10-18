@@ -44,15 +44,18 @@ test("native WebView2 trusted host creation, isolation, reuse and destruction", 
   const main = context.pages()[0];
   await main.waitForFunction(() => window.__TAURI_INTERNALS__);
   const invoke = (page, document, open = true) => page.evaluate(({ document, open }) => window.__TAURI_INTERNALS__.invoke("html_preview", { document, open }), { document, open });
-  const doc = htmlPreviewDocument('<style>h1{color:rgb(12,34,56)}</style><h1>Native report</h1><script>parent.pwned=true</script><a href="https://probe.invalid/">link</a>');
+  const doc = htmlPreviewDocument('<style>h1{color:rgb(12,34,56)}</style><h1>Native report</h1><script>document.body.dataset.ran="yes";parent.pwned=true</script><a href="https://probe.invalid/">link</a>', true);
   const opened = context.waitForEvent("page");
   await invoke(main, doc);
   const host = await opened;
   await host.frameLocator("iframe").getByRole("heading", { name: "Native report" }).waitFor();
   assert.equal(new URL(host.url()).pathname, "/html-preview.html");
-  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "allow-scripts");
   assert.equal(await host.frameLocator("iframe").locator("h1").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
-  assert.equal(await host.frameLocator("iframe").locator("body").evaluate(() => typeof window.__TAURI_INTERNALS__), "undefined");
+  // WebView2 injects Tauri's scripts into every frame, so the frame does see
+  // __TAURI_INTERNALS__ (#443). Its replies return to the top frame only; that
+  // an invoke from the frame is denied by the ACL is checked on the real app.
+  assert.equal(await host.frameLocator("iframe").locator("body").evaluate(() => document.body.dataset.ran ?? "none"), "yes", "inline script runs in the separate window's frame");
   assert.equal(await host.frameLocator("iframe").locator("body").evaluate(() => { try { parent.document; return false; } catch { return true; } }), true);
   assert.equal(await host.evaluate(() => window.pwned), undefined);
   await assert.rejects(() => invoke(host, doc), /main window/);
