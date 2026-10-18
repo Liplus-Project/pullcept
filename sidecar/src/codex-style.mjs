@@ -1,7 +1,8 @@
 // Model-free metadata only. The installed Li+ loader owns style parsing/delivery.
 import {execFile} from "node:child_process";
+import {existsSync} from "node:fs";
 import {readFile, realpath, lstat} from "node:fs/promises";
-import {resolve, dirname, basename, relative, isAbsolute} from "node:path";
+import {resolve, dirname, basename, relative, isAbsolute, join} from "node:path";
 import {createHash} from "node:crypto";
 import {pathToFileURL} from "node:url";
 
@@ -20,6 +21,21 @@ const REASONS = {
   invalid_style_or_project:"キャラファイルの欠落・UTF-8・project 設定を確認してください。",
 };
 class StyleFailure extends Error {}
+// The Python this module runs the helper with (#361). On Windows, an App Installer
+// alias in WindowsApps can stand before the real python.exe on PATH even with the
+// alias switched off: a redirector that prints "Python" and exits 49. The first
+// python.exe on PATH outside WindowsApps is taken; with none, plain "python", so a
+// Store install, whose python.exe lives only there, still runs.
+export function pythonCommand(env = process.env, platform = process.platform, exists = existsSync) {
+  if (platform !== "win32") return "python3";
+  const key = Object.keys(env).find(name => name.toUpperCase() === "PATH");
+  for (const dir of (key ? env[key] : "").split(";")) {
+    if (!dir || /[\\/]Microsoft[\\/]WindowsApps[\\/]?$/i.test(dir)) continue;
+    const candidate = join(dir, "python.exe");
+    if (exists(candidate)) return candidate;
+  }
+  return "python";
+}
 const fail = () => { throw Error(FAILURE); };
 const within = (root, cwd) => { const part = relative(root, cwd); return !isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"); };
 function run(bin, args, cwd, env) {
@@ -91,7 +107,7 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
   for (const key of Object.keys(childEnv)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete childEnv[key];
   const args = [helper, "resolve", "--cwd", cwd, "--root", root];
   if (selected) args.push("--style", selected);
-  const metadata = await run(process.platform === "win32" ? "python" : "python3", args, cwd, childEnv);
+  const metadata = await run(pythonCommand(env), args, cwd, childEnv);
   if (metadata.protocol_version !== 1 || !["file", "disabled"].includes(metadata.mode) || metadata.root !== root ||
       !Number.isInteger(metadata.byte_count) || metadata.byte_count < 0 || metadata.byte_count > 128 * 1024 ||
       (metadata.mode === "file" && (typeof metadata.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metadata.name) ||
@@ -110,7 +126,7 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
   result.body = null;
   if (metadata.mode === "file") {
     // The hook path itself: same helper, same selection, same bytes.
-    const reply = await runHook(process.platform === "win32" ? "python" : "python3", [helper, "hook", "--root", root], cwd,
+    const reply = await runHook(pythonCommand(env), [helper, "hook", "--root", root], cwd,
       {...childEnv, LI_PLUS_OUTPUT_STYLE:metadata.name},
       JSON.stringify({hook_event_name:"SessionStart", source:"startup", cwd}));
     const body = reply?.hookSpecificOutput?.additionalContext;
