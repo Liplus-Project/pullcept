@@ -19,6 +19,7 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   const base = server.resolvedUrls.local[0].replace(/\/$/, "");
   const browser = await chromium.launch({ executablePath: edge, headless: true });
   t.after(async () => { await browser.close(); await server.close(); });
+  t.diagnostic(`browser ${browser.version()}`);
   const context = await browser.newContext();
   const page = await context.newPage();
   // An isolated harness uses the production renderer and controller. No live
@@ -134,6 +135,10 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   assert.ok((await page.locator(".html-preview > p").first().textContent()).includes("JavaScript は、この表示の中だけで動きます"));
   // The child view loads the separate window's host page with `?pane`: the frame only.
   const paneHost = await context.newPage();
+  // The renderer reports every load its CSP stops as a securitypolicyviolation in
+  // that frame, whether or not the browser also surfaces it as a failed request.
+  await paneHost.addInitScript(() => document.addEventListener("securitypolicyviolation",
+    e => (window.__cspViolations ??= []).push([e.blockedURI, e.effectiveDirective]), true));
   await paneHost.goto(`${base}/html-preview.html?pane`);
   popups = 0;
   assert.equal(await paneHost.getByRole("button", { name: "メインウィンドウで開く" }).isVisible(), false);
@@ -170,9 +175,15 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   assert.equal(await paneHost.evaluate(() => window.pwned), undefined);
   assert.equal(await page.evaluate(() => window.pwned), undefined);
   const attempted = requests.map(url => [url, failures.get(url)]);
+  const previewFrame = paneHost.frames()[1];
   for (const css of ["https://probe.invalid/root", "https://probe.invalid/background"]) {
-    assert.ok(attempted.some(([url, failure]) => url === css && failure === "csp"), `${css} blocked by CSP`);
+    // Proof of the block is the frame's own violation report. Whether Chromium
+    // also emits a request (failed with "csp") for it varies by build and timing;
+    // either way the every() below guarantees no such URL was ever fetched.
+    await previewFrame.waitForFunction(url => (window.__cspViolations ?? []).some(([uri, directive]) => uri === url && directive === "img-src"), css, { timeout: 5000 })
+      .catch(async () => assert.fail(`${css} blocked by CSP: violations ${JSON.stringify(await previewFrame.evaluate(() => window.__cspViolations))}, requests ${JSON.stringify(attempted)}`));
   }
+  t.diagnostic(`requests ${JSON.stringify(attempted)}; violations ${JSON.stringify(await previewFrame.evaluate(() => window.__cspViolations))}`);
   assert.ok(attempted.every(([url, failure]) => failure === "csp" || (url === "file:///C:/secret" && failure === "other")),
     `CSP blocks network/app schemes, opaque frame denies local files: ${JSON.stringify(attempted)}`);
   assert.equal(popups, 0, "window.open in the frame opens nothing");
