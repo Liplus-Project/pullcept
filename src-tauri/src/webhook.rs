@@ -90,10 +90,17 @@ pub async fn receive(
     let mut lines = BufReader::new(stdout).lines();
     let mut notices = Notices::new();
     let mut ready = false;
+    let mut observer = Box::pin(observe(server, report));
+    let mut observer_done = false;
     let ended = loop {
         let deadline = notices.next_deadline();
         let line = tokio::select! {
             line = lines.next_line() => line,
+            result = &mut observer, if !observer_done => {
+                observer_done = true;
+                if result.is_err() { report.observer(serde_json::json!({"state":"unobserved","observed_at":crate::room_status::now_ms()})); }
+                continue;
+            },
             // A read the bridge has not answered in time: the notice goes out
             // unsigned rather than waiting on.
             _ = sleep_until(deadline), if deadline.is_some() => {
@@ -166,6 +173,78 @@ async fn sleep_until(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
         None => std::future::pending().await,
     }
+}
+
+/// A separate, noninteractive client for the shipped wrapper only. Its future
+/// belongs to receive(), so dropping/restarting that generation kills this child.
+/// Notification authentication/refresh and get_event remain on the normal child.
+async fn observe(server: &Server, report: &Reporter) -> Result<(), String> {
+    let bundled = crate::session::webhook_bridge_script().ok().is_some_and(|path|
+        server.command == "node" && server.args.len() == 1 && std::path::Path::new(&server.args[0]) == path);
+    if !bundled {
+        report.observer(serde_json::json!({"state":"unsupported"})); return Ok(());
+    }
+    let mut observer_server = server.clone();
+    observer_server.env.insert("WEBHOOK_OBSERVER".into(), "1".into());
+    observer_server.env.insert("WEBHOOK_CHANNEL".into(), "0".into());
+    let mut child = spawn(&observer_server)?;
+    let mut stdin = child.stdin.take().ok_or("observer stdin unavailable")?;
+    let mut lines = BufReader::new(child.stdout.take().ok_or("observer stdout unavailable")?).lines();
+    // Drain without saving: observer diagnostics can include private auth paths.
+    if let Some(stderr) = child.stderr.take() {
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+    }
+    observer_send(&mut stdin, &initialize_request()).await?;
+    let initialized = async {
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            if let Line::Answer {id, failure, ..} = read_line(&line) {
+                if id == INITIALIZE_ID { return failure.map_or(Ok(()), |_| Err("observer initialize refused".to_string())); }
+            }
+        }
+        Err("observer ended during initialize".into())
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), initialized).await {
+        Ok(result) => result?,
+        Err(_) => { report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()})); return Ok(()); }
+    }
+    observer_send(&mut stdin, &initialized_notification()).await?;
+    let mut observer = mcp_config::mcp_observer::Observer::default();
+    observer_send(&mut stdin, &observer.discover(Instant::now())).await?;
+    let mut discovering = true;
+    let mut poll = tokio::time::interval(std::time::Duration::from_secs(30));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let deadline = observer.deadline();
+        tokio::select! {
+            _ = sleep_until(deadline), if deadline.is_some() => {
+                if observer.expire(Instant::now()) { report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()})); }
+                if discovering { return Ok(()); }
+            },
+            _ = poll.tick() => {
+                if let Some(request) = observer.poll(Instant::now()) { observer_send(&mut stdin,&request).await?; }
+            },
+            line = lines.next_line() => {
+                let Some(line) = line.map_err(|e| e.to_string())? else { return Err("observer ended".into()); };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+                if let Some(snapshot) = observer.receive(&value, Instant::now(),crate::room_status::now_ms()) {
+                    let unsupported = snapshot["state"] == "unsupported";
+                    report.observer(snapshot);
+                    if unsupported { return Ok(()); }
+                    if discovering {
+                        discovering = false;
+                        if let Some(request) = observer.poll(Instant::now()) { observer_send(&mut stdin,&request).await?; }
+                    }
+                }
+                // All channel pushes and arbitrary server messages are ignored.
+            },
+        }
+    }
+}
+async fn observer_send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
+    tokio::time::timeout(std::time::Duration::from_secs(1),send(stdin,line)).await.map_err(|_| "observer pipe timeout")?
 }
 
 /// The server's command and arguments, with its `env` added to the app's own

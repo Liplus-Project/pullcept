@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-topic-work"
+description = "Enables the update_topic_work command without any pre-configured scope."
+commands.allow = ["update_topic_work"]
+
+[[permission]]
+identifier = "deny-update-topic-work"
+description = "Denies the update_topic_work command without any pre-configured scope."
+commands.deny = ["update_topic_work"]

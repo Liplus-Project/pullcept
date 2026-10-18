@@ -33,6 +33,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+pub mod work_status;
 
 /// The index, as it is named inside the room's directory.
 pub const INDEX_FILE: &str = "index.json";
@@ -76,11 +77,15 @@ const TITLE_CHARS: usize = 40;
 
 /// One post, as the log holds it.
 ///
-/// The same seven fields going in and coming out. `hue` and `own` are not among
+/// The post fields and optional delivery-time role going in and coming out.
+/// `hue` and `own` are not among
 /// them, and why each is absent — and why `account` is not — is written down
 /// where the mapping from a post is made (`src-tauri/src/room_log.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggedPost {
+    /// Delivery-time server origin label; absent in legacy logs, never inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub message_id: String,
     pub speaker: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -681,6 +686,11 @@ pub fn delete(dir: &Path, index: &mut TopicIndex, topic_id: &str) -> Result<(), 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Failed to delete the topic's mailboxes: {e}")),
     }
+    match std::fs::remove_file(work_status::path(dir, topic_id)?) {
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(format!("Failed to delete work status: {e}")),
+    }
     index.forget(topic_id);
     Ok(())
 }
@@ -714,6 +724,7 @@ mod tests {
     /// One topic file with one post in it.
     fn put_topic(dir: &Path, topic_id: &str, content: &str, ts: &str) {
         let post = LoggedPost {
+            role: None,
             message_id: Uuid::new_v4().to_string(),
             speaker: "Lin".to_string(),
             full_name: None,

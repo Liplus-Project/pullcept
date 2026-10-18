@@ -565,9 +565,20 @@ const TOOLS = [
   },
   {
     name: "status",
-    description: "Read current topic participants, including humans, by connection identity. Optional account_id selects participant details (model, effort, usage/context with freshness). Unknown values are null/absent. App-observed state only; output does not prove work or availability. Ask participants directly about assignments. Read-only; posts nothing and wakes nobody.",
+    description: "Read current topic live participants by connection identity, durable work notes and human decisions (separate from roster), self-reported plans, and safe app-owned MCP observations. No account_id returns bounded current summaries/counts, no completed answer bodies; plans show only current in-progress steps. Optional account_id filters work owner or human decision target and gives model/usage details, at most 5 recent history records (answer previews 1000 chars) and 20 plan steps. Truncation flags/total counts are explicit; full records are available in participant details. Stopped work remains interrupted; only explicit complete finishes manual work. Unknown/unsupported/auth-required/timeout are not zero. Read-only; posts nothing and wakes nobody.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     inputSchema: { type: "object" as const, properties: { account_id: { type: "string", minLength: 1 } }, required: [] as string[], additionalProperties: false },
+  },
+  {
+    name: "update_work_status",
+    description: "Persist your own topic work note or human decision request. Supply unique operation_id and stable record id; retry identical request with SAME operation_id on disconnect/timeout. expected_revision=0 creates, later writes require latest revision from status. put requires kind and text; kind work/decision cannot change. decision requires target_account_id of a configured human. Optional progress, references and source_message_id. complete only finishes manual work; cancel preserves history. answer completes your decision using ONLY same-topic stored human answer_message_id; backend verifies original admin role, target account and unique ID. Never supply answer text or owner. Plan is separate and never completes work automatically.",
+    inputSchema: { type: "object" as const, properties: {
+      operation_id: {type:"string",minLength:1,maxLength:128}, id: {type:"string",minLength:1,maxLength:128},
+      action: {type:"string",enum:["put","complete","cancel","answer"]}, expected_revision: {type:"integer",minimum:0},
+      kind: {type:"string",enum:["work","decision"]}, text: {type:"string",maxLength:8000}, progress: {type:"string",maxLength:2000},
+      references: {type:"array",items:{type:"string",maxLength:2048},maxItems:20}, source_message_id: {type:"string",maxLength:128},
+      answer_message_id: {type:"string",maxLength:128}, target_account_id: {type:"string"},
+    }, required:["operation_id","id","action","expected_revision"],additionalProperties:false },
   },
   {
     name: "list_account_sessions",
@@ -634,6 +645,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (args && (Object.keys(args).some((key) => key !== "account_id") || (args.account_id !== undefined && (typeof args.account_id !== "string" || !args.account_id.trim())))) return sessionError("Optional account_id must be a non-empty string; no other arguments accepted");
       return await sessionRequest("room_status", args ?? {});
     }
+    if (name === "update_work_status") return await sessionRequest("work_status_update", { operation: args ?? {} });
     if (name === "list_account_sessions") return await sessionRequest("session_list", {});
     if (name === "account_session_status") {
       if (typeof args?.operation_id !== "string" || !args.operation_id.trim()) return sessionError("operation_id required");

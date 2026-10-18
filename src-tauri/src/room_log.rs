@@ -124,7 +124,7 @@ const TOPICS_EVENT: &str = "room-topics";
 /// failed to resume.
 static INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// The seven fields of a post, taken off the post itself.
+/// A post plus server-derived delivery origin evidence.
 ///
 /// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as well,
 /// and a derive would put it in the file. What is dropped here is dropped on
@@ -136,8 +136,9 @@ static INDEX_LOCK: Mutex<()> = Mutex::new(());
 /// `from_app` is kept, unlike `hue`: whether the app itself said it is who
 /// said it, which stays true after the fact, and a line read back draws the
 /// app's icon only if the file says so (#340).
-fn logged(post: &Post) -> LoggedPost {
+fn logged(post: &Post, role: &str) -> LoggedPost {
     LoggedPost {
+        role: Some(role.to_string()),
         message_id: post.message_id.clone(),
         speaker: post.speaker.clone(),
         full_name: post.full_name.clone(),
@@ -170,7 +171,7 @@ impl TopicRef {
 }
 
 /// Where this room's topics live.
-fn room_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn room_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -324,7 +325,7 @@ pub(crate) fn announce(app: &AppHandle) {
 ///
 /// The content may contain newlines. It stays one line per post regardless,
 /// because what is written is JSON and JSON escapes them.
-pub fn append(app: &AppHandle, topic_id: &str, post: &Post) -> Result<bool, String> {
+pub fn append(app: &AppHandle, topic_id: &str, post: &Post, role: &str) -> Result<bool, String> {
     let path = topic_path(app, topic_id)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -337,7 +338,7 @@ pub fn append(app: &AppHandle, topic_id: &str, post: &Post) -> Result<bool, Stri
         .map(|meta| meta.len() == 0)
         .unwrap_or(true);
 
-    let mut line = serde_json::to_string(&logged(post))
+    let mut line = serde_json::to_string(&logged(post, role))
         .map_err(|e| format!("Failed to serialize the post: {e}"))?;
     line.push('\n');
 
