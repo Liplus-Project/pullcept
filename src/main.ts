@@ -1724,6 +1724,22 @@ function beginTitleRename(): void {
   });
   roomTitleNameEl.hidden = true;
   roomTitleNameEl.after(field);
+  // As wide as what is written in it (#479), measured rather than left to
+  // `field-sizing`, which fell about two characters short on the device and
+  // scrolled the start of the name out of the field (#484). The extra is the
+  // field's own padding and border, and room for the caret.
+  const measure = document.createElement("canvas").getContext("2d");
+  const fit = (): void => {
+    if (!measure) return;
+    const style = getComputedStyle(field);
+    measure.font = style.font;
+    const chrome =
+      parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) +
+      parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+    field.style.width = `${Math.ceil(measure.measureText(field.value).width + chrome) + 8}px`;
+  };
+  field.addEventListener("input", fit);
+  fit();
   field.focus();
   field.select();
 }
