@@ -328,7 +328,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
-      if (["room_status", "session_list", "session_status", "session_control"].includes(frame.type)) {
+      if (["room_status", "work_status_update", "session_list", "session_status", "session_control"].includes(frame.type)) {
         sessionFrames.push(frame);
         socket.send(JSON.stringify({ type: "session_result", request_id: "unrelated", result: { wrong: true } }));
         if (sessionAnswer === "disconnect") { socket.close(); return; }
@@ -614,7 +614,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // `my_usage` reads too, and only this seat's own figures (#364).
   assert.deepEqual(
     toolNames,
-    ["say_to_room", "read_room_history", "my_usage", "status", "list_account_sessions", "account_session_status", "control_account_session"],
+    ["say_to_room", "read_room_history", "my_usage", "status", "update_work_status", "list_account_sessions", "account_session_status", "control_account_session"],
     "one posting tool plus room reads and account lifecycle controls",
   );
   assert.equal(
@@ -659,6 +659,11 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   }
   assert.equal(sessionFrames.length, beforeInvalidStatus);
   assert.equal(postFrames.length, postsBeforeStatus, "status sends no posts/notifications/seat operations");
+  const note = {operation_id:"work-493",id:"task",action:"put",expected_revision:0,kind:"work",text:"Implement status"};
+  await request("tools/call", {name:"update_work_status",arguments:note});
+  assert.equal(sessionFrames.at(-1).type,"work_status_update");
+  assert.deepEqual(sessionFrames.at(-1).operation,note);
+  assert.equal(postFrames.length,postsBeforeStatus,"journal updates do not post to room");
   const listed = await request("tools/call", { name: "list_account_sessions", arguments: {} });
   assert.match(listed.result.content[0].text, new RegExp(TEST_ACCOUNT));
   const operation = { operation_id: "self-restart-415", action: "restart", account_id: TEST_ACCOUNT, topic_id: "room", expected_pty_id: "old" };

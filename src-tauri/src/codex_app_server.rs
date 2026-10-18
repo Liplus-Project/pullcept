@@ -387,6 +387,7 @@ impl Started {
             mut socket,
             mut activity,
             probe: early,
+            thread_id,
             ..
         } = self;
         if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
@@ -401,7 +402,9 @@ impl Started {
             topic_id: topic_id.to_string(),
             account_id: account_id.to_string(),
         };
+        let (topic, account, pty) = (topic_id.to_string(), account_id.to_string(), pty_id.to_string());
         std::thread::spawn(move || {
+            let mut plan = mcp_config::work_status::CodexPlan::default();
             for (method, status, at) in &early {
                 probe.write(method, status.as_deref(), at);
             }
@@ -411,6 +414,7 @@ impl Started {
                     Ok(Message::Text(text)) => {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
                             probe.note(&value);
+                            if let Some(steps) = plan.feed(&thread_id, &value) { crate::room_status::plan(&seat.app, &topic, &account, &pty, "codex-app-server", steps); }
                             activity.feed(&value);
                             seat.tell(&activity);
                         }

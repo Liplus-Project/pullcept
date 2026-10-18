@@ -31,6 +31,8 @@
     "allow-load-sessions",
     "allow-room-port",
     "allow-room-participants",
+    "allow-topic-status",
+    "allow-update-topic-work",
     "allow-room-join",
     "allow-room-post",
     "allow-room-current-topic",

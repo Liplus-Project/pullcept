@@ -26,6 +26,8 @@ const APP_COMMANDS: &[&str] = &[
     "load_sessions",
     "room_port",
     "room_participants",
+    "topic_status",
+    "update_topic_work",
     "room_join",
     "room_post",
     "room_current_topic",

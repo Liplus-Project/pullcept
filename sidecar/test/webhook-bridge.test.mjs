@@ -50,7 +50,7 @@ async function fakeWorker() {
 }
 
 /** Start the receiver against `worker`, and read its stdout one message per line. */
-function startBridge(worker) {
+function startBridge(worker, extraEnv = {}) {
   const home = mkdtempSync(join(tmpdir(), "pullcept-webhook-"));
   const tokens = join(home, ".github-webhook-mcp");
   mkdirSync(tokens);
@@ -60,7 +60,7 @@ function startBridge(worker) {
   );
 
   const child = spawn(process.execPath, [SCRIPT], {
-    env: { ...process.env, HOME: home, USERPROFILE: home, WEBHOOK_WORKER_URL: worker.url },
+    env: { ...process.env, HOME: home, USERPROFILE: home, WEBHOOK_WORKER_URL: worker.url, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const waiting = [];
@@ -174,4 +174,21 @@ test("the receiver ends when its stdin does, with its socket open", { timeout: T
     bridge.cleanup();
     await worker.close();
   }
+});
+
+
+test("the old bridge observer child discovers unsupported without channel or calls", { timeout: TIMEOUT }, async () => {
+  const worker = await fakeWorker();
+  let channels = 0; worker.connected.then(() => channels++);
+  const bridge = startBridge(worker, {WEBHOOK_OBSERVER:"1",WEBHOOK_CHANNEL:"0"});
+  try {
+    await bridge.request(1,"initialize",INITIALIZE);
+    const tools = await bridge.request("pullcept:observer:tools","tools/list",{});
+    const pending=tools.result.tools.find(t=>t.name==="get_pending_status");
+    assert.ok(pending);
+    assert.notEqual(pending._meta?.["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"],1);
+    assert.equal(channels,0);
+    bridge.child.stdin.end();
+    assert.equal(await Promise.race([bridge.exited,new Promise(resolve=>setTimeout(()=>resolve("running"),5000))]),0);
+  } finally { bridge.cleanup(); await worker.close(); }
 });

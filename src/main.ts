@@ -1,10 +1,11 @@
+import { createParticipantDetails } from "./participant-details";
 import { openCodexRemote } from "./codex-remote";
 import { accountName } from "./account-name";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { activityNote, NO_WORD } from "./seat-status";
-import type { RoomMessage, PostOutcome, MissedPost, LoggedPost, Topic, TopicRef, Participant, Roster, SessionStats, SeatActivity, AccountKind, Account, PanelState, AppConfig, SeatedAccount, IconName, IconShape, Fold, PermissionCard, PermissionResolved, Member, RowWord, Attachment, TextPiece } from "./contracts";
+import type { TopicStatus, RoomMessage, PostOutcome, MissedPost, LoggedPost, Topic, TopicRef, Participant, Roster, SessionStats, SeatActivity, AccountKind, Account, PanelState, AppConfig, SeatedAccount, IconName, IconShape, Fold, PermissionCard, PermissionResolved, Member, RowWord, Attachment, TextPiece } from "./contracts";
 import { createAccountDialog } from "./account-dialog";
 import { createDisplaySettings } from "./display-settings";
 import { createSessionController } from "./session-controller";
@@ -312,6 +313,15 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
+const participantDetails = createParticipantDetails({
+  element: document.getElementById("participant-details") as HTMLElement,
+  topic: () => shownTopicId(), human: () => localAccountId,
+  read: (topicId, accountId) => invoke<TopicStatus>("topic_status", {topicId,accountId}),
+  update: (topicId, operation, answer) => invoke("update_topic_work", {topicId,operation,answer}),
+  history: (topicId) => invoke<LoggedPost[]>("room_topic_log", {topicId}),
+  openUrl: (url) => { void invoke("open_post_url", {url}); },
+  changed: () => renderPanel(),
+});
 const factsMoreEl = document.querySelector("#participants .facts-more") as HTMLDetailsElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
 const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
@@ -1789,6 +1799,8 @@ async function enterTopic(topic: TopicRef): Promise<void> {
   const leaving = shownTopicId();
   if (leaving !== "") sessions.rememberSelection(leaving);
   currentTopic = topic;
+  participantDetails.topicChanged();
+  void participantDetails.refresh();
   try {
     renderRoster(
       topic.topic_id,
@@ -2313,35 +2325,18 @@ function memberRow(row: Member): HTMLLIElement {
   } else if (view?.ended != null) noteText = "終了";
   else if (row.account) noteText = "未起動";
 
-  // A row whose account has a terminal here picks that terminal; the whole line
-  // is the control, so choosing which session to watch is one click on the
-  // session rather than on something beside it. A row with no terminal is not a
-  // button at all — a disabled one would grey out a name whose colour is
-  // load-bearing.
-  let pick: HTMLElement;
-  if (view) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pick";
-    button.setAttribute("aria-pressed", String(view.accountId === sessions.selectedAccount()));
-    button.title = `${name} の端末を見る`;
-    // Picking is selection, and the pane's fold is not part of it. A folded
-    // pane stays folded: the pick moves which terminal is chosen, the row's
-    // highlight and the session facts below the panel, and the terminal takes
-    // no focus, since nothing it would type into is on screen. 端末 later opens
-    // the pane on the terminal that was picked. An open pane switches the
-    // terminal it shows, as it always did (#175).
-    button.addEventListener("click", () => {
-      const folded = diagnosticsEl.hidden;
-      showView(view.accountId);
-      if (!folded) view.term.focus();
-    });
-    if (view.accountId === sessions.selectedAccount()) entry.classList.add("shown");
-    pick = button;
-  } else {
-    pick = document.createElement("div");
-    pick.className = "pick static";
-  }
+  // Participant details and terminal selection are independent controls (#493).
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "pick";
+  const detailId = row.account?.id ?? row.participant?.id ?? null;
+  button.setAttribute("aria-pressed", String(participantDetails.selected() === detailId));
+  button.title = `${name} の作業と判断待ち`;
+  button.addEventListener("click", () => {
+    participantDetails.select(detailId, name, row.account?.server ?? undefined, row.account?.kind);
+    renderPanel();
+  });
+  if (detailId != null && participantDetails.selected() === detailId) entry.classList.add("detail-selected");
+  const pick: HTMLElement = button;
   pick.append(mark, who);
   if (noteText) {
     const note = document.createElement("span");
@@ -2359,7 +2354,15 @@ function memberRow(row: Member): HTMLLIElement {
     if (noteTitle) note.title = noteTitle;
     pick.appendChild(note);
   }
+  const decisionCount = detailId ? participantDetails.count(detailId) : 0;
+  if (decisionCount) { const count = document.createElement("span"); count.className = "decision-count"; count.textContent = `判断待ち ${decisionCount}`; who.append(count); }
   entry.appendChild(pick);
+  if (view) {
+    const terminal = document.createElement("button"); terminal.type = "button"; terminal.className = "detail-terminal";
+    terminal.textContent = "端末"; terminal.title = `${name} の端末を見る`;
+    terminal.addEventListener("click", () => { const folded = diagnosticsEl.hidden; showView(view.accountId); if (!folded) view.term.focus(); });
+    entry.appendChild(terminal);
+  }
 
   // The account's own operations ride on its row, which is what one list buys:
   // the row is keyed on the account id, so these act on one account and cannot
@@ -2744,6 +2747,7 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
+  (document.getElementById("terminal-facts") as HTMLElement).hidden = participantDetails.selected() != null;
   // The title bar's count is this roster's length (#225).
   renderRoomTitle();
   // The tabs are redrawn here rather than on their own schedule. Both surfaces
@@ -4040,6 +4044,11 @@ async function main(): Promise<void> {
     // on a row without anything having to read the CLI's output (#82).
     trackAddress(event.payload);
   });
+  await listen<{topic_id:string}>("work-status-changed", (event) => {
+    if (event.payload.topic_id === shownTopicId()) void participantDetails.refresh();
+  });
+  await listen("mcp-servers-changed", () => { void participantDetails.refresh(); });
+  setInterval(() => { if (!participantsEl.hidden) void participantDetails.refresh(); }, 15000);
   await listen<Roster>("room-participants", (event) =>
     renderRoster(event.payload.topic_id, event.payload.participants),
   );
@@ -4323,6 +4332,7 @@ async function main(): Promise<void> {
       shownTopicId(),
       await invoke<Participant[]>("room_participants", { topicId: shownTopicId() }),
     );
+    void participantDetails.refresh();
     const port = await invoke<number | null>("room_port");
     if (port !== null) renderSocket(port);
     renderPanel();

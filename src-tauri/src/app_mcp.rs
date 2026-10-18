@@ -83,6 +83,7 @@ struct Run {
     /// there once the next one has started.
     log: Log,
     task: Option<JoinHandle<()>>,
+    observer: Option<Value>,
 }
 
 #[derive(Default)]
@@ -128,6 +129,9 @@ impl Reporter {
     }
 
     /// `initialize` was answered.
+    pub fn observer(&self, value: Value) {
+        if self.with_current(|run| run.observer = Some(value)) { let _ = self.app.emit(CHANGED_EVENT, &self.name); }
+    }
     pub fn running(&self) {
         if self.with_current(|run| run.state = Some(RunState::Running)) {
             let _ = self.app.emit(CHANGED_EVENT, &self.name);
@@ -161,6 +165,13 @@ impl Reporter {
 }
 
 impl McpServers {
+    pub fn safe_status(&self) -> Vec<Value> {
+        self.inner.lock().runs.iter().map(|(name,run)| {
+            let state = match run.state { Some(RunState::Starting) => "starting", Some(RunState::Running) => "running", Some(RunState::Ended{..}) => "ended", Some(RunState::Failed{..}) => "failed", _ => "stopped" };
+            serde_json::json!({"server":name,"connection":state,"generation":run.generation,
+                "pending": if state == "running" { run.observer.clone().unwrap_or_else(|| serde_json::json!({"state":"unobserved"})) } else { serde_json::json!({"state":"unobserved"}) }})
+        }).collect()
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -181,6 +192,7 @@ impl McpServers {
             run.generation = generation;
             run.started_with = Some(server.clone());
             run.state = Some(RunState::Starting);
+            run.observer = None;
             generation
         };
         let reporter = Reporter {
