@@ -30,6 +30,10 @@ function draw() {
   codeEl.textContent = window.__htmlPreviewCode ?? "";
 }
 window.addEventListener("html-preview-update", draw);
+// A document the native side handed over before this module ran (#478): its
+// update event fired with no listener yet, and the side pane's first open after
+// a restart stayed blank until the next document. Drawn once now from what is set.
+if (window.__htmlPreviewDocument !== undefined) draw();
 
 /** "プレビュー｜コード", as the side pane's switch (#439). */
 function showCode(on: boolean) {
