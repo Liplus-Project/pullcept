@@ -796,7 +796,7 @@ app-server 方式・スマホから接続・利用上限の解除後の再開は
 | 項目 | 費用 |
 |---|---|
 | システム発言の出所 | エージェントが `say_to_room` で言うなら可。アプリがファイルや git を監視して言う形は、[constraints](0-requirements.md#constraints) の一行目の線（部屋のために要るか）で量ることになり、要るとはまだ言えていない |
-| webhook を部屋へ流す | 実証中（#169、「[webhook の通知](1-room.md#webhook-の通知169)」）。アプリ本体が受けて部屋へ出す形であり、#32 が挙げた「参加者として書く形」ではない。[constraints](0-requirements.md#constraints) との関係は #172 で整理した（部屋に要る機能としてアプリ本体が持つ） |
+| webhook を部屋へ流す | 実機で確認済み（#169、Master、2026-09-27。「[実機で確認済み](4-status.md#2026-09-27master-が確認)」、「[webhook の通知](1-room.md#webhook-の通知169)」）。アプリ本体が受けて部屋へ出す形であり、#32 が挙げた「参加者として書く形」ではない。[constraints](0-requirements.md#constraints) との関係は #172 で整理した（部屋に要る機能としてアプリ本体が持つ） |
 | ミュート | `design/Vision.dc.html` にあるが、まだ求められていない。#59 の対象外 |
 
 ### ニックネーム表示（#383）
