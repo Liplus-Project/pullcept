@@ -11,7 +11,10 @@ use uuid::Uuid;
 
 struct PtyInstance {
     writer: Box<dyn Write + Send>,
-    child: Box<dyn portable_pty::Child + Send>,
+    /// What a kill path ends the child with. The child itself is not here: it
+    /// is held by the session's waiter thread, which is blocked in its `wait`
+    /// (#130).
+    child: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     killer: Box<dyn portable_pty::MasterPty + Send>,
 }
 
@@ -33,10 +36,11 @@ pub struct PtyExit {
     ///
     /// Read off the map, which is where the kill leaves its mark: every kill
     /// path takes the session's entry out before killing it, and the only
-    /// other thing that takes an entry out is the session's own reader thread,
-    /// at its end. So an entry already gone when that thread looks for it is a
-    /// kill having come first. Nothing else is recorded — a second record of
-    /// the same fact would be one more place for the two to disagree.
+    /// other thing that takes an entry out is the session's own waiter thread,
+    /// once the child has exited (#130). So an entry already gone when that
+    /// thread looks for it is a kill having come first. Nothing else is
+    /// recorded — a second record of the same fact would be one more place for
+    /// the two to disagree.
     pub requested: bool,
 }
 
@@ -152,8 +156,8 @@ impl PtyState {
     /// Whether the session on `id` is still running.
     ///
     /// Membership is liveness, not history: a session is taken out of the map
-    /// by its own reader thread the moment it is reaped. That is what lets a
-    /// seat in the room release itself (`session::RoomSeats`) instead of
+    /// by its own waiter thread the moment it is reaped (#130). That is what
+    /// lets a seat in the room release itself (`session::RoomSeats`) instead of
     /// depending on someone remembering to call for its release — a release
     /// that never came would lock an account out of the room for the rest of
     /// the run, with no way back short of restarting the app.
@@ -389,23 +393,69 @@ pub fn spawn_pty_with_env(
     let id_clone = id.clone();
     let app_clone = app.clone();
 
-    // In the map before the reader thread exists, never after. The thread reads
+    // In the map before the waiter thread exists, never after. The thread reads
     // an entry already gone as a kill having taken it (`PtyExit::requested`),
-    // and a child that dies at once — a command that is not there — can reach
-    // the end of its output before a later insert. Its end would then be
+    // and a child that dies at once — a command that is not there — can be
+    // reaped before a later insert. Its end would then be
     // announced as one the app asked for, and the entry inserted behind it
     // would say forever that a dead session is running (#121).
+    let mut child = child;
     state.procs.lock().insert(
         id.clone(),
         PtyInstance {
             writer,
-            child,
+            child: child.clone_killer(),
             killer: pair.master,
         },
     );
+    // The slave holds the pseudo console too; the master is to be its last
+    // holder, so that dropping the master is what closes it.
+    drop(pair.slave);
+
+    // The end of a session is watched for on the child, not on its output
+    // (#130). Under ConPTY the pseudo console holds the write end of the output
+    // pipe for as long as it is open, attached child or not, so a child that
+    // exits on its own leaves the reader below waiting with no end in sight —
+    // the row stayed 起動中, and the person's ❌ became the only end there was,
+    // announced as a kill (`portable-pty-patch/tests/conpty_exit.rs` holds this).
+    //
+    // So this thread waits on the child itself, and when the wait returns it
+    // takes the entry out and drops it, outside the lock. Dropping the instance
+    // closes the pseudo console, which is what brings the reader to its end.
+    // The outcome is handed to the reader, which announces it once it has
+    // passed on every byte the session wrote: the exit is never ahead of the
+    // output it ends.
+    //
+    // A kill path takes the entry out before it kills, as before. The wait then
+    // returns on the killed child and finds the entry gone, which is the same
+    // record #121 / #127 read a requested end from: no code, `requested`.
+    let ptys_clone = Arc::clone(&state.procs);
+    let id_waiter = id.clone();
+    let waiter = std::thread::spawn(move || {
+        let status = child.wait();
+        // Bound before the match: a guard held in the scrutinee lives as long
+        // as the match does, which would put the drop inside the lock.
+        let ended = ptys_clone.lock().remove(&id_waiter);
+        match ended {
+            Some(pty) => {
+                drop(pty);
+                PtyExit {
+                    code: status.ok().map(|status| status.exit_code()),
+                    requested: false,
+                }
+            }
+            // Already removed: a kill took it — `kill_pty`, `kill_each`, or the
+            // `kill_all` sweep. The kill took the child away; the code it was
+            // reaped with is the kill's, not the session's, and the end is one
+            // the app asked for (#121).
+            None => PtyExit {
+                code: None,
+                requested: true,
+            },
+        }
+    });
 
     // Spawn background thread to read PTY output and emit events
-    let ptys_clone = Arc::clone(&state.procs);
     let input_clone = Arc::clone(&state.input);
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -420,37 +470,18 @@ pub fn spawn_pty_with_env(
                 Err(_) => break,
             }
         }
-        // Collect exit code before emitting exit event.
-        //
-        // Taken out of the map first, for two reasons. The map is what says a
-        // session is running, and a session that has ended must stop saying so
-        // — a seat in the room is held for exactly as long as this entry is
-        // here. And the wait happens outside the lock, so a child that is slow
-        // to be reaped no longer blocks every other session's input.
-        //
-        // The instance is dropped after the wait, never before: dropping the
-        // master closes the PTY, and closing it under a child that has not been
-        // reaped is how an exit code goes missing.
-        // Bound before the match: a guard held in the scrutinee lives as long
-        // as the match does, which would put the wait back inside the lock.
-        let ended = ptys_clone.lock().remove(&id_clone);
+        // The output has ended, which under ConPTY is the pseudo console
+        // having been closed — by the waiter once the child exited, or by a
+        // kill path. Either way the waiter's wait has returned or is about to.
+        // A reader that ended early (an error on the pipe) waits here for the
+        // child, so the exit is announced when the session has really ended.
+        let exit = waiter.join().unwrap_or(PtyExit {
+            code: None,
+            requested: false,
+        });
         // Its input box goes with it, and so do the posts held for it: there
         // is no session left to type them into (#195).
         input_clone.lock().remove(&id_clone);
-        let exit = match ended {
-            Some(mut pty) => PtyExit {
-                code: pty.child.wait().ok().map(|status| status.exit_code()),
-                requested: false,
-            },
-            // Already removed: a kill took it — `kill_pty`, `kill_each`, or the
-            // `kill_all` sweep. The exit is this thread's to announce either
-            // way; the code is not knowable from here, and the end is one the
-            // app asked for (#121).
-            None => PtyExit {
-                code: None,
-                requested: true,
-            },
-        };
         app_clone.state::<crate::room_status::StatusBook>().0.lock().ended(&id_clone);
         let _ = app_clone.emit(&format!("pty-exit-{}", id_clone), exit);
     });
