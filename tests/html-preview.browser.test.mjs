@@ -32,6 +32,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     window.preview = createHtmlPreview(document.querySelector('#conversation'), async doc => {
       window.detachedCalls.push(doc);
       if (window.detachDelay) await window.detachDelay;
+      if (window.detachFail && doc !== null) throw new Error('native open failed');
     });
     window.render = text => appendMarkdown(document.querySelector('#post'), text, {
       prose: text => [document.createTextNode(text)], link: (_, label) => label,
@@ -126,6 +127,9 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
 
   await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
   await page.waitForFunction(() => window.detachedCalls.length === 1);
+  // Success hides the side pane but does not close the separate window (#463).
+  await page.waitForFunction(() => document.querySelector('.html-preview').hidden);
+  assert.equal(await page.evaluate(() => window.detachedCalls.includes(null)), false);
   // Exercise the shipped trusted detached host document with the exact same
   // prepared source; native window creation/ownership is separately cargo-checked.
   const host = await context.newPage();
@@ -142,6 +146,18 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await open("Second report").click();
   await frame.getByRole("heading", { name: "Second report" }).waitFor();
   await page.waitForFunction(() => window.detachedCalls.length === 2);
+  // "メインウィンドウで開く" asks the native guard through a fixed navigation (#463).
+  await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
+  await page.waitForFunction(() => window.detachedCalls.length === 3 && document.querySelector('.html-preview').hidden);
+  const back = host.getByRole("button", { name: "メインウィンドウで開く" });
+  assert.equal(await back.locator("svg").count(), 1);
+  const returned = host.waitForRequest(r => new URL(r.url()).pathname === "/html-preview-return");
+  await host.route("**/html-preview-return", route => route.abort());
+  await back.click();
+  await returned;
+  await page.evaluate(() => window.preview.returnToMain());
+  assert.equal(await page.locator(".html-preview").isVisible(), true, "the same document returns to the side pane");
+  assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).evaluate(el => el === document.activeElement), true);
   assert.equal(await page.locator(".html-preview iframe").count(), 1);
   await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
   assert.equal(await page.locator(".html-preview").isVisible(), false);
@@ -153,6 +169,7 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await open("Second report").click();
   assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).isVisible(), true);
   await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
+  await page.waitForFunction(() => document.querySelector('.html-preview').hidden);
   await page.evaluate(() => window.preview.clear()); // enterTopic uses this same boundary
   await page.waitForFunction(() => window.detachedCalls.at(-1) === null);
   assert.equal(await page.locator(".html-preview iframe").count(), 0);
@@ -165,6 +182,14 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   assert.ok((await page.locator(".html-preview-code").textContent()).includes("invalid source"), "failed render leaves code readable");
   await page.evaluate(() => window.preview.clear());
   assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")));
+
+  // A failed separate window keeps the side pane and the error text (#463).
+  await page.evaluate(() => { window.detachFail = true; });
+  await open("Second report").click();
+  await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
+  await page.waitForFunction(() => document.querySelector('.html-preview [role=status]').textContent === "別ウィンドウを開けませんでした。コードまたは横の表示をご覧ください。");
+  assert.equal(await page.locator(".html-preview").isVisible(), true);
+  await page.evaluate(() => { window.detachFail = false; window.preview.clear(); });
 
   // Main-webview reload/recreation starts without knowledge of a surviving
   // native window. Startup and topic clears must still close that window.

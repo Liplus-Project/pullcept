@@ -3,6 +3,26 @@ use std::sync::Mutex;
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const LABEL: &str = "html-preview";
+/// Fixed navigation the host page makes for "メインウィンドウで開く" (#463).
+/// The detached window holds no app-command capability, so this blocked
+/// navigation is its only request path; the main window gets an event.
+const RETURN_PATH: &str = "/html-preview-return";
+pub const RETURN_EVENT: &str = "html-preview-return";
+
+fn return_to_main(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<HtmlPreview>();
+        let _operation = state.operations.lock().await;
+        if let Some(preview) = app.get_webview_window(LABEL) {
+            let _ = preview.destroy();
+        }
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.unminimize();
+            let _ = main.set_focus();
+            let _ = tauri::Emitter::emit_to(&app, "main", RETURN_EVENT, ());
+        }
+    });
+}
 
 #[derive(Default)]
 pub struct HtmlPreview {
@@ -73,7 +93,16 @@ pub async fn html_preview(
             .title("HTML プレビュー - Pullcept")
             .inner_size(900.0, 700.0)
             // This trusted top document never navigates to posted or external HTML.
-            .on_navigation(move |url| url.origin() == origin && url.path() == "/html-preview.html")
+            .on_navigation({
+                let app = app.clone();
+                move |url| {
+                    if url.origin() == origin && url.path() == RETURN_PATH {
+                        return_to_main(app.clone());
+                        return false;
+                    }
+                    url.origin() == origin && url.path() == "/html-preview.html"
+                }
+            })
             .on_page_load(|preview, payload| {
                 if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                     let document = preview

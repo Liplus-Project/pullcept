@@ -3215,6 +3215,7 @@ function markdownLink(href: string, label: Node[]): Node[] {
 const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
   (document, open) => invoke("html_preview", { document, open }),
   (code) => highlightedCode(code, "html"));
+void listen("html-preview-return", () => htmlPreview.returnToMain());
 
 function codeBlock(code: string, lang: string, info = ""): HTMLElement {
   // An html fence is one file-name line in the room; its code is read in the preview (#436).
