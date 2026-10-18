@@ -251,9 +251,10 @@ button svg.icon {
 /* The rename field stands where the name was (#469), and is told from the
    bar by the field look the list's has. */
 #room-title input.rename {
-  /* As wide as what is written in it (#479), with room for one more word
-     before it starts to scroll, and never past the bar's slack. */
-  field-sizing: content;
+  /* Its width is set from the text by src/main.ts (#479, #484); it is never
+     shrunk below that by the bar, and never runs past the bar's slack. */
+  flex: none;
+  box-sizing: border-box;
   min-width: 4rem;
   max-width: 100%;
   padding-inline: 0.3rem;
