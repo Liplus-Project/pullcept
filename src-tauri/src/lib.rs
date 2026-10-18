@@ -10,6 +10,7 @@ mod html_preview;
 mod post_link;
 mod pty;
 mod room;
+mod room_status;
 mod room_log;
 mod session;
 mod session_control;
@@ -44,6 +45,7 @@ pub fn run() {
         // Each seat's usage-limit figures as last received, read back by the
         // seat itself (#364).
         .manage(room::UsageBook::default())
+        .manage(room_status::StatusBook::default())
         // Each Codex seat's own app-server, by its terminal (#299).
         .manage(codex_app_server::CodexServers::new())
         // What each Claude Code seat is doing, as its hooks tell it (#331).

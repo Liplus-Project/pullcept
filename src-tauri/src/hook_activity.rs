@@ -167,6 +167,7 @@ impl HookSeats {
             (seat.reporter.next(&seat.activity), seat.to_hand_over())
         };
         if let Some(event) = told {
+            crate::room_status::activity(app, &event);
             let _ = app.emit("seat-activity", event);
         }
         if hand_over {
@@ -203,6 +204,7 @@ impl HookSeats {
             (seat.reporter.next(&seat.activity), hand_over)
         };
         if let Some(event) = told {
+            crate::room_status::activity(app, &event);
             let _ = app.emit("seat-activity", event);
         }
         if let Some((topic_id, account_id)) = hand_over {

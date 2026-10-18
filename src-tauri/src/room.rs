@@ -605,7 +605,7 @@ impl RoomState {
     }
 
     /// Whether this run holds the room.
-    fn holds(&self, room_id: &str) -> bool {
+    pub(crate) fn holds(&self, room_id: &str) -> bool {
         self.inner.lock().rooms.contains_key(room_id)
     }
 
@@ -1044,7 +1044,7 @@ fn deliver_except(
 /// and carries the kind of the account its seat declared — read off the
 /// config, since the room holds only the id. `terminal_input::role` is where
 /// the rule is: the socket never makes `admin`, whatever it names.
-fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str>) -> String {
+pub(crate) fn role_of(app: &AppHandle, room: &RoomState, origin: &str, account: Option<&str>) -> String {
     let kind;
     let source = if origin == room.local_origin {
         terminal_input::Source::Screen
@@ -1360,6 +1360,9 @@ pub async fn start(app: AppHandle, room: RoomState) -> Result<u16, String> {
 /// (`main.ts`, `activityNote`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionStats {
+    /// Internal provenance; absent model fields in limit-only replays are not updates.
+    #[serde(skip)]
+    pub model_reported: bool,
     pub topic_id: String,
     pub account_id: String,
     pub model: Option<String>,
@@ -1396,6 +1399,7 @@ impl SessionStats {
             value.as_str().filter(|s| !s.is_empty()).map(str::to_string)
         };
         Some(SessionStats {
+            model_reported: true,
             topic_id,
             account_id,
             model: text(&data["model"]["display_name"]).or_else(|| text(&data["model"]["id"])),
@@ -1423,6 +1427,7 @@ impl SessionStats {
         limited: bool,
     ) -> Self {
         SessionStats {
+            model_reported: status.model_reported,
             topic_id,
             account_id,
             model: status.model.clone(),
@@ -1441,6 +1446,7 @@ impl SessionStats {
     /// Hand the report to the screen. The one event both paths end in, so the
     /// panel draws a Codex seat and a Claude Code seat the same way.
     pub fn emit(self, app: &AppHandle) {
+        crate::room_status::stats(app, &self);
         let _ = app.emit("session-stats", self);
     }
 
@@ -1481,6 +1487,10 @@ impl UsageBook {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64).unwrap_or_default();
         self.0.lock().record_context(topic, account, context, now);
+    }
+
+    pub fn snapshot(&self, topic: &str, account: &str) -> serde_json::Value {
+        self.0.lock().answer("", topic, account)
     }
 
     fn answer(&self, request_id: &str, topic: &str, account: &str) -> serde_json::Value {
@@ -2232,10 +2242,14 @@ async fn serve_participant(
                     frame: answer.to_string(),
                 });
             }
-            "session_list" | "session_status" | "session_control" => {
+            "room_status" | "session_list" | "session_status" | "session_control" => {
                 let request_id = frame.request_id.unwrap_or_default();
                 let control = app.state::<crate::session_control::SessionControl>();
                 let result = (|| -> Result<serde_json::Value, String> {
+                    if frame.kind == "room_status" {
+                        return mcp_config::room_status::request(control.authorize(&app, &origin, &socket_id), joined_room.get().map(String::as_str),
+                            |topic| crate::room_status::answer(&app, topic, frame.account_id.as_deref()));
+                    }
                     control.authorize(&app, &origin, &socket_id)?;
                     match frame.kind.as_str() {
                         "session_list" => control.list(&app),
@@ -2400,6 +2414,7 @@ pub fn room_delete_topic(
 
     let moved = state.remove(&topic_id);
     app.state::<UsageBook>().forget_topic(&topic_id);
+    app.state::<crate::room_status::StatusBook>().0.lock().forget_topic(&topic_id);
     if let Some(fresh) = &moved {
         let _ = app.emit("room-participants", state.roster(&fresh.topic_id));
     }

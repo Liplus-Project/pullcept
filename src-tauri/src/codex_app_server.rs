@@ -200,6 +200,7 @@ impl Seat {
     /// Tell the screen, if what the seat says or its connection has changed.
     fn tell(&mut self, activity: &Activity) {
         if let Some(event) = self.reporter.next(activity) {
+            crate::room_status::activity(&self.app, &event);
             let _ = self.app.emit("seat-activity", event);
         }
     }

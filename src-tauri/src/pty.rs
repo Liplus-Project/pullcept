@@ -411,6 +411,7 @@ pub fn spawn_pty_with_env(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    app_clone.state::<crate::room_status::StatusBook>().0.lock().output(&id_clone, crate::room_status::now_ms());
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     let _ = app_clone.emit(&format!("pty-data-{}", id_clone), data);
                 }
@@ -448,6 +449,7 @@ pub fn spawn_pty_with_env(
                 requested: true,
             },
         };
+        app_clone.state::<crate::room_status::StatusBook>().0.lock().ended(&id_clone);
         let _ = app_clone.emit(&format!("pty-exit-{}", id_clone), exit);
     });
 

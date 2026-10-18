@@ -4,7 +4,7 @@
 
 種別で `Codex CLI` を選び、CLI コマンド（`codex` または実行ファイルの絶対パス）と作業ディレクトリを設定する。対応基準は **Codex CLI 0.160.0 以上**であり、古い CLI では起動前に診断を返す。アプリはインストール・認証・利用者のグローバル設定を変更しない。宣言済み `cli` は command が codex でも汎用のままであり、移行対象は旧 `ai` または kind の無いアカウントだけである。
 
-**Codex の部屋の MCP は起動の行だけで渡し、ファイルには書かない（#297）。** 起動の `-c mcp_servers.<自席>={…}` が定義全体（コマンド・引数・`env_vars`・`enabled=true`・部屋の六道具の承認）を運ぶ。席の名前は Claude の席と同じアカウント／トピックごとの名前（`server_name_for`）である。席の属性（部屋 URL・名前・アカウント・部屋 id・色・未読の印）と部屋トークンは起動した CLI の環境にあり、定義は名前だけを `env_vars` で指す。部屋トークンと起動別のセッション操作 capability（#415）は設定・argv・プレビューに値を残さない。発言・履歴・利用量と、[セッション操作の三道具](1-room.md#ai-からのセッション操作415)を起動時に承認する。行に載るのは自席の定義だけで、他の席の名前は載らない——Codex の他の席の部屋サーバーはそれぞれの起動の行にしか無く、この席からは見えないため、無効化する他席の MCP 登録が無い。起動の前に有効 cwd に `.codex` フォルダーだけを用意する。Codex 0.160.0 の native discovery は `config.toml` の無い `.codex` フォルダーでも project layer を返し（[loader](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/loader/mod.rs) の `discover_project_layers`）、専用 hook の置き場はその layer から決まる（下記）。
+**Codex の部屋の MCP は起動の行だけで渡し、ファイルには書かない（#297）。** 起動の `-c mcp_servers.<自席>={…}` が定義全体（コマンド・引数・`env_vars`・`enabled=true`・部屋の七道具の承認）を運ぶ。席の名前は Claude の席と同じアカウント／トピックごとの名前（`server_name_for`）である。席の属性（部屋 URL・名前・アカウント・部屋 id・色・未読の印）と部屋トークンは起動した CLI の環境にあり、定義は名前だけを `env_vars` で指す。部屋トークンと起動別のセッション操作 capability（#415）は設定・argv・プレビューに値を残さない。発言・履歴・利用量・状態の読み取りと、[セッション操作の三道具](1-room.md#ai-からのセッション操作415)を起動時に承認する。行に載るのは自席の定義だけで、他の席の名前は載らない——Codex の他の席の部屋サーバーはそれぞれの起動の行にしか無く、この席からは見えないため、無効化する他席の MCP 登録が無い。起動の前に有効 cwd に `.codex` フォルダーだけを用意する。Codex 0.160.0 の native discovery は `config.toml` の無い `.codex` フォルダーでも project layer を返し（[loader](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/loader/mod.rs) の `discover_project_layers`）、専用 hook の置き場はその layer から決まる（下記）。
 
 **以前の版が `.codex/config.toml` に書いた部屋の登録は、その席が起動するときに消す（#297）。** 消すのは名前が `pullcept-room` で始まり、`env` に `PULLCEPT_ACCOUNT_ID` を持つ欄だけで、部屋 URL を問わない。他のキー・欄・コメントは残し、消す欄が無ければファイルを書き直さない。欄を消して `[mcp_servers]` が空になればその表も外す。ファイルそのものは消さない。対象は起動する有効 cwd のファイルだけであり、別のフォルダーに残った欄は、そのフォルダーで席が起動したときに消える。残っていても無効（`enabled = false`）で、サーバーは起動しない。消してよいのは、#272 以来どの版も同じ定義全体を起動の行で渡しており、ファイルの欄は既定で無効のまま一度もサーバーを起動していないためである。
 
@@ -751,3 +751,6 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 旧専用DBは削除・コピー・再利用せず残す。新しい保存先ではrelayの再登録・ペアリングが必要になり得る。`CODEX_HOME`と明示resumeの会話IDは変更しない。接続を選んでいない席の保存先・起動は変更しない。
 
 2026-10-16の隔離native0.162.1試験では、developer fixtureをモデルturnなしで永続化したあと、履歴DB本体251字で取得成功、252字で失敗した。slash／extended prefix指定でも252字の失敗は変わらず、同じ252字の新規fixture DBをINCREMENTAL/WALで事前初期化すると成功した。nativeはINCREMENTALをWAL切替より先に設定するため、初期rollback journal（+8字）が失敗する説明と合うが、個別OS syscallは追跡していない。失敗したfixtureを同じ隔離HOME・別の短いSQLiteへcold resumeし、元thread ID一致と履歴取得成功も確認した。修正後の実Rust保存先関数を呼んで得た188字のDB本体pathでも、同じ失敗fixtureのcold resumeと履歴取得が成功した。Pythonで長いDBが開けることやこのfixtureの成功を、製品の元のLuna会話の実証とは扱わない。
+
+
+**部屋の `status`（#474）も起動時に承認する読み取り道具である。** 同じトピックの人間を含む接続名簿と、安全に投影した既存の状態を読む。特定アカウントの詳細指定、時刻の区別、PTY 世代による隔離は「[参加者とアプリが把握する状態を読む](1-room.md#参加者とアプリが把握する状態を読む474)」を正とする。アカウントのコマンド・環境・パスや長いツール説明は露出しない。画面の人間へ AI 用の統計を作らない。

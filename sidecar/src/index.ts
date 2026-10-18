@@ -564,6 +564,12 @@ const TOOLS = [
     },
   },
   {
+    name: "status",
+    description: "Read current topic participants, including humans, by connection identity. Optional account_id selects participant details (model, effort, usage/context with freshness). Unknown values are null/absent. App-observed state only; output does not prove work or availability. Ask participants directly about assignments. Read-only; posts nothing and wakes nobody.",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    inputSchema: { type: "object" as const, properties: { account_id: { type: "string", minLength: 1 } }, required: [] as string[], additionalProperties: false },
+  },
+  {
     name: "list_account_sessions",
     description: "List configured account IDs, launchable kinds, open topic IDs, current PTY IDs and room connection state. No commands or environment secrets. Authenticated room participants may control their own and other sessions.",
     inputSchema: { type: "object" as const, properties: {}, required: [] as string[] },
@@ -624,6 +630,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "read_room_history") return await readHistory(args);
     if (name === "my_usage") return await readUsage();
+    if (name === "status") {
+      if (args && (Object.keys(args).some((key) => key !== "account_id") || (args.account_id !== undefined && (typeof args.account_id !== "string" || !args.account_id.trim())))) return sessionError("Optional account_id must be a non-empty string; no other arguments accepted");
+      return await sessionRequest("room_status", args ?? {});
+    }
     if (name === "list_account_sessions") return await sessionRequest("session_list", {});
     if (name === "account_session_status") {
       if (typeof args?.operation_id !== "string" || !args.operation_id.trim()) return sessionError("operation_id required");
@@ -1051,6 +1061,7 @@ async function sessionRequest(type: string, fields: Record<string, unknown>) {
   });
   if (!sendToRoom({ type, request_id: requestId, ...fields })) awaitingSessions.get(requestId)?.(null);
   const result = await answer;
+  if (result === null && type === "room_status") return sessionError("Status unavailable: disconnected or timed out. Read again after reconnecting.");
   if (result === null) return sessionError("Session request unconfirmed (disconnected or timed out). Query operation_id or retry with the SAME operation_id; do not create a new ID.");
   if (result.error) return sessionError(result.error);
   return { content: [{ type: "text" as const, text: JSON.stringify(result.result) }] };

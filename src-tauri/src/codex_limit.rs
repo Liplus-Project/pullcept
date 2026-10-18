@@ -333,12 +333,14 @@ impl Limiter {
 
     /// The seat's values as the screen gets them, 制限中 included.
     pub fn stats(&self, status: &Status) -> SessionStats {
-        SessionStats::from_codex(
+        let mut stats = SessionStats::from_codex(
             self.topic_id.clone(),
             self.account_id.clone(),
             status,
             self.is_limited(),
-        )
+        );
+        stats.pty_id = Some(self.pty_id.clone());
+        stats
     }
 
     /// The rollout has just carried the seat's rate limits (#364): record its

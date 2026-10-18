@@ -1682,6 +1682,7 @@ pub(crate) fn start_session_with_policy(
         })?;
 
     app.state::<crate::room::UsageBook>().begin_session(&topic.topic_id, &account.id);
+    app.state::<crate::room_status::StatusBook>().0.lock().begin(&topic.topic_id, &account.id);
 
     // Where a Codex seat's rollout lives, and — on a resume — how long the file
     // already was before this launch. That length is where the reading starts,
@@ -1737,6 +1738,7 @@ pub(crate) fn start_session_with_policy(
         rows,
     ) {
         Ok(started) => {
+            app.state::<crate::room_status::StatusBook>().0.lock().bind(&topic.topic_id, &account.id, &started.pty_id);
             // On the topic, so the next opening of it can resume this session.
             // Recorded after the spawn rather than before: an id written for a
             // launch that failed would be resumed into a session that was never
@@ -2206,6 +2208,7 @@ fn launch_codex_app_server(
     };
     let thread_id = started.thread_id.clone();
     let url = started.url.clone();
+    app.state::<crate::room_status::StatusBook>().0.lock().bind(topic_id, &account.id, &pty_id);
     started.adopt(&app, &pty_id, topic_id, &account.id);
     Ok(StartedSession {
         launch_id: Some(launch_id),
