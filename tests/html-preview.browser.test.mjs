@@ -135,10 +135,6 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   assert.ok((await page.locator(".html-preview > p").first().textContent()).includes("JavaScript は、この表示の中だけで動きます"));
   // The child view loads the separate window's host page with `?pane`: the frame only.
   const paneHost = await context.newPage();
-  // The renderer reports every load its CSP stops as a securitypolicyviolation in
-  // that frame, whether or not the browser also surfaces it as a failed request.
-  await paneHost.addInitScript(() => document.addEventListener("securitypolicyviolation",
-    e => (window.__cspViolations ??= []).push([e.blockedURI, e.effectiveDirective]), true));
   await paneHost.goto(`${base}/html-preview.html?pane`);
   popups = 0;
   assert.equal(await paneHost.getByRole("button", { name: "メインウィンドウで開く" }).isVisible(), false);
@@ -175,15 +171,29 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   assert.equal(await paneHost.evaluate(() => window.pwned), undefined);
   assert.equal(await page.evaluate(() => window.pwned), undefined);
   const attempted = requests.map(url => [url, failures.get(url)]);
+  // Proof of the block is the renderer's own CSP violation record for the frame.
+  // The sandboxed srcdoc frame runs out of process, and Playwright attaches to it
+  // late often enough that an init-script listener or its request events miss the
+  // early loads (#483). DevTools keeps each violation as an Audits issue and
+  // replays the stored ones on enable, so reading them later loses none.
   const previewFrame = paneHost.frames()[1];
+  const audits = await context.newCDPSession(previewFrame).catch(() => context.newCDPSession(paneHost));
+  const violations = [];
+  audits.on("Audits.issueAdded", ({ issue }) => {
+    const csp = issue.details.contentSecurityPolicyIssueDetails;
+    if (csp) violations.push([csp.blockedURL, csp.violatedDirective]);
+  });
+  await audits.send("Audits.enable");
   for (const css of ["https://probe.invalid/root", "https://probe.invalid/background"]) {
-    // Proof of the block is the frame's own violation report. Whether Chromium
-    // also emits a request (failed with "csp") for it varies by build and timing;
-    // either way the every() below guarantees no such URL was ever fetched.
-    await previewFrame.waitForFunction(url => (window.__cspViolations ?? []).some(([uri, directive]) => uri === url && directive === "img-src"), css, { timeout: 5000 })
-      .catch(async () => assert.fail(`${css} blocked by CSP: violations ${JSON.stringify(await previewFrame.evaluate(() => window.__cspViolations))}, requests ${JSON.stringify(attempted)}`));
+    // Whether Chromium also emits a request (failed with "csp") for it varies by
+    // build and timing; either way the every() below allows no fetched URL.
+    for (let waited = 0; !violations.some(([url, directive]) => url === css && directive === "img-src"); waited += 50) {
+      if (waited >= 5000) assert.fail(`${css} blocked by CSP: violations ${JSON.stringify(violations)}, requests ${JSON.stringify(attempted)}`);
+      await paneHost.waitForTimeout(50);
+    }
   }
-  t.diagnostic(`requests ${JSON.stringify(attempted)}; violations ${JSON.stringify(await previewFrame.evaluate(() => window.__cspViolations))}`);
+  t.diagnostic(`requests ${JSON.stringify(attempted)}; violations ${JSON.stringify(violations)}`);
+  await audits.detach();
   assert.ok(attempted.every(([url, failure]) => failure === "csp" || (url === "file:///C:/secret" && failure === "other")),
     `CSP blocks network/app schemes, opaque frame denies local files: ${JSON.stringify(attempted)}`);
   assert.equal(popups, 0, "window.open in the frame opens nothing");
