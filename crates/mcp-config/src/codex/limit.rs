@@ -16,7 +16,9 @@
 //!   times (`app-server-protocol/src/protocol/v2/account.rs:333`). Only
 //!   `ordinaryUsageAllowed: true` is [`Answer::Allowed`]; a `null`, an error
 //!   and a broken answer are all [`Answer::Unavailable`], which keeps the seat
-//!   limited.
+//!   limited;
+//! - **the usage**, off the same answer ([`read_usage`], #496): the two
+//!   windows it reports, for a limited seat whose rollout no longer moves.
 //!
 //! [`Limit`] is one seat: free, or stopped with when to ask next. Times are
 //! Unix seconds, passed in. Nothing is held back from a stopped seat (#403):
@@ -156,6 +158,60 @@ pub fn read_answer(response: &Value) -> Answer {
     Answer::Denied {
         resets_at: binding_reset(&windows),
     }
+}
+
+/// The 5-hour and weekly windows an `account/rateLimits/read` answer reports
+/// (#496): what the panel and `my_usage` show of a seat whose turns, and so
+/// whose rollout, no longer move while it is limited.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Windows {
+    pub five_hour: Option<f64>,
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day: Option<f64>,
+    pub seven_day_resets_at: Option<i64>,
+}
+
+/// The two windows of the response to [`READ_ID`], or `None` when it carries
+/// none to read.
+///
+/// Read as the rollout's are (`status`): by window length (300 / 10080
+/// minutes), not by position, and only from the `codex` bucket — the `codex`
+/// entry of `rateLimitsByLimitId` when it is there, otherwise `rateLimits`
+/// when its `limitId` is `codex` or absent. Both windows are replaced
+/// together, a missing one by `None`.
+///
+/// An answer [`read_answer`] reads as [`Answer::Unavailable`] (no boolean
+/// `ordinaryUsageAllowed`) gives `None`, and so does one with neither window,
+/// so the figures already held stand.
+pub fn read_usage(response: &Value) -> Option<Windows> {
+    let result = &response["result"];
+    result["ordinaryUsageAllowed"].as_bool()?;
+    let bucket = match &result["rateLimitsByLimitId"]["codex"] {
+        Value::Object(_) => &result["rateLimitsByLimitId"]["codex"],
+        _ => {
+            let single = &result["rateLimits"];
+            if !single.is_object() || !single["limitId"].as_str().is_none_or(|id| id == "codex") {
+                return None;
+            }
+            single
+        }
+    };
+    let window = |minutes: u64| {
+        ["primary", "secondary"]
+            .iter()
+            .map(|key| &bucket[key])
+            .find(|w| w["windowDurationMins"].as_u64() == Some(minutes))
+    };
+    let used = |w: Option<&Value>| w.and_then(|w| w["usedPercent"].as_f64().filter(|n| n.is_finite()));
+    let reset = |w: Option<&Value>| w.and_then(|w| crate::epoch_seconds(&w["resetsAt"]));
+    let (five, seven) = (window(300), window(10080));
+    let windows = Windows {
+        five_hour: used(five),
+        five_hour_resets_at: reset(five),
+        seven_day: used(seven),
+        seven_day_resets_at: reset(seven),
+    };
+    (windows.five_hour.is_some() || windows.seven_day.is_some()).then_some(windows)
 }
 
 /// How long after the reset the first question is put: "a little after".
@@ -487,6 +543,49 @@ mod tests {
             r#"null"#,
         ] {
             assert_eq!(read_answer(&json(broken)), Answer::Unavailable, "{broken}");
+        }
+    }
+
+    #[test]
+    fn the_answer_carries_the_two_windows() {
+        // The measured answer: 5 hours full, weekly at 96.
+        assert_eq!(
+            read_usage(&json(DENIED)),
+            Some(Windows {
+                five_hour: Some(100.0),
+                five_hour_resets_at: Some(1791207908),
+                seven_day: Some(96.0),
+                seven_day_resets_at: Some(1791613576),
+            })
+        );
+        // An allowed answer carries them too, told apart by length, not position.
+        assert_eq!(
+            read_usage(&json(r#"{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":12.5,"windowDurationMins":10080,"resetsAt":20},"secondary":{"usedPercent":3,"windowDurationMins":300,"resetsAt":10}}}}"#)),
+            Some(Windows {
+                five_hour: Some(3.0),
+                five_hour_resets_at: Some(10),
+                seven_day: Some(12.5),
+                seven_day_resets_at: Some(20),
+            })
+        );
+        // The codex bucket wins over the single-bucket view.
+        assert_eq!(
+            read_usage(&json(r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"other","primary":{"usedPercent":1,"windowDurationMins":300}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":77,"windowDurationMins":300}}}}}"#)),
+            Some(Windows { five_hour: Some(77.0), ..Windows::default() })
+        );
+        // Nothing to read: unavailable answers, another bucket, no window of
+        // either length. The figures already held stand.
+        for none in [
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":null,"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":50,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"error":{"code":-32600,"message":"no"}}"#,
+            r#"null"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"other","primary":{"usedPercent":50,"windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":50,"windowDurationMins":60}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":"x","windowDurationMins":300}}}}"#,
+            r#"{"id":2,"result":{"ordinaryUsageAllowed":false}}"#,
+        ] {
+            assert_eq!(read_usage(&json(none)), None, "{none}");
         }
     }
 

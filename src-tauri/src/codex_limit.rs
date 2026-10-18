@@ -41,9 +41,17 @@
 //!
 //! **An account can switch the resume off** (#475, `Account::resume_notice`):
 //! the recovery is still confirmed, told and freed, and nothing is typed.
+//!
+//! **Every answer the app-server gives refreshes the seat's usage** (#496):
+//! a limited seat's turns do not move, so its rollout carries no new rate
+//! limits. The two windows an answer reports (`limit::read_usage`) stand over
+//! the rollout's on the screen (`Limiter::stats`) and are recorded for
+//! `my_usage`, until the rollout carries rate limits again. An answer with
+//! none (`Unavailable` included) changes nothing. No question is added for
+//! this: only the stop's and the due ones carry it.
 
 use crate::room::{RoomState, SessionStats};
-use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd};
+use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd, Windows};
 use mcp_config::codex::status::Status;
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -71,6 +79,9 @@ struct Entry {
     /// The topic's mark file, or `None` when it could not be placed: the stop
     /// is then known in memory only, as before #312.
     mailboxes: Option<PathBuf>,
+    /// The windows the app-server last reported (#496), newer than the
+    /// rollout's until the rollout carries rate limits again.
+    answered: Option<Windows>,
 }
 
 impl Entry {
@@ -142,6 +153,7 @@ impl Limiter {
             limit,
             account_id: self.account_id.clone(),
             mailboxes: self.mailboxes(),
+            answered: None,
         }
     }
 
@@ -215,7 +227,7 @@ impl Limiter {
             None => {}
         }
         if self.with(|entry| entry.limit.due(now())) {
-            let answer = ask(&self.asker);
+            let answer = self.ask();
             let recovered = self.with(|entry| entry.limit.answer(now(), answer));
             if recovered {
                 self.recover();
@@ -230,7 +242,7 @@ impl Limiter {
     /// The seat has just stopped. One question for the reset the room is
     /// told, then the notice.
     fn announce_stop(&self) {
-        let answer = ask(&self.asker);
+        let answer = self.ask();
         let reset = self.with(|entry| {
             entry.limit.refine(now(), answer);
             entry.limit.resets_at()
@@ -342,39 +354,69 @@ impl Limiter {
         self.limits().forget(&self.pty_id);
     }
 
-    /// The seat's values as the screen gets them, 制限中 included.
+    /// The seat's values as the screen gets them, 制限中 included. The
+    /// windows the app-server last reported, when newer than the rollout's
+    /// (#496), stand in for the rollout's two windows.
     pub fn stats(&self, status: &Status) -> SessionStats {
+        let answered = self.with(|entry| entry.answered);
         let mut stats = SessionStats::from_codex(
             self.topic_id.clone(),
             self.account_id.clone(),
             status,
             self.is_limited(),
         );
+        if let Some(w) = answered {
+            stats.five_hour = w.five_hour;
+            stats.five_hour_resets_at = w.five_hour_resets_at;
+            stats.seven_day = w.seven_day;
+            stats.seven_day_resets_at = w.seven_day_resets_at;
+        }
         stats.pty_id = Some(self.pty_id.clone());
         stats
     }
 
-    /// The rollout has just carried the seat's rate limits (#364): record its
-    /// two windows as received now, for the seat to read back (`my_usage`).
+    /// The rollout has just carried the seat's rate limits (#364): they are
+    /// now the newest, so the app-server's stand down (#496), and the two
+    /// windows are recorded as received now, for the seat to read back
+    /// (`my_usage`).
     pub fn received_usage(&self, status: &Status) {
+        self.with(|entry| entry.answered = None);
         self.app.state::<crate::room::UsageBook>().record(
             &self.topic_id,
             &self.account_id,
             self.stats(status).usage(),
         );
     }
+
+    /// Ask the app-server about the seat's account. The windows its answer
+    /// reports, if any, become the seat's usage (#496): shown over the
+    /// rollout's and recorded as received now. An answer without them leaves
+    /// the figures held as they were.
+    fn ask(&self) -> Answer {
+        let (answer, windows) = ask(&self.asker);
+        if let Some(windows) = windows {
+            self.with(|entry| entry.answered = Some(windows));
+            self.app.state::<crate::room::UsageBook>().record(
+                &self.topic_id,
+                &self.account_id,
+                self.stats(&Status::default()).usage(),
+            );
+        }
+        answer
+    }
 }
 
 /// How long one question may take, start to answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Ask the app-server whether the seat's account may run again.
-fn ask(asker: &Asker) -> Answer {
+/// Ask the app-server whether the seat's account may run again, and with
+/// what usage (#496).
+fn ask(asker: &Asker) -> (Answer, Option<Windows>) {
     match ask_once(asker) {
-        Ok(response) => limit::read_answer(&response),
+        Ok(response) => (limit::read_answer(&response), limit::read_usage(&response)),
         Err(err) => {
             eprintln!("[codex-limit] the app-server could not be asked: {err}");
-            Answer::Unavailable
+            (Answer::Unavailable, None)
         }
     }
 }
