@@ -79,10 +79,14 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   // Serialize native operations: a slow create must finish before a topic's
   // clear/destroy, and before a subsequent source replaces it.
   let pending = Promise.resolve();
-  function syncDetached(value: string | null, open = false) {
-    pending = pending.catch(() => {}).then(() => detached(value, open)).catch(() => {
+  /** Resolves true only once the native side reports success. */
+  function syncDetached(value: string | null, open = false): Promise<boolean> {
+    const run = pending.catch(() => {}).then(() => detached(value, open)).then(() => true, () => {
       error.textContent = "別ウィンドウを開けませんでした。コードまたは横の表示をご覧ください。";
+      return false;
     });
+    pending = run.then(() => {});
+    return run;
   }
   function showCode(on: boolean) {
     codeView.hidden = !on;
@@ -112,7 +116,14 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   separate.addEventListener("click", () => {
     if (doc === null) return;
     detachedOpen = true;
-    syncDetached(doc, true);
+    const shown = doc;
+    // Hide the side pane only after the separate window has opened (#463);
+    // on failure the pane and its error stay. The window itself stays open.
+    void syncDetached(shown, true).then(ok => {
+      if (!ok || doc !== shown || pane.hidden) return;
+      pane.hidden = true;
+      if (opener?.isConnected) opener.focus();
+    });
   });
   // Reclaim ownership after startup/reload before accepting any new opens.
   syncDetached(null);
