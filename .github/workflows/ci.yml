@@ -71,6 +71,12 @@ jobs:
       - name: Check native Windows large icon lifetime
         run: cargo run --locked --manifest-path scripts/window-icon-check/Cargo.toml
 
+      # How a child that ends on its own is seen through ConPTY, which the
+      # app's end-of-session watch relies on (#130). Windows only.
+      - name: Test the patched portable-pty ConPTY exit
+        working-directory: portable-pty-patch
+        run: cargo test --test conpty_exit
+
       # Not in src-tauri: a test binary that links the tauri dependency tree
       # does not load on the GNU target (STATUS_ENTRYPOINT_NOT_FOUND). The
       # logic that most needs covering lives in a tauri-free crate for that
