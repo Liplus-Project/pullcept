@@ -248,6 +248,15 @@ button svg.icon {
   color: var(--muted);
 }
 
+/* The rename field stands where the name was (#469), as wide as a name is
+   given room, and is told from the bar by the field look the list's has. */
+#room-title input.rename {
+  min-width: 8rem;
+  flex: 0 1 24rem;
+  font: inherit;
+  font-weight: 600;
+}
+
 #room-title-count {
   flex: none;
   color: var(--muted);

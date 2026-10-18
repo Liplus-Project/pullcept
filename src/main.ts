@@ -276,6 +276,7 @@ const toggleParticipantsEl = document.getElementById(
 const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
+const roomTitleEl = document.getElementById("room-title") as HTMLElement;
 const roomTitleNameEl = document.getElementById("room-title-name") as HTMLElement;
 const roomTitleCountEl = document.getElementById("room-title-count") as HTMLElement;
 const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
@@ -1448,7 +1449,7 @@ function renderRoomTitle(): void {
   const topic = current ? topics.find((one) => one.topic_id === current.topic_id) : undefined;
   const name = current === null ? "" : topic ? topicName(topic) : "新しいトピック";
   roomTitleNameEl.textContent = name;
-  roomTitleNameEl.title = name;
+  roomTitleNameEl.title = topic ? `${name}（ダブルクリックで名前を変える）` : name;
   roomTitleNameEl.classList.toggle("unnamed", topic !== undefined && !topic.title);
   roomTitleCountEl.textContent = current === null ? "" : `${shownRoster().length} 人`;
 }
@@ -1607,10 +1608,13 @@ function deleteButton(topic: Topic): HTMLButtonElement {
  * Rename one topic in place.
  *
  * Escape and losing focus both mean 取消, Enter means 決定 — the three ways out
- * the account form has. The row is redrawn from the list on every path, so none
- * of them leaves half an edit applied.
+ * the account form has. `done` puts back what the field stood over on every
+ * path, so none of them leaves half an edit applied.
+ *
+ * The list's rows and the title bar's heading (#469) both open this one field:
+ * two places that edit one name answer the same three keys.
  */
-function beginRename(row: HTMLLIElement, topic: Topic): void {
+function renameField(topic: Topic, done: () => void): HTMLInputElement {
   const field = document.createElement("input");
   field.type = "text";
   field.className = "rename";
@@ -1621,14 +1625,14 @@ function beginRename(row: HTMLLIElement, topic: Topic): void {
   const cancel = (): void => {
     if (settled) return;
     settled = true;
-    renderTopics();
+    done();
   };
   const commit = (): void => {
     if (settled) return;
     settled = true;
     const title = field.value.trim();
     if (!title || title === topic.title) {
-      renderTopics();
+      done();
       return;
     }
     void invoke("room_rename_topic", { topicId: topic.topic_id, title })
@@ -1637,7 +1641,7 @@ function beginRename(row: HTMLLIElement, topic: Topic): void {
       // The list arrives on `room-topics` when the rename lands. This redraw is
       // for the path where it did not: a field left standing over a failed
       // rename is an edit that looks like it took.
-      .finally(() => renderTopics());
+      .finally(done);
   };
 
   field.addEventListener("keydown", (event) => {
@@ -1651,8 +1655,35 @@ function beginRename(row: HTMLLIElement, topic: Topic): void {
     }
   });
   field.addEventListener("blur", () => cancel());
+  return field;
+}
 
+/** Rename one topic from its row in the list. */
+function beginRename(row: HTMLLIElement, topic: Topic): void {
+  const field = renameField(topic, () => renderTopics());
   row.replaceChildren(field);
+  field.focus();
+  field.select();
+}
+
+/**
+ * Rename the open topic from the title bar's heading (#469).
+ *
+ * A topic the index does not carry yet — 新しいトピック — has no row to rename,
+ * so the heading offers nothing then. The field stands in the name's place and
+ * the count stays beside it.
+ */
+function beginTitleRename(): void {
+  const current = currentTopic;
+  const topic = current ? topics.find((one) => one.topic_id === current.topic_id) : undefined;
+  if (!topic || roomTitleEl.querySelector("input.rename")) return;
+  const field = renameField(topic, () => {
+    field.remove();
+    roomTitleNameEl.hidden = false;
+    renderRoomTitle();
+  });
+  roomTitleNameEl.hidden = true;
+  roomTitleNameEl.after(field);
   field.focus();
   field.select();
 }
@@ -3759,6 +3790,26 @@ async function wireWindowControls(): Promise<void> {
   minimizeEl.addEventListener("click", () => void appWindow.minimize().catch(refused));
   maximizeEl.addEventListener("click", () => void appWindow.toggleMaximize().catch(refused));
   closeEl.addEventListener("click", () => void appWindow.close().catch(refused));
+
+  // The topic's name renames on a double click (#469), where the rest of the
+  // bar maximizes. The name carries `data-tauri-drag-region="false"`, which
+  // takes it out of Tauri's drag script altogether — a double click there
+  // would otherwise maximize before the rename saw it — so the single press
+  // that grabs the window is started here instead, and the name still moves
+  // the window like the bar around it.
+  roomTitleNameEl.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    // The second press is read here, as Tauri's script reads it, rather than
+    // on `dblclick`: the drag the first press started holds the mouse, and the
+    // press is what is known to arrive after it.
+    if (event.detail === 1) {
+      event.preventDefault();
+      void appWindow.startDragging().catch(refused);
+    } else if (event.detail === 2) {
+      event.preventDefault();
+      beginTitleRename();
+    }
+  });
 
   const showMaximized = async () => {
     const maximized = await appWindow.isMaximized();
