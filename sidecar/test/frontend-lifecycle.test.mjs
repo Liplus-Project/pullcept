@@ -216,3 +216,33 @@ test("legacy accounts default remote off; opting in requires app-server and roun
   get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
   assert.equal(saved[0].codex_remote_control,false);
 });
+
+test("resume prompt switch: legacy accounts are on, off round-trips, shown only for Claude Code and Codex CLI", async t => {
+  const {get}=dom(t);
+  const accounts=[structuredClone(account)];
+  let saved;
+  const dialog=createAccountDialog({
+    invoke: async command => command === "parse_launch_options" ? [] : "", listen: async () => noop,
+    accounts, shownTopicId: () => "first", joinArgs: args => args.join(" "), homeDir: "D:/work", localAccountId: "human",
+    speakerColor: () => "red", declaredHue: () => null, initialOf: name => name[0], avatarImages: new Map(), drawAvatar: noop,
+    asciiJson: text => text, setAvatarImage: noop, saveConfig: async () => {saved=JSON.parse(JSON.stringify(accounts));return true;}, renderPanel: noop, status: noop,
+    seatedAnywhere: () => false, renderSessionFacts: noop, join: async () => {}, allViews: () => [], discardView: noop, fillHues: noop,
+  });
+  dialog.wireForm(); dialog.openAccountDialog(accounts[0]); await new Promise(r=>setImmediate(r));
+  // #475: an account saved before the switch has the prompt on.
+  assert.equal(get("dialog-resume-notice-field").hidden,false);
+  assert.equal(get("dialog-resume-notice").checked,true);
+  get("dialog-resume-notice").checked=false;
+  get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
+  assert.equal(saved?.[0].resume_notice,false);
+  accounts[0]=saved[0];dialog.openAccountDialog(accounts[0]);
+  assert.equal(get("dialog-resume-notice").checked,false);
+  get("dialog-kind").value="codex_cli";get("dialog-kind").emit("change");
+  assert.equal(get("dialog-resume-notice-field").hidden,false);
+  get("dialog-kind").value="cli";get("dialog-kind").emit("change");
+  assert.equal(get("dialog-resume-notice-field").hidden,true);
+  get("dialog-kind").value="claude_code";get("dialog-kind").emit("change");
+  get("dialog-resume-notice").checked=true;
+  get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
+  assert.equal(saved[0].resume_notice,true);
+});

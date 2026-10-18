@@ -184,12 +184,19 @@ export function createAccountDialog(deps: Dependencies) {
     document.getElementById("dialog-codex-note")!.hidden = !codex;
     dialogCodexAppServerFieldEl.hidden = !codex;
     dialogCodexRemoteFieldEl.hidden = !codex;
+    // The two kinds whose seats the app types a resume into (#475).
+    dialogResumeNoticeFieldEl.hidden = !resumesKind(kind);
     if (launchesKind(kind)) refreshDialogLine();
     // The kind picks the folder the character file is in, or that there is none (#100).
     void refreshCharacterFile();
     // Chosen on a form making an account: the server is written and started at
     // 決定, so what there is to fill in now is what it is started with (#200).
     if (kind === "mcp" && editing === null) drawNewMcp();
+  }
+
+  /** The kinds whose seats get the resume prompt after a usage limit (#475). */
+  function resumesKind(kind: AccountKind): boolean {
+    return kind === "claude_code" || kind === "codex_cli";
   }
 
   /** `launches`, for a kind the form holds rather than an account. */
@@ -455,6 +462,8 @@ export function createAccountDialog(deps: Dependencies) {
     // A different kind has no Codex transport choice to preserve.
     dialogCodexAppServerEl.checked = draft.kind !== "codex_cli" || draft.codex_app_server !== false;
     dialogCodexRemoteEl.checked = draft.codex_remote_control === true;
+    // Missing is on, as every seat was before the switch (#475).
+    dialogResumeNoticeEl.checked = draft.resume_notice !== false;
     dialogCommandEl.value = draft.command;
     dialogOptionsEl.value = deps.joinArgs(draft.args);
     dialogResumeEl.value = draft.resume_command ?? "";
@@ -995,6 +1004,9 @@ export function createAccountDialog(deps: Dependencies) {
       // Kept only where it is read (#299).
       codex_app_server: kind === "codex_cli" && dialogCodexAppServerEl.checked,
       codex_remote_control: kind === "codex_cli" && dialogCodexAppServerEl.checked && dialogCodexRemoteEl.checked,
+      // Stored as the box says on the kinds that read it; on the others the
+      // default, so a kind switched back finds the prompt on (#475).
+      resume_notice: !resumesKind(kind) || dialogResumeNoticeEl.checked,
       args,
       env,
     };
@@ -1497,6 +1509,10 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCodexRemoteFieldEl = document.getElementById("dialog-codex-remote-field") as HTMLElement;
 
   const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
+
+  const dialogResumeNoticeEl = document.getElementById("dialog-resume-notice") as HTMLInputElement;
+
+  const dialogResumeNoticeFieldEl = document.getElementById("dialog-resume-notice-field") as HTMLElement;
 
   const dialogCodexAppServerFieldEl = document.getElementById("dialog-codex-app-server-field") as HTMLElement;
 

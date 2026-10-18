@@ -121,6 +121,19 @@ impl Resume {
         None
     }
 
+    /// Whether [`Resume::tick`] would type a prompt now. Asked first so the
+    /// account's switch (#475) is read only at that moment.
+    pub fn due(&self, now: i64) -> bool {
+        self.sent.is_none() && self.next.is_some_and(|n| now >= n)
+    }
+
+    /// The account's switch is off (#475): the prompt due now is dropped, not
+    /// typed. Nothing awaits an answer, so no [`Action::OtherCause`] follows,
+    /// and nothing more is scheduled until the next rejection arms it.
+    pub fn skip(&mut self) {
+        *self = Self::default();
+    }
+
     /// The parent is no longer limited: nothing stays scheduled.
     pub fn recovered(&mut self) {
         *self = Self::default();
@@ -157,7 +170,8 @@ impl Stalled {
 
 /// One line of [`LOG_FILE`]: `[claude-resume] <action> room=<topic id>
 /// account=<account id> at=<time> <detail>`. Actions: `typed`, `pending`,
-/// `refused`, `still-limited`, `recovered`, `other-cause`. No conversational
+/// `refused`, `still-limited`, `recovered`, `other-cause`, `skipped` (the
+/// account's switch is off, #475). No conversational
 /// text is written.
 pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
     let token = |text: &str| -> String {
@@ -417,5 +431,33 @@ mod tests {
             "[claude-resume] pending room=a_b account=- at=t x y"
         );
         assert_eq!(log_line("recovered", "t", "a", "now", ""), "[claude-resume] recovered room=t account=a at=now");
+    }
+
+    #[test]
+    fn switched_off_drops_the_due_prompt_without_other_cause() {
+        let mut r = Resume::default();
+        r.rejected(1_000_000, Some(5000), 1000);
+        assert!(!r.due(5000));
+        assert!(r.due(5000 + GRACE));
+        r.skip();
+        assert!(!r.pending());
+        assert!(!r.due(5000 + GRACE));
+        for now in [5000 + GRACE, 5000 + GRACE + ANSWER_WAIT, 100_000] {
+            assert_eq!(r.tick(now), None); // Never typed, never "other cause".
+        }
+        // The next rejection arms it again, for a switch turned back on.
+        r.rejected(200_000_000, Some(300_000), 200_000);
+        assert!(r.due(300_000 + GRACE));
+        assert_eq!(r.tick(300_000 + GRACE), Some(Action::Type { retry: false }));
+        assert!(!r.due(300_000 + GRACE + 1)); // Typed: awaiting its answer.
+    }
+
+    #[test]
+    fn switched_off_restored_launch_types_nothing() {
+        let mut r = Resume::restored(Some(5000), 9000);
+        assert!(r.due(9000));
+        r.skip();
+        assert_eq!(r.tick(9000), None);
+        assert_eq!(r.tick(9000 + ANSWER_WAIT), None);
     }
 }

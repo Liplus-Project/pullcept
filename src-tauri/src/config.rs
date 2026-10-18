@@ -113,6 +113,7 @@ impl Default for AppConfig {
                 avatar: false,
                 codex_app_server: false,
                 codex_remote_control: false,
+                resume_notice: true,
             }],
             panels: PanelState::default(),
         }
@@ -272,6 +273,18 @@ pub fn account_kind_name(app: &AppHandle, account_id: &str) -> Option<String> {
     let config = read_config(app).ok()?;
     let account = config.accounts.into_iter().find(|account| account.id == account_id)?;
     kind_value(account.kind).as_str().map(str::to_string)
+}
+
+/// Whether the resume prompt is typed into `account_id`'s seat after its usage
+/// limit lifts (#475, `Account::resume_notice`). Read at the moment the prompt
+/// is due, as the kind is read above, so the switch is what the account says
+/// now. A config that cannot be read, or holds no such account, answers `true`:
+/// the behaviour every seat had before the switch.
+pub fn resume_notice_enabled(app: &AppHandle, account_id: &str) -> bool {
+    read_config(app)
+        .ok()
+        .and_then(|config| config.accounts.into_iter().find(|account| account.id == account_id))
+        .map_or(true, |account| account.resume_notice)
 }
 
 /// The kind every launched account carried while there was one of them (#156).
