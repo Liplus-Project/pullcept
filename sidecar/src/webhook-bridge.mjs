@@ -22,6 +22,4 @@
 
 process.stdin.on("end", () => process.exit(0));
 
-// App-owned observer mode is noninteractive on servers advertising the v1 contract.
-process.env.WEBHOOK_OBSERVER = "1";
 await import("github-webhook-mcp");

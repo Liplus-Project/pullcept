@@ -59,6 +59,8 @@ export interface MissedPost {
 }
 
 export interface LoggedPost {
+    /** Delivery-time origin evidence; missing on old logs remains unknown. */
+    role?: string;
   message_id: string;
   speaker: string;
   full_name?: string | null;
@@ -556,3 +558,22 @@ export interface McpPanelView {
 
 /** The shapes a terminal cursor can be drawn in, in xterm's names (#448). */
 export type TerminalCursorStyle = "block" | "bar" | "underline";
+
+
+export interface WorkRecord {
+  id: string; kind: "work" | "decision"; owner: string; added_by: string;
+  text: string; progress: string | null; references: string[];
+  source_message_id: string | null; target_account_id: string | null;
+  created_at: string; updated_at: string; revision: number; state: string;
+  owner_running?: boolean; owner_limited?: boolean | null; interrupted?: boolean;
+  answer: { content: string; name: string; account: string; answered_at: string; message_id?: string } | null;
+}
+export interface TopicStatus {
+  topic_id: string; retrieved_at: number; participants: {account_id?: string; role?: string; session?: {
+    process_running: boolean; limited?: boolean | null; model?: {value?: string}; effort?: {value?: string}; login?: {value?: string};
+    usage?: {five_hour?: {used_percentage:number}; seven_day?: {used_percentage:number}; context?: number; received_at?: number};
+  }}[];
+  work: { active: WorkRecord[]; history: WorkRecord[]; history_limit: number; pending_decisions: number };
+  plans: {account_id: string; source: string; updated_at: number; current_launch: boolean; steps: {step: string; status: string}[]}[];
+  mcp_servers: {server: string; connection: string; generation: number; pending: {state: string; pending_count?: number; types?: Record<string,number>; latest_received_at?: string | null; observed_at?: number}}[];
+}

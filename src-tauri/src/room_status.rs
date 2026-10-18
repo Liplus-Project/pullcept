@@ -103,6 +103,10 @@ pub fn answer(app: &AppHandle, topic: &str, account_id: Option<&str>) -> Result<
         );
     }
     let work = crate::work_status::snapshot(app, topic, account_id)?;
+    if let Some(account) = account_id {
+        if rows.is_empty() && work["active"].as_array().is_none_or(|v| v.is_empty()) && work["history"].as_array().is_none_or(|v| v.is_empty())
+            && !crate::config::read_config(app)?.accounts.iter().any(|a| a.id == account) { return Err("Unknown participant or saved work owner".into()); }
+    }
     let plans = app.state::<PlanBook>().0.lock().iter().filter(|((t,a),_)| t == topic && account_id.is_none_or(|id| a == id))
         .map(|((_,a),p)| {
             let mut value = p.clone(); value["account_id"] = json!(a);

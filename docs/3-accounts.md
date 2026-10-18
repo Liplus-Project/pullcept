@@ -793,3 +793,12 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 
 
 **部屋の `status`（#474）も起動時に承認する読み取り道具である。** 同じトピックの人間を含む接続名簿と、安全に投影した既存の状態を読む。特定アカウントの詳細指定、時刻の区別、PTY 世代による隔離は「[参加者とアプリが把握する状態を読む](1-room.md#参加者とアプリが把握する状態を読む474)」を正とする。アカウントのコマンド・環境・パスや長いツール説明は露出しない。画面の人間へ AI 用の統計を作らない。
+
+
+## 作業メモと自動 plan (#493)
+
+`update_work_status` で本人の作業または対象人間への判断依頼を登録・更新・完了・取消し、`status` で読む。判断依頼は kind=decision、target_account_id は設定済み admin の ID である。AI の回答完了は同 topic の保存済み admin 発言の answer_message_id だけを渡す。回答原文や回答者を AI に入力させない。詳細・再試行は docs/1-room.md の journal 契約による。
+
+Codex app-server の plan は現在の親 thread と turn が一致する `turn/plan/updated` の構造化通知だけを受ける。Claude は現行 launch の認証済み、成功した親 `PostToolUse` の `TodoWrite` のみを受ける。失敗・子エージェント・古い launch・壊れた payload は更新しない。hook 方式の Codex は自動 plan を送らないので明示登録を使う。plan と手動作業は別であり、idle・ターン終了・plan の全項目完了から手動作業を完了にしない。
+
+CLI 0.162.1 の stable schema は通知形式の根拠であり、実機受信の観測ではない。Claude TodoWrite もこの変更の合成テストと実機観測を区別する。

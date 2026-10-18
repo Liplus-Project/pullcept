@@ -891,7 +891,7 @@ fn deliver_except(
 
     // One acquisition, both halves. Concurrent speakers serialise here, so the
     // loser's check runs against a floor the winner has already changed.
-    let (admission, hue, logged, topic, seats) = {
+    let (admission, hue, logged, topic, seats, role) = {
         let mut guard = room.inner.lock();
         let Some(inner) = guard.rooms.get_mut(room_id) else {
             return Err(format!(
@@ -962,8 +962,9 @@ fn deliver_except(
         // room is one topic for as long as it exists, so the post reaches the
         // file of the floor that admitted it.
         let topic = inner.topic.clone();
+        let role = role_of(app, room, origin, post.account.as_deref());
         let logged = match &admission {
-            Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post, &role_of(app, room, origin, post.account.as_deref())),
+            Admission::Admitted { .. } => room_log::append(app, &topic.topic_id, &post, &role),
             Admission::Unseen(_) => Ok(false),
         };
         // Who is in the room as this post is admitted, with the account each
@@ -979,7 +980,7 @@ fn deliver_except(
             .iter()
             .map(|(id, seat)| (id.clone(), seat.account.clone(), seat.name.clone()))
             .collect();
-        (admission, hue, logged, topic, seats)
+        (admission, hue, logged, topic, seats, role)
     };
 
     if let Admission::Unseen(missed) = admission {
@@ -1006,7 +1007,6 @@ fn deliver_except(
 
     // No session in the room is not an error — the room accepts what is said
     // in it; a later joiner simply missed it, and can pull it.
-    let role = role_of(app, room, origin, post.account.as_deref());
     type_into_sessions(app, room_id, &seats, origin, &role, &post, except_pty);
 
     let _ = app.emit(
@@ -2256,6 +2256,8 @@ async fn serve_participant(
                         return mcp_config::room_status::request(control.authorize(&app, &origin, &socket_id), joined_room.get().map(String::as_str),
                             |topic| crate::room_status::answer(&app, topic, frame.account_id.as_deref()));
                     }
+                    let seats = app.state::<RoomSeats>();
+                    let _work_guard = if frame.kind == "work_status_update" { Some(seats.lifecycle.lock()) } else { None };
                     control.authorize(&app, &origin, &socket_id)?;
                     match frame.kind.as_str() {
                         "work_status_update" => crate::work_status::apply(&app,

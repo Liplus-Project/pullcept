@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-topic-status"
+description = "Enables the topic_status command without any pre-configured scope."
+commands.allow = ["topic_status"]
+
+[[permission]]
+identifier = "deny-topic-status"
+description = "Denies the topic_status command without any pre-configured scope."
+commands.deny = ["topic_status"]

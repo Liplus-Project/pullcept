@@ -124,7 +124,7 @@ const TOPICS_EVENT: &str = "room-topics";
 /// failed to resume.
 static INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// The seven fields of a post, taken off the post itself.
+/// A post plus server-derived delivery origin evidence.
 ///
 /// A mapping rather than a `Serialize` on `Post`: `Post` carries `hue` as well,
 /// and a derive would put it in the file. What is dropped here is dropped on

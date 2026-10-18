@@ -2221,7 +2221,8 @@ button svg.icon {
   letter-spacing: 0.02em;
 }
 
-/* Three columns. The name takes the slack; 開始 and the row's menu sit in
+/* The name selects details; terminal, lifecycle and menu have separate tracks.
+   開始 and the row's menu sit in
    tracks after it, so each is in one place on every row (#62, #224). A track
    has its width whether or not anything is in it, which is what keeps a row
    with no 開始 — a person, who is not launched, or a session that is running —
@@ -2238,16 +2239,13 @@ button svg.icon {
   gap: 0.3rem;
 }
 
-/* The name is the control that picks this account's terminal, and it is the
-   column that takes the row's slack: choosing which session to watch is a click
-   on the session itself. A row whose account has no terminal here is the same
-   shape without the button — the layout must not move when a session starts or
-   ends. */
+/* Every participant can select details, including humans and unstarted seats. */
 #participants .member .pick {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.1rem 0.5rem;
   font: inherit;
   text-align: left;
   background: none;
@@ -2255,6 +2253,27 @@ button svg.icon {
   border-radius: 4px;
   padding: 0.3rem;
 }
+#participants .member .pick > .avatar { grid-column: 1; grid-row: 1 / span 2; }
+#participants .member .pick > .who { grid-column: 2; grid-row: 1; }
+#participants .member .pick > .note { grid-column: 2; grid-row: 2; justify-self: start; }
+
+#participants .member .lifecycle { grid-column: 2; grid-row: 1; }
+#participants .member .more { grid-column: 3; grid-row: 1; }
+#participants .member .detail-terminal { grid-column: 1; grid-row: 2; justify-self: end; font-size: .7rem; padding: .2rem; color: var(--muted); border: 0; border-radius: 4px; background: none; cursor: pointer; }
+#participants .member .detail-terminal:hover { background: var(--hover); }
+#participants .member.detail-selected button.pick { background: var(--selected); }
+#participants .member .decision-count { display: block; font-size: .65rem; color: var(--accent); }
+#participant-details { border-top: 1px solid var(--line); padding: .65rem; min-width: 0; overflow-wrap: anywhere; font-size: .78rem; }
+#participant-details h3, #participant-details h4 { margin: .5rem 0; }
+#participant-details small { display: block; color: var(--muted); }
+#participant-details p { margin: .4rem 0; white-space: pre-wrap; }
+#participant-details button { border: 0; border-radius: 4px; color: var(--accent); background: none; cursor: pointer; font-size: inherit; max-width: 100%; overflow-wrap: anywhere; margin: .2rem; padding: .25rem .4rem; }
+#participant-details button:hover { background: var(--hover); }
+#participant-details .work-record { border-bottom: 1px solid var(--line); padding: .6rem 0; }
+#participant-details .work-record strong { display: block; white-space: pre-wrap; }
+.work-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; }
+.work-dialog textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; margin: .5rem 0; }
+.work-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 #participants .member button.pick {
   cursor: pointer;

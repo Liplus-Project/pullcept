@@ -77,7 +77,8 @@ const TITLE_CHARS: usize = 40;
 
 /// One post, as the log holds it.
 ///
-/// The same seven fields going in and coming out. `hue` and `own` are not among
+/// The post fields and optional delivery-time role going in and coming out.
+/// `hue` and `own` are not among
 /// them, and why each is absent — and why `account` is not — is written down
 /// where the mapping from a post is made (`src-tauri/src/room_log.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

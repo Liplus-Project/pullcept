@@ -261,9 +261,8 @@
                  window, and what says it is a header is where it sits and what
                  is in it (Master, 実機, 2026-08-24).
 
-                 The tabs and the participant rows are two renderings of one
-                 selection, and they move together — either one puts the same
-                 terminal on the glass. That is the duplication #59 removed from
+                 The tabs and each participant row's terminal control select a
+                 terminal. Participant names select details independently (#493). That is the duplication #59 removed from
                  the roster, chosen deliberately here (#68): a tab strip answers
                  "which terminals are open" at the pane being looked at, which
                  the rows answer only by being read alongside it.
@@ -409,6 +408,8 @@
             <li class="empty">参加者なし</li>
           </ul>
 
+          <section id="participant-details" aria-label="参加者の作業と判断待ち" aria-live="polite"></section>
+
           <!-- What the terminal on the glass was launched from. The values
                follow the row that is selected above, so they answer for the
                pane being looked at rather than for whichever session started
@@ -417,6 +418,7 @@
                what it says it is using (#225). What is read only when something
                is stuck — the socket, the id, how it was launched — is under
                詳細, folded. -->
+          <div id="terminal-facts">
           <dl class="facts">
             <dt>セッション</dt>
             <dd id="session-state">未起動</dd>
@@ -484,6 +486,7 @@
               <dd id="session-window">—</dd>
             </dl>
           </details>
+          </div>
         </aside>
       </div>
 

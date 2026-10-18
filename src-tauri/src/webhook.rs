@@ -90,23 +90,15 @@ pub async fn receive(
     let mut lines = BufReader::new(stdout).lines();
     let mut notices = Notices::new();
     let mut ready = false;
-    let mut observer_supported = false;
-    let mut observer_wait: Option<Instant> = None;
-    let mut observer_list = false;
-    let mut next_poll = tokio::time::interval(std::time::Duration::from_secs(30));
-    next_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut observer = Box::pin(observe(server, report));
+    let mut observer_done = false;
     let ended = loop {
         let deadline = notices.next_deadline();
         let line = tokio::select! {
             line = lines.next_line() => line,
-            _ = sleep_until(observer_wait), if observer_wait.is_some() => {
-                observer_wait = None;
-                report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()}));
-                continue;
-            },
-            _ = next_poll.tick(), if ready && observer_supported && observer_wait.is_none() => {
-                send(&mut stdin, &mcp_config::mcp_observer::poll_request()).await?;
-                observer_wait = Some(Instant::now() + std::time::Duration::from_secs(5));
+            result = &mut observer, if !observer_done => {
+                observer_done = true;
+                if result.is_err() { report.observer(serde_json::json!({"state":"unobserved","observed_at":crate::room_status::now_ms()})); }
                 continue;
             },
             // A read the bridge has not answered in time: the notice goes out
@@ -121,24 +113,6 @@ pub async fn receive(
             Ok(None) => break Ok(()),
             Err(e) => break Err(format!("reading the server failed: {e}")),
         };
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-            // String IDs cannot collide with get_event/initialize numeric replies.
-            if value["method"].is_null() && value["id"] == mcp_config::mcp_observer::LIST_ID {
-                if observer_list && observer_wait.is_some() {
-                    observer_list = false; observer_wait = None;
-                    observer_supported = mcp_config::mcp_observer::supported(&value);
-                    report.observer(serde_json::json!({"state": if observer_supported {"unobserved"} else {"unsupported"}}));
-                }
-                continue;
-            }
-            if value["method"].is_null() && value["id"] == mcp_config::mcp_observer::POLL_ID {
-                if !observer_list && observer_wait.is_some() {
-                    observer_wait = None;
-                    report.observer(mcp_config::mcp_observer::snapshot(&value, crate::room_status::now_ms()));
-                }
-                continue;
-            }
-        }
         match read_line(&line) {
             Line::Answer { id, failure, .. } if id == INITIALIZE_ID => {
                 if let Some(failure) = failure {
@@ -149,10 +123,6 @@ pub async fn receive(
                 }
                 ready = true;
                 report.running();
-                // Discovery is passive. The tool is never called without its explicit raw-mode marker.
-                send(&mut stdin, &mcp_config::mcp_observer::list_request()).await?;
-                observer_list = true;
-                observer_wait = Some(Instant::now() + std::time::Duration::from_secs(5));
             }
             Line::Answer { id, failure, text } => {
                 notices.answer(id, failure.as_deref(), text.as_deref());
@@ -203,6 +173,78 @@ async fn sleep_until(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
         None => std::future::pending().await,
     }
+}
+
+/// A separate, noninteractive client for the shipped wrapper only. Its future
+/// belongs to receive(), so dropping/restarting that generation kills this child.
+/// Notification authentication/refresh and get_event remain on the normal child.
+async fn observe(server: &Server, report: &Reporter) -> Result<(), String> {
+    let bundled = crate::session::webhook_bridge_script().ok().is_some_and(|path|
+        server.command == "node" && server.args.len() == 1 && std::path::Path::new(&server.args[0]) == path);
+    if !bundled {
+        report.observer(serde_json::json!({"state":"unsupported"})); return Ok(());
+    }
+    let mut observer_server = server.clone();
+    observer_server.env.insert("WEBHOOK_OBSERVER".into(), "1".into());
+    observer_server.env.insert("WEBHOOK_CHANNEL".into(), "0".into());
+    let mut child = spawn(&observer_server)?;
+    let mut stdin = child.stdin.take().ok_or("observer stdin unavailable")?;
+    let mut lines = BufReader::new(child.stdout.take().ok_or("observer stdout unavailable")?).lines();
+    // Drain without saving: observer diagnostics can include private auth paths.
+    if let Some(stderr) = child.stderr.take() {
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+    }
+    observer_send(&mut stdin, &initialize_request()).await?;
+    let initialized = async {
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            if let Line::Answer {id, failure, ..} = read_line(&line) {
+                if id == INITIALIZE_ID { return failure.map_or(Ok(()), |_| Err("observer initialize refused".to_string())); }
+            }
+        }
+        Err("observer ended during initialize".into())
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), initialized).await {
+        Ok(result) => result?,
+        Err(_) => { report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()})); return Ok(()); }
+    }
+    observer_send(&mut stdin, &initialized_notification()).await?;
+    let mut observer = mcp_config::mcp_observer::Observer::default();
+    observer_send(&mut stdin, &observer.discover(Instant::now())).await?;
+    let mut discovering = true;
+    let mut poll = tokio::time::interval(std::time::Duration::from_secs(30));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let deadline = observer.deadline();
+        tokio::select! {
+            _ = sleep_until(deadline), if deadline.is_some() => {
+                if observer.expire(Instant::now()) { report.observer(serde_json::json!({"state":"timeout","observed_at":crate::room_status::now_ms()})); }
+                if discovering { return Ok(()); }
+            },
+            _ = poll.tick() => {
+                if let Some(request) = observer.poll(Instant::now()) { observer_send(&mut stdin,&request).await?; }
+            },
+            line = lines.next_line() => {
+                let Some(line) = line.map_err(|e| e.to_string())? else { return Err("observer ended".into()); };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+                if let Some(snapshot) = observer.receive(&value, Instant::now(),crate::room_status::now_ms()) {
+                    let unsupported = snapshot["state"] == "unsupported";
+                    report.observer(snapshot);
+                    if unsupported { return Ok(()); }
+                    if discovering {
+                        discovering = false;
+                        if let Some(request) = observer.poll(Instant::now()) { observer_send(&mut stdin,&request).await?; }
+                    }
+                }
+                // All channel pushes and arbitrary server messages are ignored.
+            },
+        }
+    }
+}
+async fn observer_send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
+    tokio::time::timeout(std::time::Duration::from_secs(1),send(stdin,line)).await.map_err(|_| "observer pipe timeout")?
 }
 
 /// The server's command and arguments, with its `env` added to the app's own
