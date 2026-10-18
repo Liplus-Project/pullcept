@@ -328,13 +328,13 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.type === "hello") helloSeen.resolve(frame);
-      if (["session_list", "session_status", "session_control"].includes(frame.type)) {
+      if (["room_status", "session_list", "session_status", "session_control"].includes(frame.type)) {
         sessionFrames.push(frame);
         socket.send(JSON.stringify({ type: "session_result", request_id: "unrelated", result: { wrong: true } }));
         if (sessionAnswer === "disconnect") { socket.close(); return; }
         socket.send(JSON.stringify({ type: "session_result", request_id: frame.request_id,
           ...(sessionAnswer === "denied" ? { error: "Only a connected account session may control sessions" } :
-            { result: frame.type === "session_list" ? { accounts: [{ account_id: TEST_ACCOUNT }], topics: [{ topic_id: "room" }] } :
+            { result: frame.type === "room_status" ? { participants: [{ id: "human", role: "admin" }, { id: "ai", account_id: frame.account_id ?? TEST_ACCOUNT }], retrieved_at: 123 } : frame.type === "session_list" ? { accounts: [{ account_id: TEST_ACCOUNT }], topics: [{ topic_id: "room" }] } :
               { operation_id: frame.operation?.operation_id ?? frame.operation_id, status: "accepted", room_connected: false } }) }));
         return;
       }
@@ -614,7 +614,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // `my_usage` reads too, and only this seat's own figures (#364).
   assert.deepEqual(
     toolNames,
-    ["say_to_room", "read_room_history", "my_usage", "list_account_sessions", "account_session_status", "control_account_session"],
+    ["say_to_room", "read_room_history", "my_usage", "status", "list_account_sessions", "account_session_status", "control_account_session"],
     "one posting tool plus room reads and account lifecycle controls",
   );
   assert.equal(
@@ -645,6 +645,20 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   // where it now lives. Nothing here may be lost to the move: these are the
   // lines the 2048 cut had taken from every session.
   assert.ok(!JSON.stringify(tools).includes("synthetic-control-only"), "launch capability must not appear in tools/list");
+  const postsBeforeStatus = postFrames.length;
+  const statusRead = await request("tools/call", { name: "status", arguments: {} });
+  assert.equal(JSON.parse(statusRead.result.content[0].text).participants[0].role, "admin");
+  assert.equal(sessionFrames.at(-1).type, "room_status");
+  const detailRead = await request("tools/call", { name: "status", arguments: { account_id: TEST_ACCOUNT } });
+  assert.equal(JSON.parse(detailRead.result.content[0].text).participants[1].account_id, TEST_ACCOUNT);
+  assert.equal(sessionFrames.at(-1).account_id, TEST_ACCOUNT);
+  const beforeInvalidStatus = sessionFrames.length;
+  for (const args of [{ account_id: 3 }, { account_id: "" }, { topic_id: "other" }]) {
+    const invalid = await request("tools/call", { name: "status", arguments: args });
+    assert.equal(invalid.result.isError, true);
+  }
+  assert.equal(sessionFrames.length, beforeInvalidStatus);
+  assert.equal(postFrames.length, postsBeforeStatus, "status sends no posts/notifications/seat operations");
   const listed = await request("tools/call", { name: "list_account_sessions", arguments: {} });
   assert.match(listed.result.content[0].text, new RegExp(TEST_ACCOUNT));
   const operation = { operation_id: "self-restart-415", action: "restart", account_id: TEST_ACCOUNT, topic_id: "room", expected_pty_id: "old" };

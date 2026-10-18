@@ -102,6 +102,7 @@ impl ClaudeLimits {
             None => Default::default(),
         };
         let stats = SessionStats {
+            model_reported: false,
             topic_id: topic.into(),
             account_id: account.into(),
             model: None,

@@ -32,6 +32,8 @@ use std::path::Path;
 /// as its percentage, and replaced with it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
+    /// A turn-context snapshot has arrived, including missing model/effort.
+    pub model_reported: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub five_hour: Option<f64>,
@@ -73,6 +75,7 @@ impl Status {
         let payload = &value["payload"];
         match value["type"].as_str() {
             Some("turn_context") if payload.is_object() => {
+                self.model_reported = true;
                 self.model = text(&payload["model"]);
                 self.effort = text(&payload["effort"]);
             }
@@ -299,6 +302,20 @@ mod tests {
         dir.join("rollout.jsonl")
     }
 
+    #[test]
+    fn model_provenance_survives_partial_limits_and_tracks_missing_snapshot_fields() {
+        let mut status = Status::default();
+        assert!(!status.model_reported);
+        status.apply(&serde_json::json!({"type":"event_msg","payload":{"type":"token_count","rate_limits":{}}}));
+        assert!(!status.model_reported);
+        status.apply(&serde_json::json!({"type":"turn_context","payload":{"model":"m","effort":"high"}}));
+        assert!(status.model_reported);
+        status.apply(&serde_json::json!({"type":"turn_context","payload":{"model":"no-effort"}}));
+        assert!(status.model_reported);
+        assert_eq!(status.effort, None);
+        status.apply(&serde_json::json!({"type":"turn_context","payload":{}}));
+        assert_eq!(status.model, None);
+    }
     #[test]
     fn context_receipt_tracks_info_without_rate_limits_once() {
         let mut tail = Tail::default();

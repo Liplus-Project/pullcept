@@ -56,7 +56,7 @@ pub(crate) fn room_server_definition(own: &str, runner: &str, entry: &str) -> St
         .join(",");
     // The only registration (#297). The whole table, so it works before project trust
     // and an entry left in a trusted project's config cannot override this launch.
-    format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}},my_usage={{approval_mode='approve'}},list_account_sessions={{approval_mode='approve'}},account_session_status={{approval_mode='approve'}},control_account_session={{approval_mode='approve'}}}}}}", instruction_value(runner), instruction_value(entry))
+    format!("mcp_servers.{own}={{command='node',args=[{},{}],env_vars=[{vars}],enabled=true,tools={{say_to_room={{approval_mode='approve'}},read_room_history={{approval_mode='approve'}},my_usage={{approval_mode='approve'}},status={{approval_mode='approve'}},list_account_sessions={{approval_mode='approve'}},account_session_status={{approval_mode='approve'}},control_account_session={{approval_mode='approve'}}}}}}", instruction_value(runner), instruction_value(entry))
 }
 
 /// The runner and entry paths as the room server's table carries them, or why
@@ -1084,6 +1084,7 @@ PULLCEPT_ACCOUNT_ID = \"a\"
             own["tools"]["my_usage"]["approval_mode"].as_str(),
             Some("approve")
         );
+        assert_eq!(own["tools"]["status"]["approval_mode"].as_str(), Some("approve"));
         assert!(own["env_vars"]
             .as_array()
             .unwrap()
