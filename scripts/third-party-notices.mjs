@@ -5,7 +5,10 @@
 //   node scripts/third-party-notices.mjs          write the file
 //   node scripts/third-party-notices.mjs --check  fail when the file is stale
 //
-// The roots are the packages src/composer.ts, src/codex-remote.ts and src/markdown.ts (#431) import. Their dependencies are
+// The roots are the packages the window's code under src/ imports: the editor
+// (src/composer.ts), the pairing screen (src/codex-remote.ts), Markdown
+// (src/markdown.ts, #431), and since #360 the terminal (xterm) and the Tauri
+// API the window calls. Their dependencies are
 // followed through package-lock.json, peers included, and each package's
 // licence is read from the LICENSE file it ships in node_modules. A package
 // with no licence file, or with a licence outside ALLOWED, stops the run: it is
@@ -17,8 +20,13 @@ import { fileURLToPath } from "node:url";
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const NOTICES = join(REPO, "THIRD-PARTY-NOTICES.txt");
 
-/** Browser libraries imported by composer and the local pairing screen. */
+/** Browser libraries the window's code imports (#354, #360). */
 export const ROOTS = [
+  "@tauri-apps/api",
+  "@tauri-apps/plugin-clipboard-manager",
+  "@xterm/xterm",
+  "@xterm/addon-fit",
+  "@xterm/addon-webgl",
   "@tiptap/core",
   "@tiptap/pm",
   "@tiptap/extension-code-block",
@@ -52,6 +60,23 @@ const UNDECLARED = { khroma: "MIT" };
  */
 const README_LICENCE = new Set(["fastdom"]);
 
+/**
+ * Packages that ship only an SPDX record (#360: the Tauri clipboard plugin's
+ * LICENSE.spdx), with the package whose licence files carry the same licences'
+ * texts. The record's copyright line goes first, and both licences it declares
+ * must be the ones the text package ships.
+ */
+const SPDX_LICENCE = { "@tauri-apps/plugin-clipboard-manager": "@tauri-apps/api" };
+
+/** The SPDX record's copyright and the borrowed licence texts. */
+function spdxLicence(name, version, dir, texts) {
+  const record = readFileSync(join(dir, "LICENSE.spdx"), "utf8");
+  const copyright = /^PackageCopyrightText: *(.+)$/m.exec(record)?.[1];
+  const declared = [...record.matchAll(/^PackageLicenseDeclared: *(\S+)$/gm)].map((m) => m[1]).sort();
+  if (!copyright || declared.join(" ") !== "Apache-2.0 MIT") throw new Error(`${name}@${version}: unexpected LICENSE.spdx`);
+  return [`Copyright (c) ${copyright.trim()}`, texts(SPDX_LICENCE[name])].join("\n\n");
+}
+
 /** The README's `## License` section, for a package in README_LICENCE. */
 function readmeLicence(name, version, dir) {
   if (!README_LICENCE.has(name)) throw new Error(`${name}@${version} ships no licence file`);
@@ -64,14 +89,26 @@ function readmeLicence(name, version, dir) {
 /**
  * Whether a licence expression may ship (#431): a single allowed id, or an
  * SPDX `(A OR B)` choice with at least one allowed alternative (dompurify,
- * MPL-2.0 OR Apache-2.0, is taken under Apache-2.0). `AND` is not accepted.
+ * MPL-2.0 OR Apache-2.0, is taken under Apache-2.0). The parentheses may be
+ * absent (#360: @tauri-apps/api declares `Apache-2.0 OR MIT`). `AND` is not
+ * accepted.
  */
 function allowed(license) {
   if (typeof license !== "string") return false;
   if (ALLOWED.has(license)) return true;
-  const choice = /^\((.+)\)$/.exec(license);
-  if (!choice || / AND /.test(choice[1])) return false;
-  return choice[1].split(" OR ").some((one) => ALLOWED.has(one.trim()));
+  const choice = /^\((.+)\)$/.exec(license)?.[1] ?? license;
+  if (!/ OR /.test(choice) || / AND /.test(choice)) return false;
+  return choice.split(" OR ").some((one) => ALLOWED.has(one.trim()));
+}
+
+/** The licence files `name` ships in node_modules, joined; empty when none. */
+function licenceFiles(name) {
+  const dir = join(REPO, "node_modules", name);
+  return readdirSync(dir)
+    .filter((one) => /^(licen[cs]e|copying)([._-][a-z0-9.-]+)?$/i.test(one) && !/\.spdx$/i.test(one))
+    .sort()
+    .map((one) => readFileSync(join(dir, one), "utf8").replace(/\r\n?/g, "\n").trim())
+    .join("\n\n");
 }
 
 /** Every package the roots reach, by name, with its version and licence, sorted. */
@@ -101,10 +138,11 @@ export function collect() {
       const dir = join(REPO, "node_modules", name);
       const installed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version;
       if (installed !== entry.version) throw new Error(`${name}: node_modules has ${installed}, the lock ${entry.version}`);
-      const file = readdirSync(dir).find((one) => /^(licen[cs]e|copying)(\.(md|txt))?$/i.test(one));
-      const text = file
-        ? readFileSync(join(dir, file), "utf8").replace(/\r\n?/g, "\n").trim()
-        : readmeLicence(name, entry.version, dir);
+      // One licence file, or one per licence of a choice (#360: the Tauri
+      // packages ship LICENSE_MIT and LICENSE_APACHE-2.0): every one is kept.
+      const text = Object.hasOwn(SPDX_LICENCE, name)
+        ? spdxLicence(name, entry.version, dir, licenceFiles)
+        : licenceFiles(name) || readmeLicence(name, entry.version, dir);
       if (!entry.license && !text.includes(`${license} License`)) throw new Error(`${name}@${entry.version}: licence file is not ${license}`);
       return { name, version: entry.version, license, text };
     });
@@ -116,9 +154,9 @@ export function render(packages) {
   const head = [
     "Pullcept: third-party notices",
     "",
-    "Pullcept includes the following libraries in its window (the input box's",
-    "editor, code colouring, local pairing QR and post Markdown / diagrams, #354 /",
-    "#419 / #431). Each has the version",
+    "Pullcept includes the following libraries in its window (the terminal, the",
+    "Tauri API, the input box's editor, code colouring, local pairing QR and post",
+    "Markdown / diagrams, #354 / #360 / #419 / #431). Each has the version",
     "shipped, its licence, and the licence text and copyright notice it is",
     "distributed under. Generated by scripts/third-party-notices.mjs from",
     "package-lock.json and the packages' own licence files.",

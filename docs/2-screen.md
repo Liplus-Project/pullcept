@@ -195,7 +195,7 @@
 
 **箱の高さは中身に合わせて伸びる。** 空のときはテキストエリアの `rows="2"` と同じ二行の高さで、書くほど伸び、窓の高さの 4 割を超えると中でスクロールする。テキストエリアのような手で高さを変えるつまみは無くした（AI 判断）。placeholder（「部屋に発言する」）は、本文が空の一行のときだけ欄の外側の要素が描く（`#input[data-empty]`）——エディターの中身を placeholder のために描き直さないためである。
 
-**使うライブラリのライセンス。** 入力欄が使うライブラリと、それらが使うライブラリはすべて MIT か BSD-3-Clause である（GPL など縛りの強いものは入れていない）。採用したバージョンごとの名前・ライセンス・著作権表示とライセンス本文は `THIRD-PARTY-NOTICES.txt` にまとめ、インストーラーに `NOTICE.txt` と一緒に同梱する（`src-tauri/tauri.conf.json` の `bundle.resources`）。このファイルは `scripts/third-party-notices.mjs` が `package-lock.json` と各パッケージの LICENSE から作る。
+**使うライブラリのライセンス。** 入力欄が使うライブラリと、それらが使うライブラリはすべて MIT か BSD-3-Clause である（GPL など縛りの強いものは入れていない）。採用したバージョンごとの名前・ライセンス・著作権表示とライセンス本文は `THIRD-PARTY-NOTICES.txt` にまとめ、インストーラーに `NOTICE.txt` と一緒に同梱する（`src-tauri/tauri.conf.json` の `bundle.resources`）。このファイルは `scripts/third-party-notices.mjs` が `package-lock.json` と各パッケージの LICENSE から作る。#360 から、入力欄の外の画面が読み込むライブラリ——端末（`@xterm/xterm`・`@xterm/addon-fit`・`@xterm/addon-webgl`、MIT）と Tauri の API（`@tauri-apps/api`・`@tauri-apps/plugin-clipboard-manager`、MIT と Apache-2.0 の選択）——も載せる。ライセンスのファイルを選択の一つずつに分けて持つもの（`LICENSE_MIT` と `LICENSE_APACHE-2.0`）は全部を載せ、SPDX の記録（`LICENSE.spdx`）しか持たないクリップボードのプラグインは、記録の著作権表示と、同じ二つのライセンスを持つ `@tauri-apps/api` の本文を載せる。Rust の crate はまだ載せていない（#360 の残り）。
 
 | パッケージ | 版 | ライセンス |
 |---|---|---|
