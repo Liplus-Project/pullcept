@@ -131,6 +131,31 @@ pub fn requests(version: &str) -> [String; 3] {
     ]
 }
 
+/// The id of `account/read` (#495), asked after [`READ_ID`] on the same
+/// process: which account the seat's `CODEX_HOME` is logged in to.
+pub const ACCOUNT_ID: u64 = 3;
+
+/// `account/read` without a token refresh: the question only reads.
+pub fn account_request() -> String {
+    format!(r#"{{"id":{ACCOUNT_ID},"method":"account/read","params":{{"refreshToken":false}}}}"#)
+}
+
+/// The name the panel shows for the account the response to [`ACCOUNT_ID`]
+/// names (#495): a ChatGPT login's email, else the kind of login. `None`
+/// when no account is logged in or the response is not one.
+pub fn read_login(response: &Value) -> Option<String> {
+    let account = &response["result"]["account"];
+    if let Some(email) = account["email"].as_str().filter(|s| !s.is_empty()) {
+        return Some(email.into());
+    }
+    match account["type"].as_str()? {
+        "chatgpt" => Some("ChatGPT".into()),
+        "apiKey" => Some("API キー".into()),
+        "amazonBedrock" => Some("Amazon Bedrock".into()),
+        _ => None,
+    }
+}
+
 /// Read the response to [`READ_ID`].
 ///
 /// The `codex` bucket of `rateLimitsByLimitId` when it is there, the
@@ -472,6 +497,18 @@ mod tests {
         serde_json::from_str(text).unwrap()
     }
 
+    #[test]
+    fn login_is_the_email_else_the_kind_of_login() {
+        let answer = |account: Value| serde_json::json!({"id": ACCOUNT_ID, "result": {"account": account, "requiresOpenaiAuth": true}});
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "chatgpt", "email": "l@example.com", "planType": "pro"}))),
+            Some("l@example.com".into()));
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "chatgpt", "email": null, "planType": "pro"}))),
+            Some("ChatGPT".into()));
+        assert_eq!(read_login(&answer(serde_json::json!({"type": "apiKey"}))), Some("API キー".into()));
+        assert_eq!(read_login(&answer(Value::Null)), None);
+        assert_eq!(read_login(&serde_json::json!({"id": ACCOUNT_ID, "error": {"message": "x"}})), None);
+    }
+
     // The task_complete of a turn stopped on the limit, cut down from Luna's
     // rollout (2026-10-05, 0.160.0).
     const STOPPED: &str = r#"{"timestamp":"2026-10-05T12:58:43.771Z","ordinal":719,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t","last_agent_message":null,"error":{"message":"Error running remote compact task: You’ve hit your usage limit. ... try again at 10:45 PM.","codex_error_info":"usage_limit_exceeded"},"started_at":1791205121,"completed_at":1791205123,"duration_ms":2344}}"#;
@@ -601,6 +638,9 @@ mod tests {
         assert!(json(&lines[1]).get("id").is_none());
         assert_eq!(json(&lines[2])["method"], "account/rateLimits/read");
         assert_eq!(json(&lines[2])["id"], READ_ID);
+        assert_eq!(json(&account_request())["id"], ACCOUNT_ID);
+        assert_eq!(json(&account_request())["method"], "account/read");
+        assert_eq!(json(&account_request())["params"]["refreshToken"], false);
     }
 
     #[test]

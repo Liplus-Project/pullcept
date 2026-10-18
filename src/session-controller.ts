@@ -584,6 +584,7 @@ export function createSessionController(deps: Dependencies) {
   function renderSessionStats(): void {
     const stats = shownView()?.stats ?? null;
     const now = Date.now();
+    statsEls.login.textContent = stats?.login ?? "—";
     statsEls.model.textContent = stats?.model ?? "—";
     statsEls.effort.textContent = stats?.effort ?? "—";
     renderUsage(
@@ -1292,6 +1293,7 @@ export function createSessionController(deps: Dependencies) {
 
   // The five the session reports about itself (#155), in the order they are read.
   const statsEls = {
+    login: document.getElementById("session-login") as HTMLElement,
     model: document.getElementById("session-model") as HTMLElement,
     effort: document.getElementById("session-effort") as HTMLElement,
     five_hour: document.getElementById("session-five-hour") as HTMLElement,

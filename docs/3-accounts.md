@@ -521,6 +521,8 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 | コンテキスト | `context_window.used_percentage` |
 | 5 時間・週次のリセット（#306、#320） | `rate_limits.five_hour.resets_at` / `rate_limits.seven_day.resets_at`（Unix 秒。同 docs、2026-10-07 に読んだ） |
 
+**パネルの「ログイン」欄は、ステータスラインではなく CLI のログイン情報のファイルから出す**（#495）。ステータスラインの JSON はログイン中のアカウントを運ばない。アプリはその席の設定ディレクトリ（会話記録の置き場と同じ解決：アカウントの `CLAUDE_CONFIG_DIR`、アプリの環境、`~/.claude` の順）の `.claude.json` を読む。既定の `~/.claude` だけは、ファイルがホームの `~/.claude.json` に在る。読むのは `oauthAccount` の `accountUuid` と、表示名としてのメールアドレス（`emailAddress`。無ければ `displayName`）だけである。ステータスラインが届くたびにファイルの更新時刻を見て、変わったときだけ読み直す。`CLAUDE_CONFIG_DIR` を持たない席どうしは同じファイルを読むため、同じアカウントと表示される——同じログインを共有しているからである。
+
 **欄はどれも欠けうる。** `rate_limits` は claude.ai の Pro / Max の契約でなければ来ず、契約が在っても最初の API の応答までは来ない。`effort` はその欄を持たないモデルでは来ない。`context_window.used_percentage` はセッションの序盤で null になりうる（同 docs）。**欠けているものは「—」であり、空欄でも 0% でもない。** 0% と、まだ知らないことは別である——「観測していない状態の語は許されない」（「[走っているアカウントが何をしているか](2-screen.md#走っているアカウントが何をしているか)」）と同じ線である。
 
 **受け口は部屋のソケットと同じ一本である**（決定2）。部屋のポートへ POST し、部屋は WebSocket の upgrade（`GET`）で始まるため最初のバイトで二つの呼び手を分けられる。別のポートを開かないのは、起動の行が既に部屋のポートを運んでいるためである——第二のアドレスは、起動のたびに配り、持ち、返す対象が一つ増えることになる。
@@ -586,6 +588,12 @@ CLI は `.mcp.json` のサーバのうち承認されていないものを、セ
 | 週次 | 同じく `window_minutes` が 10080 の窓の `used_percent` |
 | 5 時間・週次のリセット（#306、#320） | 同じ二つの窓の `resets_at`（Unix 秒）。使用率と同じ窓から読み、同じ行で置き換える |
 | コンテキスト | 同じ行の `payload.info.last_token_usage.total_tokens` と `payload.info.model_context_window` から、下記の Codex の式で出す |
+
+**「ログイン」欄は app-server の `account/read` から出す**（#495）。`auth.json` は名前やメールを `id_token`（JWT）の中にしか持たず、トークンを読まずには取り出せないため、ファイルの中身は読まない。制限の問い合わせ（下記「Codex の席が利用上限で止まったとき」）と同じ短命の app-server へ、`account/rateLimits/read` の後に `account/read`（`refreshToken: false`）を続けて聞く。出すのは ChatGPT ログインのメールアドレスで、無ければログインの種類（`ChatGPT` / `API キー` / `Amazon Bedrock`）。この問いに答えが無くても、制限の答えはそのまま使う。
+
+**ログイン先が替わったら一度だけ聞き直す**（#495）。watcher は毎回、席の `$CODEX_HOME/auth.json` の更新時刻だけを見る（起動時の最初の確認を含む）。変わっていれば app-server に一度聞き、名前と使用量を新しくする。制限中の席は、その答えを期限の来た問い合わせと同じに扱い、解除されていれば再開する。動いている席は、この答えで制限中にはしない——アカウントが替わったことは、制限されたことも解除されたことも意味しない。止まったかどうかは、これまでどおり rollout のターン終了が言う。
+
+Claude Code の席には、制限を問い合わせる口が無い。ログイン先が替わっても聞き直さず、制限中の印は次の正常な応答で外れる（「[Claude 親の利用上限と手動再開](#claude-親の利用上限と手動再開342)」）。
 
 **コンテキストは Codex の `/status` と同じ式で出す（#285）。** 単純な割り算（`total_tokens` ÷ `model_context_window`）は Codex の表示と合わない——2026-10-05 の実機で、パネルが 11% のとき `/status` は `93% left (29.1K used / 258K)` であった。Codex は使用量と上限の両方から基準量 12000 トークンを引き、残りの割合を整数に丸めて出す（openai/codex の `codex-rs/protocol/src/protocol.rs` の `percent_of_context_window_remaining`、2026-10-05 に読んで確認）。アプリは同じ式で残りを出し、パネルには `100 − 残り` を使用率として出す。上の例では 7% である。
 
