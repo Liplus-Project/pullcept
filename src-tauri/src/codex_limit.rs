@@ -38,6 +38,9 @@
 //! `limit::ANSWER_WAIT`: the room is told once that the seat seems stopped on
 //! something else, and nothing is typed again; a turn the seat completes
 //! later is told back once.
+//!
+//! **An account can switch the resume off** (#475, `Account::resume_notice`):
+//! the recovery is still confirmed, told and freed, and nothing is typed.
 
 use crate::room::{RoomState, SessionStats};
 use mcp_config::codex::limit::{self, Answer, Limit, Mailboxes, TurnEnd};
@@ -274,11 +277,16 @@ impl Limiter {
     /// Typed by the launch that holds the seat now. A launch that no longer
     /// does types nothing and leaves the mark: the launch after it started
     /// stopped from that mark, asks for itself, and types its own resume.
+    ///
+    /// The account's switch (#475), read here as the recovery is confirmed:
+    /// off, the seat is freed and its mark goes all the same, the room hears
+    /// the recovery, and nothing is typed, so no answer is awaited.
     fn recover(&self) {
         if !self.current() {
             return;
         }
-        let notice = self.notice(&limit::recovery_notice(&self.name));
+        let resume = crate::config::resume_notice_enabled(&self.app, &self.account_id);
+        let notice = self.notice(&limit::recovery_notice(&self.name, resume));
         self.with(|entry| {
             // The app-server query may have outlived this launch.
             if !self.current() {
@@ -288,6 +296,9 @@ impl Limiter {
             // The mark goes before the resume is typed: cut short between the
             // two, the seat misses its resume rather than being typed it twice.
             entry.persist(|boxes, account| boxes.close(account));
+            if !resume {
+                return;
+            }
             // The label carries the recovery notice's id, so the seat's next
             // `last_seen` stands past it (#47).
             let watermark = notice.unwrap_or_default();

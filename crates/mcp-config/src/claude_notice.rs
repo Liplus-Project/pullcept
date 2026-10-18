@@ -206,7 +206,9 @@ impl Notices {
             .collect()
     }
 }
-pub fn stopped(name: &str, stop: &Stop, clock: Option<&str>) -> String {
+/// `resume` is the account's switch for the resume prompt (#475): off, a
+/// parent with a known reset is told it will not be typed.
+pub fn stopped(name: &str, stop: &Stop, clock: Option<&str>, resume: bool) -> String {
     let who = if stop.subject == "parent" {
         format!("{name} の親セッション")
     } else {
@@ -219,7 +221,8 @@ pub fn stopped(name: &str, stop: &Stop, clock: Option<&str>) -> String {
         .map(|c| format!("解除予定は {c} です。"))
         .unwrap_or_else(|| "解除予定は不明です。".into());
     let action = match (stop.subject == "parent", clock.is_some()) {
-        (true, true) => "解除予定時刻を過ぎたら、Pullcept が端末へ再開の指示を一度打ちます。",
+        (true, true) if resume => "解除予定時刻を過ぎたら、Pullcept が端末へ再開の指示を一度打ちます。",
+        (true, true) => RESUME_OFF,
         (true, false) => "解除予定が分からないため、自動では再開を試しません。端末で手動再開できます。",
         (false, _) => "子の停止だけでは親の停止・回復を判定しません。",
     };
@@ -232,11 +235,17 @@ pub fn reached(name: &str, subject: &str) -> String {
         subject.trim_start_matches("child:")
     )
 }
-pub fn reset_known(name: &str, stop: &Stop, clock: &str) -> String {
+/// The account's resume prompt is switched off (#475).
+const RESUME_OFF: &str = "このアカウントは再開の指示を打たない設定のため、自動では再開を試しません。端末で手動再開できます。";
+pub fn reset_known(name: &str, stop: &Stop, clock: &str, resume: bool) -> String {
     let (who, action) = if stop.subject == "parent" {
         (
             format!("{name} の親セッション"),
-            "解除予定時刻を過ぎたら端末へ再開の指示を一度打ちます。",
+            if resume {
+                "解除予定時刻を過ぎたら端末へ再開の指示を一度打ちます。"
+            } else {
+                RESUME_OFF
+            },
         )
     } else {
         (
@@ -348,7 +357,8 @@ mod tests {
                 reset: None,
                 episode: None
             },
-            None
+            None,
+            true
         )
         .contains("解除予定は不明"));
     }
@@ -482,7 +492,7 @@ mod tests {
         // A known reset announces the automatic attempt; an unknown one says
         // it will not be tried and points at the manual path. Neither speaks
         // of holding posts (#401).
-        let known = stopped("seat", &parent, Some("10月10日 01:20"));
+        let known = stopped("seat", &parent, Some("10月10日 01:20"), true);
         // The stop itself is still told to the whole room (#401 item 5).
         assert!(known.starts_with("seat の親セッション は利用上限で停止しました。解除予定は 10月10日 01:20 です。"), "{known}");
         assert!(known.contains("再開の指示を一度打ちます"));
@@ -493,15 +503,23 @@ mod tests {
                 ..parent.clone()
             },
             None,
+            true,
         );
         assert!(unknown.contains("自動では再開を試しません"));
-        assert!(reset_known("seat", &parent, "10月10日 01:20").contains("再開の指示"));
+        assert!(reset_known("seat", &parent, "10月10日 01:20", true).contains("再開の指示を一度打ちます"));
+        // Switched off (#475): the stop and its reset are still told, the
+        // attempt is not promised.
+        let off = stopped("seat", &parent, Some("10月10日 01:20"), false);
+        assert!(off.starts_with("seat の親セッション は利用上限で停止しました。解除予定は 10月10日 01:20 です。"), "{off}");
+        assert!(off.contains("打たない設定") && !off.contains("一度打ちます"), "{off}");
+        let off_known = reset_known("seat", &parent, "10月10日 01:20", false);
+        assert!(off_known.contains("10月10日 01:20") && off_known.contains("打たない設定"), "{off_known}");
         let child = Stop {
             subject: "child:a".into(),
             ..parent
         };
-        assert!(!reset_known("seat", &child, "10月10日 01:20").contains("再開の指示"));
-        let child_stop = stopped("seat", &child, None);
+        assert!(!reset_known("seat", &child, "10月10日 01:20", true).contains("再開の指示"));
+        let child_stop = stopped("seat", &child, None, true);
         assert!(typed("seat", false).contains("再開の指示を打ちます"));
         assert!(typed("seat", true).contains("まだ利用上限") && typed("seat", true).contains("もう一度"));
         let other = other_cause("seat");

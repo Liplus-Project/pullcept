@@ -39,3 +39,22 @@ fn other_account_kinds_and_remote_opt_in_are_preserved() {
     let loaded: Account = serde_json::from_value(json!({"id":"codex", "name":"Codex", "command":"codex", "args":[], "kind":"codex_cli", "codex_remote_control":true})).unwrap();
     assert!(loaded.codex_remote_control);
 }
+
+#[test]
+fn resume_notice_missing_is_on_and_explicit_off_survives_save() {
+    // #475: an account saved before the switch keeps the prompt it always had.
+    for (kind, command) in [("claude_code", "claude"), ("codex_cli", "codex")] {
+        let value = json!({"id":"a", "name":"A", "command":command, "args":[], "kind":kind});
+        let loaded: Account = serde_json::from_value(value.clone()).unwrap();
+        assert!(loaded.resume_notice);
+        assert_eq!(serde_json::to_value(&loaded).unwrap()["resume_notice"], true);
+        let mut off = value;
+        off["resume_notice"] = json!(false);
+        let loaded: Account = serde_json::from_value(off).unwrap();
+        assert!(!loaded.resume_notice);
+        let saved = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(saved["resume_notice"], false);
+        let reloaded: Account = serde_json::from_value(saved).unwrap();
+        assert!(!reloaded.resume_notice);
+    }
+}

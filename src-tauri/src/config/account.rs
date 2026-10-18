@@ -235,8 +235,23 @@ pub struct Account {
     /// Opt-in relay; only these seats use their own SQLite directory (#419).
     #[serde(default)]
     pub codex_remote_control: bool,
+    /// Whether the resume prompt is typed into this account's seat once its
+    /// usage limit lifts (#475): `claude_resume::PROMPT` at a Claude Code
+    /// parent's reset, `codex::limit::CONTINUE` at a Codex CLI seat's confirmed
+    /// recovery. Off types nothing; the stop, 制限中 and the room's notices of
+    /// the limit stay as they are (docs/3-accounts.md).
+    ///
+    /// Missing values keep the prompt on, which is what every account did
+    /// before the switch existed. Read when the prompt is due, not held from
+    /// the launch, so a change reaches a seat already running.
+    #[serde(default = "default_resume_notice")]
+    pub resume_notice: bool,
 }
 
 pub fn default_codex_app_server() -> bool {
+    true
+}
+
+pub fn default_resume_notice() -> bool {
     true
 }

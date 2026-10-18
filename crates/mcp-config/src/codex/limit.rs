@@ -388,9 +388,14 @@ pub fn stop_notice(name: &str, reset: Option<&str>) -> String {
 }
 
 /// What the room is told when the recovery is confirmed and the resume is
-/// about to be typed into the seat.
-pub fn recovery_notice(name: &str) -> String {
-    format!("{name} の利用上限の解除を確かめました。{name} の端末へ再開の指示を打ちます。")
+/// about to be typed into the seat. `resume` is the account's switch for it
+/// (#475): off, the recovery is still told and nothing is typed.
+pub fn recovery_notice(name: &str, resume: bool) -> String {
+    if resume {
+        format!("{name} の利用上限の解除を確かめました。{name} の端末へ再開の指示を打ちます。")
+    } else {
+        format!("{name} の利用上限の解除を確かめました。このアカウントは再開の指示を打たない設定のため、端末へは打ちません。")
+    }
 }
 
 /// The resume drew no answer within [`ANSWER_WAIT`] (#403).
@@ -615,10 +620,13 @@ mod tests {
             "Codex Luna は利用上限で止まりました。解除予定は 10月5日 22:45 です。"
         );
         assert!(stop_notice("L", None).contains("解除予定は分かっていません。"));
-        for text in [stop_notice("L", None), recovery_notice("L")] {
+        for text in [stop_notice("L", None), recovery_notice("L", true), recovery_notice("L", false)] {
             assert!(!text.contains("預か"), "{text}");
         }
-        assert!(recovery_notice("L").contains("再開の指示を打ちます"));
+        assert!(recovery_notice("L", true).contains("再開の指示を打ちます"));
+        // Switched off (#475): the recovery is told, the prompt is not promised.
+        let off = recovery_notice("L", false);
+        assert!(off.contains("解除を確かめました") && off.contains("打たない設定") && !off.contains("打ちます。"), "{off}");
         assert!(other_cause("L").contains("端末を見てください"));
         assert!(back_after_other_cause("L").contains("解消"));
         assert!(CONTINUE.contains("中断していた作業を再開してください"));

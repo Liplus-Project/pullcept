@@ -10,6 +10,13 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager};
 
 type Key = (String, String);
+/// What the watcher's round does about the resume prompt.
+enum Prompt {
+    Typed(resume::Action),
+    /// The account's switch is off (#475).
+    Skipped,
+}
+use Prompt::{Skipped, Typed};
 struct Entry {
     nonce: String,
     parent: String,
@@ -249,6 +256,18 @@ impl ClaudeLimits {
     /// own terminal — the one occupying the seat, since the watcher runs only
     /// while it does (#401). No other launch's identity is compared.
     fn flush_notices(&self, app: &AppHandle, topic: &str, account: &str, nonce: &str, pty: &str) {
+        // The account's switch for the resume prompt (#475), read from the
+        // config only when a parent notice or a prompt is due, and outside
+        // the seats' lock.
+        let now = unix_now();
+        let wanted = {
+            let seats = self.seats.lock();
+            seats.get(&(topic.into(), account.into())).is_some_and(|e| {
+                (e.state.limited && e.resume.due(now))
+                    || e.pending_notices.iter().any(|(n, _)| n.subject == "parent")
+            })
+        };
+        let enabled = !wanted || crate::config::resume_notice_enabled(app, account);
         let (messages, action, name) = {
             let mut seats = self.seats.lock();
             let Some(e) = seats.get_mut(&(topic.into(), account.into())).filter(|e| {
@@ -265,13 +284,13 @@ impl ClaudeLimits {
                             &e.name,
                             &stop,
                             clock.as_deref().unwrap_or("不明"),
+                            enabled,
                         )
                     } else {
-                        mcp_config::claude_notice::stopped(&e.name, &stop, clock.as_deref())
+                        mcp_config::claude_notice::stopped(&e.name, &stop, clock.as_deref(), enabled)
                     }
                 })
                 .collect();
-            let now = unix_now();
             // The parent's reset is the resume prompt's to act on (#357).
             messages.extend(
                 e.notices
@@ -280,10 +299,15 @@ impl ClaudeLimits {
                     .filter(|subject| subject != "parent")
                     .map(|subject| mcp_config::claude_notice::reached(&e.name, &subject)),
             );
-            let action = if e.state.limited {
-                e.resume.tick(now)
-            } else {
+            let action = if !e.state.limited {
                 None
+            } else if !enabled && e.resume.due(now) {
+                // Switched off (#475): dropped, not typed; nothing is said to
+                // the room and no answer is awaited.
+                e.resume.skip();
+                Some(Skipped)
+            } else {
+                e.resume.tick(now).map(Typed)
             };
             (messages, action, e.name.clone())
         };
@@ -292,7 +316,10 @@ impl ClaudeLimits {
             crate::room::post_app_notice(app, &room, topic, &message, Some(pty));
         }
         match action {
-            Some(resume::Action::Type { retry }) => {
+            Some(Skipped) => {
+                log(app, "skipped", topic, account, "resume_notice=off");
+            }
+            Some(Typed(resume::Action::Type { retry })) => {
                 // Said to the room first, its id the label's watermark; not
                 // typed into this seat, which gets the prompt instead.
                 let notice = crate::room::post_app_notice(
@@ -328,7 +355,7 @@ impl ClaudeLimits {
                     &format!("retry={retry} pty={pty}"),
                 );
             }
-            Some(resume::Action::OtherCause) => {
+            Some(Typed(resume::Action::OtherCause)) => {
                 crate::room::post_app_notice(app, &room, topic, &notice::other_cause(&name), Some(pty));
                 self.stalled.lock().told(topic, account);
                 log(app, "other-cause", topic, account, &format!("no_answer_within={}s", resume::ANSWER_WAIT));
