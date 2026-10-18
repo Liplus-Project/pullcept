@@ -31,3 +31,7 @@ src-tauri/gen/
 src-tauri/.cargo/config.toml
 # Seeded design canvas — 2.2MB of editor payload, regenerated from design/*.dc.html
 design/pullcept-ui.html
+
+# Written by scripts/restart-pullcept.ps1 (#408)
+restart-pullcept.log
+restart-pullcept.dev.log

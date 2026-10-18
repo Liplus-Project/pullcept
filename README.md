@@ -160,6 +160,18 @@ Tauri アプリを開発モードで起動します。
 npm run tauri dev
 ```
 
+### 作り直して再起動する（#408）
+
+動いている開発版を作り直して起動し直すときは、そのクローンのルートで次を実行します。
+
+```powershell
+pwsh -NoProfile -File scripts\restart-pullcept.ps1
+```
+
+スクリプトは自分のあるクローンだけを対象にします。そのクローンのターゲットディレクトリ（`src-tauri\target`、または `src-tauri\.cargo\config.toml` の `target-dir`）で作られた `pullcept.exe` を探し、それを起動した `npm run tauri dev` のツリーごと `taskkill /T /F` で終了し、クローンのルートで `npm.cmd run tauri dev` を起動して、新しい `pullcept.exe` が立ち上がるまで待ちます（既定 900 秒、`-TimeoutSeconds` で変更）。別のクローンから起動した Pullcept には触れません。
+
+Pullcept の席の端末からも実行できます。スクリプトは自分を WMI（`Win32_Process.Create`）で Pullcept のツリーの外に起動し直してすぐ戻るので、古いツリーと一緒に席のシェルが消えても再起動は続きます。結果は端末ではなく、クローンのルートの `restart-pullcept.log` に追記されます（`OK: new pullcept.exe pid=…` か `FAIL: …`）。`tauri dev` 自身の出力は `restart-pullcept.dev.log` に出ます。どちらも Git の追跡対象外です。`-DryRun` は対象の一覧をログに書くだけで、何も止めず起動もしません。
+
 フロントエンドだけを起動する場合は、次のコマンドを使います。
 
 ```powershell
@@ -202,7 +214,7 @@ crates/room-floor/    同時発話の順序付け（tauri 非依存、テスト�
 crates/topic-index/   トピックの保存と索引の照合（tauri 非依存、テスト対象）
 crates/mcp-servers/   アプリ本体が起動する MCP サーバの設定ファイルと欄の読み方（tauri 非依存、テスト対象）
 portable-pty-patch/   Windows 対応を含む portable-pty のローカルパッチ
-scripts/              インストール時に @xterm/addon-webgl へ当てるパッチ（#278）
+scripts/              インストール時に @xterm/addon-webgl へ当てるパッチ（#278）、開発版の再起動（#408）
 .github/workflows/    Windows CI とリリース用 CD
 ```
 
