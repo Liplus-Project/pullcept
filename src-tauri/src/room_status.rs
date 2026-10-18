@@ -61,6 +61,9 @@ pub fn activity(app: &AppHandle, event: &Value) {
 }
 
 pub fn answer(app: &AppHandle, topic: &str, account_id: Option<&str>) -> Result<Value, String> {
+    answer_ui(app,topic,account_id).map(|snapshot| mcp_config::status_projection::mcp(snapshot,account_id.is_some()))
+}
+pub fn answer_ui(app: &AppHandle, topic: &str, account_id: Option<&str>) -> Result<Value, String> {
     let room = app.state::<RoomState>();
     if !room.holds(topic) {
         return Err("Topic is no longer open".into());

@@ -43,6 +43,7 @@ pub mod prompt_hold;
 pub mod usage;
 pub mod room_status;
 pub mod work_status;
+pub mod status_projection;
 pub mod mcp_observer;
 pub mod session_control;
 

@@ -176,7 +176,10 @@ impl Book {
                 if r.kind.as_ref().is_some_and(|k| k != &record.kind) {
                     return Err("Cannot change kind".into());
                 }
-                if r.target_account_id.as_ref().is_some_and(|a| Some(a) != record.target_account_id.as_ref()) {
+                if r.target_account_id
+                    .as_ref()
+                    .is_some_and(|a| Some(a) != record.target_account_id.as_ref())
+                {
                     return Err("Cannot change the target human".into());
                 }
                 record.text = r.text.clone().ok_or("text required")?;
@@ -230,8 +233,9 @@ impl Book {
                 .cmp(&a.updated_at)
                 .then_with(|| b.id.cmp(&a.id))
         });
+        let history_total = history.len();
         history.truncate(limit.min(100));
-        json!({"active":active,"history":history,"history_limit":limit.min(100),
+        json!({"active":active,"history":history,"history_limit":limit.min(100),"history_total":history_total,
             "pending_decisions":active.iter().filter(|r| r.kind == "decision").count()})
     }
 }

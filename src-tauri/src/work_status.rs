@@ -124,7 +124,7 @@ pub fn topic_status(
     topic_id: String,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    crate::room_status::answer(&app, &topic_id, account_id.as_deref())
+    crate::room_status::answer_ui(&app, &topic_id, account_id.as_deref())
 }
 #[tauri::command]
 pub fn update_topic_work(

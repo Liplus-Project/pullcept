@@ -565,7 +565,7 @@ const TOOLS = [
   },
   {
     name: "status",
-    description: "Read current topic live participants by connection identity, durable work notes and human decisions (separate from roster), self-reported plans, and safe app-owned MCP observations. Optional account_id filters work owner or human decision target and participant details including model/usage freshness. Stopped work remains interrupted; only explicit complete finishes manual work. Unknown/unsupported/auth-required/timeout are not zero. Read-only; posts nothing and wakes nobody.",
+    description: "Read current topic live participants by connection identity, durable work notes and human decisions (separate from roster), self-reported plans, and safe app-owned MCP observations. No account_id returns bounded current summaries/counts, no completed answer bodies; plans show only current in-progress steps. Optional account_id filters work owner or human decision target and gives model/usage details, at most 5 recent history records (answer previews 1000 chars) and 20 plan steps. Truncation flags/total counts are explicit; full records are available in participant details. Stopped work remains interrupted; only explicit complete finishes manual work. Unknown/unsupported/auth-required/timeout are not zero. Read-only; posts nothing and wakes nobody.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     inputSchema: { type: "object" as const, properties: { account_id: { type: "string", minLength: 1 } }, required: [] as string[], additionalProperties: false },
   },

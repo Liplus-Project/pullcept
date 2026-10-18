@@ -599,3 +599,6 @@ wire protocol 11 は `session_list`、`session_status`（`operation_id`）、`se
 observer は initialize と tools/list の後、`get_pending_status._meta["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"] === 1` のときだけ raw snapshot を取得する。30秒間隔、同時一件、回答5秒・pipe書込み1秒の上限を持ち、通知の数値 ID と異なる一意な文字列 ID で照合する。古い回答・古い generation は新しい観測を上書きしない。未対応の旧 bridge は取得を呼ばず終了し、未対応と出す。現在の npm 0.12 系にはこの契約が無く、upstream #260 の公開版への更新は別の反映である。
 
 `pending_count/types/latest_received_at` だけを公開し、latest_received_at は現在の未処理集合内の最新受信である。未認証・未取得・timeout は件数なしで区別する。観測でイベントを消費・処理済みにせず、認証ブラウザも起動しない。通知用プロセスの token 更新と get_event はこの観測から独立して続く。
+
+
+status の無指定取得は現在の作業・判断依頼の要約と件数、現行計画の進行中の段、MCP 観測だけを返し、完了回答の本文を含めない（#493）。要約は作業20件・計画20件を上限とし、文字の省略と総件数を明示する。account_id 指定の詳細は作業10件、最新履歴5件（回答1000文字）、計画20段（各300文字）に制限する。画面の topic_status は同じ保存・観測を別の詳細 projection で読み、元の保存原文は変更しない。長い回答や計画の全文は参加者詳細・発言ダイアログから読める。
