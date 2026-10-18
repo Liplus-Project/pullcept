@@ -184,19 +184,15 @@ impl PtyState {
     /// `claude.exe` under it were both gone from the process list afterwards.
     /// This sweep drops each instance the same way, so it ends the same tree.
     ///
-    /// **There is no failure to report, so nothing here reports one.** On
-    /// Windows `Child::kill` resolves to `WinChild::kill`, which discards the
-    /// result of its own `TerminateProcess` call and returns `Ok(())`
-    /// unconditionally (`portable-pty-patch/src/win/mod.rs`). A caller
-    /// collecting the sessions that resisted would collect nothing, forever,
-    /// and the report built on it would be a protection that reads as present
-    /// and is not. The root of that — `do_kill` also has its success test
-    /// inverted — is #96. **If #96 lands, `kill()` can start failing for real,
-    /// and a failure path here becomes worth having again.** Until then it
-    /// would be dead code claiming to be a safety net.
+    /// **A failure is logged, and the sweep goes on.** Since #96 `Child::kill`
+    /// on Windows reports what `TerminateProcess` did (`portable-pty-patch/src/
+    /// win/mod.rs`): it fails only on a process that is still running after the
+    /// call, a process already gone being no failure. The sweep runs as the app
+    /// closes, with nobody to show a report to, so the failure goes to the log
+    /// (`kill_failed`) and the drop still closes that ConPTY.
     pub fn kill_all(&self) {
-        for (_, mut pty) in self.procs.lock().drain() {
-            let _ = pty.child.kill();
+        for (id, mut pty) in self.procs.lock().drain() {
+            kill_failed(&id, pty.child.kill());
         }
     }
 
@@ -205,8 +201,7 @@ impl PtyState {
     /// `kill_all` narrowed to a list, and the same three things hold about it:
     /// one acquisition of the lock over the whole set, the entry taken out
     /// rather than left in place because dropping the instance is the half that
-    /// ends the tree, and no failure to report (see `kill_all` for why, and for
-    /// what #96 would have to change first).
+    /// ends the tree, and a failure logged rather than returned (see `kill_all`).
     ///
     /// An id that is not in the map is a session that has already exited. That
     /// is not an error here: the caller's list came from the seats, and a seat
@@ -216,9 +211,16 @@ impl PtyState {
         let mut map = self.procs.lock();
         for id in ids {
             if let Some(mut pty) = map.remove(id) {
-                let _ = pty.child.kill();
+                kill_failed(id, pty.child.kill());
             }
         }
+    }
+}
+
+/// A sweep's failed kill, said in the log with the session's id (#96).
+fn kill_failed(id: &str, result: std::io::Result<()>) {
+    if let Err(err) = result {
+        eprintln!("[pty] kill of {id} failed: {err}");
     }
 }
 
