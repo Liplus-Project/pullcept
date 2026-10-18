@@ -20,7 +20,7 @@ test("dry run resolves the clone's target directory, logs and touches nothing",(
     const result=run(["-RepoRoot",dir,"-DryRun"]);
     assert.equal(result.status,0,result.stderr);
     const log=readFileSync(join(dir,"restart-pullcept.log"),"utf8");
-    assert.match(log,/target=C:\pullcept-synthetic-target\/);
+    assert.ok(log.includes("target=C:\\pullcept-synthetic-target\\"),log);
     assert.match(log,/no running Pullcept from this clone/);
     assert.match(log,/dry run: nothing stopped or started/);
   } finally { rmSync(dir,{recursive:true,force:true}); }
