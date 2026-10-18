@@ -13,7 +13,7 @@ const edge = process.env.PREVIEW_BROWSER ?? [
 ].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER to its executable (no skipped boundary tests)");
 
-test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, async t => {
+test("real Chromium static preview boundary and lifecycle", { timeout: 60000 }, async t => {
   const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false }, logLevel: "error" });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, "");
@@ -63,7 +63,23 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
     html.report-root #card{text-decoration:underline}body::after{content:'static CSS'}</style></head>
     <body style="background-color:rgb(230, 240, 250)" onload="parent.pwned=true">
     <h1 id="card" onclick="parent.pwned=true">Static report</h1><p style="font-weight:700">inline CSS</p>
-    <script>parent.pwned=true;fetch('https://probe.invalid/fetch');parent.document.body.innerHTML='bad';window.__TAURI_INTERNALS__.invoke('bad')</script>
+    <script>parent.pwned=true</script>
+    <script>document.getElementById('card').dataset.ran='inline';document.body.append(Object.assign(document.createElement('div'),{id:'made',textContent:'made by script'}))</script>
+    <script>const mark=(k,v)=>document.body.dataset[k]=v;
+      try{parent.document.body.innerHTML='bad';mark('parent','reached')}catch{mark('parent','opaque')}
+      try{top.document.title='bad';mark('top','reached')}catch{mark('top','opaque')}
+      try{mark('parentTauri',typeof parent.__TAURI_INTERNALS__)}catch{mark('parentTauri','denied')}
+      mark('tauri',typeof window.__TAURI_INTERNALS__);
+      fetch('https://probe.invalid/fetch').then(()=>mark('fetch','reached'),()=>mark('fetch','blocked'));
+      new Image().src='https://probe.invalid/js-image';
+      document.body.append(Object.assign(document.createElement('iframe'),{src:'https://probe.invalid/js-frame'}));
+      try{window.open('https://probe.invalid/js-popup');}catch{}</script>
+    <script type="module">document.body.dataset.module='ran'</script>
+    <script src="https://probe.invalid/external.js">document.body.dataset.external='ran'</script>
+    <script type="importmap">{"imports":{"x":"https://probe.invalid/map.js"}}</script>
+    <script type="speculationrules">{"prefetch":[{"source":"list","urls":["https://probe.invalid/speculation"]}]}</script>
+    <script><!--<script>document.body.dataset.escaped='ran'</script>--></script><h2 id="after-script">after script</h2>
+    <button id="handler" onclick="this.dataset.clicked='yes'">handler</button>
     <img src="https://probe.invalid/image" srcset="https://probe.invalid/set 2x" onerror="parent.pwned=true">
     <iframe src="https://probe.invalid/frame"></iframe><object data="file:///C:/secret"></object><embed src="https://probe.invalid/embed">
     <svg><a href="https://probe.invalid/svg"><text>svg</text></a><image href="https://probe.invalid/svg-image"/></svg>
@@ -91,6 +107,14 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   const frame = page.frameLocator(".html-preview iframe");
   await frame.locator("#card").waitFor();
   assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
+  // The side pane never runs posted scripts or handlers (#443).
+  await frame.locator("#handler").click();
+  await page.waitForTimeout(300);
+  assert.equal(await frame.locator("#made").count(), 0);
+  assert.deepEqual(await frame.locator("body").evaluate(el => ({ ...el.dataset })), {});
+  assert.equal(await frame.locator("#card").getAttribute("data-ran"), null);
+  assert.deepEqual(await frame.locator("#handler").evaluate(el => [...el.attributes].map(a => a.name)), ["id"]);
+  assert.equal(await frame.locator("#after-script").textContent(), "after script");
   assert.equal(await frame.locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
   assert.equal(await frame.locator("body").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(230, 240, 250)");
   assert.equal(await frame.locator("p").evaluate(el => getComputedStyle(el).fontWeight), "700");
@@ -135,11 +159,41 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   const host = await context.newPage();
   await host.goto(`${base}/html-preview.html`);
   await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, await page.evaluate(() => window.detachedCalls[0]));
-  await host.frameLocator("iframe").locator("#card").waitFor();
-  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "");
-  assert.equal(await host.frameLocator("iframe").locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
-  await host.frameLocator("iframe").locator("#nav").click();
+  const hostFrame = host.frameLocator("iframe");
+  await hostFrame.locator("#card").waitFor();
+  assert.equal(await host.locator("iframe").getAttribute("sandbox"), "allow-scripts", "the separate window's frame adds allow-scripts only");
+  // Inline scripts and handlers run inside the separate window's opaque frame only (#443).
+  await hostFrame.locator("#made").waitFor();
+  await hostFrame.locator("body[data-fetch]").waitFor();
+  assert.equal(await hostFrame.locator("#card").getAttribute("data-ran"), "inline");
+  assert.deepEqual(await hostFrame.locator("body").evaluate(el => ({ ...el.dataset })), {
+    parent: "opaque", top: "opaque", parentTauri: "denied", tauri: "undefined", fetch: "blocked", module: "ran",
+  }, "fetch stops at CSP; parent/top documents stay out of reach");
+  assert.equal(await hostFrame.locator("#after-script").textContent(), "after script", "a script cannot swallow following markup");
+  assert.equal(await hostFrame.locator("script[src],script[type=importmap],script[type=speculationrules]").count(), 0);
+  await hostFrame.locator("#handler").click();
+  assert.equal(await hostFrame.locator("#handler").getAttribute("data-clicked"), "yes", "on* handlers run in the frame");
+  assert.equal(await hostFrame.locator("html").evaluate(el => [...el.attributes].some(a => a.name.startsWith("on"))), false);
+  assert.equal(await hostFrame.locator("iframe:not([src='https://probe.invalid/js-frame']),object,embed,meta[http-equiv=refresh],base,form,link,img,svg,math").count(), 0, "posted markup never carries these; only the script-made frame exists");
+  assert.equal(await hostFrame.locator("#card").evaluate(el => getComputedStyle(el).color), "rgb(12, 34, 56)");
+  await hostFrame.locator("#nav").click();
+  await host.waitForTimeout(300);
   assert.equal(host.frames()[1].url(), "about:srcdoc");
+  assert.equal(await host.evaluate(() => window.pwned), undefined);
+  assert.equal(popups, 1, "only the test's own host page opened; window.open is blocked");
+  // A script can navigate its own frame; the host page's frame-src (about: only)
+  // stops that before any request, for external and same-origin targets alike.
+  for (const target of ["https://probe.invalid/host-self-nav", "/html-preview.html", "/index.html"]) {
+    const navDoc = await page.evaluate(target => window.htmlPreviewDocument(`<p id="nav-start">nav</p><script>location.href=${JSON.stringify(target)}</script>`, true), target);
+    await host.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, navDoc);
+    await host.waitForTimeout(500);
+    assert.equal(host.frames().length, 2);
+    // Chromium leaves its error document in a frame whose navigation CSP blocked.
+    assert.ok(["about:srcdoc", "chrome-error://chromewebdata/"].includes(host.frames()[1].url()), `self-navigation to ${target} is blocked`);
+  }
+  assert.equal(requests.some(url => url.includes("self-nav")), false, "self-navigation never reaches the network");
+  assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")),
+    "every script-made attempt fails at CSP");
 
   await page.evaluate(() => window.render('```HTML\n<title>  Second\n report </title><h2>Second report</h2>\n```\n\n```html\n<p>untitled</p>\n```'));
   assert.equal(await open("HTML").count(), 1, "no first-line name and no title falls back to HTML");

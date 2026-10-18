@@ -74,6 +74,9 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   pane.append(header, note, error, content, codeView);
   conversation.after(pane);
   let doc: string | null = null;
+  // The separate window's document keeps inline scripts (#443); the side
+  // pane's document `doc` never does.
+  let scriptDoc: string | null = null;
   let opener: HTMLButtonElement | null = null;
   let detachedOpen = false;
   // Serialize native operations: a slow create must finish before a topic's
@@ -98,6 +101,7 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   codeToggle.addEventListener("click", () => showCode(true));
   function clear(restoreFocus = false) {
     doc = null;
+    scriptDoc = null;
     pane.hidden = true;
     title.textContent = "HTML プレビュー";
     content.replaceChildren();
@@ -114,13 +118,13 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   close.addEventListener("click", () => clear(true));
   pane.addEventListener("keydown", e => { if (e.key === "Escape") clear(true); });
   separate.addEventListener("click", () => {
-    if (doc === null) return;
+    if (scriptDoc === null) return;
     detachedOpen = true;
-    const shown = doc;
+    const shown = scriptDoc;
     // Hide the side pane only after the separate window has opened (#463);
     // on failure the pane and its error stay. The window itself stays open.
     void syncDetached(shown, true).then(ok => {
-      if (!ok || doc !== shown || pane.hidden) return;
+      if (!ok || scriptDoc !== shown || pane.hidden) return;
       pane.hidden = true;
       if (opener?.isConnected) opener.focus();
     });
@@ -168,16 +172,19 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
         codeView.replaceChildren(...code);
         try {
           const next = htmlPreviewDocument(source);
+          const nextScript = htmlPreviewDocument(source, true);
           const frame = previewFrame(next);
           frame.addEventListener("error", () => { error.textContent = "表示できませんでした。コードをご覧ください。"; showCode(true); });
           content.replaceChildren(frame);
           doc = next;
+          scriptDoc = nextScript;
           error.textContent = "";
           showCode(false);
-          if (detachedOpen) syncDetached(doc);
+          if (detachedOpen) syncDetached(scriptDoc);
         } catch {
           // The code stays readable in the pane even if parsing or rendering fails.
           doc = null;
+          scriptDoc = null;
           content.replaceChildren();
           error.textContent = "表示できませんでした。コードをご覧ください。";
           showCode(true);
