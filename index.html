@@ -82,7 +82,13 @@
              after it stay pinned to the right. Drawn by src/main.ts
              (`renderRoomTitle`). -->
         <div id="room-title" class="spacer">
-          <span id="room-title-name"></span>
+          <!-- Out of the drag script (`false`): a double click on the name
+               renames the topic (#469) rather than maximizing. The single
+               press that moves the window is started by src/main.ts. -->
+          <span
+            id="room-title-name"
+            data-tauri-drag-region="false"
+          ></span>
           <span id="room-title-count"></span>
         </div>
         <!-- The person at this screen used to declare their name and colour

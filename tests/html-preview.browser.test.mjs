@@ -30,9 +30,11 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
     import { htmlPreviewDocument } from '/src/html-preview-document.ts';
     window.createHtmlPreview = createHtmlPreview;
     window.detachedCalls = [];
+    window.detachedSources = [];
     window.paneCalls = [];
-    window.preview = createHtmlPreview(document.querySelector('#conversation'), async doc => {
+    window.preview = createHtmlPreview(document.querySelector('#conversation'), async (doc, open, source) => {
       window.detachedCalls.push(doc);
+      window.detachedSources.push(source);
       if (window.detachDelay) await window.detachDelay;
       if (window.detachFail && doc !== null) throw new Error('native open failed');
     }, async placement => { window.paneCalls.push(placement); });
@@ -47,7 +49,7 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   await page.goto(`${base}/preview-test`);
   await page.waitForFunction(() => window.ready);
   await page.waitForFunction(() => window.detachedCalls.length === 1 && window.detachedCalls[0] === null);
-  await page.evaluate(() => { window.detachedCalls = []; });
+  await page.evaluate(() => { window.detachedCalls = []; window.detachedSources = []; });
   // The side pane's child view (#466) is a native view; this harness records
   // what the controller asks of it. Startup empties and hides a surviving one.
   const lastPane = async (check, what) => {
@@ -141,6 +143,9 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   popups = 0;
   assert.equal(await paneHost.getByRole("button", { name: "メインウィンドウで開く" }).isVisible(), false);
   assert.equal(await paneHost.locator("body > p").isVisible(), false);
+  // The separate window's title bar and code view are not drawn in the side pane (#468).
+  assert.equal(await paneHost.locator("header").isVisible(), false);
+  assert.equal(await paneHost.locator("#code").isVisible(), false);
   await paneHost.evaluate(doc => { window.__htmlPreviewDocument = doc; window.dispatchEvent(new Event("html-preview-update")); }, shown.document);
   const frame = paneHost.frameLocator("iframe");
   await frame.locator("#card").waitFor();
@@ -252,6 +257,63 @@ test("real Chromium preview boundary and lifecycle", { timeout: 60000 }, async t
   assert.equal(requests.some(url => url.includes("self-nav")), false, "self-navigation never reaches the network");
   assert.ok(requests.every(url => failures.get(url) === "csp" || (url === "file:///C:/secret" && failures.get(url) === "other")),
     "every script-made attempt fails at CSP");
+
+  // The separate window's own title bar (#468): the side pane's header row
+  // (name, プレビュー｜コード, メインウィンドウで開く) and the window's three,
+  // with no "HTML プレビュー - Pullcept" anywhere on the page.
+  const sent = await page.evaluate(() => window.detachedSources[0]);
+  assert.deepEqual(sent, { name: "report.html", code: source }, "the separate window gets the file name and the posted source");
+  await host.evaluate(({ name, code }) => { window.__htmlPreviewName = name; window.__htmlPreviewCode = code; window.dispatchEvent(new Event("html-preview-update")); }, sent);
+  const bar = host.locator("header");
+  assert.equal(await bar.locator("strong").textContent(), "report.html");
+  assert.deepEqual(await bar.getByRole("button").evaluateAll(els => els.map(el => el.getAttribute("aria-label") ?? el.textContent)),
+    ["プレビュー", "コード", "メインウィンドウで開く", "最小化", "最大化", "閉じる"]);
+  assert.equal((await host.locator("body").textContent()).includes("HTML プレビュー - Pullcept"), false);
+  assert.equal(await host.title(), "Pullcept");
+  // The code view is text: the posted scripts appear as characters and run nothing.
+  await host.getByRole("button", { name: "コード" }).click();
+  assert.equal(await host.locator("#code").isVisible(), true);
+  assert.equal(await host.locator("#preview").isVisible(), false);
+  assert.equal(await host.locator("#code").textContent(), source);
+  assert.equal(await host.locator("#code *").count(), 0);
+  assert.equal(await host.getByRole("button", { name: "コード" }).getAttribute("aria-pressed"), "true");
+  await host.getByRole("button", { name: "プレビュー" }).click();
+  assert.equal(await host.locator("#code").isVisible(), false);
+  assert.equal(await host.locator("#preview iframe").isVisible(), true);
+  // Each window operation is a fixed navigation the native guard blocks and
+  // performs (src-tauri/src/html_preview.rs); no window API is called here.
+  // A 204 answer leaves the page in place, as the guard's refusal does.
+  // On a page of its own: a navigation the test answers stays pending to Chromium.
+  const bare = await context.newPage();
+  await bare.goto(`${base}/html-preview.html`);
+  const bareBar = bare.locator("header");
+  const asked = [];
+  await bare.route("**/html-preview-window/**", route => { asked.push(new URL(route.request().url()).pathname); return route.fulfill({ status: 204 }); });
+  const askedNext = async (what, act) => {
+    const before = asked.length;
+    await act();
+    for (let attempt = 0; attempt < 50 && asked.length === before; attempt++) await bare.waitForTimeout(20);
+    assert.deepEqual(asked.slice(before), [what]);
+  };
+  await askedNext("/html-preview-window/minimize", () => bare.getByRole("button", { name: "最小化" }).dispatchEvent("click"));
+  await askedNext("/html-preview-window/toggle-maximize", () => bare.getByRole("button", { name: "最大化" }).dispatchEvent("click"));
+  await askedNext("/html-preview-window/close", () => bare.getByRole("button", { name: "閉じる" }).dispatchEvent("click"));
+  // Grabbing the bar (the name included) drags; a double click maximizes or restores.
+  await askedNext("/html-preview-window/drag", () => bareBar.locator("strong").dispatchEvent("mousedown", { button: 0, detail: 1 }));
+  await askedNext("/html-preview-window/toggle-maximize", () => bareBar.dispatchEvent("mousedown", { button: 0, detail: 2 }));
+  // A button on the bar is a button, not a handle; the right button does nothing.
+  const quiet = asked.length;
+  await bare.getByRole("button", { name: "コード" }).dispatchEvent("mousedown", { button: 0, detail: 1 });
+  await bareBar.locator("strong").dispatchEvent("mousedown", { button: 2, detail: 1 });
+  await bare.waitForTimeout(200);
+  assert.equal(asked.length, quiet);
+  assert.equal(new URL(bare.url()).pathname, "/html-preview.html");
+  // 最大化 names what pressing it does now, from the native side's report.
+  await bare.evaluate(() => { window.__htmlPreviewMaximized = true; window.dispatchEvent(new Event("html-preview-window")); });
+  assert.equal(await bare.getByRole("button", { name: "元に戻す" }).isVisible(), true);
+  await bare.evaluate(() => { window.__htmlPreviewMaximized = false; window.dispatchEvent(new Event("html-preview-window")); });
+  assert.equal(await bare.getByRole("button", { name: "最大化" }).isVisible(), true);
+  await bare.close();
 
   await page.evaluate(() => window.render('```HTML\n<title>  Second\n report </title><h2>Second report</h2>\n```\n\n```html\n<p>untitled</p>\n```'));
   assert.equal(await open("HTML").count(), 1, "no first-line name and no title falls back to HTML");

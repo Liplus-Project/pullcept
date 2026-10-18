@@ -14,6 +14,8 @@
 | [5-development.md](5-development.md) | テストの配置、往復が成立しないときの切り分け、配布、開発環境とビルド手順 |
 | [6-tradeoffs.md](6-tradeoffs.md) | 受容したトレードオフ |
 
+要求仕様のほかに、[Home.md](Home.md) と `_Footer.md` は GitHub Wiki のトップとフッター、[Decision-Structure.md](Decision-Structure.md) は wiki に置く判断構造エントリの index である。`docs/` 直下の `*.md` は wiki へそのまま写され、wiki は `docs/` の鏡になる（判断構造のエントリ本体だけは wiki 側が正）。
+
 ## purpose
 
 人間と複数の独立した AI セッションが、一つのローカルな会話面を共有するためのデスクトップアプリケーション。

@@ -1,6 +1,8 @@
 import { htmlPreviewDocument, htmlTitle } from "./html-preview-document";
 
-export type DetachedPreview = (document: string | null, open: boolean) => Promise<void>;
+/** What the separate window's title bar and code view show besides the document (#468). */
+export type DetachedSource = { name: string; code: string };
+export type DetachedPreview = (document: string | null, open: boolean, source?: DetachedSource) => Promise<void>;
 /** The side pane's content area, in physical pixels of the main window's client area. */
 export type PaneBounds = { x: number; y: number; width: number; height: number };
 /**
@@ -92,6 +94,8 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   conversation.after(pane);
   // The prepared document, shown by the child view and the separate window alike.
   let doc: string | null = null;
+  // The shown file's name and posted source, for the separate window (#468).
+  let detachedSource: DetachedSource = { name: "", code: "" };
   let opener: HTMLButtonElement | null = null;
   let detachedOpen = false;
   // Serialize native operations: a slow create must finish before a topic's
@@ -99,7 +103,8 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   let pending = Promise.resolve();
   /** Resolves true only once the native side reports success. */
   function syncDetached(value: string | null, open = false): Promise<boolean> {
-    const run = pending.catch(() => {}).then(() => detached(value, open)).then(() => true, () => {
+    const shown = value === null ? undefined : detachedSource;
+    const run = pending.catch(() => {}).then(() => detached(value, open, shown)).then(() => true, () => {
       error.textContent = "別ウィンドウを開けませんでした。コードまたは横の表示をご覧ください。";
       return false;
     });
@@ -224,6 +229,7 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
         opener = button;
         pane.hidden = false;
         title.textContent = name;
+        detachedSource = { name, code: String(source) };
         let code: Node[];
         try { code = renderCode(source); } catch { code = [document.createTextNode(String(source))]; }
         codeView.replaceChildren(...code);
