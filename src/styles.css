@@ -2827,8 +2827,8 @@ button svg.icon {
   /* The settings dialog's shape (#304): the sections down the side, the one on
      screen beside them. A height of its own rather than its content's, so the
      buttons below hold still while the sections are switched. */
-  width: min(44rem, calc(100vw - 3rem));
-  height: min(34rem, calc(100vh - 3rem));
+  width: min(70rem, calc(100vw - 3rem));
+  height: min(58rem, calc(100vh - 3rem));
   container-type: inline-size;
   color: var(--fg);
   background: var(--bg);
