@@ -277,6 +277,7 @@ const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
 const roomTitleEl = document.getElementById("room-title") as HTMLElement;
+const topicMenuEl = document.getElementById("topic-menu") as HTMLElement;
 const roomTitleNameEl = document.getElementById("room-title-name") as HTMLElement;
 const roomTitleCountEl = document.getElementById("room-title-count") as HTMLElement;
 const accountMenuEl = document.getElementById("account-menu") as HTMLElement;
@@ -1449,7 +1450,7 @@ function renderRoomTitle(): void {
   const topic = current ? topics.find((one) => one.topic_id === current.topic_id) : undefined;
   const name = current === null ? "" : topic ? topicName(topic) : "新しいトピック";
   roomTitleNameEl.textContent = name;
-  roomTitleNameEl.title = topic ? `${name}（ダブルクリックで名前を変える）` : name;
+  roomTitleNameEl.title = topic ? `${name}（クリックで名前を変える）` : name;
   roomTitleNameEl.classList.toggle("unnamed", topic !== undefined && !topic.title);
   roomTitleCountEl.textContent = current === null ? "" : `${shownRoster().length} 人`;
 }
@@ -1558,6 +1559,10 @@ function topicRow(topic: Topic): HTMLLIElement {
     event.preventDefault();
     beginRename(row, topic);
   });
+  row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openTopicMenu(topic, { x: event.clientX, y: event.clientY }, () => beginRename(row, topic));
+  });
 
   row.appendChild(pick);
   row.appendChild(deleteButton(topic));
@@ -1664,6 +1669,41 @@ function beginRename(row: HTMLLIElement, topic: Topic): void {
   row.replaceChildren(field);
   field.focus();
   field.select();
+}
+
+/**
+ * A topic's right-click menu (#479): 名前を変更, for the row in the list and
+ * for the title bar's heading alike. `rename` is the one each place opens its
+ * own field with.
+ *
+ * Its own element beside `#account-menu`, drawn the same way, because that
+ * menu's state is an account's — what it marks and where Escape returns the
+ * focus are a roster row's.
+ */
+function openTopicMenu(topic: Topic, at: { x: number; y: number }, rename: () => void): void {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.setAttribute("role", "menuitem");
+  item.tabIndex = -1;
+  item.append(icon("edit"), "名前を変更");
+  item.addEventListener("click", () => {
+    closeTopicMenu();
+    rename();
+  });
+  topicMenuEl.replaceChildren(item);
+  topicMenuEl.setAttribute("aria-label", `トピック「${topicName(topic)}」の操作`);
+  topicMenuEl.hidden = false;
+  const x = Math.max(0, Math.min(at.x, window.innerWidth - topicMenuEl.offsetWidth - 4));
+  const y = Math.max(0, Math.min(at.y, window.innerHeight - topicMenuEl.offsetHeight - 4));
+  topicMenuEl.style.left = `${x}px`;
+  topicMenuEl.style.top = `${y}px`;
+  item.focus();
+}
+
+function closeTopicMenu(): void {
+  if (topicMenuEl.hidden) return;
+  topicMenuEl.hidden = true;
+  topicMenuEl.replaceChildren();
 }
 
 /**
@@ -3792,24 +3832,39 @@ async function wireWindowControls(): Promise<void> {
   maximizeEl.addEventListener("click", () => void appWindow.toggleMaximize().catch(refused));
   closeEl.addEventListener("click", () => void appWindow.close().catch(refused));
 
-  // The topic's name renames on a double click (#469), where the rest of the
-  // bar maximizes. The name carries `data-tauri-drag-region="false"`, which
-  // takes it out of Tauri's drag script altogether — a double click there
-  // would otherwise maximize before the rename saw it — so the single press
-  // that grabs the window is started here instead, and the name still moves
-  // the window like the bar around it.
+  // The topic's name renames on a click (#469, #479): a press released where
+  // it was pressed opens the field, and a press that moves grabs the window
+  // like the bar around it. The name carries `data-tauri-drag-region="false"`,
+  // which takes it out of Tauri's drag script — that script starts the drag on
+  // the press itself, before it can be told from a click — so the drag is
+  // started here once the pointer has moved a few pixels with the button held.
   roomTitleNameEl.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
-    // The second press is read here, as Tauri's script reads it, rather than
-    // on `dblclick`: the drag the first press started holds the mouse, and the
-    // press is what is known to arrive after it.
-    if (event.detail === 1) {
-      event.preventDefault();
+    event.preventDefault();
+    const fromX = event.clientX;
+    const fromY = event.clientY;
+    const off = (): void => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    const onMove = (move: MouseEvent): void => {
+      if (Math.abs(move.clientX - fromX) + Math.abs(move.clientY - fromY) < 4) return;
+      off();
       void appWindow.startDragging().catch(refused);
-    } else if (event.detail === 2) {
-      event.preventDefault();
+    };
+    const onUp = (): void => {
+      off();
       beginTitleRename();
-    }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+  roomTitleNameEl.addEventListener("contextmenu", (event) => {
+    const current = currentTopic;
+    const topic = current ? topics.find((one) => one.topic_id === current.topic_id) : undefined;
+    if (!topic) return;
+    event.preventDefault();
+    openTopicMenu(topic, { x: event.clientX, y: event.clientY }, () => beginTitleRename());
   });
 
   const showMaximized = async () => {
@@ -4124,6 +4179,23 @@ async function main(): Promise<void> {
   participantsEl.addEventListener("scroll", () => closeAccountMenu(false), true);
   window.addEventListener("resize", () => closeAccountMenu(false));
   window.addEventListener("blur", () => closeAccountMenu(false));
+  // The topic menu closes the same ways, and on Escape.
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.target instanceof Node && topicMenuEl.contains(event.target)) return;
+      closeTopicMenu();
+    },
+    true,
+  );
+  topicMenuEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTopicMenu();
+    }
+  });
+  window.addEventListener("resize", () => closeTopicMenu());
+  window.addEventListener("blur", () => closeTopicMenu());
   sessions.wireSessionIdCopy();
   accountDialog.wireForm();
 

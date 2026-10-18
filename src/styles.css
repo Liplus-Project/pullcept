@@ -248,11 +248,15 @@ button svg.icon {
   color: var(--muted);
 }
 
-/* The rename field stands where the name was (#469), as wide as a name is
-   given room, and is told from the bar by the field look the list's has. */
+/* The rename field stands where the name was (#469), and is told from the
+   bar by the field look the list's has. */
 #room-title input.rename {
-  min-width: 8rem;
-  flex: 0 1 24rem;
+  /* As wide as what is written in it (#479), with room for one more word
+     before it starts to scroll, and never past the bar's slack. */
+  field-sizing: content;
+  min-width: 4rem;
+  max-width: 100%;
+  padding-inline: 0.3rem;
   font: inherit;
   font-weight: 600;
 }
@@ -2461,7 +2465,8 @@ button svg.icon {
    under the pointer or the keyboard's focus. The box they stand in is the one
    floating surface on the screen besides `#mention-list`, and is drawn the same
    way: the window's ground, a line, a shadow. */
-#account-menu {
+#account-menu,
+#topic-menu {
   position: fixed;
   z-index: 20;
   display: flex;
@@ -2475,11 +2480,13 @@ button svg.icon {
   font-size: 0.85rem;
 }
 
-#account-menu[hidden] {
+#account-menu[hidden],
+#topic-menu[hidden] {
   display: none;
 }
 
-#account-menu [role="menuitem"] {
+#account-menu [role="menuitem"],
+#topic-menu [role="menuitem"] {
   display: flex;
   align-items: center;
   gap: 0.55rem;
@@ -2494,12 +2501,15 @@ button svg.icon {
 }
 
 #account-menu [role="menuitem"]:hover,
-#account-menu [role="menuitem"]:focus-visible {
+#account-menu [role="menuitem"]:focus-visible,
+#topic-menu [role="menuitem"]:hover,
+#topic-menu [role="menuitem"]:focus-visible {
   background: var(--hover);
   outline: none;
 }
 
-#account-menu [role="menuitem"] svg.icon {
+#account-menu [role="menuitem"] svg.icon,
+#topic-menu [role="menuitem"] svg.icon {
   width: 0.95rem;
   height: 0.95rem;
   flex: none;
