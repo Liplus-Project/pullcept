@@ -5,7 +5,9 @@ mod html_preview;
 use tauri::Manager;
 
 #[tauri::command]
-fn preview_test_close_main(window: tauri::WebviewWindow) {
+// A window, not a WebviewWindow: with the side pane's child view (#466) the
+// main window holds two webviews.
+fn preview_test_close_main(window: tauri::Window) {
     assert_eq!(window.label(), "main");
     window.destroy().expect("destroy test main");
 }

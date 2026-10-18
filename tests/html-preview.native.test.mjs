@@ -80,6 +80,23 @@ test("native WebView2 trusted host creation, isolation, reuse and destruction", 
   await closedAgain;
   await invoke(main, doc, false);
   assert.equal(context.pages().length, 1, "source update does not reopen a closed detached window");
+  // The side pane's child view (#466): a second webview inside the main window.
+  // Not run locally yet (see docs/5-development.md); the real app check is #466's.
+  const paned = context.waitForEvent("page");
+  const place = (document, bounds) => main.evaluate(pane => window.__TAURI_INTERNALS__.invoke("html_preview", { document: null, open: false, pane }), { document, bounds });
+  await place(doc, { x: 0, y: 0, width: 400, height: 300 });
+  const paneView = await paned;
+  assert.equal(new URL(paneView.url()).search, "?pane");
+  await paneView.frameLocator("iframe").locator("h1").waitFor();
+  assert.equal(await paneView.locator("iframe").getAttribute("sandbox"), "allow-scripts");
+  assert.equal(await paneView.frameLocator("iframe").locator("body").evaluate(() => document.body.dataset.ran ?? "none"), "yes", "inline script runs in the child view's frame");
+  await assert.rejects(() => paneView.evaluate(() => window.__TAURI_INTERNALS__.invoke("html_preview", { document: null, open: false })), "the child view matches no capability");
+  await paneView.evaluate(() => { location.href = "https://probe.invalid/navigation"; });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(new URL(paneView.url()).pathname, "/html-preview.html", "child view top-level navigation denied");
+  await place("", null);
+  // The main webview keeps its commands while its window holds two webviews.
+  await invoke(main, doc, false);
   const last = context.waitForEvent("page");
   await invoke(main, doc);
   const lastHost = await last;
