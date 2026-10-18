@@ -127,8 +127,16 @@ export function createHtmlPreview(conversation: HTMLElement, detached: DetachedP
   });
   // Reclaim ownership after startup/reload before accepting any new opens.
   syncDetached(null);
+  /** The separate window was closed by its "メインウィンドウで開く" (#463). */
+  function returnToMain() {
+    detachedOpen = false;
+    if (doc === null) return;
+    pane.hidden = false;
+    close.focus();
+  }
   return {
     clear,
+    returnToMain,
     /** The room's single line for an html fence: its name, which opens the preview. */
     fileBlock(source: string, info = ""): HTMLElement {
       const name = htmlFenceName(source, info);

@@ -146,6 +146,18 @@ test("real Chromium static preview boundary and lifecycle", { timeout: 30000 }, 
   await open("Second report").click();
   await frame.getByRole("heading", { name: "Second report" }).waitFor();
   await page.waitForFunction(() => window.detachedCalls.length === 2);
+  // "メインウィンドウで開く" asks the native guard through a fixed navigation (#463).
+  await page.getByRole("button", { name: "新しいウィンドウで開く" }).click();
+  await page.waitForFunction(() => window.detachedCalls.length === 3 && document.querySelector('.html-preview').hidden);
+  const back = host.getByRole("button", { name: "メインウィンドウで開く" });
+  assert.equal(await back.locator("svg").count(), 1);
+  const returned = host.waitForRequest(r => new URL(r.url()).pathname === "/html-preview-return");
+  await host.route("**/html-preview-return", route => route.abort());
+  await back.click();
+  await returned;
+  await page.evaluate(() => window.preview.returnToMain());
+  assert.equal(await page.locator(".html-preview").isVisible(), true, "the same document returns to the side pane");
+  assert.equal(await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).evaluate(el => el === document.activeElement), true);
   assert.equal(await page.locator(".html-preview iframe").count(), 1);
   await page.getByRole("button", { name: "プレビューを閉じて会話に戻る" }).click();
   assert.equal(await page.locator(".html-preview").isVisible(), false);
