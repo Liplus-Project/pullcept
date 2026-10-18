@@ -3212,7 +3212,8 @@ function markdownLink(href: string, label: Node[]): Node[] {
  * label over the code and never part of it.
  */
 const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
-  (document, open) => invoke("html_preview", { document, open }),
+  // The separate window's title bar and code view take the file's name and source (#468).
+  (document, open, source) => invoke("html_preview", { document, open, name: source?.name, code: source?.code }),
   // The side pane's child view (#466) goes through the same command.
   (pane) => invoke("html_preview", { document: null, open: false, pane }),
   (code) => highlightedCode(code, "html"));
