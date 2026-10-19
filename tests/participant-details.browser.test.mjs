@@ -51,6 +51,7 @@ test("participant details use actual index, styles and row controller without st
     {id:"human",name:"マスター",kind:"admin",args:[],cwd:""},
     {id:"ai",name:"Codex Luna",kind:"codex_cli",args:[],cwd:""},
     {id:"other",name:"Other AI",kind:"codex_cli",args:[],cwd:""},
+    {id:"mcp-empty",name:"Unconfigured MCP",kind:"mcp",args:[],cwd:""},
     {id:"mcp",name:"GitHub",kind:"mcp",server:"webhook",args:[],cwd:""},
   ]));
   const terminalBefore=await page.evaluate(()=>window.detailsTest.selectedTerminal());
@@ -178,6 +179,25 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("未処理: 未対応"));
   assert.equal(await page.locator("#terminal-facts").isVisible(),false,"MCP detail has no AI model/usage facts");
+  await page.locator('#roster button.pick[title="Unconfigured MCP の作業と判断待ち"]').click();
+  await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未取得'));
+  assert.equal(await page.locator('.todo-fold').count(),0);
+  assert.equal(await page.locator('#terminal-facts').isVisible(),false);
+  assert.equal(await page.locator('#terminal-diagnostics').isVisible(),false);
+  assert.match(await page.locator('#participant-details').innerText(),/接続: 未取得/);
+  await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
+  await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未対応'));
+  assert.equal(await page.locator('.todo-fold').count(),0);
+  for (const name of ['Codex Luna','マスター']) {
+    await page.locator(`#roster button.pick[title="${name} の作業と判断待ち"]`).click();
+    assert.equal(await page.locator('.todo-fold').count(),1);
+    assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
+    await page.locator('.todo-fold > summary').click();
+    assert.match(await page.locator('.todo-fold').innerText(),/判断待ち/);
+    await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
+    await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未対応'));
+    assert.equal(await page.locator('.todo-fold').count(),0);
+  }
   assert.equal(await page.evaluate(()=>window.detailsTest.selectedTerminal()),"ai");
   assert.equal(await page.evaluate(()=>window.calls.filter(c=>["start_session","spawn_pty","write_pty"].includes(c.cmd)).length),0);
   await page.setViewportSize({width:900,height:760});await page.screenshot({path:join(artifacts,"mcp-narrow.png")});

@@ -133,6 +133,25 @@ export function createParticipantDetails(o: Options) {
     const todoOpen = el.querySelector<HTMLDetailsElement>(".todo-fold")?.open ?? false;
     const historyOpen = el.querySelector<HTMLDetailsElement>(".todo-history")?.open ?? false;
     el.replaceChildren();
+    if (selected?.kind === "mcp" || selected?.server) {
+      if (error) el.append(text("p", `取得できません: ${error}`));
+      if (!data || dataTopic !== o.topic()) { el.append(text("p", "未取得")); return; }
+      const server = data.mcp_servers.find(s => s.server === selected?.server);
+      const labels: Record<string,string> = {unsupported:"未対応",unobserved:"未取得",timeout:"タイムアウト",auth_required:"未認証",observed:"取得済み"};
+      el.append(text("h4", "アプリの MCP"));
+      el.append(text("p", server ? `接続: ${{starting:"接続中",running:"接続済み",ended:"切断",failed:"接続失敗",stopped:"停止"}[server.connection] ?? "未取得"}` : "接続: 未取得"));
+      if (!server) el.append(text("p", "未処理: 未取得"));
+      if (server) {
+        const p = server.pending;
+        el.append(text("p", `未処理: ${p.state === "observed" ? `${p.pending_count} 件` : (labels[p.state] ?? "未取得")}`));
+        if (p.state === "observed") {
+          el.append(text("p", Object.entries(p.types ?? {}).map(([k,v]) => `${k}: ${v}`).join(" / ")));
+          el.append(text("small", `未処理内の最新受信: ${p.latest_received_at ?? "なし"}`));
+        }
+        if (p.observed_at) el.append(text("small", `観測: ${new Date(p.observed_at).toLocaleString()}`));
+      }
+      return;
+    }
     const fold = document.createElement("details"); fold.className = "todo-fold facts-more"; fold.open = todoOpen;
     fold.append(text("summary", "todo")); el.append(fold);
     if (!selected) { fold.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
@@ -161,21 +180,6 @@ export function createParticipantDetails(o: Options) {
     historyEl.append(text("summary", `完了履歴 ${history.length} 件（最大 ${data.work.history_limit} 件）`));
     if (history.length) historyEl.append(recordsTable(history));
     fold.append(historyEl);
-    if (selected.server) {
-      const server = data.mcp_servers.find(s => s.server === selected?.server);
-      const labels: Record<string,string> = {unsupported:"未対応",unobserved:"未取得",timeout:"タイムアウト",auth_required:"未認証",observed:"取得済み"};
-      el.append(text("h4", "アプリの MCP"));
-      el.append(text("p", server ? `接続: ${{starting:"接続中",running:"接続済み",ended:"切断",failed:"接続失敗",stopped:"停止"}[server.connection] ?? "未取得"}` : "接続: 未取得"));
-      if (server) {
-        const p = server.pending;
-        el.append(text("p", `未処理: ${p.state === "observed" ? `${p.pending_count} 件` : (labels[p.state] ?? "未取得")}`));
-        if (p.state === "observed") {
-          el.append(text("p", Object.entries(p.types ?? {}).map(([k,v]) => `${k}: ${v}`).join(" / ")));
-          el.append(text("small", `未処理内の最新受信: ${p.latest_received_at ?? "なし"}`));
-        }
-        if (p.observed_at) el.append(text("small", `観測: ${new Date(p.observed_at).toLocaleString()}`));
-      }
-    }
   }
   function refresh(): Promise<void> {
     const topic = o.topic();
@@ -186,7 +190,7 @@ export function createParticipantDetails(o: Options) {
       try {
         const result = await o.read(topic);
         const account = selected?.id;
-        if (account && !selected?.server && selected?.kind !== "admin" && account !== o.human()) {
+        if (account && !selected?.server && selected?.kind !== "admin" && selected?.kind !== "mcp" && account !== o.human()) {
           try {
             const detail = await o.read(topic,account);
             if (detail.topic_id === topic) for (const row of detail.participants) {
