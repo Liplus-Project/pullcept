@@ -34,8 +34,10 @@ const SCRIPT = join(HERE, "..", "src", "webhook-bridge.mjs");
 const TIMEOUT = 20_000;
 
 /** A loopback worker with raw status RPC and an `/events` socket. */
-async function fakeWorker() {
+async function fakeWorker({ holdStatus = false } = {}) {
   const calls = [];
+  let statusStarted;
+  const statusRequest = new Promise(resolve => { statusStarted = resolve; });
   const snapshot = { pending_count: 3, types: { issues: 3 }, latest_received_at: "2026-10-19T00:00:00Z" };
   const http = createServer(async (req, res) => {
     let body = "";
@@ -43,6 +45,10 @@ async function fakeWorker() {
     if (!body) { res.writeHead(200).end(); return; }
     const rpc = JSON.parse(body);
     calls.push({ path: req.url, method: rpc.method, tool: rpc.params?.name });
+    if (holdStatus && rpc.method === "tools/call") {
+      statusStarted({ closed: new Promise(resolve => req.socket.once("close", resolve)) });
+      return;
+    }
     const result = rpc.method === "server/discover"
       ? { supportedVersions: ["2026-07-28"], capabilities: { tools: {} } }
       : { resultType: "complete", content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };
@@ -58,7 +64,7 @@ async function fakeWorker() {
     }),
   );
   return {
-    calls, snapshot,
+    calls, snapshot, statusRequest,
     url: `http://127.0.0.1:${http.address().port}`,
     connected,
     close: () => new Promise((resolve) => server.close(() => http.close(resolve))),
@@ -66,7 +72,7 @@ async function fakeWorker() {
 }
 
 /** Start the receiver against `worker`, and read its stdout one message per line. */
-function startBridge(worker, extraEnv = {}) {
+function startBridge(worker, extraEnv = {}, nodeArgs = []) {
   const home = mkdtempSync(join(tmpdir(), "pullcept-webhook-"));
   const tokens = join(home, ".github-webhook-mcp");
   mkdirSync(tokens);
@@ -75,7 +81,8 @@ function startBridge(worker, extraEnv = {}) {
     JSON.stringify({ flow: "web", access_token: "test-access-token" }),
   );
 
-  const child = spawn(process.execPath, [SCRIPT], {
+  const child = spawn(process.execPath, [...nodeArgs, SCRIPT], {
+    cwd: tmpdir(),
     env: { ...process.env, HOME: home, USERPROFILE: home, WEBHOOK_WORKER_URL: worker.url, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -103,7 +110,7 @@ function startBridge(worker, extraEnv = {}) {
     if (found >= 0) return Promise.resolve(unmatched.splice(found, 1)[0]);
     return new Promise((resolve) => waiting.push({ match, resolve }));
   };
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+  const exited = new Promise((resolve) => child.on("close", (code) => resolve(code)));
   return {
     child,
     stderr: () => stderr,
@@ -221,4 +228,38 @@ test("the published observer advertises raw snapshots without opening a channel"
     bridge.child.stdin.end();
     assert.equal(await Promise.race([bridge.exited,new Promise(resolve=>setTimeout(()=>resolve("running"),5000))]),0, bridge.stderr());
   } finally { bridge.cleanup(); await worker.close(); }
+});
+
+test("observer EOF cancels a pending HTTP snapshot and closes its connection", { timeout: TIMEOUT }, async () => {
+  const worker = await fakeWorker({ holdStatus: true });
+  const bridge = startBridge(worker, { WEBHOOK_OBSERVER: "1", WEBHOOK_CHANNEL: "0" });
+  try {
+    await bridge.request(1, "initialize", INITIALIZE);
+    void bridge.request(2, "tools/call", { name: "get_pending_status", arguments: {} });
+    const { closed } = await worker.statusRequest;
+    bridge.child.stdin.end();
+    assert.equal(await Promise.race([
+      bridge.exited,
+      new Promise(resolve => setTimeout(() => resolve("still running"), 5_000)),
+    ]), 0, bridge.stderr());
+    await closed;
+  } finally {
+    bridge.cleanup();
+    await worker.close();
+  }
+});
+
+test("unexpected bridge worker errors and nonzero exits remain failures", { timeout: TIMEOUT }, async () => {
+  const worker = await fakeWorker();
+  try {
+    for (const [statement, expectedCode] of [["throw new Error('test worker failure')", 1], ["process.exit(7)", 7]]) {
+      // Worker inherits the preload; only its copy fails. No installed package is changed.
+      const preload = `data:text/javascript,${encodeURIComponent(`import { isMainThread } from 'node:worker_threads'; if (!isMainThread) { ${statement}; }`)}`;
+      const bridge = startBridge(worker, {}, ["--import", preload]);
+      try {
+        assert.equal(await bridge.exited, expectedCode);
+        if (expectedCode === 1) assert.match(bridge.stderr(), /test worker failure/);
+      } finally { bridge.cleanup(); }
+    }
+  } finally { await worker.close(); }
 });

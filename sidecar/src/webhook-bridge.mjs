@@ -20,6 +20,32 @@
 // bridge is resolved from this file's own place in the tree, so it is Pullcept's
 // `node_modules` that is searched and never the user's.
 
-process.stdin.on("end", () => process.exit(0));
+import { isMainThread, Worker } from "node:worker_threads";
 
-await import("github-webhook-mcp");
+if (!isMainThread) {
+  await import("github-webhook-mcp");
+} else {
+  // The published bridge has no shutdown API. Keep its sockets, timers and
+  // in-flight HTTP inside a worker so EOF can dispose them together, then let
+  // Node exit naturally. process.exit() after HTTP can assert in Windows Node 24.
+  const bridge = new Worker(new URL(import.meta.url), {
+    stdin: true, stdout: true, stderr: true,
+  });
+  let ending = false;
+  bridge.stdout.pipe(process.stdout);
+  bridge.stderr.pipe(process.stderr);
+  bridge.on("error", (error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+  bridge.on("exit", (code) => {
+    process.stdin.unpipe(bridge.stdin);
+    process.stdin.pause();
+    if (!ending && code !== 0) process.exitCode = code;
+  });
+  process.stdin.once("end", () => {
+    ending = true;
+    void bridge.terminate();
+  });
+  process.stdin.pipe(bridge.stdin);
+}

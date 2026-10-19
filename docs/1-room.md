@@ -596,6 +596,8 @@ wire protocol 11 は `session_list`、`session_status`（`operation_id`）、`se
 
 通常の通知用 bridge は従来どおり実行する。配布済み `webhook-bridge.mjs` と完全一致する app 設定に限り、所有 receiver の generation あたり最大一つの追加 observer 子プロセスを使う。追加する環境変数はこの子だけの `WEBHOOK_OBSERVER=1` と `WEBHOOK_CHANNEL=0` で、保存設定は変えない。追加子の channel push は配送せず、所有 task の終了・再起動で子も終了する。汎用 MCP を二重起動しない。
 
+wrapper は公開 bridge を worker thread 内で読み込み、標準入出力を転送する。stdin EOF では worker を終了して、その WebSocket・タイマー・実行中 HTTP を破棄し、親プロセスは自然終了する。HTTP snapshot 後にプロセス全体を即時 `process.exit(0)` する経路は、Windows Node 24 の終了時 assertion を再現したため使わない。worker の予期しない例外や非ゼロ終了は失敗として返す。別の OS 子プロセスは増やさない（#505）。
+
 observer は initialize と tools/list の後、`get_pending_status._meta["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"] === 1` のときだけ raw snapshot を取得する。30秒間隔、同時一件、回答5秒・pipe書込み1秒の上限を持ち、通知の数値 ID と異なる一意な文字列 ID で照合する。古い回答・古い generation は新しい観測を上書きしない。未対応の旧 bridge は取得を呼ばず終了し、未対応と出す。npm 0.12.0 にはこの契約が無い。0.12.1 で追加され、本アプリは通常の npm dependency と lockfile でこの対応版を採用する。
 
 `pending_count/types/latest_received_at` だけを公開し、latest_received_at は現在の未処理集合内の最新受信である。未認証・未取得・timeout は件数なしで区別する。観測でイベントを消費・処理済みにせず、認証ブラウザも起動しない。通知用プロセスの token 更新と get_event はこの観測から独立して続く。
