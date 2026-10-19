@@ -87,7 +87,10 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('.todo-fold .todo-refresh').click();
   assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false,'更新 in the heading does not toggle the fold');
   // #539: closed, the heading shows the open item count (判断待ち + 作業) midway between TODO and 更新.
-  assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'1件');
+  assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'1');
+  assert.equal(await page.locator('.todo-fold .todo-fold-count').getAttribute('aria-label'),'未完了 1 件');
+  // #543: the same badge as the inner 判断待ち count (bare number, same rounded ground).
+  assert.deepEqual(await page.locator('.todo-fold .todo-fold-count').evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopLeftRadius,s.fontSize,s.paddingTop,s.paddingLeft,s.backgroundColor];}),await page.locator('.todo-decisions .todo-head .todo-count').evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopLeftRadius,s.fontSize,s.paddingTop,s.paddingLeft,s.backgroundColor];}));
   assert.ok(await page.locator('.todo-fold > summary').evaluate(e=>{const t=e.querySelector('.todo-title').getBoundingClientRect(),c=e.querySelector('.todo-fold-count').getBoundingClientRect(),b=e.querySelector('.todo-refresh').getBoundingClientRect();return c.left>t.right&&c.right<b.left&&Math.abs((c.left-t.right)-(b.left-c.right))<4;}),'count centred between TODO and 更新');
   await page.locator('.todo-fold > summary').click();
   assert.equal(await page.locator('.todo-fold .todo-fold-count').isVisible(),false,'the open fold hides the count');
@@ -277,7 +280,7 @@ test("participant details use actual index, styles and row controller without st
     await page.screenshot({path:join(artifacts,`todo-folded-${viewport.width}.png`)});
     await page.locator('#participants').screenshot({path:join(artifacts,`panel-folded-${viewport.width}.png`)});
     // #539: the count fits the heading row at every width; none open -> no count.
-    assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'2件');
+    assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'2','bare number, like the inner counts (#543)');
     assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>{const s=e.getBoundingClientRect();return e.scrollWidth<=e.clientWidth+1&&[...e.children].every(c=>{const r=c.getBoundingClientRect();return r.left>=s.left-1&&r.right<=s.right+1;});}),true,'the folded heading does not overflow');
     if (process.env.UI539_ARTIFACTS) await page.locator('#participants').screenshot({path:join(process.env.UI539_ARTIFACTS,`todo-count-closed-${viewport.width}.png`)});
     const saved=await page.evaluate(()=>window.snapshot.work.active);
