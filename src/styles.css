@@ -2257,6 +2257,10 @@ button svg.icon {
 #participants .member.detail-selected button.pick { background: var(--selected); }
 #participants .member .decision-count { display: block; font-size: .65rem; color: var(--accent); }
 #participant-details { border-top: 1px solid var(--line); padding: 0; min-width: 0; overflow-wrap: anywhere; font-size: .78rem; }
+/* Under the session's state and usage bars, TODO is set apart by two lines of
+   blank space instead of a rule (#525). With the state hidden (a human or MCP
+   row), the rule stays: it is then the divide from the roster. */
+#terminal-facts:not([hidden]) + #participant-details { border-top: 0; margin-top: 2lh; }
 #participant-details h3, #participant-details h4 { margin: .5rem 0; }
 #participant-details small { display: block; color: var(--muted); }
 #participant-details p { margin: .4rem 0; white-space: pre-wrap; }
@@ -2659,7 +2663,7 @@ button svg.icon {
   flex: none;
   width: 0.38em;
   height: 0.38em;
-  margin: 0 0.5em 0 0.1em;
+  margin: 0 var(--fold-label-gap) 0 0.1em;
   vertical-align: 0.15em;
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
@@ -2674,6 +2678,27 @@ button svg.icon {
 
 #participants .todo-history > summary::before {
   color: var(--muted);
+}
+
+/* Between the chevron and its label (#525): the chevron's own clearance plus
+   one half-width space (U+0020 is 0.27em in the UI font), the same in all
+   three folds. The flex summaries already put their gap there, so the
+   chevron's margin gives that much back. */
+#participants {
+  --fold-label-gap: calc(0.5em + 0.27em);
+}
+
+#participants .todo-fold > summary::before {
+  margin-right: calc(var(--fold-label-gap) - 0.3rem);
+}
+
+#participants .todo-history > summary::before {
+  margin-right: calc(var(--fold-label-gap) - 0.4rem);
+}
+
+/* One line of blank space above 詳細 (#525). */
+#participants #terminal-diagnostics {
+  margin-top: 1lh;
 }
 
 #participants .facts-more > summary:hover {
