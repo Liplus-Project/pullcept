@@ -143,8 +143,9 @@ test("participant details use actual index, styles and row controller without st
   await page.evaluate(()=>window.detailsTest.joinLimited());
   for (const viewport of [{width:1280,height:900},{width:900,height:760}]) {
     await page.setViewportSize(viewport);
-    await page.locator('.todo-history').evaluate(e=>e.open=false);
-    await page.locator('.todo-fold').evaluate(e=>e.open=false);
+    // Fold states change only by the user's toggle (#523), so close them through their headings.
+    if (await page.locator('.todo-history').evaluate(e=>e.open)) await page.locator('.todo-history > summary').click();
+    if (await page.locator('.todo-fold').evaluate(e=>e.open)) await page.locator('.todo-fold > summary').click();
     await page.evaluate(()=>window.detailsTest.refresh());
     assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
     const foldedHeight=await page.locator('.todo-fold').evaluate(e=>e.getBoundingClientRect().height);
@@ -208,16 +209,28 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未対応'));
   assert.equal(await page.locator('.todo-fold').count(),0);
+  // The fold states are the user's (#523): only a toggle changes them, so passing through
+  // an MCP view, which draws no fold, and switching participants keep them as left.
+  await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
+  assert.equal(await page.locator('.todo-fold').count(),1);
+  assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),true,'the fold left open on マスター stays open on Luna');
+  assert.equal(await page.locator('.todo-history').evaluate(e=>e.open),false);
+  await page.locator('.todo-history > summary').click();
+  assert.match(await page.locator('.todo-fold').innerText(),/判断待ち/);
   for (const name of ['Codex Luna','マスター']) {
-    await page.locator(`#roster button.pick[title="${name} の作業と判断待ち"]`).click();
-    assert.equal(await page.locator('.todo-fold').count(),1);
-    assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
-    await page.locator('.todo-fold > summary').click();
-    assert.match(await page.locator('.todo-fold').innerText(),/判断待ち/);
     await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
     await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未対応'));
     assert.equal(await page.locator('.todo-fold').count(),0);
+    await page.locator(`#roster button.pick[title="${name} の作業と判断待ち"]`).click();
+    await page.waitForFunction(()=>document.querySelector('.todo-history'));
+    assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),true,`${name}: the fold stays open after the MCP view`);
+    assert.equal(await page.locator('.todo-history').evaluate(e=>e.open),true,`${name}: the history stays open after the MCP view`);
   }
+  await page.locator('.todo-fold > summary').click();
+  await page.evaluate(()=>window.detailsTest.refresh());
+  assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false,'closing is the user toggle too');
+  await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
+  await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未対応'));
   assert.equal(await page.evaluate(()=>window.detailsTest.selectedTerminal()),"ai");
   assert.equal(await page.evaluate(()=>window.calls.filter(c=>["start_session","spawn_pty","write_pty"].includes(c.cmd)).length),0);
   await page.setViewportSize({width:900,height:760});await page.screenshot({path:join(artifacts,"mcp-narrow.png")});

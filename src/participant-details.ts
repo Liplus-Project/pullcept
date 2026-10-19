@@ -21,6 +21,10 @@ export function createParticipantDetails(o: Options) {
   let requestedTopic = "";
   let dirty = false;
   let error = "";
+  // The fold states belong to the user: only their toggle changes them, so a redraw,
+  // a participant switch or an MCP view (which draws no fold) does not reset them.
+  let todoOpen = false;
+  let historyOpen = false;
   const el = o.element;
   const text = (tag: string, value: string) => {
     const e = document.createElement(tag); e.textContent = value; return e;
@@ -144,8 +148,6 @@ export function createParticipantDetails(o: Options) {
     block.append(head, text("small", note)); return block;
   }
   function draw() {
-    const todoOpen = el.querySelector<HTMLDetailsElement>(".todo-fold")?.open ?? false;
-    const historyOpen = el.querySelector<HTMLDetailsElement>(".todo-history")?.open ?? false;
     el.replaceChildren();
     if (selected?.kind === "mcp" || selected?.server) {
       if (error) el.append(text("p", `取得できません: ${error}`));
@@ -168,6 +170,9 @@ export function createParticipantDetails(o: Options) {
     }
     const fold = document.createElement("details"); fold.className = "todo-fold facts-more"; fold.open = todoOpen;
     const summary = document.createElement("summary"); summary.append(span("todo-title", "TODO"));
+    // Read the user's toggle at its click, before the toggle event: a redraw landing in between
+    // would otherwise draw the old state and drop the toggle with the replaced element.
+    summary.addEventListener("click", e => { if (!e.defaultPrevented) todoOpen = !fold.open; });
     fold.append(summary); el.append(fold);
     if (!selected) { fold.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
     // The refresh control sits in the heading; pressing it does not toggle the fold.
@@ -210,6 +215,7 @@ export function createParticipantDetails(o: Options) {
     const history = data.work.history.filter(include);
     const historyEl = document.createElement("details"); historyEl.className = "todo-history"; historyEl.open = historyOpen;
     const historySummary = document.createElement("summary");
+    historySummary.addEventListener("click", e => { if (!e.defaultPrevented) historyOpen = !historyEl.open; });
     historySummary.append(span("todo-history-title", "完了履歴"), span("todo-count", `${history.length}件`), span("todo-limit", `最大${data.work.history_limit}件`));
     historyEl.append(historySummary);
     if (history.length) history.forEach(r => historyEl.append(recordCard(r, true)));
