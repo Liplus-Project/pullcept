@@ -12,6 +12,19 @@ if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER");
 const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。".repeat(8),progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
 const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
 
+// #536: an open card heading, as card mock B draws it — the gap from the heading
+// text's bottom to what follows it (TODO: the rule above its first section;
+// 詳細: its first row), and the heading text's left edge against that content's.
+const cardHeading = (page,selector) => page.locator(selector).evaluate(e=>{
+  const summary=e.querySelector(':scope > summary');
+  const title=summary.querySelector('.todo-title');
+  let text;
+  if (title) text=title.getBoundingClientRect();
+  else { const r=document.createRange(); r.selectNodeContents(summary); text=r.getBoundingClientRect(); }
+  const next=e.querySelector(':scope > :not(summary)');
+  const content=(next.matches('.facts') ? next.querySelector('dt') : next).getBoundingClientRect();
+  return {gap:content.top-text.bottom,dx:text.left-content.left};
+});
 // #534: the thin chevron follows the label; direction still tracks the native fold.
 const chevron = (page,selector) => page.locator(selector).evaluate(e=>{
   const summary=e.querySelector(':scope > summary');
@@ -88,6 +101,11 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator('.todo-decisions .todo-source').evaluate(e=>getComputedStyle(e).textDecorationLine),'none');
   assert.deepEqual(await chevron(page,'.todo-fold'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
   assert.deepEqual(await chevron(page,'.todo-history'),{content:'""',listStyle:'none',border:'solid',dir:'right'});
+  {
+    const h=await cardHeading(page,'.todo-fold');
+    assert.ok(h.gap>=8,`TODO heading clears the rule below it (#536): ${JSON.stringify(h)}`);
+    assert.ok(Math.abs(h.dx)<0.5,`TODO heading starts at the card content's left edge (#536): ${JSON.stringify(h)}`);
+  }
   // #523 icons from the mockup: open circle on a decision card, ↗ after 発言を開く, bundled inline SVG only.
   assert.equal(await page.locator('.todo-decisions .todo-card .todo-mark svg.todo-icon-circle').count(),1);
   assert.equal(await page.locator('.todo-decisions .todo-source svg.todo-icon-external').count(),1);
@@ -139,6 +157,7 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.evaluate(()=>window.calls.some(c=>c.cmd==='update_topic_work' && c.args.operation.action==='cancel')),true);
   const artifacts=process.env.STATUS_UI_ARTIFACTS ?? "artifacts/status-516";await mkdir(artifacts,{recursive:true});
   await page.screenshot({path:join(artifacts,"human-normal.png")});
+  await page.locator('#participants').screenshot({path:join(artifacts,"panel-human-todo-open.png")});
   await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("中断中"));
   assert.match(await page.locator(".todo-plan .todo-head").innerText(),/計画（自己申告）\s*前の起動/);
@@ -218,6 +237,16 @@ test("participant details use actual index, styles and row controller without st
   }
   await page.locator("#terminal-diagnostics").evaluate(e=>e.open=true);
   assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  for (const selector of ['.todo-fold','#terminal-diagnostics']) {
+    assert.equal(await page.locator(selector).evaluate(e=>e.open),true);
+    const h=await cardHeading(page,selector);
+    assert.ok(h.gap>=8,`${selector} heading clears what follows it (#536): ${JSON.stringify(h)}`);
+    assert.ok(Math.abs(h.dx)<0.5,`${selector} heading starts at the card content's left edge (#536): ${JSON.stringify(h)}`);
+  }
+  await page.evaluate(()=>document.activeElement?.blur());
+  await page.locator('#participants').screenshot({path:join(artifacts,"panel-ai-todo-open.png")});
+  await page.locator('#terminal-diagnostics').evaluate(e=>e.scrollIntoView({block:'end'}));
+  await page.locator('#participants').screenshot({path:join(artifacts,"panel-ai-details-open.png")});
   if (process.env.STATUS_UI_ARTIFACTS) {
     // Every fold open, for the visual check of the headings (#527).
     for (const fold of ['.todo-fold','.todo-history']) if (!await page.locator(fold).evaluate(e=>e.open)) await page.locator(`${fold} > summary`).click();

@@ -2279,8 +2279,6 @@ button svg.icon {
 #participants #terminal-facts { margin-top: 12px; }
 #participants .state-title { font-size: .78rem; font-weight: 650; margin: 0 0 8px; }
 #participants #terminal-facts > .facts { padding: 0; border: 0; }
-#participants #terminal-diagnostics > summary,
-#participants .todo-fold > summary { padding-top: 0; padding-bottom: 0; }
 #participant-details:empty { display: none; }
 #participant-details h3, #participant-details h4 { margin: .5rem 0; }
 #participant-details small { display: block; color: var(--muted); }
@@ -2703,8 +2701,15 @@ button svg.icon {
   color: var(--muted);
 }
 
-#participants #terminal-diagnostics > summary,
-#participants #participant-details .todo-fold > summary { padding-top: 0; padding-bottom: 0; }
+/* Card headings (#536), as the approved card mock B draws them: no space above
+   the heading (the card's own padding is the top), the heading's left edge on
+   the card content's left edge (TODO's sections sit .65rem in, 詳細's list
+   .9rem), and, open, about 10px between the heading and what follows — the
+   rule above 判断待ち, or 詳細's first row. */
+#participants #participant-details .todo-fold > summary { padding: 0 .65rem; }
+#participants #terminal-diagnostics > summary { padding: 0 .9rem; }
+#participants #participant-details .todo-fold[open] > summary,
+#participants #terminal-diagnostics[open] > summary { padding-bottom: .6rem; }
 
 /* Put these three fold markers directly after their labels (#534), leaving
    the refresh button and history counts in their existing tracks. */
