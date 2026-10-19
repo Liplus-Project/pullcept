@@ -66,6 +66,36 @@ pub fn isolate(args: &mut Vec<String>, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The relay transport's tracing target (#430). `remoteControl/status/read`
+/// says only `errored`; why is in this target's connection-failure warning,
+/// which the app-server's default stderr filter (error) does not print.
+pub const RELAY_LOG_TARGET: &str =
+    "codex_app_server_transport::transport::remote_control::websocket";
+
+/// The seat server's `RUST_LOG`: what it would have had, plus warnings from
+/// the relay transport. A filter that already names the target is the
+/// person's own and is kept as it is.
+pub fn relay_log_filter(existing: Option<&str>) -> String {
+    let base = existing.map(str::trim).filter(|s| !s.is_empty());
+    match base {
+        Some(base) if base.contains(RELAY_LOG_TARGET) => base.to_owned(),
+        Some(base) => format!("{base},{RELAY_LOG_TARGET}=warn"),
+        None => format!("error,{RELAY_LOG_TARGET}=warn"),
+    }
+}
+
+/// One stderr line of the seat server, read for the relay's last connection
+/// failure: `Some(true)` = the relay refused it with 409 "Remote app server
+/// already online" (another connection holds the registration), `Some(false)`
+/// = any other relay connection failure, `None` = not such a line.
+pub fn relay_failure_in_use(line: &str) -> Option<bool> {
+    if !line.contains("failed to connect to app-server remote control websocket") {
+        return None;
+    }
+    let lower = line.to_ascii_lowercase();
+    Some(lower.contains("409") && lower.contains("remote app server already online"))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pairing {
@@ -297,6 +327,36 @@ mod tests {
                 .unwrap()
                 .unwrap()["status"],
             "connected"
+        );
+    }
+    #[test]
+    fn relay_warnings_are_added_without_dropping_the_persons_filter() {
+        let target = RELAY_LOG_TARGET;
+        assert_eq!(relay_log_filter(None), format!("error,{target}=warn"));
+        assert_eq!(relay_log_filter(Some("  ")), format!("error,{target}=warn"));
+        assert_eq!(
+            relay_log_filter(Some("info,codex_core=debug")),
+            format!("info,codex_core=debug,{target}=warn")
+        );
+        let own = format!("info,{target}=off");
+        assert_eq!(relay_log_filter(Some(&own)), own);
+    }
+    #[test]
+    fn only_the_relay_409_already_online_failure_reads_as_in_use() {
+        // Shape of the 0.162.1 warning (#430, seat log 2026-10-16), plain and
+        // JSON-escaped, with the ANSI colouring the fmt layer may add.
+        let in_use = "\u{1b}[33m WARN\u{1b}[0m codex_app_server_transport::transport::remote_control::websocket: failed to connect to app-server remote control websocket websocket_url=wss://chatgpt.com/backend-api/wham/remote/control/server error=failed to connect app-server remote control websocket: HTTP error: 409 Conflict, request-id: x, body: {\"detail\":\"Remote app server already online\"} reconnect_attempt=3";
+        assert_eq!(relay_failure_in_use(in_use), Some(true));
+        let json = r#"{"level":"WARN","fields":{"message":"failed to connect to app-server remote control websocket","error":"HTTP error: 409 Conflict, body: {\"detail\":\"Remote app server already online\"}"}}"#;
+        assert_eq!(relay_failure_in_use(json), Some(true));
+        let other = "WARN x: failed to connect to app-server remote control websocket error=HTTP error: 503 Service Unavailable";
+        assert_eq!(relay_failure_in_use(other), Some(false));
+        let other_409 = "WARN x: failed to connect to app-server remote control websocket error=HTTP error: 409 Conflict, body: {\"detail\":\"something else\"}";
+        assert_eq!(relay_failure_in_use(other_409), Some(false));
+        assert_eq!(relay_failure_in_use("listening on: ws://127.0.0.1:4000"), None);
+        assert_eq!(
+            relay_failure_in_use("Remote app server already online 409"),
+            None
         );
     }
     #[test]

@@ -787,6 +787,15 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 検証範囲: 2026-10-16 の CLI 0.162.1 で、隔離した単一 WS + TUI + Android の同一試験会話入力、および同一 CODEX_HOME / 別 SQLite の二 backend の約16秒の connected 共存を確認した。製品コードの合成試験は起動計画・相関・秘密除外・画面寿命を扱う。製品への実適用、分離後の既存会話 resume / writer lock、複数端末表示と選択 routing、承認、切断再接続、長時間の共存は別途実機確認が必要。connected 表示や CI 成功をこれらの実証とは扱わない。
 
 
+### 中継が「別の接続が使用中」と断るとき（#430）
+
+中継が席の接続を HTTP 409 `{"detail":"Remote app server already online"}` で断っているあいだ、接続画面は一般の「接続に失敗しました」ではなく「別の接続が中継を使用中です」と表示し、Codex デスクトップアプリなど同じ中継を使っていそうなものを閉じて少し待つよう案内する。409 だけでは相手を特定できないため、デスクトップアプリは確認先の例として挙げ、断定しない。2026-10-16 の実機では、同じ PC のデスクトップアプリ（ChatGPT.exe）の app-server が登録を持っていた間この 409 が続き、アプリ終了の数十秒後に再接続で接続済みになった（#419）。登録の単位は確認できていない。
+
+`remoteControl/status/read` は `errored` / `connecting` しか返さず理由を持たないので、理由は席の app-server の stderr から読む。接続する席だけ、app-server の `RUST_LOG` に `codex_app_server_transport::transport::remote_control::websocket=warn` を加える（既定は `error`。アカウントの環境変数か Pullcept 自身の環境に `RUST_LOG` があればそれを保ち、末尾に足す。すでにこの target を指定していれば変えない）。この target の「failed to connect to app-server remote control websocket」警告のうち、最後のものが 409 と `Remote app server already online` を含むときだけ「使用中」と扱い、ほかの失敗の警告が来れば一般の表示に戻る。接続済み・停止中の状態を読んだとき、または「接続を開始」「接続を停止」を押したときに消す。席は再接続を続けるので、画面の定期的な状態読み取りで、つながった時点で表示は接続済みに変わり、押し直しは要らない。
+
+検証範囲: 警告の行の形は CLI 0.162.1 の席 DB（`logs_2.sqlite`）に記録された実際の行と、0.162.1 のソース（`app-server-transport/src/transport/remote_control/websocket.rs`、失敗時に `Errored` を出してから再試行）で確認した。隔離した `CODEX_HOME` で、この `RUST_LOG` でも待ち受けの表示が変わらず起動することを確かめた。実際の 409 を stderr から読んで画面に出す往復は実機で確認する。
+
+
 ### Windows の専用DB保存先（#426）
 
 #423 の旧形式 `id-<topic hex>/id-<account hex>` は、標準のアプリデータrootとUUIDの組合せでも保存先が長くなり、Codex CLI 0.162.1の新規履歴DB初期化でSQLite14を起こす条件があった。#426から固定長SHA-256形式を使う。最長DB名 `thread_history_1.sqlite` と `-journal` を含む全pathをWindowsのUTF-16単位で数え、248単位を超える場合は実spawn前にアプリデータ保存先の短縮を促す。DB本体だけで判定せず、長いユーザー名や非ASCIIrootにも同じ検証を行う。

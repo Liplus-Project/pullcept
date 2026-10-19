@@ -11,6 +11,9 @@ pub struct Reply {
     status: Option<String>,
     pairing: Option<protocol::Pairing>,
     error: Option<String>,
+    /// Why `errored` / `connecting`, when known: `relay_in_use` = the relay
+    /// refused this seat with 409 "already online" (#430).
+    reason: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -20,14 +23,19 @@ pub async fn codex_remote_control(
     epoch: Option<String>,
     action: Action,
 ) -> Result<Reply, String> {
-    let control = app.state::<CodexServers>().servers.lock().get(&pty_id)
-        .and_then(|server| server.remote.clone())
+    let (control, relay_in_use) = app.state::<CodexServers>().servers.lock().get(&pty_id)
+        .and_then(|server| Some((server.remote.clone()?, Arc::clone(&server.relay_in_use))))
         .ok_or("この席ではリモート接続が有効ではありません。アカウント設定を確認し、席を起動し直してください。")?;
     if !app.state::<crate::pty::PtyState>().is_running(&pty_id) {
         control.end();
     }
     control.check()?;
     control.accept(action, epoch.as_deref())?;
+    if matches!(action, Action::Enable | Action::Disable) {
+        // An explicit operation starts a new connection cycle; an earlier
+        // refusal no longer describes it.
+        relay_in_use.store(false, Ordering::Release);
+    }
     let still_current = Arc::clone(&control);
     let reply = tauri::async_runtime::spawn_blocking(move || {
         let mut reply = Reply {
@@ -35,6 +43,7 @@ pub async fn codex_remote_control(
             status: None,
             pairing: None,
             error: None,
+            reason: None,
         };
         match control.call(action) {
             Ok(value) if action == Action::Pair => {
@@ -60,6 +69,15 @@ pub async fn codex_remote_control(
                 }
                 if reply.status.as_deref() == Some("disabled") {
                     reply.error = control.startup_error().or(reply.error);
+                }
+                match reply.status.as_deref() {
+                    Some("errored" | "connecting") => {
+                        if relay_in_use.load(Ordering::Acquire) {
+                            reply.reason = Some("relay_in_use");
+                        }
+                    }
+                    Some(_) => relay_in_use.store(false, Ordering::Release),
+                    None => {}
                 }
             }
             Err(err) => reply.error = Some(err),
