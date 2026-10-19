@@ -86,9 +86,13 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
   await page.locator('.todo-fold .todo-refresh').click();
   assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false,'更新 in the heading does not toggle the fold');
+  // #539: closed, the heading shows the open item count (判断待ち + 作業) midway between TODO and 更新.
+  assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'1件');
+  assert.ok(await page.locator('.todo-fold > summary').evaluate(e=>{const t=e.querySelector('.todo-title').getBoundingClientRect(),c=e.querySelector('.todo-fold-count').getBoundingClientRect(),b=e.querySelector('.todo-refresh').getBoundingClientRect();return c.left>t.right&&c.right<b.left&&Math.abs((c.left-t.right)-(b.left-c.right))<4;}),'count centred between TODO and 更新');
   await page.locator('.todo-fold > summary').click();
+  assert.equal(await page.locator('.todo-fold .todo-fold-count').isVisible(),false,'the open fold hides the count');
   // #521: TODO heading with 更新, then 判断待ち cards, the plan, the folded 完了履歴.
-  assert.deepEqual(await page.locator('.todo-fold > summary').evaluate(e=>[...e.children].map(c=>c.textContent)),['TODO','更新']);
+  assert.deepEqual(await page.locator('.todo-fold > summary').evaluate(e=>[...e.children].filter(c=>c.offsetParent).map(c=>c.textContent)),['TODO','更新']);
   // #523: 更新 then the refresh icon, at the right of the heading row; the chevron is at the left.
   assert.equal(await page.locator('.todo-fold .todo-refresh > svg.todo-icon-refresh:last-child').count(),1);
   assert.ok(await page.locator('.todo-fold > summary').evaluate(e=>{const s=e.getBoundingClientRect(),b=e.querySelector('.todo-refresh').getBoundingClientRect(),t=e.querySelector('.todo-title').getBoundingClientRect();return s.right-b.right<16&&b.left>t.left;}));
@@ -272,10 +276,22 @@ test("participant details use actual index, styles and row controller without st
     assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>e.getBoundingClientRect().left),await page.locator('#terminal-diagnostics > summary').evaluate(e=>e.getBoundingClientRect().left));
     await page.screenshot({path:join(artifacts,`todo-folded-${viewport.width}.png`)});
     await page.locator('#participants').screenshot({path:join(artifacts,`panel-folded-${viewport.width}.png`)});
+    // #539: the count fits the heading row at every width; none open -> no count.
+    assert.equal(await page.locator('.todo-fold .todo-fold-count').innerText(),'2件');
+    assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>{const s=e.getBoundingClientRect();return e.scrollWidth<=e.clientWidth+1&&[...e.children].every(c=>{const r=c.getBoundingClientRect();return r.left>=s.left-1&&r.right<=s.right+1;});}),true,'the folded heading does not overflow');
+    if (process.env.UI539_ARTIFACTS) await page.locator('#participants').screenshot({path:join(process.env.UI539_ARTIFACTS,`todo-count-closed-${viewport.width}.png`)});
+    const saved=await page.evaluate(()=>window.snapshot.work.active);
+    await page.evaluate(async()=>{window.snapshot.work.active=[];await window.detailsTest.refresh();});
+    assert.equal(await page.locator('.todo-fold .todo-fold-count').count(),0,'no open items, no count');
+    assert.ok(await page.locator('.todo-fold > summary').evaluate(e=>e.getBoundingClientRect().right-e.querySelector('.todo-refresh').getBoundingClientRect().right<16),'更新 stays at the right without a count');
+    if (process.env.UI539_ARTIFACTS) await page.locator('#participants').screenshot({path:join(process.env.UI539_ARTIFACTS,`todo-count-zero-${viewport.width}.png`)});
+    await page.evaluate(async(active)=>{window.snapshot.work.active=active;await window.detailsTest.refresh();},saved);
     await page.locator('.todo-fold > summary').click();
     await page.evaluate(()=>window.detailsTest.refresh());
     assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),true);
     assert.equal(await page.locator('.todo-history').evaluate(e=>e.open),false,'history does not take the outer open state');
+    assert.equal(await page.locator('.todo-fold .todo-fold-count').isVisible(),false,'open, the heading carries no count (#539)');
+    if (process.env.UI539_ARTIFACTS) await page.locator('#participants').screenshot({path:join(process.env.UI539_ARTIFACTS,`todo-count-open-${viewport.width}.png`)});
     assert.equal(await page.locator('#participants').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
     assert.doesNotMatch(await page.locator('.todo-fold').innerText(),/https:\/\/|javascript:/);
     for (const row of await page.locator('.todo-fold .todo-card, .todo-fold .todo-head, .todo-history > summary, .todo-steps li').all()) {

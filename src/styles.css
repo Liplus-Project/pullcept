@@ -2293,8 +2293,13 @@ button svg.icon {
    row shrinks to the narrow right column; long text is cut, never widened. */
 .todo-fold > :not(summary), #participant-details > h4, #participant-details > p, #participant-details > small { margin-left: .65rem; margin-right: .65rem; }
 #participants .todo-fold > summary { display: flex; align-items: center; gap: .3rem; min-width: 0; }
-.todo-fold > summary .todo-title { flex: 1; min-width: 0; font-weight: 600; color: var(--fg); }
-#participant-details .todo-fold > summary .todo-refresh { margin: -.2rem 0; padding: .1rem .35rem; font-size: .72rem; line-height: 1.2; }
+.todo-fold > summary .todo-title { flex: 0 1 auto; min-width: 0; font-weight: 600; color: var(--fg); }
+#participant-details .todo-fold > summary .todo-refresh { margin: -.2rem 0 -.2rem auto; padding: .1rem .35rem; font-size: .72rem; line-height: 1.2; }
+/* #539: closed, the open item count sits midway between TODO and 更新 in the
+   section count's badge; open, it is hidden (each section shows its own). */
+.todo-fold > summary .todo-fold-count { flex: none; margin: 0 auto; padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); line-height: 1.2; white-space: nowrap; }
+#participant-details .todo-fold:not([open]) > summary .todo-fold-count + .todo-refresh { margin-left: 0; }
+.todo-fold[open] > summary .todo-fold-count { display: none; }
 #participant-details .todo-fold > summary { cursor: pointer; list-style: none; }
 #participant-details .todo-fold > summary::-webkit-details-marker { display: none; }
 .todo-section, .todo-plan, .todo-history { border-top: 1px solid var(--line); padding: .4rem 0; min-width: 0; }
