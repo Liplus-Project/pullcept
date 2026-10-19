@@ -12,29 +12,12 @@ if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER");
 const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。".repeat(8),progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
 const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
 
-// The fold marker is a thin chevron drawn by ::before (#523): right when folded, down when open.
+// #534: the thin chevron follows the label; direction still tracks the native fold.
 const chevron = (page,selector) => page.locator(selector).evaluate(e=>{
-  const style=getComputedStyle(e.querySelector(':scope > summary'),'::before');
+  const summary=e.querySelector(':scope > summary');
+  const style=getComputedStyle(summary.querySelector('.todo-title,.todo-history-title') ?? summary,'::after');
   const m=/matrix\(([^)]+)\)/.exec(style.transform); const b=m?Number(m[1].split(',')[1]):NaN;
   return {content:style.content,listStyle:getComputedStyle(e.querySelector(':scope > summary')).listStyleType,border:style.borderRightStyle,dir:b<0?'right':b>0?'down':'none'};
-});
-
-// #525: the label starts one half-width space past the chevron's own clearance (0.1em + box + 0.5em),
-// the space measured in the summary's own font; the same in TODO, 完了履歴 and 詳細.
-const chevronGap = (page,selector) => page.locator(selector).evaluate(e=>{
-  const summary=e.querySelector(':scope > summary'),s=getComputedStyle(summary),em=parseFloat(s.fontSize);
-  const label=summary.querySelector('.todo-title,.todo-history-title');
-  let left; if (label) left=label.getBoundingClientRect().left; else { const r=document.createRange(); r.selectNodeContents(summary); left=[...r.getClientRects()].at(-1).left; }
-  const probe=document.createElement('span'); probe.style.whiteSpace='pre'; probe.textContent=' '; summary.append(probe);
-  const space=probe.getBoundingClientRect().width; probe.remove();
-  const before=getComputedStyle(summary,'::before');
-  const clearance=em*(0.1+0.38+0.5)+parseFloat(before.borderRightWidth);
-  return {extra:left-summary.getBoundingClientRect().left-parseFloat(s.paddingLeft)-clearance, space};
-});
-// One line of the element's own text, for the blank-line gaps (#525).
-const lineHeight = (page,selector) => page.locator(selector).evaluate(e=>{
-  const probe=document.createElement('div'); probe.textContent='あ'; probe.style.margin='0'; probe.style.padding='0'; e.append(probe);
-  const h=probe.getBoundingClientRect().height; probe.remove(); return {line:h, margin:parseFloat(getComputedStyle(e).marginTop)};
 });
 
 test("participant details use actual index, styles and row controller without starting terminals", {timeout:60000}, async t => {
@@ -119,11 +102,8 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator('.todo-history .todo-mark svg.todo-icon-check').count(),1);
   assert.equal(await page.locator('.todo-history .todo-source svg.todo-icon-external').count(),1);
   assert.deepEqual(await chevron(page,'.todo-history'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
-  {
-    const gap=await chevronGap(page,'.todo-history');
-    assert.ok(gap.space>2&&Math.abs(gap.extra-gap.space)<0.75,`.todo-history: ${JSON.stringify(gap)}`);
-  }
-  // With no session state shown (a human row), the rule stays as the divide from the roster (#525).
+  assert.ok(await page.locator('.todo-history-title').evaluate(e=>{const s=getComputedStyle(e,'::after');return Math.abs(parseFloat(s.marginLeft)-.55*parseFloat(getComputedStyle(e).fontSize))<.2;}));
+  // A human's own work remains framed while the AI state card is hidden (#534).
   assert.equal(await page.locator('#participant-details').evaluate(e=>getComputedStyle(e).borderTopStyle),'solid');
   // The icons take the text colour and size, so they read in both themes (the check is the ok colour).
   for (const scheme of ['light','dark']) {
@@ -201,19 +181,33 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator("#session-seven-day .reset").count(),1);
   assert.equal(await page.locator("#terminal-diagnostics").isVisible(),true);
   assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'right'});
-  // #525: no rule between the session's state and TODO, two lines of blank space instead; one line above 詳細.
-  assert.equal(await page.locator('#participant-details').evaluate(e=>getComputedStyle(e).borderTopStyle),'none');
-  {
-    const todo=await lineHeight(page,'#participant-details'),detail=await lineHeight(page,'#terminal-diagnostics');
-    assert.ok(Math.abs(todo.margin-2*todo.line)<1,JSON.stringify(todo));
-    assert.ok(Math.abs(detail.margin-detail.line)<1,JSON.stringify(detail));
-    const [facts,details,diag]=await page.evaluate(()=>['#terminal-facts','#participant-details','#terminal-diagnostics'].map(s=>document.querySelector(s).getBoundingClientRect()));
-    assert.ok(details.top-facts.bottom>=2*todo.line-1,'TODO sits two lines below the usage bars');
-    assert.ok(diag.top-details.bottom>=detail.line-1,'詳細 sits a line below TODO');
+  // #534: the approved cards frame only visible sections with theme-aware borders.
+  for (const selector of ['#terminal-facts','#participant-details','#terminal-diagnostics']) {
+    assert.deepEqual(await page.locator(selector).evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopWidth,s.borderTopLeftRadius,s.paddingTop,s.marginLeft];}),['1px','12px','12px','10px']);
   }
-  for (const fold of ['.todo-fold','#terminal-diagnostics']) {
-    const gap=await chevronGap(page,fold);
-    assert.ok(gap.space>2&&Math.abs(gap.extra-gap.space)<0.75,`${fold}: ${JSON.stringify(gap)}`);
+  assert.equal(await page.locator('.state-title').innerText(),'状態');
+  const grip=page.getByRole('separator',{name:'アカウントの幅',exact:true});
+  const gripBox=await grip.boundingBox();
+  const originalWidth=await page.locator('#participants').evaluate(e=>e.getBoundingClientRect().width);
+  await page.mouse.move(gripBox.x+gripBox.width/2,gripBox.y+20);
+  await page.mouse.down();await page.mouse.move(gripBox.x+gripBox.width/2+72,gripBox.y+20);await page.mouse.up();
+  assert.ok(await page.locator('#participants').evaluate(e=>e.getBoundingClientRect().width)<originalWidth);
+  assert.ok(await page.locator('#participants').evaluate(e=>e.scrollWidth<=e.clientWidth+1));
+  await grip.dblclick();
+  assert.equal(await page.locator('#participants').evaluate(e=>e.getBoundingClientRect().width),originalWidth);
+  for(const scheme of ['light','dark']) {
+    await page.emulateMedia({colorScheme:scheme});
+    assert.equal(await page.locator('#terminal-facts').evaluate(e=>getComputedStyle(e).borderTopColor),scheme==='light'?'rgb(227, 227, 226)':'rgb(51, 51, 58)');
+  }
+  await page.emulateMedia({colorScheme:'light'});
+
+  for (const selector of ['.todo-fold','.todo-history','#terminal-diagnostics']) {
+    const summary=page.locator(`${selector} > summary`);
+    const before=await page.locator(selector).evaluate(e=>e.open);
+    await summary.focus();await page.keyboard.press('Enter');
+    assert.equal(await page.locator(selector).evaluate(e=>e.open),!before);
+    await page.keyboard.press('Space');
+    assert.equal(await page.locator(selector).evaluate(e=>e.open),before);
   }
   // #527: the 詳細 heading reads as the TODO heading does — same weight, size and colour.
   {
@@ -229,7 +223,7 @@ test("participant details use actual index, styles and row controller without st
     for (const fold of ['.todo-fold','.todo-history']) if (!await page.locator(fold).evaluate(e=>e.open)) await page.locator(`${fold} > summary`).click();
     await page.locator('#participants').screenshot({path:join(artifacts,"panel-all-open.png")});
   }
-  if (process.env.SIDEBAR_COMPARISONS) await sidebarComparisons(page, process.env.SIDEBAR_COMPARISONS);
+  if (process.env.SIDEBAR_UI_ARTIFACTS) await sidebarComparisons(page, process.env.SIDEBAR_UI_ARTIFACTS);
   assert.equal(await page.locator("#session-command").innerText(),"codex ai");
   assert.equal(await page.locator("#session-dir").innerText(),"D:/fixture/ai");
   assert.equal(await page.locator("#session-id").innerText(),"session-ai");
@@ -305,6 +299,7 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("未処理: 未対応"));
   assert.equal(await page.locator("#terminal-facts").isVisible(),false,"MCP detail has no AI model/usage facts");
+  assert.equal(await page.locator('#terminal-facts').evaluate(e=>e.getBoundingClientRect().height),0,'hidden state leaves no card');
   await page.locator('#roster button.pick[title="Unconfigured MCP の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector('#participant-details').textContent.includes('未処理: 未取得'));
   assert.equal(await page.locator('.todo-fold').count(),0);

@@ -32,6 +32,7 @@
      are the same #fcfcfb. Only the right column takes it; the topic list stays
      on `--surface`. Dark keeps the panel on the dark `--surface`. */
   --participants-ground: #fcfcfb;
+  --participants-card-line: #e3e3e2;
   --tint: #f4f4f7;
   --accent: #185fa5;
   --danger: #a52a2a;
@@ -127,6 +128,7 @@
     --muted: #9a9aa5;
     --surface: #202026;
     --participants-ground: #202026;
+    --participants-card-line: var(--line);
     --tint: #202026;
     --accent: #7aa7d8;
     --danger: #e08585;
@@ -2263,10 +2265,23 @@ button svg.icon {
 #participants .member.detail-selected button.pick { background: var(--selected); }
 #participants .member .decision-count { display: block; font-size: .65rem; color: var(--accent); }
 #participant-details { border-top: 1px solid var(--line); padding: 0; min-width: 0; overflow-wrap: anywhere; font-size: .78rem; }
-/* Under the session's state and usage bars, TODO is set apart by two lines of
-   blank space instead of a rule (#525). With the state hidden (a human or MCP
-   row), the rule stays: it is then the divide from the roster. */
-#terminal-facts:not([hidden]) + #participant-details { border-top: 0; margin-top: 2lh; }
+/* Approved right-hand card variant (#534). Hidden sections retain native hidden layout. */
+#participants #terminal-facts,
+#participants #participant-details:not(:empty),
+#participants #terminal-diagnostics {
+  border: 1px solid var(--participants-card-line);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 10px 10px 0;
+  box-sizing: border-box;
+  min-width: 0;
+}
+#participants #terminal-facts { margin-top: 12px; }
+#participants .state-title { font-size: .78rem; font-weight: 650; margin: 0 0 8px; }
+#participants #terminal-facts > .facts { padding: 0; border: 0; }
+#participants #terminal-diagnostics > summary,
+#participants .todo-fold > summary { padding-top: 0; padding-bottom: 0; }
+#participant-details:empty { display: none; }
 #participant-details h3, #participant-details h4 { margin: .5rem 0; }
 #participant-details small { display: block; color: var(--muted); }
 #participant-details p { margin: .4rem 0; white-space: pre-wrap; }
@@ -2671,7 +2686,7 @@ button svg.icon {
   flex: none;
   width: 0.38em;
   height: 0.38em;
-  margin: 0 var(--fold-label-gap) 0 0.1em;
+  margin: 0 .77em 0 0.1em;
   vertical-align: 0.15em;
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
@@ -2688,26 +2703,29 @@ button svg.icon {
   color: var(--muted);
 }
 
-/* Between the chevron and its label (#525): the chevron's own clearance plus
-   one half-width space (U+0020 is 0.27em in the UI font), the same in all
-   three folds. The flex summaries already put their gap there, so the
-   chevron's margin gives that much back. */
-#participants {
-  --fold-label-gap: calc(0.5em + 0.27em);
-}
+#participants #terminal-diagnostics > summary,
+#participants #participant-details .todo-fold > summary { padding-top: 0; padding-bottom: 0; }
 
-#participants .todo-fold > summary::before {
-  margin-right: calc(var(--fold-label-gap) - 0.3rem);
+/* Put these three fold markers directly after their labels (#534), leaving
+   the refresh button and history counts in their existing tracks. */
+#participants .todo-fold > summary::before,
+#participants #terminal-diagnostics > summary::before,
+#participants .todo-history > summary::before { display: none; }
+#participants .todo-title::after,
+#participants #terminal-diagnostics > summary::after,
+#participants .todo-history-title::after {
+  content: "";
+  display: inline-block;
+  width: .38em;
+  height: .38em;
+  margin-left: .55em;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
 }
-
-#participants .todo-history > summary::before {
-  margin-right: calc(var(--fold-label-gap) - 0.4rem);
-}
-
-/* One line of blank space above 詳細 (#525). */
-#participants #terminal-diagnostics {
-  margin-top: 1lh;
-}
+#participants .todo-fold[open] > summary .todo-title::after,
+#participants #terminal-diagnostics[open] > summary::after,
+#participants .todo-history[open] > summary .todo-history-title::after { transform: rotate(45deg); }
 
 /* The room is not listening, and the row saying so is folded: the summary
    says it is worth opening (src/main.ts, `renderSocket`). */
