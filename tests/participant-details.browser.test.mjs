@@ -8,14 +8,15 @@ import { join } from "node:path";
 
 const edge = process.env.PREVIEW_BROWSER ?? ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe","C:/Program Files/Microsoft/Edge/Application/msedge.exe","/usr/bin/chromium"].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER");
-const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装",progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
-const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路",status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
+const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。".repeat(8),progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
+const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
 
 test("participant details use actual index, styles and row controller without starting terminals", {timeout:60000}, async t => {
   const main = readFileSync("src/main.ts","utf8");
   const inject = `
   window.detailsTest = {
     setup(list) { accounts = list; localAccountId = 'human'; currentTopic = {topic_id:'t',created_at:'now'}; topics = [{topic_id:'t',sessions:{ai:'session-ai',other:'session-other'},created_at:'now'}]; fillIcons(); renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null}]); },
+    joinLimited: () => renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null},{id:'other-session',name:'Other AI',account:'other',own:false,hue:null}]),
     selectedTerminal: () => sessions.selectedAccount(),
     adopt: () => sessions.refreshSeats(),
     terminal: (id) => sessions.showView(id),
@@ -59,16 +60,31 @@ test("participant details use actual index, styles and row controller without st
   await page.keyboard.press("Enter");
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("判断待ち 1 件"));
   assert.equal(await page.locator("#terminal-facts").isVisible(),false,"human detail does not show another AI's facts");
-  await page.locator("#participant-details details").evaluate(e=>e.open=true);
-  assert.match(await page.locator("#participant-details").innerText(),/その方針で進めて。/);
+  assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
+  await page.locator('.todo-fold > summary').click();
+  await page.locator('.todo-history > summary').click();
+  assert.equal(await page.locator('.todo-history tbody td').first().innerText(),'回答済み');
+  await page.locator('.todo-history .todo-item').click();
+  assert.match(await page.locator('dialog[open]').innerText(),/その方針で進めて。/);
+  await page.keyboard.press('Escape');
+  await page.locator('.todo-fold > .todo-table .todo-item').click();
   await page.getByRole("button",{name:"回答",exact:true}).click();
   await page.getByRole("textbox",{name:"回答",exact:true}).fill("画面から直接回答します。");
   await page.getByRole("button",{name:"保存",exact:true}).click();
   assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==="update_topic_work").args.answer),"画面から直接回答します。");
-  await page.getByRole("button",{name:"元の発言",exact:true}).first().click();
+  assert.equal(await page.locator(".todo-history").evaluate(e=>e.open),true);
+  await page.locator('.todo-fold > .todo-table').getByRole('button',{name:'発言',exact:true}).first().click();
   await page.waitForFunction(()=>document.querySelector("dialog[open]")?.textContent.includes("判断に必要な元の発言"));
   await page.keyboard.press("Escape");
-  const artifacts=process.env.STATUS_UI_ARTIFACTS ?? "artifacts/status-493";await mkdir(artifacts,{recursive:true});
+  await page.locator('.todo-fold > .todo-table .todo-item').click();
+  await page.getByRole('button',{name:'編集',exact:true}).click();
+  await page.getByRole('textbox',{name:'質問',exact:true}).fill('短い編集後の質問');
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==='update_topic_work' && c.args.operation.action==='put').args.operation.text),'短い編集後の質問');
+  await page.locator('.todo-fold > .todo-table .todo-item').click();
+  await page.getByRole('button',{name:'取消',exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.calls.some(c=>c.cmd==='update_topic_work' && c.args.operation.action==='cancel')),true);
+  const artifacts=process.env.STATUS_UI_ARTIFACTS ?? "artifacts/status-516";await mkdir(artifacts,{recursive:true});
   await page.screenshot({path:join(artifacts,"human-normal.png")});
   await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("中断中"));
@@ -107,9 +123,43 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator("#session-dir").innerText(),"D:/fixture/ai");
   assert.equal(await page.locator("#session-id").innerText(),"session-ai");
   await page.locator("#terminal-diagnostics").evaluate(e=>e.open=false);
-  await page.setViewportSize({width:1280,height:1500});
-  await page.screenshot({path:join(artifacts,"ai-bars-todo-details.png")});
+  await page.evaluate(()=>window.detailsTest.stats({topic_id:'t',account_id:'other',pty_id:'pty-other',model:'OTHER-MODEL',effort:'high',login:'other@example.test',five_hour:100,seven_day:100,context:80,limited:true,five_hour_resets_at:null,seven_day_resets_at:null}));
+  await page.evaluate(()=>window.detailsTest.joinLimited());
+  for (const viewport of [{width:1280,height:900},{width:900,height:760}]) {
+    await page.setViewportSize(viewport);
+    await page.locator('.todo-history').evaluate(e=>e.open=false);
+    await page.locator('.todo-fold').evaluate(e=>e.open=false);
+    await page.evaluate(()=>window.detailsTest.refresh());
+    assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
+    assert.ok(await page.locator('.todo-fold').evaluate(e=>e.getBoundingClientRect().height<35));
+    assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>e.getBoundingClientRect().left),await page.locator('#terminal-diagnostics > summary').evaluate(e=>e.getBoundingClientRect().left));
+    await page.screenshot({path:join(artifacts,`todo-folded-${viewport.width}.png`)});
+    await page.locator('.todo-fold > summary').click();
+    await page.evaluate(()=>window.detailsTest.refresh());
+    assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),true);
+    assert.equal(await page.locator('.todo-history').evaluate(e=>e.open),false,'history does not take the outer open state');
+    assert.equal(await page.locator('#participants').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
+    assert.doesNotMatch(await page.locator('.todo-table').first().innerText(),/https:\/\/|javascript:/);
+    assert.ok(await page.locator('.todo-item').first().evaluate(e=>e.textContent.length<40));
+    for (const title of ['Codex Luna の作業と判断待ち','Other AI の作業と判断待ち']) {
+      const placement=await page.locator(`button.pick[title="${title}"]`).evaluate(e=>{const name=e.querySelector('.who').getBoundingClientRect(),badge=e.querySelector('.note').getBoundingClientRect();return {right:badge.x>=name.right-1,aligned:Math.abs((badge.y+badge.height/2)-(name.y+name.height/2))<2};});
+      assert.deepEqual(placement,{right:true,aligned:true});
+    }
+    assert.match(await page.locator('button.pick[title="Other AI の作業と判断待ち"] .note').innerText(),/制限中/);
+    await page.screenshot({path:join(artifacts,`todo-expanded-${viewport.width}.png`)});
+  }
   await page.setViewportSize({width:1280,height:900});
+  await page.locator('.todo-fold > .todo-table .todo-item').first().click();
+  assert.ok((await page.locator('dialog[open]').innerText()).includes('長い作業内容。'.repeat(1)));
+  await page.screenshot({path:join(artifacts,'record-detail.png')});
+  await page.locator('dialog[open]').getByRole('button',{name:'https://github.com/Liplus-Project/pullcept/issues/493',exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==='open_post_url').args.url),'https://github.com/Liplus-Project/pullcept/issues/493');
+  assert.equal(await page.locator('dialog[open]').getByRole('button',{name:'javascript:alert(1)',exact:true}).count(),0);
+  await page.keyboard.press('Escape');
+  await page.locator('.todo-fold > .todo-table .todo-item').last().click();
+  assert.doesNotMatch(await page.locator('dialog[open]').innerText(),/completed|inProgress|pending/);
+  assert.match(await page.locator('dialog[open]').innerText(),/完了 · 認証済み/);
+  await page.keyboard.press('Escape');
   await page.evaluate(()=>document.querySelector('#diagnostics').hidden=false);
   await page.locator('#terminal-tabs button.name[title="Other AI の端末"]').click();
   await page.waitForFunction(()=>document.querySelector('#participant-details h3')?.textContent==='Other AI');

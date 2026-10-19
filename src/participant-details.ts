@@ -73,7 +73,7 @@ export function createParticipantDetails(o: Options) {
   function recordView(record: WorkRecord) {
     const row = document.createElement("article"); row.className = "work-record";
     row.append(text("strong", `${record.kind === "decision" ? "判断依頼" : "作業"} · ${record.text}`));
-    row.append(text("small", `${record.added_by} · ${record.updated_at} · ${{active:"登録中",completed:"完了",answered:"回答済み",cancelled:"取消済み"}[record.state] ?? record.state}${record.interrupted ? " · 中断中" : ""}${record.owner_limited ? " · 利用上限" : ""}`));
+    row.append(text("small", `${record.added_by} · ${record.updated_at} · ${{active:"登録中",completed:"完了",answered:"回答済み",cancelled:"取消済み"}[record.state] ?? record.state}${record.state === "active" && record.interrupted ? " · 中断中" : ""}${record.state === "active" && record.owner_limited ? " · 利用上限" : ""}`));
     if (record.progress) row.append(text("p", record.progress));
     for (const ref of record.references) {
       try {
@@ -88,11 +88,11 @@ export function createParticipantDetails(o: Options) {
       if (record.answer.message_id) row.append(button("回答の発言", () => void source(record.answer!.message_id!)));
     }
     if (record.kind === "decision" && record.state === "active" && record.target_account_id === o.human()) {
-      row.append(button("回答", () => edit(record,"answer")), button("編集", () => edit(record,"put")));
+      row.append(button("回答", () => { row.closest("dialog")?.close(); edit(record,"answer"); }), button("編集", () => { row.closest("dialog")?.close(); edit(record,"put"); }));
       const op = {operation_id:crypto.randomUUID(), id:record.id, action:"cancel", expected_revision:record.revision};
       const cancel = button("取消", () => void (async () => {
         const topic = o.topic(); cancel.disabled = true;
-        try { await o.update(topic,op); await refresh(); }
+        try { await o.update(topic,op); row.closest("dialog")?.close(); await refresh(); }
         catch (e) { if (topic === o.topic()) { error = String(e); draw(); } }
         finally { cancel.disabled = false; }
       })());
@@ -100,29 +100,67 @@ export function createParticipantDetails(o: Options) {
     }
     return row;
   }
+  const short = (value: string) => { const chars = Array.from(value.replace(/\s+/g, " ").trim()); return chars.length > 32 ? `${chars.slice(0,32).join("")}…` : chars.join(""); };
+  function openRecord(record: WorkRecord) {
+    const dialog = document.createElement("dialog"); dialog.className = "work-dialog";
+    dialog.append(text("h3", "項目の詳細"), recordView(record), button("閉じる", () => dialog.close()));
+    dialog.addEventListener("close", () => dialog.remove(), {once:true});
+    document.body.append(dialog); dialog.showModal();
+  }
+  function table() {
+    const table = document.createElement("table"); table.className = "todo-table";
+    const head = document.createElement("thead"); const row = document.createElement("tr");
+    for (const label of ["状態", "内容", "参照"]) { const cell = text("th",label); cell.setAttribute("scope","col"); row.append(cell); }
+    head.append(row); const body = document.createElement("tbody"); table.append(head,body);
+    return {element:table, body};
+  }
+  function tableRow(body: HTMLElement, state: string, label: string, detail: () => void, sourceId?: string | null) {
+    const row = document.createElement("tr"); const content = document.createElement("td");
+    const link = button(short(label), detail); link.className = "todo-item"; content.append(link);
+    const reference = document.createElement("td");
+    if (sourceId) reference.append(button("発言", () => void source(sourceId)));
+    row.append(text("td",state), content,reference); body.append(row);
+  }
+  function recordsTable(records: WorkRecord[]) {
+    const rows = table();
+    for (const record of records) {
+      const state = record.state === "active" ? (record.owner_limited ? "利用上限" : record.interrupted ? "中断中" : record.kind === "decision" ? "判断待ち" : "作業") : ({completed:"完了",answered:"回答済み",cancelled:"取消済み"} as Record<string,string>)[record.state] ?? record.state;
+      tableRow(rows.body,state,record.text,() => openRecord(record),record.source_message_id);
+    }
+    return rows.element;
+  }
   function draw() {
-    const historyOpen = el.querySelector("details")?.open ?? false;
+    const todoOpen = el.querySelector<HTMLDetailsElement>(".todo-fold")?.open ?? false;
+    const historyOpen = el.querySelector<HTMLDetailsElement>(".todo-history")?.open ?? false;
     el.replaceChildren();
-    if (!selected) { el.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
-    el.append(text("h3", selected.name), button("更新", () => void refresh()));
-    const human = selected.kind === "admin" || selected.id === o.human();
-    el.append(text("small", human ? "人間" : selected.server ? "MCP サーバー" : "AI"));
-    if (error) el.append(text("p", `取得できません: ${error}`));
-    if (!data || dataTopic !== o.topic()) { el.append(text("p", "未取得")); return; }
+    const fold = document.createElement("details"); fold.className = "todo-fold facts-more"; fold.open = todoOpen;
+    fold.append(text("summary", "todo")); el.append(fold);
+    if (!selected) { fold.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
+    const tools = document.createElement("div"); tools.className = "todo-tools";
+    tools.append(text("h3", selected.name), button("更新", () => void refresh())); fold.append(tools);
+    if (error) fold.append(text("p", `取得できません: ${error}`));
+    if (!data || dataTopic !== o.topic()) { fold.append(text("p", "未取得")); return; }
     const include = (r: WorkRecord) => selected?.id != null && (r.owner === selected.id || (r.kind === "decision" && r.target_account_id === selected.id));
     const active = data.work.active.filter(include);
-    el.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
-    el.append(text("h4", "作業と判断依頼"));
-    if (!active.length) el.append(text("p", "登録なし"));
-    active.forEach(r => el.append(recordView(r)));
+    fold.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
+    fold.append(active.length ? recordsTable(active) : text("p", "登録なし"));
     for (const plan of data.plans.filter(p => p.account_id === selected?.id)) {
-      el.append(text("h4", `計画（自己申告）${plan.current_launch ? "" : " · 前の起動"}`));
-      el.append(text("small", `${plan.source === "codex-app-server" ? "Codex" : "Claude"} · ${new Date(plan.updated_at).toLocaleString()}`));
-      plan.steps.forEach(s => el.append(text("p", `${({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[s.status] ?? "未取得"} · ${s.step}`)));
+      const title = `計画（自己申告）${plan.current_launch ? "" : " · 前の起動"}`;
+      fold.append(text("h4", title));
+      const rows = table();
+      const planState = (status: string) => ({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[status] ?? "未取得";
+      const content = `${plan.source === "codex-app-server" ? "Codex" : "Claude"} · ${new Date(plan.updated_at).toLocaleString()}\n\n${plan.steps.map(s=>`${planState(s.status)} · ${s.step}`).join("\n")}`;
+      plan.steps.forEach(s => tableRow(rows.body,planState(s.status),s.step,()=>showDialog(title,content)));
+      fold.append(rows.element);
     }
-    if (!selected.server && selected.id !== o.human() && !data.plans.some(p => p.account_id === selected?.id)) {
-      el.append(text("h4", "計画（自己申告）"),text("p", "未取得"));
+    if (!selected.server && selected.kind !== "admin" && selected.id !== o.human() && !data.plans.some(p => p.account_id === selected?.id)) {
+      fold.append(text("h4", "計画（自己申告）"),text("p", "未取得"));
     }
+    const history = data.work.history.filter(include);
+    const historyEl = document.createElement("details"); historyEl.className = "todo-history"; historyEl.open = historyOpen;
+    historyEl.append(text("summary", `完了履歴 ${history.length} 件（最大 ${data.work.history_limit} 件）`));
+    if (history.length) historyEl.append(recordsTable(history));
+    fold.append(historyEl);
     if (selected.server) {
       const server = data.mcp_servers.find(s => s.server === selected?.server);
       const labels: Record<string,string> = {unsupported:"未対応",unobserved:"未取得",timeout:"タイムアウト",auth_required:"未認証",observed:"取得済み"};
@@ -138,9 +176,6 @@ export function createParticipantDetails(o: Options) {
         if (p.observed_at) el.append(text("small", `観測: ${new Date(p.observed_at).toLocaleString()}`));
       }
     }
-    const history = data.work.history.filter(include);
-    const historyEl = document.createElement("details"); historyEl.open = historyOpen; historyEl.append(text("summary", `完了履歴 ${history.length} 件（最大 ${data.work.history_limit} 件）`));
-    history.forEach(r => historyEl.append(recordView(r))); el.append(historyEl);
   }
   function refresh(): Promise<void> {
     const topic = o.topic();
@@ -176,6 +211,6 @@ export function createParticipantDetails(o: Options) {
     session: () => dataTopic === o.topic() ? data?.participants.find(p => p.account_id === selected?.id)?.session : undefined,
     count(id: string) { return dataTopic === o.topic() ? data?.work.active.filter(r => r.kind === "decision" && (r.owner === id || r.target_account_id === id)).length ?? 0 : 0; },
     refresh,
-    topicChanged() { document.querySelectorAll<HTMLDialogElement>("dialog.work-dialog").forEach(d => d.close()); ++epoch; pending = null; dirty = false; data = null; dataTopic = ""; selected = null; draw(); },
+    topicChanged() { document.querySelectorAll<HTMLDialogElement>("dialog.work-dialog").forEach(d => d.close()); ++epoch; pending = null; dirty = false; data = null; dataTopic = ""; selected = null; el.replaceChildren(); draw(); },
   };
 }
