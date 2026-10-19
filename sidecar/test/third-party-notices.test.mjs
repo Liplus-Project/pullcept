@@ -55,3 +55,16 @@ test("the post renderer's libraries are roots of the notices and dependencies of
   assert.ok(!packages.includes("elkjs"), "EPL-2.0 elkjs is not shipped");
   assert.ok(!packages.includes("strictdom"), "fastdom-strict is not imported");
 });
+
+test("THIRD-PARTY-NOTICES-RUST.txt lists only crates at the versions Cargo.lock holds, and ships (#360)", async () => {
+  const { RUST_NOTICES, listed } = await import("../../scripts/rust-notices.mjs");
+  const crates = listed(readFileSync(RUST_NOTICES, "utf8"));
+  assert.ok(crates.length > 200, "the crates were read");
+  const locked = new Set(
+    [...read("../../src-tauri/Cargo.lock").matchAll(/^name = "([^"]+)"\nversion = "([^"]+)"/gm)].map(([, n, v]) => `${n} ${v}`),
+  );
+  for (const one of crates) assert.ok(locked.has(one), `${one} is not in Cargo.lock: run node scripts/rust-notices.mjs`);
+  assert.ok(crates.includes("tauri " + [...locked].find((one) => one.startsWith("tauri ")).split(" ")[1]));
+  const resources = JSON.parse(read("../../src-tauri/tauri.conf.json")).bundle.resources;
+  assert.equal(resources["../THIRD-PARTY-NOTICES-RUST.txt"], "THIRD-PARTY-NOTICES-RUST.txt");
+});
