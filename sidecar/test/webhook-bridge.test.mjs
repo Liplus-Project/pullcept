@@ -19,6 +19,7 @@
 //
 // Run: npm run sidecar:test
 import { test } from "node:test";
+import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -32,10 +33,24 @@ const SCRIPT = join(HERE, "..", "src", "webhook-bridge.mjs");
 
 const TIMEOUT = 20_000;
 
-/** A worker's `/events` socket on loopback, which hands over whoever connects. */
+/** A loopback worker with raw status RPC and an `/events` socket. */
 async function fakeWorker() {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0, path: "/events" });
-  await new Promise((resolve) => server.on("listening", resolve));
+  const calls = [];
+  const snapshot = { pending_count: 3, types: { issues: 3 }, latest_received_at: "2026-10-19T00:00:00Z" };
+  const http = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    if (!body) { res.writeHead(200).end(); return; }
+    const rpc = JSON.parse(body);
+    calls.push({ path: req.url, method: rpc.method, tool: rpc.params?.name });
+    const result = rpc.method === "server/discover"
+      ? { supportedVersions: ["2026-07-28"], capabilities: { tools: {} } }
+      : { resultType: "complete", content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+  });
+  const server = new WebSocketServer({ server: http, path: "/events" });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   const connected = new Promise((resolve) =>
     server.on("connection", (socket, request) => {
       socket.send(JSON.stringify({ status: "connected" }));
@@ -43,9 +58,10 @@ async function fakeWorker() {
     }),
   );
   return {
-    url: `http://127.0.0.1:${server.address().port}`,
+    calls, snapshot,
+    url: `http://127.0.0.1:${http.address().port}`,
     connected,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => server.close(() => http.close(resolve))),
   };
 }
 
@@ -63,6 +79,8 @@ function startBridge(worker, extraEnv = {}) {
     env: { ...process.env, HOME: home, USERPROFILE: home, WEBHOOK_WORKER_URL: worker.url, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk; });
   const waiting = [];
   const unmatched = [];
   let buffer = "";
@@ -88,6 +106,7 @@ function startBridge(worker, extraEnv = {}) {
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
   return {
     child,
+    stderr: () => stderr,
     exited,
     next,
     request(id, method, params) {
@@ -115,6 +134,8 @@ test("the bridge declares claude/channel to a client that is not a CLI", { timeo
     assert.equal(answer.error, undefined);
     assert.equal(answer.result.serverInfo.name, "github-webhook-mcp");
     assert.deepEqual(answer.result.capabilities.experimental, { "claude/channel": {} });
+    const tools = await bridge.request(2, "tools/list", {});
+    assert.equal(tools.result.tools.find(tool => tool.name === "get_pending_status")._meta?.["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"], undefined);
   } finally {
     bridge.cleanup();
     await worker.close();
@@ -177,7 +198,7 @@ test("the receiver ends when its stdin does, with its socket open", { timeout: T
 });
 
 
-test("the old bridge observer child discovers unsupported without channel or calls", { timeout: TIMEOUT }, async () => {
+test("the published observer advertises raw snapshots without opening a channel", { timeout: TIMEOUT }, async () => {
   const worker = await fakeWorker();
   let channels = 0; worker.connected.then(() => channels++);
   const bridge = startBridge(worker, {WEBHOOK_OBSERVER:"1",WEBHOOK_CHANNEL:"0"});
@@ -186,9 +207,18 @@ test("the old bridge observer child discovers unsupported without channel or cal
     const tools = await bridge.request("pullcept:observer:tools","tools/list",{});
     const pending=tools.result.tools.find(t=>t.name==="get_pending_status");
     assert.ok(pending);
-    assert.notEqual(pending._meta?.["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"],1);
+    assert.equal(pending._meta?.["io.github.Liplus-Project/github-webhook-mcp/pending-status-observer"],1);
+    const answer = await bridge.request("pullcept:observer:status", "tools/call", { name: "get_pending_status", arguments: {} });
+    assert.equal(answer.error, undefined);
+    assert.deepEqual(answer.result.structuredContent, worker.snapshot);
+    assert.deepEqual(JSON.parse(answer.result.content[0].text), worker.snapshot);
+    Object.assign(worker.snapshot, { pending_count: 0, types: {}, latest_received_at: null });
+    const empty = await bridge.request("pullcept:observer:empty", "tools/call", { name: "get_pending_status", arguments: {} });
+    assert.deepEqual(empty.result.structuredContent, worker.snapshot);
+    assert.ok(worker.calls.length > 0);
+    assert.ok(worker.calls.every(call => call.path === "/mcp" && (call.method === "server/discover" || (call.method === "tools/call" && call.tool === "get_pending_status"))));
     assert.equal(channels,0);
     bridge.child.stdin.end();
-    assert.equal(await Promise.race([bridge.exited,new Promise(resolve=>setTimeout(()=>resolve("running"),5000))]),0);
+    assert.equal(await Promise.race([bridge.exited,new Promise(resolve=>setTimeout(()=>resolve("running"),5000))]),0, bridge.stderr());
   } finally { bridge.cleanup(); await worker.close(); }
 });
