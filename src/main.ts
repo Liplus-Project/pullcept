@@ -30,6 +30,7 @@ import "@xterm/xterm/css/xterm.css";
 import { createComposer, findCodeFences, highlightedCode, lineInFence } from "./composer";
 import { appendMarkdown } from "./markdown";
 import { createHtmlPreview } from "./html-preview";
+import { resizableSidebar } from "./sidebar-resize";
 
 /**
  * Whether this account launches a session.
@@ -274,6 +275,9 @@ const toggleHistoryEl = document.getElementById("toggle-history") as HTMLButtonE
 const toggleParticipantsEl = document.getElementById(
   "toggle-participants",
 ) as HTMLButtonElement;
+// Each side panel's inner edge drags to resize it (#530).
+resizableSidebar(historyEl, "left", "トピック");
+resizableSidebar(participantsEl, "right", "アカウント");
 const rosterEl = document.getElementById("roster") as HTMLElement;
 const topicListEl = document.getElementById("topic-list") as HTMLElement;
 const topicNewEl = document.getElementById("topic-new") as HTMLButtonElement;
