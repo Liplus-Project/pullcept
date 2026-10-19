@@ -2747,7 +2747,7 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  */
 function renderPanel(): void {
   const selection = participantDetails.selection();
-  const ai = selection && selection.id != null && selection.kind !== "admin" && selection.id !== localAccountId && !selection.server;
+  const ai = selection && selection.id != null && selection.kind !== "admin" && selection.kind !== "mcp" && selection.id !== localAccountId && !selection.server;
   (document.getElementById("terminal-facts") as HTMLElement).hidden = selection != null && !ai;
   (document.getElementById("terminal-diagnostics") as HTMLElement).hidden = selection != null && (!ai || !sessions.getView(seatKey(shownTopicId(), selection.id!)));
   sessions.renderSessionFacts();
