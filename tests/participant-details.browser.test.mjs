@@ -129,6 +129,8 @@ test("participant details use actual index, styles and row controller without st
     await page.emulateMedia({colorScheme:scheme});
     const [stroke,color,size,ok]=await page.locator('.todo-history .todo-mark svg').evaluate(e=>{const s=getComputedStyle(e);return [s.stroke,getComputedStyle(e.parentElement).color,e.getBoundingClientRect().width,getComputedStyle(document.documentElement).getPropertyValue('--ok').trim()];});
     assert.equal(stroke,color,scheme); assert.ok(size>8&&size<20,String(size)); assert.ok(ok,scheme);
+    // #529: the right panel's ground is Claude Desktop's sidebar (#fcfcfb) in light, the dark surface in dark.
+    assert.equal(await page.locator('#participants').evaluate(e=>getComputedStyle(e).backgroundColor),scheme==='light'?'rgb(252, 252, 251)':'rgb(32, 32, 38)',scheme);
   }
   await page.emulateMedia({colorScheme:'light'});
   await page.locator('.todo-history .todo-source').click();

@@ -27,6 +27,11 @@
   --line: #e2e2e1;
   --muted: #73726c;
   --surface: #fbfbf9;
+  /* The participant panel's own ground (#529): the right sidebar of Claude
+     Desktop, sampled from Master's reference — its panel and its section cards
+     are the same #fcfcfb. Only the right column takes it; the topic list stays
+     on `--surface`. Dark keeps the panel on the dark `--surface`. */
+  --participants-ground: #fcfcfb;
   --tint: #f4f4f7;
   --accent: #185fa5;
   --danger: #a52a2a;
@@ -121,6 +126,7 @@
     --line: #33333a;
     --muted: #9a9aa5;
     --surface: #202026;
+    --participants-ground: #202026;
     --tint: #202026;
     --accent: #7aa7d8;
     --danger: #e08585;
@@ -2153,7 +2159,7 @@ button svg.icon {
   width: 16.5rem;
   flex: none;
   border-left: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--participants-ground);
   display: flex;
   flex-direction: column;
   min-height: 0;
