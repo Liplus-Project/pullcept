@@ -11,6 +11,13 @@ if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER");
 const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。".repeat(8),progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
 const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
 
+// The fold marker is a thin chevron drawn by ::before (#523): right when folded, down when open.
+const chevron = (page,selector) => page.locator(selector).evaluate(e=>{
+  const style=getComputedStyle(e.querySelector(':scope > summary'),'::before');
+  const m=/matrix\(([^)]+)\)/.exec(style.transform); const b=m?Number(m[1].split(',')[1]):NaN;
+  return {content:style.content,listStyle:getComputedStyle(e.querySelector(':scope > summary')).listStyleType,border:style.borderRightStyle,dir:b<0?'right':b>0?'down':'none'};
+});
+
 test("participant details use actual index, styles and row controller without starting terminals", {timeout:60000}, async t => {
   const main = readFileSync("src/main.ts","utf8");
   const inject = `
@@ -67,6 +74,22 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('.todo-fold > summary').click();
   // #521: TODO heading with 更新, then 判断待ち cards, the plan, the folded 完了履歴.
   assert.deepEqual(await page.locator('.todo-fold > summary').evaluate(e=>[...e.children].map(c=>c.textContent)),['TODO','更新']);
+  // #523: 更新 then the refresh icon, at the right of the heading row; the chevron is at the left.
+  assert.equal(await page.locator('.todo-fold .todo-refresh > svg.todo-icon-refresh:last-child').count(),1);
+  assert.ok(await page.locator('.todo-fold > summary').evaluate(e=>{const s=e.getBoundingClientRect(),b=e.querySelector('.todo-refresh').getBoundingClientRect(),t=e.querySelector('.todo-title').getBoundingClientRect();return s.right-b.right<16&&b.left>t.left;}));
+  // The 判断待ち count is a small rounded badge next to the heading.
+  assert.deepEqual(await page.locator('.todo-decisions .todo-head .todo-count').evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopLeftRadius,s.fontSize,s.paddingTop,s.paddingLeft];}),['10px','11px','2px','6px']);
+  // A task item: 1px border, radius 8px, padding 9px.
+  assert.deepEqual(await page.locator('.todo-decisions .todo-card').evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopWidth,s.borderTopLeftRadius,s.paddingTop,s.columnGap];}),['1px','8px','9px','6px']);
+  // 参照：発言を開く ↗ sits at the right of the meta row, without underline until hovered.
+  assert.ok(await page.locator('.todo-decisions .todo-meta').evaluate(e=>{const m=e.getBoundingClientRect(),r=e.querySelector('.todo-ref').getBoundingClientRect();return m.right-r.right<2;}));
+  assert.equal(await page.locator('.todo-decisions .todo-source').evaluate(e=>getComputedStyle(e).textDecorationLine),'none');
+  assert.deepEqual(await chevron(page,'.todo-fold'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  assert.deepEqual(await chevron(page,'.todo-history'),{content:'""',listStyle:'none',border:'solid',dir:'right'});
+  // #523 icons from the mockup: open circle on a decision card, ↗ after 発言を開く, bundled inline SVG only.
+  assert.equal(await page.locator('.todo-decisions .todo-card .todo-mark svg.todo-icon-circle').count(),1);
+  assert.equal(await page.locator('.todo-decisions .todo-source svg.todo-icon-external').count(),1);
+  assert.equal(await page.locator('#participant-details svg.todo-icon').evaluateAll(els=>els.every(e=>e.getAttribute('aria-hidden')==='true' && !e.querySelector('image,use,foreignObject'))),true);
   assert.deepEqual(await page.locator('.todo-fold > :not(summary)').evaluateAll(els=>els.map(e=>e.className)),['todo-section todo-decisions','todo-history']);
   assert.match(await page.locator('.todo-decisions .todo-head').innerText(),/判断待ち\s*1/);
   assert.match(await page.locator('.todo-decisions .todo-card').innerText(),/この方針で進めますか？[\s\S]*判断待ち[\s\S]*Codex Luna[\s\S]*参照：[\s\S]*発言を開く/);
@@ -74,7 +97,16 @@ test("participant details use actual index, styles and row controller without st
   assert.match(await page.locator('.todo-history > summary').innerText(),/完了履歴\s*1件\s*最大50件/);
   await page.locator('.todo-history > summary').click();
   assert.equal(await page.locator('.todo-history .todo-mark').first().getAttribute('aria-label'),'回答済み');
-  assert.equal(await page.locator('.todo-history .todo-mark').first().innerText(),'✓');
+  assert.equal(await page.locator('.todo-history .todo-mark svg.todo-icon-check').count(),1);
+  assert.equal(await page.locator('.todo-history .todo-source svg.todo-icon-external').count(),1);
+  assert.deepEqual(await chevron(page,'.todo-history'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  // The icons take the text colour and size, so they read in both themes (the check is the ok colour).
+  for (const scheme of ['light','dark']) {
+    await page.emulateMedia({colorScheme:scheme});
+    const [stroke,color,size,ok]=await page.locator('.todo-history .todo-mark svg').evaluate(e=>{const s=getComputedStyle(e);return [s.stroke,getComputedStyle(e.parentElement).color,e.getBoundingClientRect().width,getComputedStyle(document.documentElement).getPropertyValue('--ok').trim()];});
+    assert.equal(stroke,color,scheme); assert.ok(size>8&&size<20,String(size)); assert.ok(ok,scheme);
+  }
+  await page.emulateMedia({colorScheme:'light'});
   await page.locator('.todo-history .todo-source').click();
   await page.waitForFunction(()=>document.querySelector("dialog[open]")?.textContent.includes("判断に必要な元の発言"));
   await page.keyboard.press('Escape');
@@ -103,6 +135,13 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("中断中"));
   assert.match(await page.locator(".todo-plan .todo-head").innerText(),/計画（自己申告）\s*前の起動/);
+  assert.equal(await page.locator('.todo-plan .todo-head > svg.todo-icon-calendar:first-child').count(),1);
+  // #523: a long title is clamped to two lines and wraps inside the sidebar; clicking it opens the full text.
+  const clamp=await page.locator('.todo-works .todo-item').evaluate(e=>{const s=getComputedStyle(e);return {lines:Math.round(e.clientHeight/parseFloat(s.lineHeight)),clipped:e.scrollHeight>e.clientHeight+1,fits:e.getBoundingClientRect().right<=e.closest('.todo-card').getBoundingClientRect().right+1,full:e.textContent.length};});
+  assert.deepEqual([clamp.lines,clamp.clipped,clamp.fits],[2,true,true],JSON.stringify(clamp));
+  await page.locator('.todo-works .todo-item').click();
+  assert.match(await page.locator('dialog[open]').innerText(),/(参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。){8}/);
+  await page.keyboard.press('Escape');
   assert.deepEqual(await page.locator('.todo-fold > :not(summary)').evaluateAll(els=>els.map(e=>e.className)),['todo-section todo-decisions','todo-section todo-works','todo-plan','todo-history']);
   assert.match(await page.locator('.todo-works .todo-card').innerText(),/中断中/);
   assert.match(await page.locator("#session-state").innerText(),/未起動/);
@@ -134,7 +173,9 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator("#session-five-hour .reset").count(),1);
   assert.equal(await page.locator("#session-seven-day .reset").count(),1);
   assert.equal(await page.locator("#terminal-diagnostics").isVisible(),true);
+  assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'right'});
   await page.locator("#terminal-diagnostics").evaluate(e=>e.open=true);
+  assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
   assert.equal(await page.locator("#session-command").innerText(),"codex ai");
   assert.equal(await page.locator("#session-dir").innerText(),"D:/fixture/ai");
   assert.equal(await page.locator("#session-id").innerText(),"session-ai");
@@ -150,6 +191,7 @@ test("participant details use actual index, styles and row controller without st
     assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),false);
     const foldedHeight=await page.locator('.todo-fold').evaluate(e=>e.getBoundingClientRect().height);
     assert.ok(foldedHeight<35,String(foldedHeight));
+    assert.equal((await chevron(page,'.todo-fold')).dir,'right');
     assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>e.getBoundingClientRect().left),await page.locator('#terminal-diagnostics > summary').evaluate(e=>e.getBoundingClientRect().left));
     await page.screenshot({path:join(artifacts,`todo-folded-${viewport.width}.png`)});
     await page.locator('.todo-fold > summary').click();
