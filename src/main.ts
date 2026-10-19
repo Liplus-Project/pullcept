@@ -2747,7 +2747,9 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
-  (document.getElementById("terminal-facts") as HTMLElement).hidden = participantDetails.selected() != null;
+  for (const id of ["terminal-facts", "terminal-diagnostics"]) {
+    (document.getElementById(id) as HTMLElement).hidden = participantDetails.selected() != null;
+  }
   // The title bar's count is this roster's length (#225).
   renderRoomTitle();
   // The tabs are redrawn here rather than on their own schedule. Both surfaces

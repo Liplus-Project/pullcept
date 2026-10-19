@@ -47,6 +47,8 @@ test("participant details use actual index, styles and row controller without st
     {id:"mcp",name:"GitHub",kind:"mcp",server:"webhook",args:[],cwd:""},
   ]));
   const terminalBefore=await page.evaluate(()=>window.detailsTest.selectedTerminal());
+  assert.equal(await page.locator("#participant-details").evaluate(e => e.previousElementSibling.id), "terminal-facts");
+  assert.equal(await page.locator("#participant-details").evaluate(e => e.nextElementSibling.id), "terminal-diagnostics");
   await page.locator('#roster button.pick[title="マスター の作業と判断待ち"]').focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("判断待ち 1 件"));
@@ -68,6 +70,17 @@ test("participant details use actual index, styles and row controller without st
   assert.match(await page.locator("#participant-details").innerText(),/セッション: 未起動/);
   assert.equal(await page.locator("#terminal-facts").isVisible(),false);
   assert.equal(await page.locator('#participant-details a[href^="javascript:"]').count(),0);
+  await page.evaluate(async()=>{
+    window.snapshot.participants=[{account_id:"other",session:{process_running:true,model:{value:"OTHER-MODEL"}}},{account_id:"ai",session:{process_running:true,model:{value:"SELECTED-MODEL"},usage:{five_hour:{used_percentage:42}}}}];
+    await window.detailsTest.refresh();
+  });
+  const selectedText=await page.locator("#participant-details").innerText();
+  assert.equal(selectedText.match(/SELECTED-MODEL/g)?.length,1);
+  assert.doesNotMatch(selectedText,/OTHER-MODEL/);
+  assert.ok(selectedText.indexOf("SELECTED-MODEL") < selectedText.indexOf("判断待ち"));
+  assert.ok(selectedText.indexOf("42%") < selectedText.indexOf("作業と判断依頼"));
+  assert.equal(await page.locator("#terminal-diagnostics").isVisible(),false);
+  assert.equal(await page.evaluate(()=>window.detailsTest.selectedTerminal()),terminalBefore);
   await page.locator('#roster button.pick[title="GitHub の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("未処理: 未対応"));
   assert.equal(await page.locator("#terminal-facts").isVisible(),false,"MCP detail has no AI model/usage facts");

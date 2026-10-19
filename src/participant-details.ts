@@ -111,7 +111,6 @@ export function createParticipantDetails(o: Options) {
     if (!data || dataTopic !== o.topic()) { el.append(text("p", "未取得")); return; }
     const include = (r: WorkRecord) => selected?.id != null && (r.owner === selected.id || (r.kind === "decision" && r.target_account_id === selected.id));
     const active = data.work.active.filter(include);
-    el.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
     if (!human && !selected.server) {
       const session = data.participants.find(p => p.account_id === selected?.id)?.session;
       el.append(text("p", `セッション: ${session?.process_running ? "稼働中" : "未起動"}`));
@@ -124,6 +123,7 @@ export function createParticipantDetails(o: Options) {
         if (usage.received_at != null) el.append(text("small", `利用量受信: ${new Date(usage.received_at * 1000).toLocaleString()}`));
       }
     }
+    el.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
     el.append(text("h4", "作業と判断依頼"));
     if (!active.length) el.append(text("p", "登録なし"));
     active.forEach(r => el.append(recordView(r)));
