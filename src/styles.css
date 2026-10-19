@@ -2259,8 +2259,6 @@ button svg.icon {
 
 #participants .member .lifecycle { grid-column: 2; grid-row: 1; }
 #participants .member .more { grid-column: 3; grid-row: 1; }
-#participants .member .detail-terminal { grid-column: 1; grid-row: 2; justify-self: end; font-size: .7rem; padding: .2rem; color: var(--muted); border: 0; border-radius: 4px; background: none; cursor: pointer; }
-#participants .member .detail-terminal:hover { background: var(--hover); }
 #participants .member.detail-selected button.pick { background: var(--selected); }
 #participants .member .decision-count { display: block; font-size: .65rem; color: var(--accent); }
 #participant-details { border-top: 1px solid var(--line); padding: .65rem; min-width: 0; overflow-wrap: anywhere; font-size: .78rem; }

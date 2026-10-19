@@ -11,7 +11,7 @@ type Options = {
   changed: () => void;
 };
 
-/** Details have their own selection. This controller has no terminal or launch capability. */
+/** Work selection and fetching have no terminal or launch capability. */
 export function createParticipantDetails(o: Options) {
   let selected: { id: string | null; name: string; server?: string; kind?: string } | null = null;
   let data: TopicStatus | null = null;
@@ -111,18 +111,6 @@ export function createParticipantDetails(o: Options) {
     if (!data || dataTopic !== o.topic()) { el.append(text("p", "未取得")); return; }
     const include = (r: WorkRecord) => selected?.id != null && (r.owner === selected.id || (r.kind === "decision" && r.target_account_id === selected.id));
     const active = data.work.active.filter(include);
-    if (!human && !selected.server) {
-      const session = data.participants.find(p => p.account_id === selected?.id)?.session;
-      el.append(text("p", `セッション: ${session?.process_running ? "稼働中" : "未起動"}`));
-      el.append(text("small", `モデル: ${session?.model?.value ?? "未取得"} · エフォート: ${session?.effort?.value ?? "未取得"}`));
-      if (session?.login?.value) el.append(text("small", `ログイン: ${session.login.value}`));
-      if (session?.usage) {
-        const usage = session.usage;
-        el.append(text("small", `5時間: ${usage.five_hour?.used_percentage == null ? "未取得" : `${usage.five_hour.used_percentage}%`} · 週次: ${usage.seven_day?.used_percentage == null ? "未取得" : `${usage.seven_day.used_percentage}%`}`));
-        if (usage.context != null) el.append(text("small", `コンテキスト: ${usage.context}%`));
-        if (usage.received_at != null) el.append(text("small", `利用量受信: ${new Date(usage.received_at * 1000).toLocaleString()}`));
-      }
-    }
     el.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
     el.append(text("h4", "作業と判断依頼"));
     if (!active.length) el.append(text("p", "登録なし"));
@@ -184,6 +172,8 @@ export function createParticipantDetails(o: Options) {
   return {
     select(id: string | null, name: string, server?: string, kind?: string) { selected = {id,name,server,kind}; draw(); void refresh(); },
     selected: () => selected?.id,
+    selection: () => selected,
+    session: () => dataTopic === o.topic() ? data?.participants.find(p => p.account_id === selected?.id)?.session : undefined,
     count(id: string) { return dataTopic === o.topic() ? data?.work.active.filter(r => r.kind === "decision" && (r.owner === id || r.target_account_id === id)).length ?? 0 : 0; },
     refresh,
     topicChanged() { document.querySelectorAll<HTMLDialogElement>("dialog.work-dialog").forEach(d => d.close()); ++epoch; pending = null; dirty = false; data = null; dataTopic = ""; selected = null; draw(); },

@@ -6,7 +6,7 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITerminalOptions } from "@xterm/xterm";
-import type { Topic, Participant, SessionStats, SeatActivity, Account, StartedSession, RunningSession, SeatedAccount, IconName, SessionView, Member, PtyExit, TerminalCursorStyle } from "./contracts";
+import type { TopicStatus, Topic, Participant, SessionStats, SeatActivity, Account, StartedSession, RunningSession, SeatedAccount, IconName, SessionView, Member, PtyExit, TerminalCursorStyle } from "./contracts";
 
 export interface Dependencies {
   invoke: typeof invoke;
@@ -15,6 +15,8 @@ export interface Dependencies {
   createFitAddon: () => FitAddon;
   useWebglRenderer: (term: Terminal) => void;
 
+  selectFactsAccount?: (accountId: string) => void;
+  factsSelection?: () => {accountId: string | null; session?: TopicStatus["participants"][number]["session"]} | null;
   shownTopicId: () => string;
   seatKey: (topicId: string, accountId: string) => string;
   accounts: Account[];
@@ -248,7 +250,7 @@ export function createSessionController(deps: Dependencies) {
    * number it was given is the one thing that says which of the two it is.
    */
   function showWindowSize(): void {
-    const view = shownView();
+    const view = factsView();
     windowEl.textContent = view ? `${view.term.cols}×${view.term.rows}` : "—";
   }
 
@@ -376,6 +378,7 @@ export function createSessionController(deps: Dependencies) {
     pick.title = view.ended === null ? `${name} の端末` : `${name} の端末（${endedNote(view)}）`;
     pick.setAttribute("aria-pressed", String(shown));
     pick.addEventListener("click", () => {
+      deps.selectFactsAccount?.(view.accountId);
       showView(view.accountId);
       view.term.focus();
     });
@@ -510,18 +513,24 @@ export function createSessionController(deps: Dependencies) {
   }
 
   /**
-   * Show what the terminal on the glass was launched from.
+   * Show the selected participant's terminal facts, or the shown terminal when no participant is selected.
    *
-   * Read off the shown view rather than written once at launch: with a terminal
+   * Read off that account's current-topic view rather than written once at launch: with a terminal
    * per account these values answer "what is this pane", and a pane switched away
    * from that left its command on screen would be answering for the wrong one.
    * They survive the session's exit — the question is what ran.
    */
+  function factsView(): SessionView | null {
+    const selected = deps.factsSelection?.();
+    return selected ? (selected.accountId ? views.get(deps.seatKey(deps.shownTopicId(), selected.accountId)) ?? null : null) : shownView();
+  }
+
   function renderSessionFacts(): void {
-    const view = shownView();
+    const view = factsView();
     if (!view) {
-      sessionStateEl.textContent = "未起動";
-      sessionStateEl.dataset.kind = "info";
+      const running = deps.factsSelection?.()?.session?.process_running;
+      sessionStateEl.textContent = running ? "稼働中" : "未起動";
+      sessionStateEl.dataset.kind = running ? "ok" : "info";
       transportEl.textContent = "—";
       commandEl.textContent = "—";
       dirEl.textContent = "—";
@@ -565,7 +574,7 @@ export function createSessionController(deps: Dependencies) {
   }
 
   /**
-   * Show what the terminal on the glass last said about itself (#155).
+   * Show what the selected account last said about itself (#155, #513).
    *
    * `—` for a pane with no terminal, and for one whose session has not reported
    * yet. The two are the same answer here on purpose: what a row would otherwise
@@ -582,7 +591,18 @@ export function createSessionController(deps: Dependencies) {
    * once the reset passes (`resetIn`, `resetAt`, `scheduleResetTick`).
    */
   function renderSessionStats(): void {
-    const stats = shownView()?.stats ?? null;
+    const selected = deps.factsSelection?.();
+    const session = selected?.session;
+    const view = factsView();
+    const projected: SessionStats | null = selected && session?.process_running ? {
+      topic_id: deps.shownTopicId(), account_id: selected.accountId ?? "",
+      model: session.model?.value ?? null, effort: session.effort?.value ?? null, login: session.login?.value ?? null,
+      five_hour: session.usage?.five_hour?.used_percentage ?? null,
+      seven_day: session.usage?.seven_day?.used_percentage ?? null, context: session.usage?.context ?? null,
+      five_hour_resets_at: session.usage?.five_hour?.resets_at ?? null,
+      seven_day_resets_at: session.usage?.seven_day?.resets_at ?? null, limited: session.limited ?? null,
+    } : null;
+    const stats = view?.stats ?? projected;
     const now = Date.now();
     statsEls.login.textContent = stats?.login ?? "—";
     statsEls.model.textContent = stats?.model ?? "—";
@@ -742,7 +762,7 @@ export function createSessionController(deps: Dependencies) {
    * different from not yet knowing (#139, decision 2).
    */
   function renderSessionId(): void {
-    const view = shownView();
+    const view = factsView();
     let id: string | null = null;
     let known = false;
     if (view && view.ptyId !== "") {
@@ -752,7 +772,8 @@ export function createSessionController(deps: Dependencies) {
       // No pane on the glass: after a restart there is none, and the record is
       // still there to read (#144, decision 1). Whose record is `idleAccount`'s
       // answer; the topic is the one open, because no launch has named another.
-      const accountId = idleAccount();
+      const selection = deps.factsSelection?.();
+      const accountId = selection ? selection.accountId : idleAccount();
       const topic = deps.topics.find((one) => one.topic_id === deps.shownTopicId());
       if (accountId !== null && topic) {
         known = true;
@@ -1324,7 +1345,7 @@ export function createSessionController(deps: Dependencies) {
     if (!view || !statsForView(stats, view)) return;
     const was = limitedByUsage(view.stats);
     view.stats = stats;
-    if (view === shownView()) renderSessionStats();
+    if (view === factsView()) renderSessionStats();
     if (limitedByUsage(view.stats) !== was) deps.renderPanel();
   }
 

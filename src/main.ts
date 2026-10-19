@@ -2325,7 +2325,7 @@ function memberRow(row: Member): HTMLLIElement {
   } else if (view?.ended != null) noteText = "終了";
   else if (row.account) noteText = "未起動";
 
-  // Participant details and terminal selection are independent controls (#493).
+  // A row selects its work and, when present, its existing terminal (#513).
   const button = document.createElement("button");
   button.type = "button"; button.className = "pick";
   const detailId = row.account?.id ?? row.participant?.id ?? null;
@@ -2333,7 +2333,11 @@ function memberRow(row: Member): HTMLLIElement {
   button.title = `${name} の作業と判断待ち`;
   button.addEventListener("click", () => {
     participantDetails.select(detailId, name, row.account?.server ?? undefined, row.account?.kind);
-    renderPanel();
+    if (view) {
+      const folded = diagnosticsEl.hidden;
+      showView(view.accountId);
+      if (!folded) view.term.focus();
+    } else renderPanel();
   });
   if (detailId != null && participantDetails.selected() === detailId) entry.classList.add("detail-selected");
   const pick: HTMLElement = button;
@@ -2357,12 +2361,7 @@ function memberRow(row: Member): HTMLLIElement {
   const decisionCount = detailId ? participantDetails.count(detailId) : 0;
   if (decisionCount) { const count = document.createElement("span"); count.className = "decision-count"; count.textContent = `判断待ち ${decisionCount}`; who.append(count); }
   entry.appendChild(pick);
-  if (view) {
-    const terminal = document.createElement("button"); terminal.type = "button"; terminal.className = "detail-terminal";
-    terminal.textContent = "端末"; terminal.title = `${name} の端末を見る`;
-    terminal.addEventListener("click", () => { const folded = diagnosticsEl.hidden; showView(view.accountId); if (!folded) view.term.focus(); });
-    entry.appendChild(terminal);
-  }
+  if (view?.accountId === sessions.selectedAccount()) entry.classList.add("shown");
 
   // The account's own operations ride on its row, which is what one list buys:
   // the row is keyed on the account id, so these act on one account and cannot
@@ -2747,9 +2746,11 @@ function onAccountMenuKey(event: KeyboardEvent): void {
  * only, because a name that cannot be reached is not worth naming.
  */
 function renderPanel(): void {
-  for (const id of ["terminal-facts", "terminal-diagnostics"]) {
-    (document.getElementById(id) as HTMLElement).hidden = participantDetails.selected() != null;
-  }
+  const selection = participantDetails.selection();
+  const ai = selection && selection.id != null && selection.kind !== "admin" && selection.id !== localAccountId && !selection.server;
+  (document.getElementById("terminal-facts") as HTMLElement).hidden = selection != null && !ai;
+  (document.getElementById("terminal-diagnostics") as HTMLElement).hidden = selection != null && (!ai || !sessions.getView(seatKey(shownTopicId(), selection.id!)));
+  sessions.renderSessionFacts();
   // The title bar's count is this roster's length (#225).
   renderRoomTitle();
   // The tabs are redrawn here rather than on their own schedule. Both surfaces
@@ -4356,6 +4357,14 @@ const sessions = createSessionController({
     } catch {
       // No WebGL here. The DOM renderer is already drawing; nothing to undo.
     }
+  },
+  selectFactsAccount: (accountId) => {
+    const account = accounts.find(one => one.id === accountId);
+    if (account) participantDetails.select(accountId, accountName(account), account.server ?? undefined, account.kind);
+  },
+  factsSelection: () => {
+    const selection = participantDetails.selection();
+    return selection ? { accountId: selection.id, session: participantDetails.session() } : null;
   },
   shownTopicId: (...args) => shownTopicId(...args),
   seatKey: (...args) => seatKey(...args),

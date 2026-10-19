@@ -571,7 +571,7 @@ export interface WorkRecord {
 export interface TopicStatus {
   topic_id: string; retrieved_at: number; participants: {account_id?: string; role?: string; session?: {
     process_running: boolean; limited?: boolean | null; model?: {value?: string}; effort?: {value?: string}; login?: {value?: string};
-    usage?: {five_hour?: {used_percentage:number}; seven_day?: {used_percentage:number}; context?: number; received_at?: number};
+    usage?: {five_hour?: {used_percentage:number; resets_at?:number}; seven_day?: {used_percentage:number; resets_at?:number}; context?: number; received_at?: number};
   }}[];
   work: { active: WorkRecord[]; history: WorkRecord[]; history_limit: number; pending_decisions: number };
   plans: {account_id: string; source: string; updated_at: number; current_launch: boolean; steps: {step: string; status: string}[]}[];
