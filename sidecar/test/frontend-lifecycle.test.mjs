@@ -12,8 +12,9 @@ class Element {
   dataset = {}; children = []; listeners = new Map();
   style = { setProperty() {}, removeProperty() {} };
   classList = { add() {}, remove() {}, toggle() {} };
-  addEventListener(name, callback) { this.listeners.set(name, callback); }
-  emit(name) { this.listeners.get(name)?.({preventDefault() {}}); }
+  // Every listener of a name, as the DOM keeps them (#432: the options field has two).
+  addEventListener(name, callback) { this.listeners.set(name, [...(this.listeners.get(name) ?? []), callback]); }
+  emit(name) { for (const callback of this.listeners.get(name) ?? []) callback({preventDefault() {}}); }
   appendChild(child) { this.children.push(child); return child; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
@@ -245,4 +246,38 @@ test("resume prompt switch: legacy accounts are on, off round-trips, shown only 
   get("dialog-resume-notice").checked=true;
   get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
   assert.equal(saved[0].resume_notice,true);
+});
+
+test("Claude Code remote switch mirrors --rc / --remote-control in the options and edits them (#432)", async t => {
+  const {get}=dom(t);
+  const accounts=[{...structuredClone(account),args:["--rc","--verbose"]}];
+  let saved;
+  const dialog=createAccountDialog({
+    invoke: async (command, payload) => command === "parse_launch_options" ? payload.text.split(/\s+/).filter(Boolean) : "", listen: async () => noop,
+    accounts, shownTopicId: () => "first", joinArgs: args => args.join(" "), homeDir: "D:/work", localAccountId: "human",
+    speakerColor: () => "red", declaredHue: () => null, initialOf: name => name[0], avatarImages: new Map(), drawAvatar: noop,
+    asciiJson: text => text, setAvatarImage: noop, saveConfig: async () => {saved=JSON.parse(JSON.stringify(accounts));return true;}, renderPanel: noop, status: noop,
+    seatedAnywhere: () => false, renderSessionFacts: noop, join: async () => {}, allViews: () => [], discardView: noop, fillHues: noop,
+  });
+  dialog.wireForm(); dialog.openAccountDialog(accounts[0]); await new Promise(r=>setImmediate(r));
+  // An account written by hand with --rc reads as on.
+  assert.equal(get("dialog-claude-remote-field").hidden,false);
+  assert.equal(get("dialog-claude-remote").checked,true);
+  get("dialog-claude-remote").checked=false;get("dialog-claude-remote").emit("change");
+  assert.equal(get("dialog-options").value,"--verbose");
+  get("dialog-claude-remote").checked=true;get("dialog-claude-remote").emit("change");
+  assert.equal(get("dialog-options").value,"--verbose --remote-control");
+  // Typing follows the text; --rcx and a named form are told apart.
+  get("dialog-options").value="--rcx";get("dialog-options").emit("input");
+  assert.equal(get("dialog-claude-remote").checked,false);
+  get("dialog-options").value="--remote-control=desk -p";get("dialog-options").emit("input");
+  assert.equal(get("dialog-claude-remote").checked,true);
+  get("dialog-claude-remote").checked=false;get("dialog-claude-remote").emit("change");
+  assert.equal(get("dialog-options").value,"-p");
+  get("dialog-options").value="--verbose";get("dialog-options").emit("input");
+  get("dialog-claude-remote").checked=true;get("dialog-claude-remote").emit("change");
+  get("account-form").emit("submit"); await new Promise(r=>setImmediate(r));
+  assert.deepEqual(saved?.[0].args,["--verbose","--remote-control"]);
+  get("dialog-kind").value="codex_cli";get("dialog-kind").emit("change");
+  assert.equal(get("dialog-claude-remote-field").hidden,true);
 });

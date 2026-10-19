@@ -664,6 +664,14 @@
                   <span id="dialog-codex-remote-title" class="launch-check-title">スマホから接続（app-server 方式が必要）</span>
                   <span id="dialog-codex-remote-help" class="launch-check-help">次の起動から有効。会話一覧の見え方が変わる場合があります。稼働中の席の ⋯ から接続画面を開けます。</span>
                 </label>
+                <!-- Claude Code のリモート（#432）。保存する項目は持たず、起動オプションの
+                     --rc / --remote-control の有無をそのまま映し、切り替えるとオプションの欄を
+                     書き換える。手で書いたアカウントもそのまま入として読める。 -->
+                <label id="dialog-claude-remote-field" class="field launch-check" hidden>
+                  <input id="dialog-claude-remote" type="checkbox" role="switch" aria-labelledby="dialog-claude-remote-title" aria-describedby="dialog-claude-remote-help" />
+                  <span id="dialog-claude-remote-title" class="launch-check-title">スマホから接続（Remote Control）</span>
+                  <span id="dialog-claude-remote-help" class="launch-check-help">起動オプションに --remote-control を足します。次の起動から有効。Claude デスクトップと同時に使えます。</span>
+                </label>
                 <!-- 利用上限の解除後に、Pullcept がこの席の端末へ再開の指示を打つかどうか
                      （#475）。Claude Code では解除予定時刻の後、Codex CLI では解除を確
                      かめた後の一回。既定は入（それまでの動作）。切っても止まりの知らせ・

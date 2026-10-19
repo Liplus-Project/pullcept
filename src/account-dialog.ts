@@ -28,6 +28,9 @@ export interface Dependencies {
   fillHues: (select: HTMLSelectElement, saved: string | null) => void;
 }
 
+/** Claude Code's Remote Control flag as a word of the options text (#432). */
+const REMOTE_CONTROL = String.raw`(?:^|\s)(?:--rc|--remote-control(?:=\S*)?)(?=\s|$)`;
+
 export function createAccountDialog(deps: Dependencies) {
 
   /**
@@ -184,6 +187,7 @@ export function createAccountDialog(deps: Dependencies) {
     document.getElementById("dialog-codex-note")!.hidden = !codex;
     dialogCodexAppServerFieldEl.hidden = !codex;
     dialogCodexRemoteFieldEl.hidden = !codex;
+    dialogClaudeRemoteFieldEl.hidden = kind !== "claude_code";
     // The two kinds whose seats the app types a resume into (#475).
     dialogResumeNoticeFieldEl.hidden = !resumesKind(kind);
     if (launchesKind(kind)) refreshDialogLine();
@@ -192,6 +196,14 @@ export function createAccountDialog(deps: Dependencies) {
     // Chosen on a form making an account: the server is written and started at
     // 決定, so what there is to fill in now is what it is started with (#200).
     if (kind === "mcp" && editing === null) drawNewMcp();
+  }
+
+  /**
+   * Whether the options text turns on Claude Code's Remote Control (#432):
+   * `--rc`, `--remote-control`, or `--remote-control=<name>` as a word.
+   */
+  function hasRemoteControl(text: string): boolean {
+    return new RegExp(REMOTE_CONTROL).test(text);
   }
 
   /** The kinds whose seats get the resume prompt after a usage limit (#475). */
@@ -466,6 +478,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogResumeNoticeEl.checked = draft.resume_notice !== false;
     dialogCommandEl.value = draft.command;
     dialogOptionsEl.value = deps.joinArgs(draft.args);
+    dialogClaudeRemoteEl.checked = hasRemoteControl(dialogOptionsEl.value);
     dialogResumeEl.value = draft.resume_command ?? "";
     void drawDialogEnv(draft);
     dialogDeleteEl.hidden = account === null;
@@ -1507,6 +1520,8 @@ export function createAccountDialog(deps: Dependencies) {
 
   const dialogCodexRemoteEl = document.getElementById("dialog-codex-remote") as HTMLInputElement;
   const dialogCodexRemoteFieldEl = document.getElementById("dialog-codex-remote-field") as HTMLElement;
+  const dialogClaudeRemoteEl = document.getElementById("dialog-claude-remote") as HTMLInputElement;
+  const dialogClaudeRemoteFieldEl = document.getElementById("dialog-claude-remote-field") as HTMLElement;
 
   const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
 
@@ -1594,7 +1609,20 @@ export function createAccountDialog(deps: Dependencies) {
       dialogAvatar = { kind: "clear" };
       drawDialogAvatar();
     });
-    dialogOptionsEl.addEventListener("input", () => refreshDialogLine());
+    dialogOptionsEl.addEventListener("input", () => {
+      dialogClaudeRemoteEl.checked = hasRemoteControl(dialogOptionsEl.value);
+      refreshDialogLine();
+    });
+    // The switch is the options text (#432): on adds the flag, off takes every
+    // spelling of it out. A name written after it with a space stays, since a
+    // bare word there may as well be the prompt.
+    dialogClaudeRemoteEl.addEventListener("change", () => {
+      const text = dialogOptionsEl.value;
+      dialogOptionsEl.value = dialogClaudeRemoteEl.checked
+        ? hasRemoteControl(text) ? text : `${text.trimEnd()} --remote-control`.trimStart()
+        : text.replace(new RegExp(REMOTE_CONTROL, "g"), " ").replace(/\s{2,}/g, " ").trim();
+      refreshDialogLine();
+    });
     dialogCommandEl.addEventListener("input", () => refreshDialogLine());
     // The character ends up in the line that runs, so it redraws the preview for
     // the same reason the options do: the line shown has to be the line spawned.
