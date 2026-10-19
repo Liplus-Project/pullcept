@@ -134,15 +134,26 @@ jobs:
         working-directory: crates/post-link
         run: cargo test
 
+  bridge-node24:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci
+      - name: Test webhook bridge EOF and HTTP lifecycle on Node 24
+        run: node --test sidecar/test/webhook-bridge.test.mjs
+
   # Gate job: single Required status check for branch protection.
   # Add new jobs to `needs` when CI grows. No Settings change needed.
   CI:
     if: always()
-    needs: [check]
+    needs: [check, bridge-node24]
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [[ "${{ needs.check.result }}" != "success" ]]; then
-            echo "CI failed: check=${{ needs.check.result }}"
+          if [[ "${{ needs.check.result }}" != "success" || "${{ needs.bridge-node24.result }}" != "success" ]]; then
+            echo "CI failed: check=${{ needs.check.result }}, bridge-node24=${{ needs.bridge-node24.result }}"
             exit 1
           fi

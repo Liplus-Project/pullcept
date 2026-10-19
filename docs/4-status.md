@@ -464,6 +464,6 @@ app-server 方式の Codex の席について、席の server がアプリへ送
 
 参加者の行から作業の詳細を選び、既存の AI 端末があれば折りたたみを開かずにその端末も選ぶ（#513）。topic ごとの保存作業・対象人間への判断依頼・回答履歴と、別の自己申告 plan を同じ backend snapshot から画面と status へ出す。live participants は現在の接続者のままで、保存作業の所有者は work に分ける。手動作業は明示完了でのみ履歴へ移る。席停止・利用上限では中断と表示し、再稼働から作業再開を推定しない。
 
-MCP の追加 observer は配布 bridge 一つにつき最大一プロセスであり、通知用プロセスの認証・token更新を維持する。古い npm 0.12 系は metadata 契約がないため未対応の表示になる。対応版への依存更新は upstream #260 の公開後の別反映。状態・権限・履歴・受動取得の契約は docs/0-requirements.md、1-room.md、2-screen.md、3-accounts.md を参照。
+MCP の追加 observer は配布 bridge 一つにつき最大一プロセスであり、通知用プロセスの認証・token更新を維持する。npm 0.12.0 は metadata 契約がないため未対応の表示になる。契約を備えた公開版 0.12.1 を npm dependency と lockfile で採用済み。状態・権限・履歴・受動取得の契約は docs/0-requirements.md、1-room.md、2-screen.md、3-accounts.md を参照。
 
 合成テストと実機反映は区別する。Rust の実機反映はマスター指定の再起動タイミングを待ち、画面と status の照合、停止・再起動をまたぐ保持、画面回答と履歴、MCP の未取得/件数を実機で確認するまで #493 は開けておく。

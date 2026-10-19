@@ -3895,3 +3895,27 @@ button svg.icon {
 .html-file .html-preview-open:hover .html-file-action { opacity: 1; }
 .html-preview-code[hidden], .html-preview-content[hidden] { display: none; }
 .html-preview-code { flex: 1; min-height: 0; margin: 0; padding: .6rem; overflow: auto; background: var(--code-ground); border-top: 1px solid var(--code-line); }
+
+/* The grip on each side panel's inner edge (#530). It sits between the panel
+   and the middle column, and goes away with the panel when the panel is hidden. */
+.sidebar-grip {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  background: transparent;
+}
+.sidebar-grip:hover,
+body.sidebar-resizing .sidebar-grip {
+  background: var(--line);
+}
+[hidden] + .sidebar-grip-left,
+.sidebar-grip-right:has(+ [hidden]) {
+  display: none;
+}
+body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
