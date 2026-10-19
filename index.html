@@ -408,8 +408,6 @@
             <li class="empty">参加者なし</li>
           </ul>
 
-          <section id="participant-details" aria-label="参加者の作業と判断待ち" aria-live="polite"></section>
-
           <!-- What the terminal on the glass was launched from. The values
                follow the row that is selected above, so they answer for the
                pane being looked at rather than for whichever session started
@@ -452,7 +450,9 @@
               <dd id="session-context" class="usage">—</dd>
             </div>
           </dl>
-          <details class="facts-more">
+          </div>
+          <section id="participant-details" aria-label="参加者の作業と判断待ち" aria-live="polite"></section>
+          <details id="terminal-diagnostics" class="facts-more">
             <summary>詳細</summary>
             <dl class="facts">
               <dt>部屋ソケット</dt>
@@ -486,7 +486,6 @@
               <dd id="session-window">—</dd>
             </dl>
           </details>
-          </div>
         </aside>
       </div>
 
