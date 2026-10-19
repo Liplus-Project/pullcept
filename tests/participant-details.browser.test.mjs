@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { sidebarComparisons } from "./sidebar-comparisons.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { createServer } from "vite";
@@ -228,6 +229,7 @@ test("participant details use actual index, styles and row controller without st
     for (const fold of ['.todo-fold','.todo-history']) if (!await page.locator(fold).evaluate(e=>e.open)) await page.locator(`${fold} > summary`).click();
     await page.locator('#participants').screenshot({path:join(artifacts,"panel-all-open.png")});
   }
+  if (process.env.SIDEBAR_COMPARISONS) await sidebarComparisons(page, process.env.SIDEBAR_COMPARISONS);
   assert.equal(await page.locator("#session-command").innerText(),"codex ai");
   assert.equal(await page.locator("#session-dir").innerText(),"D:/fixture/ai");
   assert.equal(await page.locator("#session-id").innerText(),"session-ai");
