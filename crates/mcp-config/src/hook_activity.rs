@@ -273,6 +273,10 @@ pub struct Activity {
     main: Agent,
     /// Running subagents, oldest first.
     subagents: Vec<Subagent>,
+    /// Whether the main agent's turn is under way: `true` from
+    /// `UserPromptSubmit`, `false` from `Stop`, and `None` until either is
+    /// heard on this launch (#509).
+    turn: Option<bool>,
 }
 
 impl Activity {
@@ -290,9 +294,13 @@ impl Activity {
         };
         match (event, heard) {
             // The path is enough for these: see "A body that cannot be read".
-            ("UserPromptSubmit", _) => self.main.clear(),
+            ("UserPromptSubmit", _) => {
+                self.main.clear();
+                self.turn = Some(true);
+            }
             ("Stop", heard) => {
                 self.main.clear();
+                self.turn = Some(false);
                 if heard.and_then(|h| h.subagent_in_flight) == Some(false) {
                     self.subagents.clear();
                 }
@@ -372,6 +380,25 @@ impl Activity {
     /// posts for the seat until this no longer holds (`prompt_hold`).
     pub fn any_waiting(&self) -> bool {
         self.main.wait.is_some() || self.subagents.iter().any(|sub| sub.agent.wait.is_some())
+    }
+
+    /// Whether the seat is idle, waiting on its next input (#509): its main
+    /// agent's turn was heard to end and none began since, and no agent runs
+    /// a tool or waits on a prompt, and no counted subagent runs. A launch
+    /// whose turn was never heard to begin or end is not idle by this reading.
+    /// A user interrupt sends no `Stop`, so an interrupted turn stays under
+    /// way here until the next one ends.
+    pub fn idle(&self) -> bool {
+        self.turn == Some(false)
+            && self.main.tools.is_empty()
+            && self.main.wait.is_none()
+            && self.subagents.is_empty()
+    }
+
+    /// A subagent stopped on the usage limit (its `StopFailure`, #509): it no
+    /// longer runs, whether or not a `SubagentStop` follows.
+    pub fn child_stopped(&mut self, agent_id: &str) {
+        self.subagents.retain(|sub| sub.id != agent_id);
     }
 
     /// The agent a hook is about: the main one when it carries no `agent_id`,
@@ -875,5 +902,32 @@ mod tests {
         ask(&mut a, "Bash");
         a.hear("UserPromptSubmit", &body("UserPromptSubmit", json!({"prompt": "x"})));
         assert!(!a.any_waiting());
+    }
+
+    #[test]
+    fn idle_is_a_heard_turn_end_with_nothing_running() {
+        let mut a = Activity::new();
+        assert!(!a.idle()); // No turn heard on this launch.
+        a.hear("UserPromptSubmit", br#"{"hook_event_name":"UserPromptSubmit"}"#);
+        assert!(!a.idle());
+        a.hear("Stop", br#"{"hook_event_name":"Stop","background_tasks":[]}"#);
+        assert!(a.idle());
+        // A subagent left running past the turn keeps the seat busy.
+        a.hear("UserPromptSubmit", br#"{"hook_event_name":"UserPromptSubmit"}"#);
+        a.hear("SubagentStart", br#"{"hook_event_name":"SubagentStart","agent_id":"c1","agent_type":"general"}"#);
+        a.hear("Stop", br#"{"hook_event_name":"Stop","background_tasks":[{"type":"subagent"}]}"#);
+        assert!(!a.idle());
+        // Its stop on the limit ends it, with no SubagentStop.
+        a.child_stopped("other");
+        assert!(!a.idle());
+        a.child_stopped("c1");
+        assert!(a.idle());
+        // A tool of the main agent, or a prompt, is not idle either.
+        a.hear("PreToolUse", br#"{"hook_event_name":"PreToolUse","tool_use_id":"t","tool_name":"Bash"}"#);
+        assert!(!a.idle());
+        a.hear("PostToolUse", br#"{"hook_event_name":"PostToolUse","tool_use_id":"t","tool_name":"Bash"}"#);
+        assert!(a.idle());
+        a.hear("PermissionRequest", br#"{"hook_event_name":"PermissionRequest","tool_name":"Bash"}"#);
+        assert!(!a.idle());
     }
 }

@@ -15,7 +15,11 @@
 //! seat stopped on something other than the limit (a selection screen, an
 //! expired login, a trust prompt), where a typed submit key could pick a
 //! choice — so nothing is typed again, the room is told once, and the attempts
-//! stop until a new rejection arms them. Child limits are not scheduled here.
+//! stop until a new rejection arms them.
+//!
+//! A child that stops on the limit while its parent is not rejected (#509) is
+//! [`Child`]: the parent left waiting on it is typed the same prompt once,
+//! after the reset, and only while it is idle.
 //!
 //! Times are Unix seconds, passed in; a rejection's `at` is the transcript's
 //! milliseconds.
@@ -149,6 +153,70 @@ impl Resume {
     }
 }
 
+/// The resume of a parent left waiting on a child that stopped on the limit
+/// while the parent itself was not rejected (#509). Bound to one launch.
+///
+/// The reset is the child's own when its transcript named one, and otherwise
+/// the account's: a child and its parent draw on one account's windows, whose
+/// resets the seat's status line reports ([`Child::reset`]). One a little
+/// early is answered by a parent rejection that names the real reset, and the
+/// parent's own [`Resume`] goes on from there.
+///
+/// Typed once, at [`GRACE`] after the reset, and only while the parent is idle
+/// (the caller's reading of its hooks). Dropped without typing when the
+/// parent answers normally at or after the reset — it is back on its own —
+/// or when the parent is rejected, which hands the seat to [`Resume`].
+#[derive(Debug, Default)]
+pub struct Child {
+    reset: Option<i64>,
+}
+
+impl Child {
+    /// The reset a child's stop is scheduled on: its own when known, else the
+    /// earliest of the account's window resets still ahead of `now`.
+    pub fn reset(own: Option<i64>, windows: &[Option<i64>], now: i64) -> Option<i64> {
+        own.or_else(|| windows.iter().flatten().copied().filter(|t| *t > now).min())
+    }
+
+    /// A child stopped on the limit. An unknown reset leaves what is armed; a
+    /// second stop with a later reset waits for the later one.
+    pub fn stopped(&mut self, reset: Option<i64>) {
+        if let Some(r) = reset {
+            self.reset = Some(self.reset.map_or(r, |old| old.max(r)));
+        }
+    }
+
+    /// A normal parent response written at `at_ms`. `true` when it drops the
+    /// prompt: written at or after the reset, the parent is back.
+    pub fn answered(&mut self, at_ms: i64) -> bool {
+        if self.reset.is_some_and(|r| at_ms >= r.saturating_mul(1000)) {
+            self.reset = None;
+            return true;
+        }
+        false
+    }
+
+    /// Whether the prompt is to be typed now: past the reset by [`GRACE`],
+    /// with the parent idle.
+    pub fn due(&self, now: i64, idle: bool) -> bool {
+        idle && self.reset.is_some_and(|r| now >= r + GRACE)
+    }
+
+    /// Typed, skipped, or handed to the parent's own resume: nothing stays.
+    pub fn clear(&mut self) {
+        self.reset = None;
+    }
+
+    pub fn pending(&self) -> bool {
+        self.reset.is_some()
+    }
+
+    /// The earliest moment the prompt can be typed.
+    pub fn type_at(&self) -> Option<i64> {
+        self.reset.map(|r| r + GRACE)
+    }
+}
+
 /// The seats the room was told are stopped on another cause ([`Action::OtherCause`]),
 /// kept per seat (topic, account) across its launches. A normal response of
 /// that seat's parent later answers the notice once, so "look at the terminal"
@@ -171,8 +239,8 @@ impl Stalled {
 /// One line of [`LOG_FILE`]: `[claude-resume] <action> room=<topic id>
 /// account=<account id> at=<time> <detail>`. Actions: `typed`, `pending`,
 /// `refused`, `still-limited`, `recovered`, `other-cause`, `skipped` (the
-/// account's switch is off, #475). No conversational
-/// text is written.
+/// account's switch is off, #475), `dropped`. A line about a [`Child`] resume
+/// (#509) carries `subject=child`. No conversational text is written.
 pub fn log_line(action: &str, topic_id: &str, account_id: &str, at: &str, detail: &str) -> String {
     tagged_log_line("claude-resume", action, topic_id, account_id, at, detail)
 }
@@ -466,5 +534,54 @@ mod tests {
         r.skip();
         assert_eq!(r.tick(9000), None);
         assert_eq!(r.tick(9000 + ANSWER_WAIT), None);
+    }
+
+    #[test]
+    fn a_child_stop_takes_its_own_reset_else_the_earliest_window_ahead() {
+        assert_eq!(Child::reset(Some(700), &[Some(500), Some(900)], 100), Some(700));
+        assert_eq!(Child::reset(None, &[Some(900), Some(500)], 100), Some(500));
+        // A window already past is not waited on.
+        assert_eq!(Child::reset(None, &[Some(50), Some(900)], 100), Some(900));
+        assert_eq!(Child::reset(None, &[Some(50), None], 100), None);
+        assert_eq!(Child::reset(None, &[None, None], 100), None);
+    }
+
+    #[test]
+    fn a_waiting_parent_is_typed_once_after_the_childs_reset_and_only_when_idle() {
+        let mut c = Child::default();
+        c.stopped(None);
+        assert!(!c.pending()); // Unknown reset: nothing armed.
+        c.stopped(Some(5000));
+        assert_eq!(c.type_at(), Some(5000 + GRACE));
+        assert!(!c.due(5000, true)); // The reset alone is not yet the moment.
+        assert!(!c.due(5000 + GRACE, false)); // A busy parent is not typed.
+        assert!(c.due(5000 + GRACE, true));
+        assert!(c.due(9000, true)); // Still due once the parent goes idle.
+        c.clear();
+        assert!(!c.due(9000, true)); // Once.
+    }
+
+    #[test]
+    fn a_parent_back_after_the_reset_is_not_typed() {
+        let mut c = Child::default();
+        c.stopped(Some(5000));
+        // Answering before the reset (a room post, say) is not being back.
+        assert!(!c.answered(4_999_999));
+        assert!(c.pending());
+        assert!(c.answered(5_000_000));
+        assert!(!c.pending());
+        assert!(!c.due(5000 + GRACE, true));
+    }
+
+    #[test]
+    fn a_later_child_stop_waits_for_the_later_reset() {
+        let mut c = Child::default();
+        c.stopped(Some(5000));
+        c.stopped(Some(90_000));
+        assert_eq!(c.type_at(), Some(90_000 + GRACE));
+        c.stopped(Some(6000));
+        assert_eq!(c.type_at(), Some(90_000 + GRACE));
+        c.stopped(None);
+        assert_eq!(c.type_at(), Some(90_000 + GRACE));
     }
 }
