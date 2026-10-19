@@ -18,6 +18,24 @@ const chevron = (page,selector) => page.locator(selector).evaluate(e=>{
   return {content:style.content,listStyle:getComputedStyle(e.querySelector(':scope > summary')).listStyleType,border:style.borderRightStyle,dir:b<0?'right':b>0?'down':'none'};
 });
 
+// #525: the label starts one half-width space past the chevron's own clearance (0.1em + box + 0.5em),
+// the space measured in the summary's own font; the same in TODO, 完了履歴 and 詳細.
+const chevronGap = (page,selector) => page.locator(selector).evaluate(e=>{
+  const summary=e.querySelector(':scope > summary'),s=getComputedStyle(summary),em=parseFloat(s.fontSize);
+  const label=summary.querySelector('.todo-title,.todo-history-title');
+  let left; if (label) left=label.getBoundingClientRect().left; else { const r=document.createRange(); r.selectNodeContents(summary); left=[...r.getClientRects()].at(-1).left; }
+  const probe=document.createElement('span'); probe.style.whiteSpace='pre'; probe.textContent=' '; summary.append(probe);
+  const space=probe.getBoundingClientRect().width; probe.remove();
+  const before=getComputedStyle(summary,'::before');
+  const clearance=em*(0.1+0.38+0.5)+parseFloat(before.borderRightWidth);
+  return {extra:left-summary.getBoundingClientRect().left-parseFloat(s.paddingLeft)-clearance, space};
+});
+// One line of the element's own text, for the blank-line gaps (#525).
+const lineHeight = (page,selector) => page.locator(selector).evaluate(e=>{
+  const probe=document.createElement('div'); probe.textContent='あ'; probe.style.margin='0'; probe.style.padding='0'; e.append(probe);
+  const h=probe.getBoundingClientRect().height; probe.remove(); return {line:h, margin:parseFloat(getComputedStyle(e).marginTop)};
+});
+
 test("participant details use actual index, styles and row controller without starting terminals", {timeout:60000}, async t => {
   const main = readFileSync("src/main.ts","utf8");
   const inject = `
@@ -100,6 +118,12 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator('.todo-history .todo-mark svg.todo-icon-check').count(),1);
   assert.equal(await page.locator('.todo-history .todo-source svg.todo-icon-external').count(),1);
   assert.deepEqual(await chevron(page,'.todo-history'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  {
+    const gap=await chevronGap(page,'.todo-history');
+    assert.ok(gap.space>2&&Math.abs(gap.extra-gap.space)<0.75,`.todo-history: ${JSON.stringify(gap)}`);
+  }
+  // With no session state shown (a human row), the rule stays as the divide from the roster (#525).
+  assert.equal(await page.locator('#participant-details').evaluate(e=>getComputedStyle(e).borderTopStyle),'solid');
   // The icons take the text colour and size, so they read in both themes (the check is the ok colour).
   for (const scheme of ['light','dark']) {
     await page.emulateMedia({colorScheme:scheme});
@@ -174,6 +198,20 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.locator("#session-seven-day .reset").count(),1);
   assert.equal(await page.locator("#terminal-diagnostics").isVisible(),true);
   assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'right'});
+  // #525: no rule between the session's state and TODO, two lines of blank space instead; one line above 詳細.
+  assert.equal(await page.locator('#participant-details').evaluate(e=>getComputedStyle(e).borderTopStyle),'none');
+  {
+    const todo=await lineHeight(page,'#participant-details'),detail=await lineHeight(page,'#terminal-diagnostics');
+    assert.ok(Math.abs(todo.margin-2*todo.line)<1,JSON.stringify(todo));
+    assert.ok(Math.abs(detail.margin-detail.line)<1,JSON.stringify(detail));
+    const [facts,details,diag]=await page.evaluate(()=>['#terminal-facts','#participant-details','#terminal-diagnostics'].map(s=>document.querySelector(s).getBoundingClientRect()));
+    assert.ok(details.top-facts.bottom>=2*todo.line-1,'TODO sits two lines below the usage bars');
+    assert.ok(diag.top-details.bottom>=detail.line-1,'詳細 sits a line below TODO');
+  }
+  for (const fold of ['.todo-fold','#terminal-diagnostics']) {
+    const gap=await chevronGap(page,fold);
+    assert.ok(gap.space>2&&Math.abs(gap.extra-gap.space)<0.75,`${fold}: ${JSON.stringify(gap)}`);
+  }
   await page.locator("#terminal-diagnostics").evaluate(e=>e.open=true);
   assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
   assert.equal(await page.locator("#session-command").innerText(),"codex ai");
@@ -194,6 +232,7 @@ test("participant details use actual index, styles and row controller without st
     assert.equal((await chevron(page,'.todo-fold')).dir,'right');
     assert.equal(await page.locator('.todo-fold > summary').evaluate(e=>e.getBoundingClientRect().left),await page.locator('#terminal-diagnostics > summary').evaluate(e=>e.getBoundingClientRect().left));
     await page.screenshot({path:join(artifacts,`todo-folded-${viewport.width}.png`)});
+    await page.locator('#participants').screenshot({path:join(artifacts,`panel-folded-${viewport.width}.png`)});
     await page.locator('.todo-fold > summary').click();
     await page.evaluate(()=>window.detailsTest.refresh());
     assert.equal(await page.locator('.todo-fold').evaluate(e=>e.open),true);
@@ -210,7 +249,15 @@ test("participant details use actual index, styles and row controller without st
     }
     assert.match(await page.locator('button.pick[title="Other AI の作業と判断待ち"] .note').innerText(),/制限中/);
     await page.screenshot({path:join(artifacts,`todo-expanded-${viewport.width}.png`)});
+    await page.locator('#participants').screenshot({path:join(artifacts,`panel-expanded-${viewport.width}.png`)});
   }
+  // The whole panel with every fold open, TODO through 詳細 (#525), then the folds as they were.
+  await page.setViewportSize({width:1280,height:1600});
+  await page.locator('.todo-history > summary').click();
+  await page.locator('#terminal-diagnostics').evaluate(e=>e.open=true);
+  await page.locator('#participants').screenshot({path:join(artifacts,'panel-all-open.png')});
+  await page.locator('#terminal-diagnostics').evaluate(e=>e.open=false);
+  await page.locator('.todo-history > summary').click();
   await page.setViewportSize({width:1280,height:900});
   await page.locator('.todo-works .todo-item').first().click();
   assert.ok((await page.locator('dialog[open]').innerText()).includes('長い作業内容。'.repeat(1)));
