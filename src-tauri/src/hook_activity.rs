@@ -178,6 +178,35 @@ impl HookSeats {
         }
     }
 
+    /// Whether the seat's launch on the terminal `pty_id` is idle by its hooks
+    /// (`Activity::idle`, #509). A seat whose hooks for that launch were not
+    /// heard is not.
+    pub fn idle(&self, topic_id: &str, account_id: &str, pty_id: &str) -> bool {
+        self.seats
+            .lock()
+            .get(&(topic_id.to_string(), account_id.to_string()))
+            .is_some_and(|seat| seat.reporter.pty_id() == pty_id && seat.activity.idle())
+    }
+
+    /// A subagent of the seat stopped on the usage limit (`StopFailure`, #509):
+    /// it is no longer counted as running, and the screen is told if that
+    /// changed what it shows.
+    pub fn child_stopped(&self, app: &AppHandle, topic_id: &str, account_id: &str, agent_id: &str) {
+        let told = {
+            let mut seats = self.seats.lock();
+            let Some(seat) = seats.get_mut(&(topic_id.to_string(), account_id.to_string())) else {
+                return;
+            };
+            seat.activity.child_stopped(agent_id);
+            seat.settle();
+            seat.reporter.next(&seat.activity)
+        };
+        if let Some(event) = told {
+            crate::room_status::activity(app, &event);
+            let _ = app.emit("seat-activity", event);
+        }
+    }
+
     /// The person typed `data` into the terminal `pty_id` (`pty::write_pty`,
     /// the pane's keys and pastes — never a post the room types in). Handed to
     /// the state of the launch that terminal is, if it is a Claude Code seat

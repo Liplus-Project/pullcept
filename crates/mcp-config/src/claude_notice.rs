@@ -266,6 +266,16 @@ pub fn typed(name: &str, retry: bool) -> String {
         format!("{name} の親セッションの解除予定時刻を過ぎたため、端末へ再開の指示を打ちます。")
     }
 }
+/// Added to a child's stop notice when its parent's resume is scheduled
+/// (#509): `clock` is when it can first be typed.
+pub fn child_resume(clock: &str) -> String {
+    format!("親セッションが待機したままなら、{clock} を過ぎたところで Pullcept が端末へ再開の指示を一度打ちます。")
+}
+/// Said as the prompt is typed into a parent left waiting on a child that
+/// stopped on the limit (#509).
+pub fn typed_child(name: &str) -> String {
+    format!("{name} のサブエージェントが利用上限で止まったあと、解除予定時刻を過ぎても親セッションが待機したままのため、端末へ再開の指示を打ちます。")
+}
 /// The typed prompt drew neither a rejection nor a response (#401).
 pub fn other_cause(name: &str) -> String {
     format!("{name} の親セッションは、再開の指示を打ってから応答がありません。利用上限以外の理由（起動時の選択画面、ログイン切れ、信頼の確認など）で止まっているようです。指示は打ち直しません。端末を見てください。")
@@ -536,4 +546,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_waiting_parents_resume_is_told_without_claiming_the_parent_stopped() {
+        let told = child_resume("10月13日 11:40");
+        assert!(told.contains("10月13日 11:40") && told.contains("待機したままなら") && told.contains("一度打ちます"), "{told}");
+        let typed = typed_child("seat");
+        assert!(typed.starts_with("seat のサブエージェント") && typed.contains("待機したまま") && typed.contains("再開の指示を打ちます"), "{typed}");
+        for text in [told, typed] {
+            assert!(!text.contains("親セッション は利用上限で停止"), "{text}");
+            assert!(!text.contains("（返信不要）"), "{text}");
+        }
+    }
 }

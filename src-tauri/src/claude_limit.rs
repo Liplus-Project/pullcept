@@ -1,5 +1,6 @@
 //! Claude parent rejection and response recovery (#342), with the resume
-//! prompt typed at the known reset (#357, simplified by #401).
+//! prompt typed at the known reset (#357, simplified by #401), and the same
+//! prompt for a parent left waiting on a child stopped on the limit (#509).
 //! Each launch is registered before spawn, then bound to its own PTY. Room
 //! posts are not held for a limited Claude seat (#401): they reach its
 //! terminal as for any seat. One lock covers every Claude seat.
@@ -15,8 +16,12 @@ enum Prompt {
     Typed(resume::Action),
     /// The account's switch is off (#475).
     Skipped,
+    /// The parent left waiting on a child stopped on the limit (#509).
+    Child,
+    /// The same, with the account's switch off.
+    ChildSkipped,
 }
-use Prompt::{Skipped, Typed};
+use Prompt::{Child, ChildSkipped, Skipped, Typed};
 struct Entry {
     nonce: String,
     parent: String,
@@ -31,6 +36,8 @@ struct Entry {
     pending_notices: Vec<(mcp_config::claude_notice::Stop, bool)>,
     /// The resume prompt at the parent's reset (#357, #401).
     resume: resume::Resume,
+    /// The prompt for a parent left waiting on a stopped child (#509).
+    child: resume::Child,
     floor: i64,
     stats: SessionStats,
     /// Where this seat's login is kept, and its last reading keyed on the
@@ -157,6 +164,7 @@ impl ClaudeLimits {
                 notices: Default::default(),
                 pending_notices: Vec::new(),
                 resume,
+                child: Default::default(),
                 floor,
                 stats,
                 login_file,
@@ -174,6 +182,9 @@ impl ClaudeLimits {
             if let Some(e) = seats.remove(&key) {
                 if e.state.limited && e.resume.pending() {
                     log(app, "pending", topic, account, "terminal_left=launch typed_at_next_launch");
+                }
+                if e.child.pending() {
+                    log(app, "dropped", topic, account, "subject=child terminal_left=launch");
                 }
             }
         }
@@ -265,10 +276,37 @@ impl ClaudeLimits {
         else {
             return false;
         };
-        if let Some(mut stop) = mcp_config::claude_notice::child(body) {
-            mcp_config::claude_notice::enrich(&e.root, &e.parent, &mut stop, body, e.floor);
-            e.remember_notice(stop);
+        let Some(mut stop) = mcp_config::claude_notice::child(body) else {
+            return true;
+        };
+        mcp_config::claude_notice::enrich(&e.root, &e.parent, &mut stop, body, e.floor);
+        // A parent not rejected itself may be left waiting on this child
+        // (#509): its resume is scheduled on the child's reset, or on the
+        // account's. A rejected parent is its own resume's (#401).
+        if !e.state.limited && !e.parent.is_empty() {
+            let now = unix_now();
+            let reset = resume::Child::reset(
+                stop.reset,
+                &[e.stats.five_hour_resets_at, e.stats.seven_day_resets_at],
+                now,
+            );
+            e.child.stopped(reset);
+            let source = match (stop.reset, reset) {
+                (_, None) => "unknown",
+                (Some(_), _) => "child",
+                (None, Some(_)) => "account",
+            };
+            let detail = match e.child.type_at() {
+                Some(at) => format!("subject=child reset={source} type_at={}", clock_or_unknown(Some(at))),
+                None => "subject=child reset=unknown not_typed".into(),
+            };
+            log(app, "pending", topic, account, &detail);
         }
+        let agent = stop.subject.trim_start_matches("child:").to_string();
+        e.remember_notice(stop);
+        drop(seats);
+        app.state::<crate::hook_activity::HookSeats>()
+            .child_stopped(app, topic, account, &agent);
         true
     }
     /// The watcher's notices, and the resume prompt typed into this launch's
@@ -279,11 +317,19 @@ impl ClaudeLimits {
         // config only when a parent notice or a prompt is due, and outside
         // the seats' lock.
         let now = unix_now();
+        // Whether the parent is idle by its hooks (#509), read before the
+        // seats' lock.
+        let idle = app
+            .state::<crate::hook_activity::HookSeats>()
+            .idle(topic, account, pty);
         let wanted = {
             let seats = self.seats.lock();
             seats.get(&(topic.into(), account.into())).is_some_and(|e| {
                 (e.state.limited && e.resume.due(now))
-                    || e.pending_notices.iter().any(|(n, _)| n.subject == "parent")
+                    || (!e.state.limited && e.child.due(now, idle))
+                    || e.pending_notices.iter().any(|(n, _)| {
+                        n.subject == "parent" || (n.subject.starts_with("child:") && e.child.pending())
+                    })
             })
         };
         let enabled = !wanted || crate::config::resume_notice_enabled(app, account);
@@ -306,7 +352,15 @@ impl ClaudeLimits {
                             enabled,
                         )
                     } else {
-                        mcp_config::claude_notice::stopped(&e.name, &stop, clock.as_deref(), enabled)
+                        let mut text =
+                            mcp_config::claude_notice::stopped(&e.name, &stop, clock.as_deref(), enabled);
+                        // A waiting parent's resume, when one is scheduled (#509).
+                        if let Some(at) = e.child.type_at().filter(|_| {
+                            enabled && !e.state.limited && stop.subject.starts_with("child:")
+                        }) {
+                            text.push_str(&mcp_config::claude_notice::child_resume(&clock_or_unknown(Some(at))));
+                        }
+                        text
                     }
                 })
                 .collect();
@@ -319,7 +373,10 @@ impl ClaudeLimits {
                     .map(|subject| mcp_config::claude_notice::reached(&e.name, &subject)),
             );
             let action = if !e.state.limited {
-                None
+                e.child.due(now, idle).then(|| {
+                    e.child.clear();
+                    if enabled { Child } else { ChildSkipped }
+                })
             } else if !enabled && e.resume.due(now) {
                 // Switched off (#475): dropped, not typed; nothing is said to
                 // the room and no answer is awaited.
@@ -338,6 +395,26 @@ impl ClaudeLimits {
             Some(Skipped) => {
                 log(app, "skipped", topic, account, "resume_notice=off");
             }
+            Some(ChildSkipped) => {
+                log(app, "skipped", topic, account, "subject=child resume_notice=off");
+            }
+            Some(Child) => {
+                let notice = crate::room::post_app_notice(
+                    app,
+                    &room,
+                    topic,
+                    &notice::typed_child(&name),
+                    Some(pty),
+                );
+                let typed = type_prompt(app, pty, notice);
+                log(
+                    app,
+                    if typed { "typed" } else { "refused" },
+                    topic,
+                    account,
+                    &format!("subject=child pty={pty}"),
+                );
+            }
             Some(Typed(resume::Action::Type { retry })) => {
                 // Said to the room first, its id the label's watermark; not
                 // typed into this seat, which gets the prompt instead.
@@ -348,24 +425,7 @@ impl ClaudeLimits {
                     &notice::typed(&name, retry),
                     Some(pty),
                 );
-                let at = terminal_input::at(&crate::room::now_iso());
-                let text = terminal_input::compose(
-                    notice.as_deref().unwrap_or_default(),
-                    crate::room::APP_SPEAKER,
-                    terminal_input::ROLE_APP,
-                    at.as_deref(),
-                    &[],
-                    resume::PROMPT,
-                );
-                // A seat waiting on a permission prompt keeps it until the
-                // wait ends (#346). Bound to this launch: not carried to the
-                // next, which reads its own pending resume back (#366).
-                let item = mcp_config::prompt_hold::Item {
-                    message_id: notice.unwrap_or_default(),
-                    text,
-                    launch_bound: true,
-                };
-                let typed = crate::hook_activity::type_or_keep(app, pty, item);
+                let typed = type_prompt(app, pty, notice);
                 log(
                     app,
                     if typed { "typed" } else { "refused" },
@@ -458,13 +518,26 @@ fn read(app: &AppHandle, limits: &ClaudeLimits, topic: &str, account: &str, nonc
                     policy::Event::Rejected { reset, at, .. } => Some((*reset, *at)),
                     _ => None,
                 };
+                let succeeded = match &event {
+                    policy::Event::Succeeded { at, .. } => Some(*at),
+                    _ => None,
+                };
                 if !e.state.apply(event) {
                     continue;
                 }
                 let Some((reset, at)) = rejected else {
                     answered = true;
+                    // Back on its own after a stopped child's reset (#509).
+                    if succeeded.is_some_and(|at| e.child.answered(at)) {
+                        log(app, "recovered", topic, account, "subject=child after=other_input");
+                    }
                     continue;
                 };
+                // The parent's own rejection: its resume takes the seat (#401).
+                if e.child.pending() {
+                    e.child.clear();
+                    log(app, "dropped", topic, account, "subject=child after=parent_rejected");
+                }
                 let stop = mcp_config::claude_notice::Stop {
                     subject: "parent".into(),
                     reset,
@@ -498,6 +571,29 @@ fn read(app: &AppHandle, limits: &ClaudeLimits, topic: &str, account: &str, nonc
         e.resume.recovered();
     }
     (answered && !e.state.limited).then(|| e.name.clone())
+}
+
+/// Type [`resume::PROMPT`] into the terminal `pty`, labelled with the room
+/// notice said just before it (its id the label's watermark). A seat waiting
+/// on a permission prompt keeps it until the wait ends (#346). Bound to this
+/// launch: not carried to the next, which reads its own pending resume back
+/// (#366).
+fn type_prompt(app: &AppHandle, pty: &str, notice: Option<String>) -> bool {
+    let at = terminal_input::at(&crate::room::now_iso());
+    let text = terminal_input::compose(
+        notice.as_deref().unwrap_or_default(),
+        crate::room::APP_SPEAKER,
+        terminal_input::ROLE_APP,
+        at.as_deref(),
+        &[],
+        resume::PROMPT,
+    );
+    let item = mcp_config::prompt_hold::Item {
+        message_id: notice.unwrap_or_default(),
+        text,
+        launch_bound: true,
+    };
+    crate::hook_activity::type_or_keep(app, pty, item)
 }
 
 fn clock_or_unknown(t: Option<i64>) -> String {
