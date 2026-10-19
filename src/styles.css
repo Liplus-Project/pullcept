@@ -2360,6 +2360,12 @@ button svg.icon {
 #participants .member.shown button.pick {
   background: var(--selected);
 }
+/* While another row is chosen for its details (a human or MCP row has no
+ terminal, so the shown one stays), only that row is filled: two fills would
+ read as two choices (#540). */
+#participants:has(.member.detail-selected) .member.shown:not(.detail-selected) button.pick:not(:hover) {
+  background: none;
+}
 
 /* The circle the participant's lines carry in the room (#253): the account's
    image, or the initial on the line's colour. Sized on the conversation's text
