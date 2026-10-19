@@ -59,7 +59,7 @@ test("participant details use actual index, styles and row controller without st
     window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:"main"},currentWebview:{label:"main"}},transformCallback(cb){const id=next++;window.callbacks.set(id,cb);return id;},unregisterCallback(){},invoke:async(cmd,args)=>{
       window.calls.push({cmd,args});
       if(cmd==="seated_accounts")return window.seats ?? [];
-      if(cmd==="topic_status") { if(window.delayed) return new Promise(resolve=>{window.resolveRead=resolve;});return {...window.snapshot,topic_id:args.topicId}; }
+      if(cmd==="topic_status") { if(window.failRead) throw new Error("unavailable"); if(window.delayed) return new Promise(resolve=>{window.resolveRead=resolve;});return {...window.snapshot,topic_id:args.topicId}; }
       if(cmd==="room_topic_log")return [{message_id:"source",speaker:"マスター",content:"判断に必要な元の発言",ts:"now"}];
       if(cmd==="update_topic_work")return {};
       if(cmd==="plugin:event|listen")return 1;
@@ -76,6 +76,41 @@ test("participant details use actual index, styles and row controller without st
     {id:"mcp-empty",name:"Unconfigured MCP",kind:"mcp",args:[],cwd:""},
     {id:"mcp",name:"GitHub",kind:"mcp",server:"webhook",args:[],cwd:""},
   ]));
+  // #545: every row receives the full topic counts without being selected.
+  await page.evaluate(()=>window.detailsTest.refresh());
+  const badge = name => page.locator(`#roster button.pick[title="${name} の作業と判断待ち"] .notification-count`);
+  assert.equal(await badge('Codex Luna').innerText(),'2');
+  assert.equal(await badge('マスター').innerText(),'1');
+  assert.equal(await badge('Other AI').count(),0);
+  assert.equal(await badge('GitHub').count(),0);
+  assert.equal(await page.locator('#roster .decision-count').count(),0);
+  await page.evaluate(async()=>{
+    window.originalSnapshot=structuredClone(window.snapshot);
+    const q=structuredClone(window.snapshot.work.active[1]);q.owner='human';
+    window.snapshot.work.active=[q,...Array.from({length:75},(_,i)=>({...window.snapshot.work.active[0],id:`work-${i}`}))];
+    window.snapshot.mcp_servers[0].pending={state:'observed',pending_count:137};
+    await window.detailsTest.refresh();
+  });
+  assert.equal(await badge('Codex Luna').innerText(),'75','UI full active list exceeds the MCP summary limit');
+  assert.equal(await badge('マスター').innerText(),'1','owner and decision target counted once');
+  assert.equal(await badge('GitHub').innerText(),'137','MCP total comes from observation');
+  for (const scheme of ['light','dark']) {
+    await page.emulateMedia({colorScheme:scheme});
+    await page.setViewportSize({width:720,height:850});
+    assert.ok(await badge('Codex Luna').evaluate(e=>{
+      const b=e.getBoundingClientRect(),n=e.nextElementSibling.getBoundingClientRect(),w=e.previousElementSibling.getBoundingClientRect();
+      return b.right<=n.left&&w.right<=b.left&&getComputedStyle(e).flexShrink==='0';
+    }),scheme);
+  }
+  await page.setViewportSize({width:1280,height:900});
+  await page.emulateMedia({colorScheme:'light'});
+  for (const pending of [{state:'observed',pending_count:0},{state:'unobserved',pending_count:9},{state:'auth_required'},{state:'timeout'},{state:'unsupported'},{state:'observed'},{state:'observed',pending_count:-1}]) {
+    await page.evaluate(async p=>{window.snapshot.mcp_servers[0].pending=p;await window.detailsTest.refresh();},pending);
+    assert.equal(await badge('GitHub').count(),0,JSON.stringify(pending));
+  }
+  await page.evaluate(async()=>{window.failRead=true;await window.detailsTest.refresh();});
+  assert.equal(await page.locator('#roster .notification-count').count(),0,'failed snapshot clears previous counts');
+  await page.evaluate(async()=>{window.failRead=false;window.snapshot=window.originalSnapshot;await window.detailsTest.refresh();});
   const terminalBefore=await page.evaluate(()=>window.detailsTest.selectedTerminal());
   assert.equal(await page.locator("#participant-details").evaluate(e => e.previousElementSibling.id), "terminal-facts");
   assert.equal(await page.locator("#participant-details").evaluate(e => e.nextElementSibling.id), "terminal-diagnostics");
@@ -394,12 +429,14 @@ test("participant details use actual index, styles and row controller without st
   await page.evaluate(async()=>{window.snapshot.mcp_servers[0].pending={state:"unsupported"};await window.detailsTest.refresh();});
   // A slow old topic response cannot enter the next topic's details.
   await page.evaluate(()=>{window.delayed=true;window.detailsTest.topic("old");window.detailsTest.select("ai","AI");});
+  assert.equal(await page.locator("#roster .notification-count").count(),0,"topic switch clears badges before reads finish");
   await page.waitForFunction(()=>window.resolveRead);
-  await page.evaluate(()=>{window.delayed=false;window.detailsTest.topic("new");window.detailsTest.select("mcp","GitHub","webhook");});
+  await page.evaluate(()=>{window.delayed=false;window.snapshot.work.active=[];window.detailsTest.topic("new");window.detailsTest.select("mcp","GitHub","webhook");});
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("未処理: 未対応"));
   await page.evaluate(()=>window.resolveRead({...window.snapshot,topic_id:"old",mcp_servers:[]}));
   await page.waitForTimeout(50);
   assert.match(await page.locator("#participant-details").innerText(),/未処理: 未対応/);
+  assert.equal(await page.locator("#roster .notification-count").count(),0,"late old topic counts cannot reappear after selection changes");
   await page.evaluate(async()=>{window.snapshot.participants=[];window.detailsTest.select('ai','AI');await window.detailsTest.refresh();});
   assert.equal(await page.locator('#session-model').innerText(),'—');
   assert.equal(await page.locator('#session-login').innerText(),'—');

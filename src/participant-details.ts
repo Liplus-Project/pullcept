@@ -262,7 +262,7 @@ export function createParticipantDetails(o: Options) {
         }
         if (generation !== epoch || topic !== o.topic() || result.topic_id !== topic) return;
         data = result; dataTopic = topic; error = ""; draw(); o.changed();
-      } catch (e) { if (generation === epoch && topic === o.topic()) { error = String(e); draw(); } }
+      } catch (e) { if (generation === epoch && topic === o.topic()) { data = null; dataTopic = ""; error = String(e); draw(); o.changed(); } }
       finally {
         if (generation === epoch) { pending = null; if (dirty) { dirty = false; void refresh(); } }
       }
@@ -274,8 +274,17 @@ export function createParticipantDetails(o: Options) {
     selected: () => selected?.id,
     selection: () => selected,
     session: () => dataTopic === o.topic() ? data?.participants.find(p => p.account_id === selected?.id)?.session : undefined,
-    count(id: string) { return dataTopic === o.topic() ? data?.work.active.filter(r => r.kind === "decision" && (r.owner === id || r.target_account_id === id)).length ?? 0 : 0; },
+    count(id: string, server?: string, kind?: string): number | undefined {
+      if (!data || dataTopic !== o.topic()) return undefined;
+      if (kind === "mcp" || server) {
+        const pending = data.mcp_servers.find(row => row.server === server)?.pending;
+        const count = pending?.pending_count;
+        return pending?.state === "observed" && typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+      }
+      // topic_status is the full UI journal, not the bounded MCP status projection.
+      return data.work.active.filter(r => r.state === "active" && (r.owner === id || (r.kind === "decision" && r.target_account_id === id))).length;
+    },
     refresh,
-    topicChanged() { document.querySelectorAll<HTMLDialogElement>("dialog.work-dialog").forEach(d => d.close()); ++epoch; pending = null; dirty = false; data = null; dataTopic = ""; selected = null; el.replaceChildren(); draw(); },
+    topicChanged() { document.querySelectorAll<HTMLDialogElement>("dialog.work-dialog").forEach(d => d.close()); ++epoch; pending = null; dirty = false; data = null; dataTopic = ""; selected = null; error = ""; el.replaceChildren(); draw(); o.changed(); },
   };
 }

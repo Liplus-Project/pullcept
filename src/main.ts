@@ -2346,6 +2346,13 @@ function memberRow(row: Member): HTMLLIElement {
   if (detailId != null && participantDetails.selected() === detailId) entry.classList.add("detail-selected");
   const pick: HTMLElement = button;
   pick.append(mark, who);
+  const notificationCount = detailId ? participantDetails.count(detailId, row.account?.server ?? undefined, row.account?.kind) : undefined;
+  if (notificationCount != null && notificationCount > 0) {
+    const count = document.createElement("span"); count.className = "notification-count";
+    count.textContent = String(notificationCount);
+    count.title = `${row.account?.kind === "mcp" ? "未処理" : "未完了"} ${notificationCount} 件`;
+    count.setAttribute("aria-label", count.title); pick.append(count);
+  }
   if (noteText) {
     const note = document.createElement("span");
     note.className = "note";
@@ -2362,8 +2369,6 @@ function memberRow(row: Member): HTMLLIElement {
     if (noteTitle) note.title = noteTitle;
     pick.appendChild(note);
   }
-  const decisionCount = detailId ? participantDetails.count(detailId) : 0;
-  if (decisionCount) { const count = document.createElement("span"); count.className = "decision-count"; count.textContent = `判断待ち ${decisionCount}`; who.append(count); }
   entry.appendChild(pick);
   if (view?.accountId === sessions.selectedAccount()) entry.classList.add("shown");
 
