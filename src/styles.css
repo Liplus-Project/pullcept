@@ -2635,11 +2635,13 @@ button svg.icon {
 
 /* The values read only when something is stuck — the socket, the id, how the
    session was launched — folded under 詳細 (#225). Folded, the summary is one
-   quiet line under the values that stay open. */
+   line under the values that stay open, its heading set as TODO's is —
+   weight, size and colour (#527). */
 #participants .facts-more > summary {
   padding: 0.35rem 0.9rem 0.6rem;
-  color: var(--muted);
+  color: var(--fg);
   font-size: 0.75rem;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -2699,10 +2701,6 @@ button svg.icon {
 /* One line of blank space above 詳細 (#525). */
 #participants #terminal-diagnostics {
   margin-top: 1lh;
-}
-
-#participants .facts-more > summary:hover {
-  color: var(--fg);
 }
 
 /* The room is not listening, and the row saying so is folded: the summary
