@@ -212,8 +212,20 @@ test("participant details use actual index, styles and row controller without st
     const gap=await chevronGap(page,fold);
     assert.ok(gap.space>2&&Math.abs(gap.extra-gap.space)<0.75,`${fold}: ${JSON.stringify(gap)}`);
   }
+  // #527: the 詳細 heading reads as the TODO heading does — same weight, size and colour.
+  {
+    const heading=s=>page.locator(s).evaluate(e=>{const c=getComputedStyle(e);return {weight:c.fontWeight,size:c.fontSize,color:c.color};});
+    const todo=await heading('.todo-fold > summary .todo-title'),detail=await heading('#terminal-diagnostics > summary');
+    if (process.env.HEADING_STYLES) console.log(JSON.stringify({todo,detail,account:await heading('#participants .panel-title')}));
+    assert.deepEqual(detail,todo);
+  }
   await page.locator("#terminal-diagnostics").evaluate(e=>e.open=true);
   assert.deepEqual(await chevron(page,'#terminal-diagnostics'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  if (process.env.STATUS_UI_ARTIFACTS) {
+    // Every fold open, for the visual check of the headings (#527).
+    for (const fold of ['.todo-fold','.todo-history']) if (!await page.locator(fold).evaluate(e=>e.open)) await page.locator(`${fold} > summary`).click();
+    await page.locator('#participants').screenshot({path:join(artifacts,"panel-all-open.png")});
+  }
   assert.equal(await page.locator("#session-command").innerText(),"codex ai");
   assert.equal(await page.locator("#session-dir").innerText(),"D:/fixture/ai");
   assert.equal(await page.locator("#session-id").innerText(),"session-ai");
