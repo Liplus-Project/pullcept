@@ -1741,6 +1741,14 @@ async fn read_hook(
             .read_to_end(&mut body)
             .await
             .map_err(|e| format!("hook request body could not be read: {e}"))?;
+        // Past the cap the rest is read and dropped, not left unread: closing
+        // on a request still being sent resets it, and the CLI would report a
+        // hook error for a tool whose body was only long (#334).
+        if length > HOOK_BODY_MAX {
+            tokio::io::copy(&mut (&mut reader).take((length - HOOK_BODY_MAX) as u64), &mut tokio::io::sink())
+                .await
+                .map_err(|e| format!("hook request body could not be read: {e}"))?;
+        }
     }
 
     // The same token the sidecars present. The listener is on loopback, and
