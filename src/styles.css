@@ -2270,8 +2270,6 @@ button svg.icon {
    row shrinks to the narrow right column; long text is cut, never widened. */
 .todo-fold > :not(summary), #participant-details > h4, #participant-details > p, #participant-details > small { margin-left: .65rem; margin-right: .65rem; }
 #participants .todo-fold > summary { display: flex; align-items: center; gap: .3rem; min-width: 0; }
-#participants .todo-fold > summary::before { content: "▸"; font-size: .65rem; }
-#participants .todo-fold[open] > summary::before { content: "▾"; }
 .todo-fold > summary .todo-title { flex: 1; min-width: 0; font-weight: 600; color: var(--fg); }
 #participant-details .todo-fold > summary .todo-refresh { margin: -.2rem 0; padding: .1rem .35rem; font-size: .72rem; line-height: 1.2; }
 #participant-details .todo-fold > summary { cursor: pointer; list-style: none; }
@@ -2279,21 +2277,39 @@ button svg.icon {
 .todo-section, .todo-plan, .todo-history { border-top: 1px solid var(--line); padding: .4rem 0; min-width: 0; }
 .todo-head { display: flex; align-items: center; gap: .4rem; min-width: 0; }
 #participant-details .todo-head h4 { margin: .2rem 0; font-size: .78rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.todo-count { color: var(--accent); font-size: .7rem; }
-.todo-card { display: flex; gap: .4rem; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: .35rem .45rem; margin: .3rem 0; background: var(--surface); }
+/* #523, after the mockup: the panel stays quiet — only 判断待ち stands out, a done item gets the green check only. */
+.todo-count { color: var(--muted); font-size: 11px; }
+.todo-head .todo-count { padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); line-height: 1.2; }
+.todo-card { display: flex; gap: 6px; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px; margin: .3rem 0; background: var(--surface); transition: background-color 120ms; }
+.todo-card:hover { background: color-mix(in oklch, var(--fg) 4%, var(--surface)); }
 .todo-card.todo-done { border: 0; border-radius: 0; border-bottom: 1px solid var(--line); background: none; margin: 0; padding: .3rem 0; }
+.todo-card.todo-done:hover { background: color-mix(in oklch, var(--fg) 4%, transparent); }
 .todo-card.todo-done:last-child { border-bottom: 0; }
 .todo-mark { flex: none; width: 1rem; text-align: center; color: var(--muted); line-height: 1.6; }
 .todo-done .todo-mark { color: var(--ok); }
+/* Line icons from the mockup (#523): the text's size and colour, so both themes carry them. */
+.todo-icon { display: inline-block; flex: none; width: 1em; height: 1em; vertical-align: -.15em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.todo-mark .todo-icon { width: .85rem; height: .85rem; vertical-align: -.12rem; }
+#participant-details .todo-source .todo-icon { margin-left: .2em; }
+#participant-details .todo-fold > summary .todo-refresh { display: inline-flex; align-items: center; justify-content: center; }
+#participant-details .todo-refresh .todo-icon { width: .9rem; height: .9rem; }
+#participant-details .todo-source .todo-icon { width: .85em; height: .85em; }
+.todo-plan .todo-head > .todo-icon { color: var(--muted); }
 .todo-body { flex: 1; min-width: 0; }
 .todo-meta, .todo-ref { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; min-width: 0; font-size: .7rem; color: var(--muted); }
-.todo-ref { justify-content: flex-end; }
-.todo-done .todo-ref { justify-content: flex-start; }
-.todo-badge { flex: none; border-radius: 4px; padding: 0 .3rem; background: var(--badge-ground); color: var(--fg); font-size: .68rem; white-space: nowrap; }
+.todo-meta { margin-top: 2px; }
+.todo-ref { margin-left: auto; gap: 0; }
+.todo-done .todo-ref { margin-left: 0; }
+.todo-badge { flex: none; border-radius: 4px; padding: 0 .3rem; background: var(--badge-ground); color: var(--fg); font-size: 10px; white-space: nowrap; }
+.todo-badge.todo-plan-missing { background: none; color: var(--muted); font-size: 10px; }
 .todo-badge-decision { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, transparent); }
 .todo-head .todo-plan-state { margin-left: auto; }
 .todo-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#participant-details .todo-source { margin: 0; padding: .1rem .2rem; text-decoration: underline; }
+#participant-details .todo-source { margin: 0; padding: .1rem .2rem; text-decoration: none; }
+#participant-details .todo-source, #participant-details .todo-fold > summary .todo-refresh { color: var(--fg); }
+#participant-details .todo-source:hover { text-decoration: underline; }
+/* The title is the whole text, clamped to two lines; clicking it opens the full record. */
+#participant-details .todo-card .todo-item { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 #participant-details .todo-item { display: block; width: 100%; margin: 0; padding: .1rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--fg); font-weight: 600; }
 .todo-plan > small { margin: 0 0 .2rem; }
 .todo-steps { list-style: none; margin: .2rem 0 0; padding: 0; }
@@ -2302,8 +2318,6 @@ button svg.icon {
 #participant-details .todo-steps .todo-item { flex: 1; font-weight: normal; }
 .todo-history > summary { display: flex; align-items: center; gap: .4rem; min-width: 0; cursor: pointer; font-weight: 600; list-style: none; }
 .todo-history > summary::-webkit-details-marker { display: none; }
-.todo-history > summary::before { content: "▸"; font-size: .65rem; font-weight: normal; color: var(--muted); }
-.todo-history[open] > summary::before { content: "▾"; }
 .todo-history .todo-count { font-weight: normal; }
 .todo-history .todo-limit { margin-left: auto; color: var(--muted); font-size: .68rem; font-weight: normal; white-space: nowrap; }
 .work-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font: .85rem system-ui, sans-serif; padding: 1rem; }
@@ -2623,6 +2637,43 @@ button svg.icon {
   color: var(--muted);
   font-size: 0.75rem;
   cursor: pointer;
+}
+
+/* Every fold in the participant panel — TODO, 完了履歴, 詳細 — carries the same
+   thin chevron: pointing right when folded, down when open (#523, after the
+   mockup). Drawn from two borders so it stays a line, not a filled triangle. */
+#participants .facts-more > summary,
+#participants .todo-history > summary {
+  list-style: none;
+}
+
+#participants .facts-more > summary::-webkit-details-marker,
+#participants .todo-history > summary::-webkit-details-marker {
+  display: none;
+}
+
+#participants .facts-more > summary::before,
+#participants .todo-history > summary::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 0.38em;
+  height: 0.38em;
+  margin: 0 0.5em 0 0.1em;
+  vertical-align: 0.15em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+#participants .facts-more[open] > summary::before,
+#participants .todo-history[open] > summary::before {
+  vertical-align: 0.3em;
+  transform: rotate(45deg);
+}
+
+#participants .todo-history > summary::before {
+  color: var(--muted);
 }
 
 #participants .facts-more > summary:hover {

@@ -12,6 +12,15 @@ type Options = {
 };
 
 /** Work selection and fetching have no terminal or launch capability. */
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  refresh: ["M20 11a8 8 0 0 0-14.9-4", "M4 3v4h4", "M4 13a8 8 0 0 0 14.9 4", "M20 21v-4h-4"],
+  circle: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16"],
+  check: ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18", "M8 12.5l2.7 2.7L16 9.5"],
+  calendar: ["M5 6h14v14H5z", "M5 10h14", "M9 3v5", "M15 3v5"],
+  external: ["M8 16L16 8", "M10 8h6v6"],
+} as const;
+
 export function createParticipantDetails(o: Options) {
   let selected: { id: string | null; name: string; server?: string; kind?: string } | null = null;
   let data: TopicStatus | null = null;
@@ -21,6 +30,10 @@ export function createParticipantDetails(o: Options) {
   let requestedTopic = "";
   let dirty = false;
   let error = "";
+  // The fold states belong to the user: only their toggle changes them, so a redraw,
+  // a participant switch or an MCP view (which draws no fold) does not reset them.
+  let todoOpen = false;
+  let historyOpen = false;
   const el = o.element;
   const text = (tag: string, value: string) => {
     const e = document.createElement(tag); e.textContent = value; return e;
@@ -28,6 +41,14 @@ export function createParticipantDetails(o: Options) {
   const button = (label: string, action: () => void) => {
     const b = text("button", label) as HTMLButtonElement; b.type = "button";
     b.addEventListener("click", action); return b;
+  };
+  /** A line icon bundled with the app (#523, after the mockup): drawn in the text colour at the text size, hidden from reading. */
+  const icon = (name: keyof typeof ICONS) => {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("todo-icon", `todo-icon-${name}`);
+    for (const d of ICONS[name]) { const path = document.createElementNS(SVG_NS, "path"); path.setAttribute("d", d); svg.append(path); }
+    return svg;
   };
   const showDialog = (title: string, content: string) => {
     const dialog = document.createElement("dialog"); dialog.className = "work-dialog";
@@ -115,37 +136,35 @@ export function createParticipantDetails(o: Options) {
     const head = document.createElement("div"); head.className = "todo-head";
     head.append(text("h4", label), span("todo-count", String(count))); return head;
   }
-  /** One record as a card: mark, short title (opens the full record), state and who added it, then the source post. */
+  /** One record as a card: mark, title clamped to two lines (opens the full record), then state, who added it and the source post. */
   function recordCard(record: WorkRecord, done: boolean) {
     const card = document.createElement("article"); card.className = done ? "todo-card todo-done" : "todo-card";
     const state = stateLabel(record);
-    const mark = span("todo-mark", done ? (record.state === "cancelled" ? "–" : "✓") : "○");
+    const mark = done && record.state === "cancelled" ? span("todo-mark", "–") : span("todo-mark", "");
+    if (!(done && record.state === "cancelled")) mark.append(icon(done ? "check" : "circle"));
     mark.setAttribute("aria-label", state); mark.title = state;
     const body = document.createElement("div"); body.className = "todo-body";
-    const title = button(short(record.text), () => openRecord(record)); title.className = "todo-item"; title.title = record.text;
+    const title = button(record.text, () => openRecord(record)); title.className = "todo-item"; title.title = record.text;
     body.append(title);
-    if (!done) {
-      const meta = document.createElement("div"); meta.className = "todo-meta";
-      meta.append(span(`todo-badge${record.state === "active" && record.kind === "decision" ? " todo-badge-decision" : ""}`, state), span("todo-who", record.added_by));
-      body.append(meta);
-    }
+    // The meta row: state and who on the left, 参照：発言を開く ↗ on the right (#523). A done item keeps only the link.
+    const meta = document.createElement("div"); meta.className = "todo-meta";
+    if (!done) meta.append(span(`todo-badge${record.state === "active" && record.kind === "decision" ? " todo-badge-decision" : ""}`, state), span("todo-who", record.added_by));
     if (record.source_message_id) {
-      const ref = document.createElement("div"); ref.className = "todo-ref";
+      const ref = document.createElement("span"); ref.className = "todo-ref";
       if (!done) ref.append(span("todo-ref-label", "参照："));
-      const open = button("発言を開く", () => void source(record.source_message_id!)); open.className = "todo-source";
-      ref.append(open); body.append(ref);
+      const open = button("発言を開く", () => void source(record.source_message_id!)); open.className = "todo-source"; open.append(icon("external"));
+      ref.append(open); meta.append(ref);
     }
+    if (meta.childElementCount) body.append(meta);
     card.append(mark, body); return card;
   }
   function planBlock(title: string, badge: string, note: string) {
     const block = document.createElement("section"); block.className = "todo-plan";
     const head = document.createElement("div"); head.className = "todo-head";
-    head.append(text("h4", title), span("todo-badge todo-plan-state", badge));
+    head.append(icon("calendar"), text("h4", title), span(`todo-badge todo-plan-state${badge === "未取得" ? " todo-plan-missing" : ""}`, badge));
     block.append(head, text("small", note)); return block;
   }
   function draw() {
-    const todoOpen = el.querySelector<HTMLDetailsElement>(".todo-fold")?.open ?? false;
-    const historyOpen = el.querySelector<HTMLDetailsElement>(".todo-history")?.open ?? false;
     el.replaceChildren();
     if (selected?.kind === "mcp" || selected?.server) {
       if (error) el.append(text("p", `取得できません: ${error}`));
@@ -168,10 +187,13 @@ export function createParticipantDetails(o: Options) {
     }
     const fold = document.createElement("details"); fold.className = "todo-fold facts-more"; fold.open = todoOpen;
     const summary = document.createElement("summary"); summary.append(span("todo-title", "TODO"));
+    // Read the user's toggle at its click, before the toggle event: a redraw landing in between
+    // would otherwise draw the old state and drop the toggle with the replaced element.
+    summary.addEventListener("click", e => { if (!e.defaultPrevented) todoOpen = !fold.open; });
     fold.append(summary); el.append(fold);
     if (!selected) { fold.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
     // The refresh control sits in the heading; pressing it does not toggle the fold.
-    const update = button("更新", () => void refresh()); update.className = "todo-refresh"; update.setAttribute("aria-label", `${selected.name} の TODO を更新`);
+    const update = button("更新", () => void refresh()); update.className = "todo-refresh"; update.append(icon("refresh")); update.setAttribute("aria-label", `${selected.name} の TODO を更新`);
     update.addEventListener("click", e => e.preventDefault()); summary.append(update);
     if (error) fold.append(text("p", `取得できません: ${error}`));
     if (!data || dataTopic !== o.topic()) { fold.append(text("p", "未取得")); return; }
@@ -210,6 +232,7 @@ export function createParticipantDetails(o: Options) {
     const history = data.work.history.filter(include);
     const historyEl = document.createElement("details"); historyEl.className = "todo-history"; historyEl.open = historyOpen;
     const historySummary = document.createElement("summary");
+    historySummary.addEventListener("click", e => { if (!e.defaultPrevented) historyOpen = !historyEl.open; });
     historySummary.append(span("todo-history-title", "完了履歴"), span("todo-count", `${history.length}件`), span("todo-limit", `最大${data.work.history_limit}件`));
     historyEl.append(historySummary);
     if (history.length) history.forEach(r => historyEl.append(recordCard(r, true)));
