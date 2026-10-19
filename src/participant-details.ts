@@ -107,27 +107,41 @@ export function createParticipantDetails(o: Options) {
     dialog.addEventListener("close", () => dialog.remove(), {once:true});
     document.body.append(dialog); dialog.showModal();
   }
-  function table() {
-    const table = document.createElement("table"); table.className = "todo-table";
-    const head = document.createElement("thead"); const row = document.createElement("tr");
-    for (const label of ["状態", "内容", "参照"]) { const cell = text("th",label); cell.setAttribute("scope","col"); row.append(cell); }
-    head.append(row); const body = document.createElement("tbody"); table.append(head,body);
-    return {element:table, body};
+  const stateLabel = (record: WorkRecord) => record.state === "active"
+    ? (record.owner_limited ? "利用上限" : record.interrupted ? "中断中" : record.kind === "decision" ? "判断待ち" : "作業")
+    : ({completed:"完了",answered:"回答済み",cancelled:"取消済み"} as Record<string,string>)[record.state] ?? record.state;
+  const span = (className: string, value: string) => { const e = text("span", value); e.className = className; return e; };
+  function sectionHead(label: string, count: number) {
+    const head = document.createElement("div"); head.className = "todo-head";
+    head.append(text("h4", label), span("todo-count", String(count))); return head;
   }
-  function tableRow(body: HTMLElement, state: string, label: string, detail: () => void, sourceId?: string | null) {
-    const row = document.createElement("tr"); const content = document.createElement("td");
-    const link = button(short(label), detail); link.className = "todo-item"; content.append(link);
-    const reference = document.createElement("td");
-    if (sourceId) reference.append(button("発言", () => void source(sourceId)));
-    row.append(text("td",state), content,reference); body.append(row);
-  }
-  function recordsTable(records: WorkRecord[]) {
-    const rows = table();
-    for (const record of records) {
-      const state = record.state === "active" ? (record.owner_limited ? "利用上限" : record.interrupted ? "中断中" : record.kind === "decision" ? "判断待ち" : "作業") : ({completed:"完了",answered:"回答済み",cancelled:"取消済み"} as Record<string,string>)[record.state] ?? record.state;
-      tableRow(rows.body,state,record.text,() => openRecord(record),record.source_message_id);
+  /** One record as a card: mark, short title (opens the full record), state and who added it, then the source post. */
+  function recordCard(record: WorkRecord, done: boolean) {
+    const card = document.createElement("article"); card.className = done ? "todo-card todo-done" : "todo-card";
+    const state = stateLabel(record);
+    const mark = span("todo-mark", done ? (record.state === "cancelled" ? "–" : "✓") : "○");
+    mark.setAttribute("aria-label", state); mark.title = state;
+    const body = document.createElement("div"); body.className = "todo-body";
+    const title = button(short(record.text), () => openRecord(record)); title.className = "todo-item"; title.title = record.text;
+    body.append(title);
+    if (!done) {
+      const meta = document.createElement("div"); meta.className = "todo-meta";
+      meta.append(span(`todo-badge${record.state === "active" && record.kind === "decision" ? " todo-badge-decision" : ""}`, state), span("todo-who", record.added_by));
+      body.append(meta);
     }
-    return rows.element;
+    if (record.source_message_id) {
+      const ref = document.createElement("div"); ref.className = "todo-ref";
+      if (!done) ref.append(span("todo-ref-label", "参照："));
+      const open = button("発言を開く", () => void source(record.source_message_id!)); open.className = "todo-source";
+      ref.append(open); body.append(ref);
+    }
+    card.append(mark, body); return card;
+  }
+  function planBlock(title: string, badge: string, note: string) {
+    const block = document.createElement("section"); block.className = "todo-plan";
+    const head = document.createElement("div"); head.className = "todo-head";
+    head.append(text("h4", title), span("todo-badge todo-plan-state", badge));
+    block.append(head, text("small", note)); return block;
   }
   function draw() {
     const todoOpen = el.querySelector<HTMLDetailsElement>(".todo-fold")?.open ?? false;
@@ -153,32 +167,53 @@ export function createParticipantDetails(o: Options) {
       return;
     }
     const fold = document.createElement("details"); fold.className = "todo-fold facts-more"; fold.open = todoOpen;
-    fold.append(text("summary", "todo")); el.append(fold);
+    const summary = document.createElement("summary"); summary.append(span("todo-title", "TODO"));
+    fold.append(summary); el.append(fold);
     if (!selected) { fold.append(text("p", "参加者を選ぶと作業と判断待ちを表示します。")); return; }
-    const tools = document.createElement("div"); tools.className = "todo-tools";
-    tools.append(text("h3", selected.name), button("更新", () => void refresh())); fold.append(tools);
+    // The refresh control sits in the heading; pressing it does not toggle the fold.
+    const update = button("更新", () => void refresh()); update.className = "todo-refresh"; update.setAttribute("aria-label", `${selected.name} の TODO を更新`);
+    update.addEventListener("click", e => e.preventDefault()); summary.append(update);
     if (error) fold.append(text("p", `取得できません: ${error}`));
     if (!data || dataTopic !== o.topic()) { fold.append(text("p", "未取得")); return; }
     const include = (r: WorkRecord) => selected?.id != null && (r.owner === selected.id || (r.kind === "decision" && r.target_account_id === selected.id));
     const active = data.work.active.filter(include);
-    fold.append(text("p", `判断待ち ${active.filter(r => r.kind === "decision").length} 件`));
-    fold.append(active.length ? recordsTable(active) : text("p", "登録なし"));
+    const decisions = active.filter(r => r.kind === "decision"), works = active.filter(r => r.kind !== "decision");
+    const decisionSection = document.createElement("section"); decisionSection.className = "todo-section todo-decisions";
+    decisionSection.append(sectionHead("判断待ち", decisions.length));
+    if (decisions.length) decisions.forEach(r => decisionSection.append(recordCard(r, false)));
+    else decisionSection.append(text("p", "登録なし"));
+    fold.append(decisionSection);
+    if (works.length) {
+      const workSection = document.createElement("section"); workSection.className = "todo-section todo-works";
+      workSection.append(sectionHead("作業", works.length));
+      works.forEach(r => workSection.append(recordCard(r, false)));
+      fold.append(workSection);
+    }
+    const planState = (status: string) => ({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[status] ?? "未取得";
     for (const plan of data.plans.filter(p => p.account_id === selected?.id)) {
-      const title = `計画（自己申告）${plan.current_launch ? "" : " · 前の起動"}`;
-      fold.append(text("h4", title));
-      const rows = table();
-      const planState = (status: string) => ({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[status] ?? "未取得";
-      const content = `${plan.source === "codex-app-server" ? "Codex" : "Claude"} · ${new Date(plan.updated_at).toLocaleString()}\n\n${plan.steps.map(s=>`${planState(s.status)} · ${s.step}`).join("\n")}`;
-      plan.steps.forEach(s => tableRow(rows.body,planState(s.status),s.step,()=>showDialog(title,content)));
-      fold.append(rows.element);
+      const title = "計画（自己申告）";
+      const done = plan.steps.filter(s => s.status === "completed").length;
+      const sourceName = plan.source === "codex-app-server" ? "Codex" : "Claude";
+      const block = planBlock(title, plan.current_launch ? `${done}/${plan.steps.length}` : "前の起動", `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}`);
+      const content = `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}${plan.current_launch ? "" : " · 前の起動"}\n\n${plan.steps.map(s=>`${planState(s.status)} · ${s.step}`).join("\n")}`;
+      const steps = document.createElement("ol"); steps.className = "todo-steps";
+      for (const step of plan.steps) {
+        const item = document.createElement("li");
+        const open = button(short(step.step), () => showDialog(title, content)); open.className = "todo-item"; open.title = step.step;
+        item.append(span("todo-step-state", planState(step.status)), open); steps.append(item);
+      }
+      block.append(steps); fold.append(block);
     }
     if (!selected.server && selected.kind !== "admin" && selected.id !== o.human() && !data.plans.some(p => p.account_id === selected?.id)) {
-      fold.append(text("h4", "計画（自己申告）"),text("p", "未取得"));
+      fold.append(planBlock("計画（自己申告）", "未取得", "計画データを取得していません"));
     }
     const history = data.work.history.filter(include);
     const historyEl = document.createElement("details"); historyEl.className = "todo-history"; historyEl.open = historyOpen;
-    historyEl.append(text("summary", `完了履歴 ${history.length} 件（最大 ${data.work.history_limit} 件）`));
-    if (history.length) historyEl.append(recordsTable(history));
+    const historySummary = document.createElement("summary");
+    historySummary.append(span("todo-history-title", "完了履歴"), span("todo-count", `${history.length}件`), span("todo-limit", `最大${data.work.history_limit}件`));
+    historyEl.append(historySummary);
+    if (history.length) history.forEach(r => historyEl.append(recordCard(r, true)));
+    else historyEl.append(text("p", "履歴なし"));
     fold.append(historyEl);
   }
   function refresh(): Promise<void> {

@@ -2265,17 +2265,47 @@ button svg.icon {
 .work-dialog .work-record { padding: .6rem 0; overflow-wrap: anywhere; }
 .work-dialog .work-record strong, .work-dialog .work-record small { display: block; white-space: pre-wrap; }
 .work-dialog .work-record button { max-width: 100%; overflow-wrap: anywhere; }
+/* The todo fold (#521): TODO heading with 更新 on its right, then 判断待ち cards,
+   the self-reported plan, the folded 完了履歴 and the existing 詳細 below. Every
+   row shrinks to the narrow right column; long text is cut, never widened. */
 .todo-fold > :not(summary), #participant-details > h4, #participant-details > p, #participant-details > small { margin-left: .65rem; margin-right: .65rem; }
-.todo-fold > .todo-table { width: calc(100% - 1.3rem); }
-.todo-tools { display: flex; align-items: center; justify-content: space-between; gap: .3rem; min-width: 0; }
-.todo-tools h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: inherit; }
-.todo-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .72rem; }
-.todo-table th, .todo-table td { text-align: left; border-bottom: 1px solid var(--line); padding: .25rem .1rem; vertical-align: middle; }
-.todo-table th:first-child { width: 3.6rem; }
-.todo-table th:last-child { width: 2rem; }
-#participant-details .todo-table button { margin: 0; padding: .2rem .1rem; }
-#participant-details .todo-item { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-#participant-details .todo-fold > summary { cursor: pointer; }
+#participants .todo-fold > summary { display: flex; align-items: center; gap: .3rem; min-width: 0; }
+#participants .todo-fold > summary::before { content: "▸"; font-size: .65rem; }
+#participants .todo-fold[open] > summary::before { content: "▾"; }
+.todo-fold > summary .todo-title { flex: 1; min-width: 0; font-weight: 600; color: var(--fg); }
+#participant-details .todo-fold > summary .todo-refresh { margin: -.2rem 0; padding: .1rem .35rem; font-size: .72rem; line-height: 1.2; }
+#participant-details .todo-fold > summary { cursor: pointer; list-style: none; }
+#participant-details .todo-fold > summary::-webkit-details-marker { display: none; }
+.todo-section, .todo-plan, .todo-history { border-top: 1px solid var(--line); padding: .4rem 0; min-width: 0; }
+.todo-head { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+#participant-details .todo-head h4 { margin: .2rem 0; font-size: .78rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-count { color: var(--accent); font-size: .7rem; }
+.todo-card { display: flex; gap: .4rem; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: .35rem .45rem; margin: .3rem 0; background: var(--surface); }
+.todo-card.todo-done { border: 0; border-radius: 0; border-bottom: 1px solid var(--line); background: none; margin: 0; padding: .3rem 0; }
+.todo-card.todo-done:last-child { border-bottom: 0; }
+.todo-mark { flex: none; width: 1rem; text-align: center; color: var(--muted); line-height: 1.6; }
+.todo-done .todo-mark { color: var(--ok); }
+.todo-body { flex: 1; min-width: 0; }
+.todo-meta, .todo-ref { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; min-width: 0; font-size: .7rem; color: var(--muted); }
+.todo-ref { justify-content: flex-end; }
+.todo-done .todo-ref { justify-content: flex-start; }
+.todo-badge { flex: none; border-radius: 4px; padding: 0 .3rem; background: var(--badge-ground); color: var(--fg); font-size: .68rem; white-space: nowrap; }
+.todo-badge-decision { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, transparent); }
+.todo-head .todo-plan-state { margin-left: auto; }
+.todo-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#participant-details .todo-source { margin: 0; padding: .1rem .2rem; text-decoration: underline; }
+#participant-details .todo-item { display: block; width: 100%; margin: 0; padding: .1rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--fg); font-weight: 600; }
+.todo-plan > small { margin: 0 0 .2rem; }
+.todo-steps { list-style: none; margin: .2rem 0 0; padding: 0; }
+.todo-steps li { display: flex; align-items: center; gap: .35rem; min-width: 0; font-size: .72rem; }
+.todo-step-state { flex: none; width: 3rem; color: var(--muted); }
+#participant-details .todo-steps .todo-item { flex: 1; font-weight: normal; }
+.todo-history > summary { display: flex; align-items: center; gap: .4rem; min-width: 0; cursor: pointer; font-weight: 600; list-style: none; }
+.todo-history > summary::-webkit-details-marker { display: none; }
+.todo-history > summary::before { content: "▸"; font-size: .65rem; font-weight: normal; color: var(--muted); }
+.todo-history[open] > summary::before { content: "▾"; }
+.todo-history .todo-count { font-weight: normal; }
+.todo-history .todo-limit { margin-left: auto; color: var(--muted); font-size: .68rem; font-weight: normal; white-space: nowrap; }
 .work-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font: .85rem system-ui, sans-serif; padding: 1rem; }
 .work-dialog textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; margin: .5rem 0; }
 .work-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; }
