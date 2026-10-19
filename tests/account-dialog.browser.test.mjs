@@ -19,7 +19,8 @@ test('account save stays open, retries preserve identity and Codex options', {ti
   window.invokeTest=async(cmd,args)=>{
    window.calls.push({cmd,args});
    if(cmd==='parse_launch_options')return (args.text.match(/"(?:\\.|[^"\\])*"|\S+/g)||[]).map(v=>v.startsWith('"')?JSON.parse(v):v);
-   if(cmd==='account_env_text')return '';
+   if(cmd==='account_env_text')return (args.env??[]).map(e=>e.key+'='+e.value).join('\n');
+   if(cmd==='seal_account_env')return [{key:'CHECK',value:args.text.split('=')[1]}];
    if(cmd==='preview_launch_args')return {args:args.args};
    if(cmd==='save_config'){if(window.delayConfig)await new Promise(r=>window.releaseConfig=r);if(window.failConfig)throw Error('disk unavailable');window.saved=args.accounts;return;}
    if(cmd==='create_mcp_server'){window.created={name:'server',command:args.command,args:args.args,env:args.env,listed:true,state:null,log:[]};return {server:'server',account_id:'mcp-id'};}
@@ -42,12 +43,14 @@ test('account save stays open, retries preserve identity and Codex options', {ti
  await page.locator('#dialog-codex-plan').uncheck();await save();
  assert.equal(await page.locator('#account-dialog').evaluate(e=>e.open),true);
  const first=await page.evaluate(()=>window.test.accounts[0]);assert.equal(first.args.filter(a=>a.startsWith('tools.update_plan.enabled=')).length,1);assert.ok(first.args.includes('tools.update_plan.enabled=false'));assert.ok(first.args.includes('unrelated=true'));
+ await page.locator('#dialog-codex-plan').check();await save();assert.ok(await page.evaluate(()=>window.test.accounts[0].args.includes('tools.update_plan.enabled=true')));assert.equal(await page.locator('#account-dialog').evaluate(e=>e.open),true);await page.locator('#dialog-cancel').click();await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="launch"]').click();assert.equal(await page.locator('#dialog-codex-plan').isChecked(),true);
  await page.locator('[data-section-tab="basic"]').click();await page.locator('#dialog-name').fill('two');await save();assert.equal(await page.evaluate(()=>window.test.accounts.length),1);assert.equal(await page.evaluate(()=>window.test.accounts[0].id),first.id);
  await page.locator('#dialog-name').fill('unsaved');await page.locator('#dialog-cancel').click();assert.equal(await page.evaluate(()=>window.test.accounts[0].name),'two');
  await page.evaluate(()=>{window.test.open(window.test.accounts[0]);window.failConfig=true;});await page.locator('#dialog-name').fill('failed');await save();assert.match(await page.locator('#dialog-error').innerText(),/disk unavailable/);assert.equal(await page.evaluate(()=>window.test.accounts[0].name),'two');
  await page.evaluate(()=>{window.failConfig=false;window.delayConfig=true;});await page.locator('#dialog-commit').click();await page.waitForFunction(()=>window.releaseConfig);await page.keyboard.press('Escape');assert.equal(await page.locator('#account-dialog').evaluate(e=>e.open),true);await page.evaluate(()=>{window.delayConfig=false;window.releaseConfig();});await page.waitForFunction(()=>!document.querySelector('#dialog-commit').closest('form').inert);await page.locator('#dialog-cancel').click();
  // The character write refreshes its stamp/body baseline for a second save.
  await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="character"]').click();await page.locator('#dialog-character').fill('persona');await page.waitForFunction(()=>!document.querySelector('#dialog-character-body').disabled);await page.locator('#dialog-character-body').fill('changed');await save();await save();assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.cmd==='save_character_file').length),1);await page.locator('#dialog-cancel').click();
+ await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="env"]').click();await page.locator('#dialog-env').fill('CHECK=value');await save();assert.equal(await page.locator('#dialog-env').inputValue(),'CHECK=value');assert.equal(await page.locator('#dialog-env').evaluate(e=>e.readOnly),false);await save();assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.cmd==='seal_account_env').length),1);await page.locator('#dialog-cancel').click();
  // Avatar failure remains editable; the successful baseline avoids repeat deletion.
  await page.evaluate(()=>{window.test.accounts[0].avatar=true;window.test.avatars.set(window.test.accounts[0].id,"fixture.png");window.test.open(window.test.accounts[0]);window.failAvatar=true;});
  await page.locator('#dialog-avatar-clear').click();await page.locator('#dialog-commit').click();await page.waitForFunction(()=>!document.querySelector('#dialog-commit').closest('form').inert);assert.match(await page.locator('#dialog-error').innerText(),/avatar unavailable/);

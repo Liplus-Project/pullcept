@@ -908,7 +908,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogKindEl.disabled = server;
     resetDialogAvatar();
     drawDialogAvatar();
-    await drawDialogEnv(settled);
+    await drawDialogEnv(draft);
     if (pendingMcpStart) {
       const name = pendingMcpStart;
       pendingMcpStart = null;

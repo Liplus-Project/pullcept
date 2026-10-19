@@ -328,7 +328,7 @@ const participantDetails = createParticipantDetails({
   openUrl: (url) => { void invoke("open_post_url", {url}); },
   changed: () => renderPanel(),
 });
-const factsMoreEl = document.querySelector("#participants .facts-more") as HTMLDetailsElement;
+const factsMoreEl = document.querySelector("#terminal-diagnostics") as HTMLDetailsElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
 const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
 const endDialogEl = document.getElementById("end-dialog") as HTMLDialogElement;

@@ -37,6 +37,7 @@ test("participant details use actual index, styles and row controller without st
   const main = readFileSync("src/main.ts","utf8");
   const inject = `
   window.detailsTest = {
+    socket: (port,error) => renderSocket(port,error),
     plan(enabled) { accounts.find(a=>a.id==='ai').args = ['-c', 'tools.update_plan.enabled='+enabled]; },
     setup(list) { accounts = list; localAccountId = 'human'; currentTopic = {topic_id:'t',created_at:'now'}; topics = [{topic_id:'t',sessions:{ai:'session-ai',other:'session-other'},created_at:'now'}]; fillIcons(); renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null}]); },
     joinLimited: () => renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null},{id:'other-session',name:'Other AI',account:'other',own:false,hue:null}]),
@@ -252,6 +253,7 @@ test("participant details use actual index, styles and row controller without st
     assert.deepEqual(await page.locator(selector).evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopWidth,s.borderTopLeftRadius,s.paddingTop,s.marginLeft];}),['1px','12px','12px','10px']);
   }
   assert.equal(await page.locator('.state-title').innerText(),'状態');
+  await page.evaluate(()=>window.detailsTest.socket(null,'fixture failure'));assert.equal(await page.locator('#terminal-diagnostics').getAttribute('data-kind'),'error');assert.equal(await page.locator('#terminal-facts').getAttribute('data-kind'),null);await page.evaluate(()=>window.detailsTest.socket(1));
   assert.equal(await page.locator('#terminal-facts').evaluate(e=>e.open),true);
   assert.deepEqual(await chevron(page,'#terminal-facts'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
   await page.locator('#terminal-facts > summary').focus();await page.keyboard.press('Enter');
