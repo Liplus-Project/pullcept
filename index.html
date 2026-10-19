@@ -416,8 +416,8 @@
                what it says it is using (#225). What is read only when something
                is stuck — the socket, the id, how it was launched — is under
                詳細, folded. -->
-          <div id="terminal-facts">
-          <h2 class="state-title">状態</h2>
+          <details id="terminal-facts" class="facts-more" open>
+          <summary class="state-title">状態</summary>
           <dl class="facts">
             <dt>セッション</dt>
             <dd id="session-state">未起動</dd>
@@ -451,7 +451,7 @@
               <dd id="session-context" class="usage">—</dd>
             </div>
           </dl>
-          </div>
+          </details>
           <section id="participant-details" aria-label="参加者の作業と判断待ち" aria-live="polite"></section>
           <details id="terminal-diagnostics" class="facts-more">
             <summary>詳細</summary>
@@ -659,6 +659,11 @@
                   <input id="dialog-codex-app-server" type="checkbox" role="switch" aria-labelledby="dialog-codex-app-server-title" />
                   <span id="dialog-codex-app-server-title" class="launch-check-title">app-server 方式</span>
                 </label>
+                <label id="dialog-codex-plan-field" class="field launch-check" hidden>
+                  <input id="dialog-codex-plan" type="checkbox" role="switch" aria-labelledby="dialog-codex-plan-title" aria-describedby="dialog-codex-plan-help" />
+                  <span id="dialog-codex-plan-title" class="launch-check-title">計画ツール</span>
+                  <span id="dialog-codex-plan-help" class="launch-check-help">Codex CLI 0.162.1 で確認。次の席起動から反映します。TODO の計画データの受信には app-server 方式が必要です。</span>
+                </label>
                 <label id="dialog-codex-remote-field" class="field launch-check" hidden>
                   <input id="dialog-codex-remote" type="checkbox" role="switch" aria-labelledby="dialog-codex-remote-title" aria-describedby="dialog-codex-remote-help" />
                   <span id="dialog-codex-remote-title" class="launch-check-title">スマホから接続（app-server 方式が必要）</span>
@@ -850,8 +855,8 @@
                    dialog of its own; whether this one follows is #72. -->
               <button id="dialog-delete" type="button" class="delete">削除</button>
               <span class="spacer"></span>
-              <button id="dialog-cancel" type="button">取消</button>
-              <button id="dialog-commit" type="submit" value="commit">決定</button>
+              <button id="dialog-cancel" type="button">閉じる</button>
+              <button id="dialog-commit" type="submit" value="commit">保存</button>
             </menu>
           </div>
         </form>
