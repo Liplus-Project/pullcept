@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import QRCode from "qrcode";
 
 interface Pairing { pairingCode: string; manualPairingCode: string | null; expiresAt: number }
-interface Reply { epoch: string; status: string | null; error: string | null; pairing: Pairing | null }
+interface Reply { epoch: string; status: string | null; error: string | null; pairing: Pairing | null; reason?: string | null }
+
+/** The relay refused this seat with 409 "already online" (#430). The 409 does
+ * not say who holds it, so the desktop app is only an example of where to look. */
+const RELAY_IN_USE = "別の接続が中継を使用中です。Codex デスクトップアプリなど、同じ中継を使っていそうなものを閉じて、少し待ってください。席は再接続を続けており、つながると表示が変わります。";
 
 /** Private, transient screen. No storage, room event, URL navigation or logging. */
 export function openCodexRemote(ptyId: string, name: string, isLive: () => boolean,
@@ -57,7 +61,7 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
       error.textContent = reply.error ?? "";
       if (reply.status) {
         currentStatus = reply.status;
-        state.textContent = ({ disabled: "接続は停止中", connecting: "接続中…", connected: "接続済み", errored: "接続に失敗しました。アカウントの許可やネットワークを確認し、接続を開始し直してください。" } as Record<string,string>)[reply.status] ?? "状態を確認できません";
+        state.textContent = reply.reason === "relay_in_use" && (reply.status === "errored" || reply.status === "connecting") ? RELAY_IN_USE : ({ disabled: "接続は停止中", connecting: "接続中…", connected: "接続済み", errored: "接続に失敗しました。アカウントの許可やネットワークを確認し、接続を開始し直してください。" } as Record<string,string>)[reply.status] ?? "状態を確認できません";
         if (reply.status === "disabled" || reply.status === "errored") clearPrivate();
       }
       if (reply.pairing && generation === requestGeneration && !document.hidden) {

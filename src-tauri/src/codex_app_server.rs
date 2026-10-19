@@ -39,6 +39,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -79,6 +80,9 @@ impl CodexServers {
 struct Server {
     child: Arc<Mutex<Child>>,
     remote: Option<Arc<remote::Control>>,
+    /// The relay's last connection failure was 409 "already online" (#430),
+    /// read off the server's stderr; cleared by the reply that sees it end.
+    relay_in_use: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -224,7 +228,7 @@ pub fn token_sha256(token: &str) -> String {
         .collect()
 }
 
-fn spawn(request: &Request) -> Result<(Child, u16), String> {
+fn spawn(request: &Request, relay_in_use: &Arc<AtomicBool>) -> Result<(Child, u16), String> {
     let command = request.command;
     let mut cmd = if cfg!(windows) && !command.to_ascii_lowercase().ends_with(".exe") {
         let mut cmd = Command::new("cmd.exe");
@@ -241,6 +245,18 @@ fn spawn(request: &Request) -> Result<(Child, u16), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if request.remote_enabled {
+        // The relay's refusal reason is a warning, below the default stderr
+        // level; the person's own RUST_LOG, if any, is kept (#430).
+        let existing = request
+            .env
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case("RUST_LOG"))
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var("RUST_LOG").ok());
+        cmd.env("RUST_LOG", mcp_config::codex::remote::relay_log_filter(existing.as_deref()));
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -261,6 +277,7 @@ fn spawn(request: &Request) -> Result<(Child, u16), String> {
     .flatten()
     {
         let tx = tx.clone();
+        let relay_in_use = Arc::clone(relay_in_use);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stream);
             let mut line = Vec::new();
@@ -269,8 +286,12 @@ fn spawn(request: &Request) -> Result<(Child, u16), String> {
                 match reader.read_until(b'\n', &mut line) {
                     Ok(0) | Err(_) => return,
                     Ok(_) => {
-                        if let Some(port) = plan::listening_port(&String::from_utf8_lossy(&line)) {
+                        let text = String::from_utf8_lossy(&line);
+                        if let Some(port) = plan::listening_port(&text) {
                             let _ = tx.send(port);
+                        }
+                        if let Some(in_use) = mcp_config::codex::remote::relay_failure_in_use(&text) {
+                            relay_in_use.store(in_use, Ordering::Release);
                         }
                     }
                 }
@@ -457,9 +478,11 @@ impl Started {
 
 /// Start the seat's server and have its thread ready for the terminal.
 pub fn start(request: Request) -> Result<Started, String> {
-    let (child, port) = spawn(&request)?;
+    let relay_in_use = Arc::new(AtomicBool::new(false));
+    let (child, port) = spawn(&request, &relay_in_use)?;
     let url = format!("ws://127.0.0.1:{port}");
     let server = Server {
+        relay_in_use,
         child: Arc::new(Mutex::new(child)),
         remote: request.remote_enabled.then(|| Arc::new(remote::Control::new(&url, request.token, uuid::Uuid::new_v4().to_string()))),
     };
