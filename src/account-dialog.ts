@@ -1,3 +1,4 @@
+import { codexPlanEnabled, withCodexPlan } from "./codex-plan";
 import type { invoke } from "@tauri-apps/api/core";
 import type { listen } from "@tauri-apps/api/event";
 import type { AccountKind, Account, EnvVar, LaunchFieldReport, SessionView, AvatarEdit, DialogSection, CharacterOpened, CharacterPlace, McpRunState, McpLogLine, McpServerView, McpPanelView } from "./contracts";
@@ -61,6 +62,9 @@ export function createAccountDialog(deps: Dependencies) {
 
   /** The account being edited, or null while the form is making a new one. */
   let editing: Account | null = null;
+  let saving = false;
+  let planEdit: Promise<void> = Promise.resolve();
+  let pendingMcpStart: string | null = null;
 
   /** The draft the form is filling in. Never the account itself. */
   let draft: Account | null = null;
@@ -187,6 +191,7 @@ export function createAccountDialog(deps: Dependencies) {
     document.getElementById("dialog-codex-note")!.hidden = !codex;
     dialogCodexAppServerFieldEl.hidden = !codex;
     dialogCodexRemoteFieldEl.hidden = !codex;
+    dialogCodexPlanFieldEl.hidden = !codex;
     dialogClaudeRemoteFieldEl.hidden = kind !== "claude_code";
     // The two kinds whose seats the app types a resume into (#475).
     dialogResumeNoticeFieldEl.hidden = !resumesKind(kind);
@@ -411,6 +416,8 @@ export function createAccountDialog(deps: Dependencies) {
    */
   function openAccountDialog(account: Account | null, field: "name" | "hue" = "name"): void {
     editing = account;
+    pendingMcpStart = null;
+    planEdit = Promise.resolve();
     draft = account
       ? { ...account, args: [...account.args] }
       : {
@@ -478,6 +485,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogResumeNoticeEl.checked = draft.resume_notice !== false;
     dialogCommandEl.value = draft.command;
     dialogOptionsEl.value = deps.joinArgs(draft.args);
+    dialogCodexPlanEl.checked = codexPlanEnabled(draft.args);
     dialogClaudeRemoteEl.checked = hasRemoteControl(dialogOptionsEl.value);
     dialogResumeEl.value = draft.resume_command ?? "";
     void drawDialogEnv(draft);
@@ -554,7 +562,7 @@ export function createAccountDialog(deps: Dependencies) {
   function drawCharacterNotice(place: CharacterPlace): void {
     const opened = characterOpened;
     const lines: string[] = [];
-    if (opened && !opened.exists) lines.push("このファイルはまだありません。本文を書いて決定すると新しく作ります。");
+    if (opened && !opened.exists) lines.push("このファイルはまだありません。本文を書いて保存すると新しく作ります。");
     if (opened?.name_in_file && opened.name_in_file !== place.name) {
       lines.push(
         place.kind === "claude_code"
@@ -564,7 +572,7 @@ export function createAccountDialog(deps: Dependencies) {
     }
     if (opened && place.kind === "codex_cli" && !opened.folder_exists) {
       lines.push(
-        "この作業ディレクトリには .codex/output-styles がありません。決定で作ると、ここで起動する Codex の席はすべてファイル方式になり、キャラクター欄が空の席は character_instance.md を要します。",
+        "この作業ディレクトリには .codex/output-styles がありません。保存で作ると、ここで起動する Codex の席はすべてファイル方式になり、キャラクター欄が空の席は character_instance.md を要します。",
       );
     }
     dialogCharacterNoticeEl.textContent = lines.join("\n");
@@ -675,7 +683,7 @@ export function createAccountDialog(deps: Dependencies) {
     const token = `${characterKey(place)}\n${body}`;
     if (asks.length > 0 && characterArmed !== token) {
       characterArmed = token;
-      dialogError(`${asks.join("")}もう一度「決定」を押すと保存します。`);
+      dialogError(`${asks.join("")}もう一度「保存」を押すと保存します。`);
       revealDialogField(dialogCharacterBodyEl, false);
       return { ok: false, written: false };
     }
@@ -877,6 +885,42 @@ export function createAccountDialog(deps: Dependencies) {
    * The one moment anything here reaches the list. Returns false when the form
    * cannot be decided yet, so the dialog stays open on its own reason.
    */
+  /** Publish only after the config write succeeds; retain the form for retries. */
+  async function persistAccount(settled: Account): Promise<boolean> {
+    const before = [...deps.accounts];
+    const at = deps.accounts.findIndex(one => one.id === settled.id);
+    if (at < 0) deps.accounts.push(settled);
+    else deps.accounts[at] = settled;
+    try {
+      if (!(await deps.saveConfig())) throw new Error("設定を保存できませんでした。");
+    } catch (err) {
+      deps.accounts.splice(0, deps.accounts.length, ...before);
+      dialogError(String(err));
+      return false;
+    }
+    editing = settled;
+    draft = { ...settled, args: [...settled.args] };
+    dialogTitleEl.textContent = "アカウントの編集";
+    dialogDeleteEl.hidden = false;
+    const server = settled.kind === "mcp";
+    dialogKindMcpEl.hidden = !server;
+    dialogKindMcpEl.disabled = !server;
+    dialogKindEl.disabled = server;
+    resetDialogAvatar();
+    drawDialogAvatar();
+    await drawDialogEnv(draft);
+    if (pendingMcpStart) {
+      const name = pendingMcpStart;
+      pendingMcpStart = null;
+      try { await deps.invoke("restart_mcp_server", { name }); }
+      catch {
+        const message = `設定は保存しましたが、サーバ「${name}」を起動できませんでした。`;
+        dialogError(message); deps.status(message, "error");
+      }
+    }
+    return true;
+  }
+
   async function commitAccountDialog(): Promise<boolean> {
     if (!draft) return false;
     // Read before the await below. Escape closes the dialog on its own, and the
@@ -919,11 +963,9 @@ export function createAccountDialog(deps: Dependencies) {
       const avatar = await settleDialogAvatar(avatarEdit, settling.id, settling.avatar);
       if (avatar === null) return false;
       const settled: Account = { ...settling, name, hue: deps.declaredHue(dialogHueEl), avatar };
-      const at = deps.accounts.findIndex((one) => one.id === target.id);
-      if (at >= 0) deps.accounts[at] = settled;
-      deps.saveConfig();
+      if (!(await persistAccount(settled))) return false;
       deps.renderPanel();
-      deps.status(`アカウント「${settled.name}」を保存しました。`);
+      if (!dialogErrorEl.textContent) deps.status(`アカウント「${settled.name}」を保存しました。`);
       return true;
     }
     // A running account cannot change kind. Its session is in the room under this
@@ -947,10 +989,12 @@ export function createAccountDialog(deps: Dependencies) {
     // Only for a session. A person's working directory, character and options
     // would be values nothing ever reads, kept alive by an edit that once set
     // them. A person is not launched, so nothing selects a style for them.
-    const args =
+    let args =
       kind === "admin"
         ? []
         : await deps.invoke<string[]>("parse_launch_options", { text: dialogOptionsEl.value });
+
+    if (kind === "codex_cli") args = withCodexPlan(args, codexPlanEnabled(args));
 
     // The character rides in `--settings`, so one written by hand up in the
     // options is the same setting declared twice. Said here because this is the
@@ -1024,13 +1068,7 @@ export function createAccountDialog(deps: Dependencies) {
       env,
     };
 
-    if (target) {
-      const at = deps.accounts.findIndex((one) => one.id === target.id);
-      if (at >= 0) deps.accounts[at] = settled;
-    } else {
-      deps.accounts.push(settled);
-    }
-    deps.saveConfig();
+    if (!(await persistAccount(settled))) return false;
 
     deps.renderPanel();
     deps.renderSessionFacts();
@@ -1097,32 +1135,20 @@ export function createAccountDialog(deps: Dependencies) {
       server: created.server,
       avatar: false,
     };
-    // The id is the app's, so the image is written only now. A file that will not
-    // write does not hold the form open: the entry is already in the file, and a
-    // second 決定 would make a second one. The account is made without the image,
-    // and the status line says so below (#236).
+    // Creation has already written the server file. Retain its identity even if
+    // the avatar/config fails, so a retry updates this entry rather than creates it.
+    editing = settled;
+    draft = { ...settled, args: [] };
+    pendingMcpStart = created.server;
+    dialogKindEl.disabled = true;
+    mcpDrawn = { name: created.server, command: mcpCommandEl.value, args: mcpArgsEl.value, env: mcpEnvEl.value };
     const avatar = await settleDialogAvatar(avatarEdit, settled.id, false);
-    settled.avatar = avatar ?? false;
-    deps.accounts.push(settled);
-    await deps.saveConfig();
-    let started = true;
-    try {
-      await deps.invoke("restart_mcp_server", { name: created.server });
-    } catch {
-      started = false;
-    }
+    if (avatar === null) return false;
+    settled.avatar = avatar;
+    if (!(await persistAccount(settled))) return false;
     deps.renderPanel();
     await refreshMcpServers();
-    if (avatar === null) {
-      deps.status(`アカウント「${settled.name}」を追加しましたが、画像を保存できませんでした。`, "error");
-    } else if (started) {
-      deps.status(`アカウント「${settled.name}」を追加し、サーバ「${created.server}」を起動しました。`);
-    } else {
-      deps.status(
-        `アカウント「${settled.name}」を追加しましたが、サーバ「${created.server}」を起動できませんでした。`,
-        "error",
-      );
-    }
+    if (!dialogErrorEl.textContent) deps.status(`アカウント「${settled.name}」を保存しました。`);
     return true;
   }
 
@@ -1207,6 +1233,7 @@ export function createAccountDialog(deps: Dependencies) {
 
   /** Drop the draft and close. Nothing it held reached the account list. */
   function closeAccountDialog(): void {
+    if (saving) return;
     editing = null;
     draft = null;
     disarmDelete();
@@ -1416,7 +1443,7 @@ export function createAccountDialog(deps: Dependencies) {
    * the section of an existing server names it.
    */
   function drawNewMcp(): void {
-    mcpStateEl.textContent = "決定で設定ファイルに書き、起動します";
+    mcpStateEl.textContent = "保存で設定ファイルに書き、起動します";
     mcpStateEl.dataset.kind = "";
     mcpRestartEl.hidden = true;
     mcpStaleEl.textContent = "";
@@ -1549,6 +1576,8 @@ export function createAccountDialog(deps: Dependencies) {
 
   const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
 
+  const dialogCodexPlanEl = document.getElementById("dialog-codex-plan") as HTMLInputElement;
+  const dialogCodexPlanFieldEl = document.getElementById("dialog-codex-plan-field") as HTMLElement;
   const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
 
   const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
@@ -1611,6 +1640,11 @@ export function createAccountDialog(deps: Dependencies) {
     });
     dialogOptionsEl.addEventListener("input", () => {
       dialogClaudeRemoteEl.checked = hasRemoteControl(dialogOptionsEl.value);
+      const text = dialogOptionsEl.value;
+      const forDraft = draft;
+      void deps.invoke<string[]>("parse_launch_options", { text }).then(args => {
+        if (draft === forDraft && dialogOptionsEl.value === text) dialogCodexPlanEl.checked = codexPlanEnabled(args);
+      }).catch(() => {});
       refreshDialogLine();
     });
     // The switch is the options text (#432): on adds the flag, off takes every
@@ -1623,6 +1657,17 @@ export function createAccountDialog(deps: Dependencies) {
         : text.replace(new RegExp(REMOTE_CONTROL, "g"), " ").replace(/\s{2,}/g, " ").trim();
       refreshDialogLine();
     });
+    dialogCodexPlanEl.addEventListener("change", () => { planEdit = (async () => {
+      const text = dialogOptionsEl.value;
+      const enabled = dialogCodexPlanEl.checked;
+      const forDraft = draft;
+      try {
+        const args = await deps.invoke<string[]>("parse_launch_options", { text });
+        if (draft !== forDraft || dialogOptionsEl.value !== text) return;
+        dialogOptionsEl.value = deps.joinArgs(withCodexPlan(args, enabled));
+        refreshDialogLine();
+      } catch (err) { dialogError(String(err)); }
+    })(); });
     dialogCommandEl.addEventListener("input", () => refreshDialogLine());
     // The character ends up in the line that runs, so it redraws the preview for
     // the same reason the options do: the line shown has to be the line spawned.
@@ -1672,6 +1717,7 @@ export function createAccountDialog(deps: Dependencies) {
     // the close handler below, so there is no path out of this form that leaves
     // half of it applied.
     dialogEl.addEventListener("close", () => {
+      if (dialogEl.open) return;
       editing = null;
       draft = null;
       mcpDrawn = null;
@@ -1679,12 +1725,18 @@ export function createAccountDialog(deps: Dependencies) {
       resetCharacterFile();
       disarmDelete();
     });
+    dialogEl.addEventListener("cancel", event => { if (saving) event.preventDefault(); });
     dialogFormEl.addEventListener("submit", (event) => {
-      // Always prevented: `method="dialog"` would close on submit, and the form
-      // may not be decidable yet. The commit closes it once it has succeeded.
       event.preventDefault();
-      void commitAccountDialog().then((done) => {
-        if (done) closeAccountDialog();
+      if (saving) return;
+      saving = true;
+      dialogError("");
+      const focus = document.activeElement as HTMLElement | null;
+      dialogFormEl.inert = true;
+      void planEdit.then(() => commitAccountDialog()).catch(err => dialogError(String(err))).finally(() => {
+        saving = false;
+        dialogFormEl.inert = false;
+        if (dialogEl.open) focus?.focus();
       });
     });
 

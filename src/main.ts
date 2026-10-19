@@ -1,3 +1,4 @@
+import { codexPlanEnabled } from "./codex-plan";
 import { createParticipantDetails } from "./participant-details";
 import { openCodexRemote } from "./codex-remote";
 import { accountName } from "./account-name";
@@ -318,6 +319,7 @@ const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
 const participantDetails = createParticipantDetails({
+  planEnabled: id => { const account = accounts.find(a => a.id === id); return account?.kind !== "codex_cli" || codexPlanEnabled(account.args); },
   element: document.getElementById("participant-details") as HTMLElement,
   topic: () => shownTopicId(), human: () => localAccountId,
   read: (topicId, accountId) => invoke<TopicStatus>("topic_status", {topicId,accountId}),
@@ -326,7 +328,7 @@ const participantDetails = createParticipantDetails({
   openUrl: (url) => { void invoke("open_post_url", {url}); },
   changed: () => renderPanel(),
 });
-const factsMoreEl = document.querySelector("#participants .facts-more") as HTMLDetailsElement;
+const factsMoreEl = document.querySelector("#terminal-diagnostics") as HTMLDetailsElement;
 const terminalEl = document.getElementById("terminal") as HTMLElement;
 const diagnosticsCloseEl = document.getElementById("diagnostics-close") as HTMLButtonElement;
 const endDialogEl = document.getElementById("end-dialog") as HTMLDialogElement;

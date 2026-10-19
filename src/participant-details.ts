@@ -2,6 +2,7 @@ import type { LoggedPost, TopicStatus, WorkRecord } from "./contracts";
 
 type Options = {
   element: HTMLElement;
+  planEnabled: (id: string | null) => boolean;
   topic: () => string;
   human: () => string;
   read: (topic: string, account?: string) => Promise<TopicStatus>;
@@ -215,7 +216,8 @@ export function createParticipantDetails(o: Options) {
       fold.append(workSection);
     }
     const planState = (status: string) => ({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[status] ?? "未取得";
-    for (const plan of data.plans.filter(p => p.account_id === selected?.id)) {
+    const showPlan = o.planEnabled(selected.id);
+    for (const plan of data.plans.filter(p => showPlan && p.account_id === selected?.id)) {
       const title = "計画（自己申告）";
       const done = plan.steps.filter(s => s.status === "completed").length;
       const sourceName = plan.source === "codex-app-server" ? "Codex" : "Claude";
@@ -229,7 +231,7 @@ export function createParticipantDetails(o: Options) {
       }
       block.append(steps); fold.append(block);
     }
-    if (!selected.server && selected.kind !== "admin" && selected.id !== o.human() && !data.plans.some(p => p.account_id === selected?.id)) {
+    if (showPlan && !selected.server && selected.kind !== "admin" && selected.id !== o.human() && !data.plans.some(p => p.account_id === selected?.id)) {
       fold.append(planBlock("計画（自己申告）", "未取得", "計画データを取得していません"));
     }
     const history = data.work.history.filter(include);

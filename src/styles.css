@@ -2304,7 +2304,7 @@ button svg.icon {
 #participant-details .todo-fold > summary::-webkit-details-marker { display: none; }
 .todo-section, .todo-plan, .todo-history { border-top: 1px solid var(--line); padding: .4rem 0; min-width: 0; }
 .todo-head { display: flex; align-items: center; gap: .4rem; min-width: 0; }
-#participant-details .todo-head h4 { margin: .2rem 0; font-size: .78rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#participant-details .todo-head h4 { margin: .2rem 0; font-size: .78rem; font-weight: 600; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* #523, after the mockup: the panel stays quiet — only 判断待ち stands out, a done item gets the green check only. */
 .todo-count { color: var(--muted); font-size: 11px; }
 .todo-head .todo-count { padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); line-height: 1.2; }
@@ -2725,9 +2725,11 @@ button svg.icon {
 /* Put these three fold markers directly after their labels (#534), leaving
    the refresh button and history counts in their existing tracks. */
 #participants .todo-fold > summary::before,
+#participants #terminal-facts > summary::before,
 #participants #terminal-diagnostics > summary::before,
 #participants .todo-history > summary::before { display: none; }
 #participants .todo-title::after,
+#participants #terminal-facts > summary::after,
 #participants #terminal-diagnostics > summary::after,
 #participants .todo-history-title::after {
   content: "";
@@ -2740,6 +2742,7 @@ button svg.icon {
   transform: rotate(-45deg);
 }
 #participants .todo-fold[open] > summary .todo-title::after,
+#participants #terminal-facts[open] > summary::after,
 #participants #terminal-diagnostics[open] > summary::after,
 #participants .todo-history[open] > summary .todo-history-title::after { transform: rotate(45deg); }
 
@@ -3503,12 +3506,14 @@ button svg.icon {
   cursor: pointer;
 }
 
-/* The decision. Filled, because it is the one control here that does anything
-   to the account list. */
-#account-dialog #dialog-commit {
-  color: var(--bg);
-  background: var(--accent);
-  border-color: var(--accent);
+/* Account save and close retain their outline and keyboard focus (#547). */
+#account-dialog #dialog-commit, #account-dialog #dialog-cancel {
+  color: var(--fg);
+  background: transparent;
+}
+#account-dialog #dialog-commit:focus-visible, #account-dialog #dialog-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Two clicks: a quiet outline at rest, filled once armed. Selected through

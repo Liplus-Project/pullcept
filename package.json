@@ -12,7 +12,7 @@
     "sidecar": "tsx sidecar/src/index.ts",
     "sidecar:check": "tsc -p sidecar/tsconfig.json",
     "sidecar:test": "node --test \"sidecar/test/*.test.mjs\"",
-    "preview:test": "node --test --test-concurrency=1 tests/html-preview.browser.test.mjs tests/participant-details.browser.test.mjs",
+    "preview:test": "node --test --test-concurrency=1 tests/html-preview.browser.test.mjs tests/participant-details.browser.test.mjs tests/account-dialog.browser.test.mjs",
     "postinstall": "node scripts/patch-xterm-webgl.mjs"
   },
   "dependencies": {

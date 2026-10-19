@@ -37,6 +37,8 @@ test("participant details use actual index, styles and row controller without st
   const main = readFileSync("src/main.ts","utf8");
   const inject = `
   window.detailsTest = {
+    socket: (port,error) => renderSocket(port,error),
+    plan(enabled) { accounts.find(a=>a.id==='ai').args = ['-c', 'tools.update_plan.enabled='+enabled]; },
     setup(list) { accounts = list; localAccountId = 'human'; currentTopic = {topic_id:'t',created_at:'now'}; topics = [{topic_id:'t',sessions:{ai:'session-ai',other:'session-other'},created_at:'now'}]; fillIcons(); renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null}]); },
     joinLimited: () => renderRoster('t',[{id:'local',name:'マスター',account:'human',own:true,hue:null},{id:'other-session',name:'Other AI',account:'other',own:false,hue:null}]),
     selectedTerminal: () => sessions.selectedAccount(),
@@ -71,8 +73,8 @@ test("participant details use actual index, styles and row controller without st
   await page.waitForFunction(()=>window.detailsTest);
   await page.evaluate(()=>window.detailsTest.setup([
     {id:"human",name:"マスター",kind:"admin",args:[],cwd:""},
-    {id:"ai",name:"Codex Luna",kind:"codex_cli",args:[],cwd:""},
-    {id:"other",name:"Other AI",kind:"codex_cli",args:[],cwd:""},
+    {id:"ai",name:"Codex Luna",kind:"codex_cli",args:["-c","tools.update_plan.enabled=true"],cwd:""},
+    {id:"other",name:"Other AI",kind:"codex_cli",args:["-c","tools.update_plan.enabled=true"],cwd:""},
     {id:"mcp-empty",name:"Unconfigured MCP",kind:"mcp",args:[],cwd:""},
     {id:"mcp",name:"GitHub",kind:"mcp",server:"webhook",args:[],cwd:""},
   ]));
@@ -202,6 +204,10 @@ test("participant details use actual index, styles and row controller without st
   await page.locator('#participants').screenshot({path:join(artifacts,"panel-human-todo-open.png")});
   await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
   await page.waitForFunction(()=>document.querySelector("#participant-details").textContent.includes("中断中"));
+  assert.deepEqual(await page.locator('.todo-plan h4').evaluate(e => { const s=getComputedStyle(e);return [s.fontSize,s.fontWeight,s.color]; }),await page.locator('.todo-decisions h4').evaluate(e => { const s=getComputedStyle(e);return [s.fontSize,s.fontWeight,s.color]; }));
+  await page.evaluate(async()=>{window.detailsTest.plan(false); await window.detailsTest.refresh();});
+  assert.equal(await page.locator('.todo-plan').count(),0,'disabled account hides even received plans');
+  await page.evaluate(async()=>{window.detailsTest.plan(true);await window.detailsTest.refresh();});
   assert.match(await page.locator(".todo-plan .todo-head").innerText(),/計画（自己申告）\s*前の起動/);
   assert.equal(await page.locator('.todo-plan .todo-head > svg.todo-icon-calendar:first-child').count(),1);
   // #523: a long title is clamped to two lines and wraps inside the sidebar; clicking it opens the full text.
@@ -247,6 +253,20 @@ test("participant details use actual index, styles and row controller without st
     assert.deepEqual(await page.locator(selector).evaluate(e=>{const s=getComputedStyle(e);return [s.borderTopWidth,s.borderTopLeftRadius,s.paddingTop,s.marginLeft];}),['1px','12px','12px','10px']);
   }
   assert.equal(await page.locator('.state-title').innerText(),'状態');
+  await page.evaluate(()=>window.detailsTest.socket(null,'fixture failure'));assert.equal(await page.locator('#terminal-diagnostics').getAttribute('data-kind'),'error');assert.equal(await page.locator('#terminal-facts').getAttribute('data-kind'),null);await page.evaluate(()=>window.detailsTest.socket(1));
+  assert.equal(await page.locator('#terminal-facts').evaluate(e=>e.open),true);
+  assert.deepEqual(await chevron(page,'#terminal-facts'),{content:'""',listStyle:'none',border:'solid',dir:'down'});
+  await page.locator('#terminal-facts > summary').focus();await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#terminal-facts .facts').isVisible(),false);
+  const foldStates=await page.evaluate(()=>[document.querySelector('.todo-fold').open,document.querySelector('#terminal-diagnostics').open]);
+  await page.evaluate(()=>window.detailsTest.refresh());
+  await page.locator('#roster button.pick[title="マスター の作業と判断待ち"]').click();
+  assert.equal(await page.locator('#terminal-facts').isVisible(),false);
+  await page.locator('#roster button.pick[title="Codex Luna の作業と判断待ち"]').click();
+  assert.equal(await page.locator('#terminal-facts').evaluate(e=>e.open),false);
+  assert.deepEqual(await page.evaluate(()=>[document.querySelector('.todo-fold').open,document.querySelector('#terminal-diagnostics').open]),foldStates);
+  await page.locator('#terminal-facts > summary').click();
+
   const grip=page.getByRole('separator',{name:'アカウントの幅',exact:true});
   const gripBox=await grip.boundingBox();
   const originalWidth=await page.locator('#participants').evaluate(e=>e.getBoundingClientRect().width);
