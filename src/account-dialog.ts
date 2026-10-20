@@ -1277,21 +1277,21 @@ export function createAccountDialog(deps: Dependencies) {
     dialogFormEl.inert = true;
     // #557: the press shows on the button, the outcome beside it for a moment.
     window.clearTimeout(savedTimer);
-    dialogSavedEl.textContent = "";
-    dialogCommitEl.textContent = "保存中…";
+    // #561: the button keeps its label (and width); the state shows beside it.
+    dialogSavedEl.textContent = "保存中…";
     return planEdit.then(() => commitAccountDialog()).then(saved => {
       if (saved) {
         edited = false;
         dialogSavedEl.textContent = "保存しました";
         savedTimer = window.setTimeout(() => { dialogSavedEl.textContent = ""; }, 3000);
       }
+      if (!saved) dialogSavedEl.textContent = "";
       return saved;
     }).catch(err => {
       dialogError(String(err));
       return false;
     }).finally(() => {
       saving = false;
-      dialogCommitEl.textContent = "保存";
       dialogFormEl.inert = false;
       if (dialogEl.open) focus?.focus();
     });
@@ -1651,7 +1651,6 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCodexPlanEl = document.getElementById("dialog-codex-plan") as HTMLInputElement;
   const dialogCodexPlanFieldEl = document.getElementById("dialog-codex-plan-field") as HTMLElement;
   const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
-  const dialogCommitEl = document.getElementById("dialog-commit") as HTMLButtonElement;
   const dialogSavedEl = document.getElementById("dialog-saved") as HTMLElement;
 
   const closeConfirmEl = document.getElementById("account-close-dialog") as HTMLDialogElement;
