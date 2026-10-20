@@ -3541,7 +3541,8 @@ button svg.icon {
    both would have to decide which of them it is opening in — but they are one
    shape, and a second copy of the shape is what drifts from the first. */
 #end-dialog,
-#topic-delete-dialog {
+#topic-delete-dialog,
+#account-close-dialog {
   width: min(22rem, calc(100vw - 3rem));
   color: var(--fg);
   background: var(--bg);
@@ -3552,12 +3553,14 @@ button svg.icon {
 }
 
 #end-dialog::backdrop,
-#topic-delete-dialog::backdrop {
+#topic-delete-dialog::backdrop,
+#account-close-dialog::backdrop {
   background: rgb(0 0 0 / 0.45);
 }
 
 #end-dialog .confirm,
-#topic-delete-dialog .confirm {
+#topic-delete-dialog .confirm,
+#account-close-dialog .confirm {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
@@ -3565,7 +3568,8 @@ button svg.icon {
 }
 
 #end-dialog h2,
-#topic-delete-dialog h2 {
+#topic-delete-dialog h2,
+#account-close-dialog h2 {
   margin: 0;
   font-size: 0.95rem;
 }
@@ -3573,7 +3577,8 @@ button svg.icon {
 /* Which session, by name. The name is the whole content of the question — the
    row that was clicked is no longer under the pointer once this is open. */
 #end-dialog p,
-#topic-delete-dialog p {
+#topic-delete-dialog p,
+#account-close-dialog p {
   margin: 0;
   color: var(--muted);
   overflow-wrap: anywhere;
@@ -3590,7 +3595,8 @@ button svg.icon {
 }
 
 #end-dialog .actions,
-#topic-delete-dialog .actions {
+#topic-delete-dialog .actions,
+#account-close-dialog .actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -3599,12 +3605,14 @@ button svg.icon {
 }
 
 #end-dialog .actions .spacer,
-#topic-delete-dialog .actions .spacer {
+#topic-delete-dialog .actions .spacer,
+#account-close-dialog .actions .spacer {
   flex: 1;
 }
 
 #end-dialog .actions button,
-#topic-delete-dialog .actions button {
+#topic-delete-dialog .actions button,
+#account-close-dialog .actions button {
   font: inherit;
   color: var(--fg);
   background: var(--bg);
@@ -3618,10 +3626,22 @@ button svg.icon {
    and holds the focus, so the two are told apart by more than their position
    and the easy answer is the one that changes nothing. */
 #end-dialog .actions .danger,
-#topic-delete-dialog .actions .danger {
+#topic-delete-dialog .actions .danger,
+#account-close-dialog .actions .danger {
   color: var(--bg);
   background: var(--danger);
   border-color: var(--danger);
+}
+
+/* The account dialog's unsaved-edits question (#549) has three answers whose
+   words are longer than the other questions' two, so it is wider and lets
+   them wrap rather than overflow. */
+#account-close-dialog {
+  width: min(28rem, calc(100vw - 3rem));
+}
+
+#account-close-dialog .actions {
+  flex-wrap: wrap;
 }
 
 /* ── the settings dialog (#172) ──────────────────────────────────────────── */
