@@ -159,15 +159,9 @@ fn codex_character_args(
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
     let style = codex_style(command, &options, cwd, env, entry, selected, false)?;
-    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled", "legacy"].contains(mode))
+    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
-    if mode == "legacy" {
-      if let Some(selected) = selected {
-        let source = codex_legacy_instructions(command, &options, cwd, env, entry)?;
-        mcp_config::codex::apply_character(&mut composed, &source, selected)?;
-      }
-    }
     mcp_config::codex::check_command_length(command, &composed)?;
     Ok(CodexCharacterLaunch {
         preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name, server_args: None, room_prompt: None },
@@ -248,18 +242,6 @@ fn codex_effective_instructions(
     }
 }
 
-/// The effective developer instructions, required (the legacy heading selection).
-fn codex_legacy_instructions(
-    command: &str,
-    options: &[String],
-    cwd: &Path,
-    env: &[(String, String)],
-    entry: &Path,
-) -> Result<String, String> {
-    codex_effective_instructions(command, options, cwd, env, entry)?
-        .ok_or_else(|| "Codex に有効な developer_instructions がありません。キャラ定義と信頼を確認してください。".to_string())
-}
-
 /// How an app-server seat's character is delivered (#299): the text handed
 /// to the thread as `developerInstructions`, and the Li+ output style hook
 /// turned off on the seat's server so the text is not delivered twice.
@@ -292,7 +274,7 @@ fn codex_delivery(
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
     let style = codex_style(command, &options, cwd, env, entry, selected, true)?;
-    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled", "legacy"].contains(mode))
+    let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
     let mut hook_keys = Vec::new();
@@ -302,12 +284,6 @@ fn codex_delivery(
     let instructions = match mode.as_str() {
         "file" => Some(style["body"].as_str().filter(|body| !body.trim().is_empty())
             .ok_or("Codex のキャラ本文を読めません。起動を止めました。")?.to_string()),
-        // The heading selection the hook method passes as `-c developer_instructions`.
-        "legacy" => match selected {
-            Some(selected) => Some(mcp_config::codex::select_character(
-                &codex_legacy_instructions(command, &options, cwd, env, entry)?, selected)?),
-            None => None,
-        },
         _ => None,
     };
     let room_prompt = mcp_config::Cli::CodexCli.room_system_prompt(server_name);

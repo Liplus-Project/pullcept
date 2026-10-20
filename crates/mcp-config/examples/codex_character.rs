@@ -6,9 +6,11 @@ fn main() {
     let data: serde_json::Value = serde_json::from_str(&input).unwrap();
     let options: Vec<String> = serde_json::from_value(data["options"].clone()).unwrap();
     let mut args = mcp_config::codex::transport_options(&options).unwrap();
-    if let Some(source) = data["source"].as_str() {
-        mcp_config::codex::apply_character(&mut args, source, data["selected"].as_str().unwrap())
-            .unwrap();
+    if let Some(text) = data["instructions"].as_str() {
+        args.extend([
+            "-c".into(),
+            format!("developer_instructions={}", mcp_config::codex::instruction_value(text)),
+        ]);
     }
     println!("{}", serde_json::to_string(&args).unwrap());
 }

@@ -529,16 +529,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_selection_and_characterless_fallback_do_not_duplicate_common_text() {
-        let selected = "COMMON\n# Selected\nBODY\n";
-        assert_eq!(seat_instructions("legacy", Some(selected), Some("ROOM"), || panic!("selection already contains common instructions")).unwrap(),
-            Some(format!("{selected}\n\nROOM")));
-        for mode in ["legacy", "disabled"] {
-            assert_eq!(seat_instructions(mode, None, Some("ROOM"), || Ok(Some("COMMON".into()))).unwrap(), Some("COMMON\n\nROOM".into()));
-            assert_eq!(seat_instructions(mode, None, Some("ROOM"), || Ok(None)).unwrap(), Some("ROOM".into()));
-            assert!(seat_instructions(mode, None, Some("ROOM"), || Err("discovery failed".into())).is_err());
-            assert_eq!(seat_instructions(mode, None, None, || panic!("no override needed")).unwrap(), None);
-        }
+    fn characterless_seat_keeps_the_effective_instructions() {
+        assert_eq!(seat_instructions("disabled", None, Some("ROOM"), || Ok(Some("COMMON".into()))).unwrap(), Some("COMMON\n\nROOM".into()));
+        assert_eq!(seat_instructions("disabled", None, Some("ROOM"), || Ok(None)).unwrap(), Some("ROOM".into()));
+        assert!(seat_instructions("disabled", None, Some("ROOM"), || Err("discovery failed".into())).is_err());
+        assert_eq!(seat_instructions("disabled", None, None, || panic!("no override needed")).unwrap(), None);
     }
 
     #[test]

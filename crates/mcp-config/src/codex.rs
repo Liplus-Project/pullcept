@@ -8,7 +8,7 @@ pub mod remote;
 mod character;
 pub mod limit;
 pub mod status;
-pub use character::{apply_character, check_command_length, instruction_value, select_character, transport_options};
+pub use character::{check_command_length, instruction_value, transport_options};
 
 pub const LAUNCH_ID_ENV: &str = "PULLCEPT_LAUNCH_ID";
 pub const LAUNCH_ROOM_ENV: &str = "PULLCEPT_LAUNCHED_ROOM";
