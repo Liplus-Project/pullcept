@@ -26,6 +26,7 @@ const child=spawn(shell ? `"${bin}"` : bin,shell ? words.map(word=>`"${word.repl
 const lines=createInterface({input:child.stdout});
 let finished=false;
 let projectLayers;
+let nativeHome;
 function finish(value){if(finished)return;finished=true;process.stdout.write(JSON.stringify(value));child.stdin.end();}
 const deadline=setTimeout(()=>{
   if(process.platform==="win32" && child.pid) {try{execFileSync("taskkill",["/PID",String(child.pid),"/T","/F"],{stdio:"ignore",windowsHide:true});}catch{child.kill();}}
@@ -37,6 +38,7 @@ child.once("exit",()=>{clearTimeout(deadline);lines.close();if(!finished)finish(
 lines.on("line",line=>{let response;try{response=JSON.parse(line)}catch{return;}
   if(response.id===1){
     if(response.error)return finish({error:"Codex initialize failed"});
+    nativeHome=response.result?.codexHome;
     child.stdin.write(JSON.stringify({method:"initialized"})+"\n");
     child.stdin.write(JSON.stringify({id:2,method:"config/read",params:{cwd,includeLayers:true}})+"\n");
   }
@@ -56,9 +58,9 @@ lines.on("line",line=>{let response;try{response=JSON.parse(line)}catch{return;}
     const startHooks=(response.result?.data ?? []).flatMap(v=>v.hooks ?? []).filter(v=>v.eventName==="sessionStart");
     const hooks=startHooks.filter(v=>v.command?.includes("codex-session.mjs"));
     const styleHooks=startHooks.filter(v=>v.command?.includes("codex-output-style.py"));
-    finish({projects:projectLayers,hooks:hooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus})),
+    finish({projects:projectLayers,home:nativeHome,hooks:hooks.map(v=>({source:v.source,path:v.sourcePath,trust:v.trustStatus})),
       styleHooks:styleHooks.map(v=>({key:v.key,source:v.source,path:v.sourcePath,trust:v.trustStatus,command:v.command,
-        matcher:v.matcher,enabled:v.enabled,async:v.async,additionalContextLimit:v.additionalContextLimit}))});
+        currentHash:v.currentHash,matcher:v.matcher,enabled:v.enabled,async:v.async,additionalContextLimit:v.additionalContextLimit}))});
   }
 });
 child.stdin.write(JSON.stringify({id:1,method:"initialize",params:{clientInfo:{name:"pullcept_project_discovery",version:"0.1.0"},capabilities:{experimentalApi:true}}})+"\n");

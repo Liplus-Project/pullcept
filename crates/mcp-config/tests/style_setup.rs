@@ -1,4 +1,4 @@
-use mcp_config::codex::style_setup::{install, LOADER};
+use mcp_config::codex::style_setup::{install, install_scoped, scoped_options, installed_hash, LOADER};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, process::Command};
 
@@ -12,6 +12,59 @@ impl Folder {
     fn write(&self, p: &str, text: &str) { fs::write(self.0.join(p), text).unwrap(); }
 }
 impl Drop for Folder { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+
+#[test]
+fn home_uses_encoded_process_hook_without_global_registration_and_preserves_arguments() {
+    let f = Folder::new(); let home = f.0.join(".codex");
+    install_scoped(&f.0, true).unwrap();
+    assert!(!home.join("hooks.json").exists());
+    let base = vec!["--model".into(), "custom".into(), "-c".into(), "unrelated=true".into()];
+    let args = scoped_options(&base, &f.0, &home).unwrap();
+    assert_eq!(&args[..base.len()], &base);
+    assert!(!args.last().unwrap().contains('|'));
+    assert_eq!(args, scoped_options(&args, &f.0, &home).unwrap());
+    for key in ["hooks", "hooks.SessionStart", "hooks.state"] {
+        let mut conflict = args.clone(); conflict.extend(["-c".into(), format!("{key}={{}}")]);
+        assert!(scoped_options(&conflict, &f.0, &home).is_err());
+    }
+    let before = fs::read(home.join("config.toml")).unwrap();
+    install_scoped(&f.0, true).unwrap();
+    assert_eq!(before, fs::read(home.join("config.toml")).unwrap());
+    fs::write(home.join("config.toml"), "[hooks]\nSessionStart=[]\n").unwrap();
+    assert!(scoped_options(&[], &f.0, &home).is_err());
+}
+
+#[test]
+fn migration_removes_only_exact_previously_bundled_home_handler() {
+    let f = Folder::new(); install(&f.0).unwrap();
+    let path = f.0.join(".codex/hooks.json");
+    let mut hooks: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    hooks["extra"] = json!({"keep":true});
+    hooks["hooks"]["SessionStart"].as_array_mut().unwrap().push(json!({"hooks":[{"type":"command","command":"user hook"}]}));
+    fs::write(&path, serde_json::to_vec(&hooks).unwrap()).unwrap();
+    let before_helper = f.read(".codex/hooks/codex-output-style.py");
+    let before_config = f.read(".codex/config.toml");
+    install_scoped(&f.0, true).unwrap();
+    let after: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(after["extra"], hooks["extra"]);
+    assert_eq!(after["hooks"]["SessionStart"], json!([hooks["hooks"]["SessionStart"][1]]));
+    assert_eq!(before_helper, f.read(".codex/hooks/codex-output-style.py"));
+    assert_eq!(before_config, f.read(".codex/config.toml"));
+    assert!(!f.0.join(".codex/output-styles").exists());
+}
+
+#[test]
+fn approval_hash_pins_preserved_newline_snapshot_and_rejects_other_changes() {
+    let f = Folder::new(); install(&f.0).unwrap();
+    let lf = LOADER.replace("\r\n", "\n");
+    f.write(".codex/hooks/codex-output-style.py", &lf);
+    let first = installed_hash(&f.0).unwrap();
+    f.write(".codex/hooks/codex-output-style.py", &lf.replace('\n', "\r\n"));
+    install(&f.0).unwrap();
+    assert_ne!(first, installed_hash(&f.0).unwrap());
+    f.write(".codex/hooks/codex-output-style.py", &(lf + "# user change\n"));
+    assert!(installed_hash(&f.0).is_err());
+}
 
 #[test]
 fn clean_offline_install_preserves_siblings_after_body_save_and_retries() {

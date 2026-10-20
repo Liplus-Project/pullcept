@@ -1,5 +1,7 @@
 # Pullcept 要求仕様
 
+Codex output-style の明示的なオン保存は、同梱 loader の設置と native 設定 API による対象フォルダー・専用 hook の承認を行う（#559）。ホーム cwd は作業場所を変えず process 限定 hook を使い、user 全体へ登録しない。承認直前に同梱 bytes・command・native hash を照合し、利用者の hook／設定や Windows 同一パスの既存節を保つ。既存動作維持・オフ保存は承認しない。本文欠落・未信頼フォルダー・未信頼 hook・loader 不足を区別し、配送できない指定キャラでは起動を止める。
+
 ## 文書の構成
 
 要求仕様は次のファイルに分けて持つ。

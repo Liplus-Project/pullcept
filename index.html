@@ -626,7 +626,7 @@
                     <option value="on">オン（保存時に読み込み役と hook を用意）</option>
                     <option value="off">オフ（この席だけ）</option>
                   </select>
-                  <span class="field-note">オンで保存すると、この作業フォルダーに .codex/hooks/codex-output-style.py と専用 SessionStart hook（hooks.json）を用意します。必要な config.toml の追加は他の席の動作を保ちます。Python 3.11 以上と Codex 側のフォルダー・hook の信頼が必要です。本文・読み込み役はフォルダーで共有し、オン・オフはこの席だけ。オフでも既存指示と共有ファイルを残します。次の起動から反映し、保存では再起動しません。</span>
+                  <span class="field-note">オンで保存すると、このフォルダーを信頼し、Pullcept 同梱の専用フックを設定・承認します。Python 3.11 以上が必要です。次の起動から反映されます。オフはこの席だけに適用します。</span>
                 </label>
                 <div id="dialog-character-file" class="character-file" hidden>
                   <label class="field body">

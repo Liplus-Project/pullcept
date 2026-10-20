@@ -40,7 +40,13 @@ Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex
 
 ### アカウントから読み込み役を用意する（#559）
 
-Codex のキャラクター欄の「Codex output-style」は「既存の動作を維持」「オン」「オフ」を選ぶ。未指定の既存アカウントは従来の選択を保つ。オンで保存すると作業フォルダーの `.codex/hooks/codex-output-style.py` と `.codex/hooks.json` の専用 SessionStart handler を用意する。Li+ 一式やネット取得は不要で、Apache-2.0 の Li+ loader の固定 snapshot を実行ファイルへ埋め込む（資材と出典は `crates/mcp-config/assets/`）。Python 3.11 以上は別途必要。保存前に共有ファイルと hook 登録・必要な信頼・次の起動から反映する旨を示す。Codex が求めるフォルダー・hook の信頼は診断端末または Codex App で行い、アプリは信頼 hash を書かない。保存で起動中の席を再起動しない。
+Codex のキャラクター欄の「Codex output-style」は「既存の動作を維持」「オン」「オフ」を選ぶ。未指定の既存アカウントは従来の選択を保つ。明示的にオンで保存すると同梱 loader を設置し、Codex の native `config/read` / `config/batchWrite` / `hooks/list` で対象フォルダーと同梱専用 hook を承認する（#559）。保存前にその範囲を短く示す。Python 3.11 以上は別途必要。資材は Apache-2.0 の Li+ loader の固定 snapshot として実行ファイルへ埋め込み、ネット取得しない（出典は `crates/mcp-config/assets/`）。保存で起動中の席を再起動しない。既存動作維持・オフでの保存は承認を追加しない。
+
+ホーム cwd（`<cwd>/.codex` が実際の `CODEX_HOME`）では、user 全体の `hooks.json` に専用 hook を追加せず、当該 process の `-c hooks.SessionStart=[...]` に同じ canonical command を載せる。cwd は変えない。source=`sessionFlags`・設定場所・index・command を検証する。既存の inline hook／該当 CLI override と競合するときは既存設定を保ち、具体的に失敗する。#560 がホームに作った登録は、同梱 helper と専用登録が一致する場合だけオン保存時に取り除き、無関係な登録・本文を残す。選択のない既存動作維持やオフの席へ process hook を追加しない。
+
+承認は本文や任意の hook 全般には与えない。同梱版と一致する helper の bytes（従来対応の LF/CRLF を含む）を保存し、その exact digest と canonical command・root・設定場所・native currentHash を承認直前に再確認する。native が返す key の `trusted_hash` だけを leaf 編集し、他の `hooks.state` を保つ。ホームの共通 index に別 hash の承認があれば上書きせず失敗する。sealed account 環境を開いた同じ `CODEX_HOME` を使い、profile の discovery 設定を保持する。
+
+フォルダー信頼は既存 `projects` の同一パスを探し `trust_level` だけを更新する。Windows の大文字小文字だけの差は既存表記を維持する。Codex 0.162.1 が認識しない区切り文字表記は、その対象テーブルの全フィールドを raw user layer から保持し、native API の一つの version 付き batch で canonical key への追加と旧 key 削除を行う。永続的な重複表を作らず、他の設定・コメントを保つ。移動対象テーブル内のコメント・書式だけは native API の再出力で変わり得る。既存の同一パス表に異なるフィールド値が競合した場合や version が変わった場合は中止し、成功表示しない。手動で config 全体を書き直さない。
 
 選択は席ごと、設置したファイルと本文はフォルダーで共有する。オフはその席だけ、名前が指定されていても専用 style hook のキーを launch の `hooks.state` で無効化する。共有のスクリプト・本文・selector と無関係な hook は削除せず、ユーザーの developer instructions を維持する。オンで名前が空なら project の既定を使い、既定が無効な場合は名前と本文の指定を求めて起動を止める。名前や本文があるのに届けられない場合も起動を止める。
 
@@ -50,7 +56,7 @@ Codex のキャラクター欄の「Codex output-style」は「既存の動作�
 
 ### 読み込み役が無い席（#555）
 
-**Li+ の output style の読み込み役（project の `.codex/output-styles` と専用 SessionStart hook）が見つからない席は、キャラクターを届けられない。** キャラクター欄に名前があれば、理由を出して起動を止める。空欄なら output style を使わない席（`disabled`）として起動し、キャラは足さない。以前あった、有効な `developer_instructions` の中の `# character_<名前>` 見出しから本文を選んで `-c developer_instructions=...` で渡す方式（#276）は没案として削除した。
+**Li+ の output style の読み込み役（project 又はホームの `.codex/output-styles` と専用 SessionStart hook）が見つからない席は、キャラクターを届けられない。** 本文ファイルの欠落・フォルダー未信頼・hook 未信頼・読み込み役の不足は区別して表示する。 キャラクター欄に名前があれば、理由を出して起動を止める。空欄なら output style を使わない席（`disabled`）として起動し、キャラは足さない。以前あった、有効な `developer_instructions` の中の `# character_<名前>` 見出しから本文を選んで `-c developer_instructions=...` で渡す方式（#276）は没案として削除した。
 
 その人の有効な developer instructions（下の「キャラの本文が無い席」と共通指示）は、次の読み取りで得る。モデルを呼ばない native `debug prompt-input` を、元 cwd・`--cd`・`--profile`・`-c`・`CODEX_HOME`・アカウント環境で実行する。ランダムな developer_instructions sentinel を上書きした比較実行と role/content 全体を照合し、その一か所の本文だけを取り出す。本文が無い時は別の permissions／skills／AGENTS を拾わない。比較が曖昧、TOML が壊れている、CLI が失敗、出力が8 MiB超、又は各実行が15秒超なら起動を止める。CLI stderr や他の指示・秘密はエラーへ出さない。
 

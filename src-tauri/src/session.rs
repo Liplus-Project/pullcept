@@ -34,7 +34,7 @@ use tauri::{AppHandle, Manager};
 /// Stage-one distribution runs from the repository, so the walk up from the
 /// working directory is the normal path; the env overrides exist for a layout
 /// this does not predict.
-fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
+pub(crate) fn resolve_sidecar_paths() -> Result<(PathBuf, PathBuf), String> {
     fn from_env(key: &str) -> Result<Option<PathBuf>, String> {
         match std::env::var(key) {
             Err(_) => Ok(None),
@@ -160,6 +160,11 @@ fn codex_character_args(
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
     let style = codex_style(command, &options, cwd, env, entry, selected, false, enabled)?;
+    let effective = mcp_config::codex::effective_cwd(cwd, &options)?;
+    let home = mcp_config::codex::style_setup::codex_home(cwd, env)?;
+    if enabled != Some(false) && (enabled == Some(true) || selected.is_some()) {
+        composed = mcp_config::codex::style_setup::scoped_options(&composed, &effective, &home)?;
+    }
     let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
@@ -196,9 +201,12 @@ fn codex_style(
         .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|home| PathBuf::from(home).join(".codex")))
         .ok_or("Codex home が見つかりません。")?;
     let home = if home.is_absolute() { home } else { cwd.join(home) };
-    let mut discovery = mcp_config::codex::discovery_options(options, &home)?;
-    discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
     let effective = mcp_config::codex::effective_cwd(cwd, options)?;
+    let options = if enabled != Some(false) && (enabled == Some(true) || selected.is_some()) {
+        mcp_config::codex::style_setup::scoped_options(options, &effective, &home)?
+    } else { options.to_vec() };
+    let mut discovery = mcp_config::codex::discovery_options(&options, &home)?;
+    discovery.extend(["-c".into(), "features.codex_hooks=true".into()]);
     let mut resolver = std::process::Command::new("node");
     resolver.arg(entry.parent().unwrap().join("codex-style.mjs"))
         .arg(command).arg(cwd).arg(serde_json::to_string(&discovery).unwrap())
@@ -1034,7 +1042,12 @@ pub async fn preview_launch_args(
         let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
         return tauri::async_runtime::spawn_blocking(move || {
             mcp_config::codex::reject_options(&args)?;
-            let plan = mcp_config::codex::app_server::plan(&mcp_config::codex::transport_options(&args)?)?;
+            let effective = mcp_config::codex::effective_cwd(&cwd, &args)?;
+            let home = mcp_config::codex::style_setup::codex_home(&cwd, &env)?;
+            let scoped = if codex_output_style != Some(false) && (codex_output_style == Some(true) || character.as_deref().is_some_and(|c| !c.trim().is_empty())) {
+                mcp_config::codex::style_setup::scoped_options(&args, &effective, &home)?
+            } else { mcp_config::codex::transport_options(&args)? };
+            let plan = mcp_config::codex::app_server::plan(&scoped)?;
             let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref(), &server_name, codex_output_style)?;
             // Placeholders where the launch puts its own values: the token's
             // digest, the port the server binds and the thread it starts.
@@ -2105,7 +2118,11 @@ fn launch_codex_app_server(
     // The `.codex` folder native discovery lists a project layer for, and the
     // removal of what builds before #297 left in it.
     mcp_config::codex::prepare_project(&project_cwd)?;
-    let plan = app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
+    let style_home = mcp_config::codex::style_setup::codex_home(cwd, account_env)?;
+    let scoped_options = if account.codex_output_style != Some(false) && (account.codex_output_style == Some(true) || character.is_some_and(|c| !c.trim().is_empty())) {
+        mcp_config::codex::style_setup::scoped_options(&account.args, &project_cwd, &style_home)?
+    } else { mcp_config::codex::transport_options(&account.args)? };
+    let plan = app_server::plan(&scoped_options)?;
     let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name, account.codex_output_style)?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let token = crate::codex_app_server::new_token();
