@@ -2343,13 +2343,16 @@ button svg.icon {
 .todo-steps { list-style: none; margin: .2rem 0 0; padding: 0; }
 .todo-steps li { display: flex; align-items: center; gap: .35rem; min-width: 0; font-size: .72rem; }
 .todo-step-state { flex: none; width: 3rem; color: var(--muted); }
-/* #563: the icon sits where the word did, at the word's height, so rows keep their height and alignment. */
-.todo-step-state.todo-step-pending, .todo-step-state.todo-step-inProgress, .todo-step-state.todo-step-completed { display: inline-flex; align-items: center; }
+/* #563: the icon sits where the word did, at the word's height, so rows keep their height and alignment.
+   #566: the slot narrows to the icon; only a state still shown as a word keeps the word's width. */
+.todo-step-state.todo-step-pending, .todo-step-state.todo-step-inProgress, .todo-step-state.todo-step-completed { display: inline-flex; align-items: center; width: auto; }
 .todo-step-completed { color: var(--ok); }
 .todo-step-pending .todo-icon { stroke-width: 1.5; }
 .todo-step-inProgress { color: var(--ok); }
 .todo-step-inProgress .todo-icon path:first-child { opacity: .25; }
 #participant-details .todo-steps .todo-item { flex: 1; font-weight: normal; }
+#participant-details .todo-plan-open { margin: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
+#participant-details .todo-plan-open:hover { text-decoration: underline; background: none; }
 .todo-history > summary { display: flex; align-items: center; gap: .4rem; min-width: 0; cursor: pointer; font-weight: 600; list-style: none; }
 .todo-history > summary::-webkit-details-marker { display: none; }
 .todo-history .todo-count { font-weight: normal; }

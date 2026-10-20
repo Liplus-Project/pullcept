@@ -389,9 +389,20 @@ test("participant details use actual index, styles and row controller without st
   assert.equal(await page.evaluate(()=>window.calls.find(c=>c.cmd==='open_post_url').args.url),'https://github.com/Liplus-Project/pullcept/issues/493');
   assert.equal(await page.locator('dialog[open]').getByRole('button',{name:'javascript:alert(1)',exact:true}).count(),0);
   await page.keyboard.press('Escape');
-  await page.locator('.todo-steps .todo-item').last().click();
+  // #566: the plan title opens the whole list; a row opens that one step, full text and state.
+  await page.locator('.todo-plan .todo-plan-open').click();
   assert.doesNotMatch(await page.locator('dialog[open]').innerText(),/completed|inProgress|pending/);
   assert.match(await page.locator('dialog[open]').innerText(),/完了 · 認証済み/);
+  await page.keyboard.press('Escape');
+  await page.locator('.todo-steps .todo-item').last().click();
+  const stepDialog=await page.locator('dialog[open]').innerText();
+  assert.match(stepDialog,/計画の項目/); assert.match(stepDialog,/状態: 進行中\s*次の確認/);
+  assert.doesNotMatch(stepDialog,/認証済み|completed|inProgress|pending/);
+  await page.keyboard.press('Escape');
+  await page.locator('.todo-steps .todo-item').first().click();
+  assert.ok((await page.locator('dialog[open]').innerText()).includes('認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目'.repeat(5)),'a row opens its full text');
+  assert.match(await page.locator('dialog[open]').innerText(),/状態: 完了/);
+  await page.screenshot({path:join(artifacts,'plan-step-detail.png')});
   await page.keyboard.press('Escape');
   // #563: 進行中 is a turning green ring, 未着手 a thin circle, 完了 the check of 完了履歴; rows keep one height.
   const savedPlans=await page.evaluate(()=>JSON.stringify(window.snapshot.plans));
@@ -400,6 +411,8 @@ test("participant details use actual index, styles and row controller without st
   assert.deepEqual(stepStates.map(s=>[s.label,s.text,s.icon,s.anim]),[['完了','',true,'none'],['進行中','',true,'step-spin'],['未着手','',true,'none']]);
   assert.ok(Math.max(...stepStates.map(s=>s.row))-Math.min(...stepStates.map(s=>s.row))<1,JSON.stringify(stepStates.map(s=>s.row)));
   assert.ok(await page.locator('.todo-step-completed svg').evaluate(e=>e.classList.contains('todo-icon-check')),'the same check icon as 完了履歴');
+  // #566: the icon slot is the icon's width, so the text starts right after it.
+  for (const gap of await page.locator('.todo-steps li').evaluateAll(ls=>ls.map(l=>l.querySelector('.todo-item').getBoundingClientRect().left-l.querySelector('.todo-step-state svg').getBoundingClientRect().right))) assert.ok(gap<10,String(gap));
   await page.emulateMedia({reducedMotion:'reduce'});
   assert.equal(await page.locator('.todo-step-inProgress svg').evaluate(e=>getComputedStyle(e).animationName),'none','reduced motion: the ring stands still');
   await page.emulateMedia({reducedMotion:'no-preference'});

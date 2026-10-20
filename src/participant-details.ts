@@ -161,10 +161,13 @@ export function createParticipantDetails(o: Options) {
     if (meta.childElementCount) body.append(meta);
     card.append(mark, body); return card;
   }
-  function planBlock(title: string, badge: string, note: string) {
+  function planBlock(title: string, badge: string, note: string, openAll?: () => void) {
     const block = document.createElement("section"); block.className = "todo-plan";
     const head = document.createElement("div"); head.className = "todo-head";
-    head.append(icon("calendar"), text("h4", title), span(`todo-badge todo-plan-state${badge === "未取得" ? " todo-plan-missing" : ""}`, badge));
+    // #566: the title opens the whole list; each row opens its own step.
+    const heading = text("h4", openAll ? "" : title);
+    if (openAll) { const all = button(title, openAll); all.className = "todo-plan-open"; all.title = "計画の全体を開く"; heading.append(all); }
+    head.append(icon("calendar"), heading, span(`todo-badge todo-plan-state${badge === "未取得" ? " todo-plan-missing" : ""}`, badge));
     block.append(head, text("small", note)); return block;
   }
   function draw() {
@@ -236,11 +239,13 @@ export function createParticipantDetails(o: Options) {
         body.append(open); card.append(mark, body); finishedPlans.push(card);
         continue;
       }
-      const block = planBlock(title, plan.current_launch ? `${done}/${plan.steps.length}` : "前の起動", `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}`);
+      const block = planBlock(title, plan.current_launch ? `${done}/${plan.steps.length}` : "前の起動", `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}`, () => showDialog(title, content));
       const steps = document.createElement("ol"); steps.className = "todo-steps";
       for (const step of plan.steps) {
         const item = document.createElement("li");
-        const open = button(short(step.step), () => showDialog(title, content)); open.className = "todo-item"; open.title = step.step;
+        const open = button(short(step.step), () => showDialog("計画の項目", `状態: ${planState(step.status)}
+
+${step.step}`)); open.className = "todo-item"; open.title = step.step;
         // #563: 進行中 is a turning green ring, 未着手 a thin circle and 完了 the check of 完了履歴; an unknown state keeps its word.
         const state = span("todo-step-state", "");
         const mark = ({ inProgress: "spinner", pending: "circle", completed: "check" } as Record<string, keyof typeof ICONS>)[step.status];
