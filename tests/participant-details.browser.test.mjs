@@ -393,6 +393,18 @@ test("participant details use actual index, styles and row controller without st
   assert.doesNotMatch(await page.locator('dialog[open]').innerText(),/completed|inProgress|pending/);
   assert.match(await page.locator('dialog[open]').innerText(),/完了 · 認証済み/);
   await page.keyboard.press('Escape');
+  // #563: 進行中 is a turning green ring, 未着手 a thin circle, 完了 the check of 完了履歴; rows keep one height.
+  const savedPlans=await page.evaluate(()=>JSON.stringify(window.snapshot.plans));
+  await page.evaluate(async()=>{window.snapshot.plans[0].steps.push({step:"その次",status:"pending"});await window.detailsTest.refresh();});
+  const stepStates=await page.locator('.todo-steps .todo-step-state').evaluateAll(es=>es.map(e=>({label:e.getAttribute('aria-label'),text:e.textContent,icon:!!e.querySelector('svg'),anim:e.querySelector('svg')?getComputedStyle(e.querySelector('svg')).animationName:null,row:e.parentElement.getBoundingClientRect().height})));
+  assert.deepEqual(stepStates.map(s=>[s.label,s.text,s.icon,s.anim]),[['完了','',true,'none'],['進行中','',true,'step-spin'],['未着手','',true,'none']]);
+  assert.ok(Math.max(...stepStates.map(s=>s.row))-Math.min(...stepStates.map(s=>s.row))<1,JSON.stringify(stepStates.map(s=>s.row)));
+  assert.ok(await page.locator('.todo-step-completed svg').evaluate(e=>e.classList.contains('todo-icon-check')),'the same check icon as 完了履歴');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await page.locator('.todo-step-inProgress svg').evaluate(e=>getComputedStyle(e).animationName),'none','reduced motion: the ring stands still');
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await page.locator('.todo-plan').screenshot({path:join(artifacts,'plan-step-states.png')});
+  await page.evaluate(async(p)=>{window.snapshot.plans=JSON.parse(p);await window.detailsTest.refresh();},savedPlans);
   await page.evaluate(()=>document.querySelector('#diagnostics').hidden=false);
   await page.locator('#terminal-tabs button.name[title="Other AI の端末"]').click();
   await page.waitForFunction(()=>document.querySelector('#participant-details .todo-refresh')?.getAttribute('aria-label')==='Other AI の TODO を更新');

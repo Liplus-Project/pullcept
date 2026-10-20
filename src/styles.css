@@ -2343,6 +2343,12 @@ button svg.icon {
 .todo-steps { list-style: none; margin: .2rem 0 0; padding: 0; }
 .todo-steps li { display: flex; align-items: center; gap: .35rem; min-width: 0; font-size: .72rem; }
 .todo-step-state { flex: none; width: 3rem; color: var(--muted); }
+/* #563: the icon sits where the word did, at the word's height, so rows keep their height and alignment. */
+.todo-step-state.todo-step-pending, .todo-step-state.todo-step-inProgress, .todo-step-state.todo-step-completed { display: inline-flex; align-items: center; }
+.todo-step-completed { color: var(--ok); }
+.todo-step-pending .todo-icon { stroke-width: 1.5; }
+.todo-step-inProgress { color: var(--ok); }
+.todo-step-inProgress .todo-icon path:first-child { opacity: .25; }
 #participant-details .todo-steps .todo-item { flex: 1; font-weight: normal; }
 .todo-history > summary { display: flex; align-items: center; gap: .4rem; min-width: 0; cursor: pointer; font-weight: 600; list-style: none; }
 .todo-history > summary::-webkit-details-marker { display: none; }
@@ -3901,10 +3907,22 @@ button svg.icon {
     animation: line-arrive 180ms ease-out;
   }
 
+  /* 進行中 plan step's ring turns (#563); it stands still under reduced motion. */
+  .todo-step-inProgress .todo-icon {
+    animation: step-spin 1s linear infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
   /* The larger picture and its dim fade in together (#318). */
   #viewer[open],
   #viewer[open]::backdrop {
     animation: line-arrive 160ms ease-out;
+  }
+}
+
+@keyframes step-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
