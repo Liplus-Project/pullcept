@@ -18,6 +18,8 @@ const ICONS = {
   refresh: ["M20 11a8 8 0 0 0-14.9-4", "M4 3v4h4", "M4 13a8 8 0 0 0 14.9 4", "M20 21v-4h-4"],
   circle: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16"],
   check: ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18", "M8 12.5l2.7 2.7L16 9.5"],
+  // #563: a faint whole ring under a quarter arc; the arc turns while the step is in progress.
+  spinner: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 4a8 8 0 0 1 8 8"],
   calendar: ["M5 6h14v14H5z", "M5 10h14", "M9 3v5", "M15 3v5"],
   external: ["M8 16L16 8", "M10 8h6v6"],
 } as const;
@@ -239,7 +241,16 @@ export function createParticipantDetails(o: Options) {
       for (const step of plan.steps) {
         const item = document.createElement("li");
         const open = button(short(step.step), () => showDialog(title, content)); open.className = "todo-item"; open.title = step.step;
-        item.append(span("todo-step-state", planState(step.status)), open); steps.append(item);
+        // #563: 進行中 is a turning green ring, 未着手 a thin circle and 完了 the check of 完了履歴; an unknown state keeps its word.
+        const state = span("todo-step-state", "");
+        const mark = ({ inProgress: "spinner", pending: "circle", completed: "check" } as Record<string, keyof typeof ICONS>)[step.status];
+        if (mark) {
+          state.append(icon(mark)); state.classList.add(`todo-step-${step.status}`);
+          state.setAttribute("role", "img"); state.setAttribute("aria-label", planState(step.status)); state.title = planState(step.status);
+          // The page's clock as phase, so a redraw carries the turn on instead of restarting it (as #307's pulse).
+          if (step.status === "inProgress") state.style.setProperty("--pulse-phase", `${-Math.round(performance.now())}ms`);
+        } else state.textContent = planState(step.status);
+        item.append(state, open); steps.append(item);
       }
       block.append(steps); fold.append(block);
     }
