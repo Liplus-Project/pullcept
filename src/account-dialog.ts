@@ -63,6 +63,7 @@ export function createAccountDialog(deps: Dependencies) {
   /** The account being edited, or null while the form is making a new one. */
   let editing: Account | null = null;
   let saving = false;
+  let savedTimer = 0;
   /** Edited since the form opened or last saved (#549). Closing then asks first. */
   let edited = false;
   let planEdit: Promise<void> = Promise.resolve();
@@ -1260,14 +1261,23 @@ export function createAccountDialog(deps: Dependencies) {
     dialogError("");
     const focus = document.activeElement as HTMLElement | null;
     dialogFormEl.inert = true;
+    // #557: the press shows on the button, the outcome beside it for a moment.
+    window.clearTimeout(savedTimer);
+    dialogSavedEl.textContent = "";
+    dialogCommitEl.textContent = "保存中…";
     return planEdit.then(() => commitAccountDialog()).then(saved => {
-      if (saved) edited = false;
+      if (saved) {
+        edited = false;
+        dialogSavedEl.textContent = "保存しました";
+        savedTimer = window.setTimeout(() => { dialogSavedEl.textContent = ""; }, 3000);
+      }
       return saved;
     }).catch(err => {
       dialogError(String(err));
       return false;
     }).finally(() => {
       saving = false;
+      dialogCommitEl.textContent = "保存";
       dialogFormEl.inert = false;
       if (dialogEl.open) focus?.focus();
     });
@@ -1624,6 +1634,8 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCodexPlanEl = document.getElementById("dialog-codex-plan") as HTMLInputElement;
   const dialogCodexPlanFieldEl = document.getElementById("dialog-codex-plan-field") as HTMLElement;
   const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
+  const dialogCommitEl = document.getElementById("dialog-commit") as HTMLButtonElement;
+  const dialogSavedEl = document.getElementById("dialog-saved") as HTMLElement;
 
   const closeConfirmEl = document.getElementById("account-close-dialog") as HTMLDialogElement;
   const closeSaveEl = document.getElementById("account-close-save") as HTMLButtonElement;

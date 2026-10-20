@@ -3978,3 +3978,6 @@ body.sidebar-resizing {
   cursor: col-resize;
   user-select: none;
 }
+
+/* #557: what 保存 just did, beside the button. */
+.dialog-saved { color: var(--ok, var(--muted)); font-size: .85em; align-self: center; }
