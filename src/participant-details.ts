@@ -217,12 +217,24 @@ export function createParticipantDetails(o: Options) {
     }
     const planState = (status: string) => ({pending:"未着手",inProgress:"進行中",completed:"完了"} as Record<string,string>)[status] ?? "未取得";
     const showPlan = o.planEnabled(selected.id);
+    // #553: a plan whose every step is done leaves the plan block for 完了履歴. Claude Code clears
+    // such a list on its own and no hook says so, so the last one would otherwise stay here.
+    const finishedPlans: HTMLElement[] = [];
     for (const plan of data.plans.filter(p => showPlan && p.account_id === selected?.id)) {
       const title = "計画（自己申告）";
       const done = plan.steps.filter(s => s.status === "completed").length;
       const sourceName = plan.source === "codex-app-server" ? "Codex" : "Claude";
-      const block = planBlock(title, plan.current_launch ? `${done}/${plan.steps.length}` : "前の起動", `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}`);
       const content = `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}${plan.current_launch ? "" : " · 前の起動"}\n\n${plan.steps.map(s=>`${planState(s.status)} · ${s.step}`).join("\n")}`;
+      if (plan.steps.length && done === plan.steps.length) {
+        const card = document.createElement("article"); card.className = "todo-card todo-done todo-plan-done";
+        const mark = span("todo-mark", ""); mark.append(icon("check")); mark.setAttribute("aria-label", "完了"); mark.title = "完了";
+        const body = document.createElement("div"); body.className = "todo-body";
+        const label = `計画（${sourceName}）${done}件 完了`;
+        const open = button(label, () => showDialog(title, content)); open.className = "todo-item"; open.title = label;
+        body.append(open); card.append(mark, body); finishedPlans.push(card);
+        continue;
+      }
+      const block = planBlock(title, plan.current_launch ? `${done}/${plan.steps.length}` : "前の起動", `${sourceName} · ${new Date(plan.updated_at).toLocaleString()}`);
       const steps = document.createElement("ol"); steps.className = "todo-steps";
       for (const step of plan.steps) {
         const item = document.createElement("li");
@@ -238,10 +250,10 @@ export function createParticipantDetails(o: Options) {
     const historyEl = document.createElement("details"); historyEl.className = "todo-history"; historyEl.open = historyOpen;
     const historySummary = document.createElement("summary");
     historySummary.addEventListener("click", e => { if (!e.defaultPrevented) historyOpen = !historyEl.open; });
-    historySummary.append(span("todo-history-title", "完了履歴"), span("todo-count", `${history.length}件`), span("todo-limit", `最大${data.work.history_limit}件`));
-    historyEl.append(historySummary);
+    historySummary.append(span("todo-history-title", "完了履歴"), span("todo-count", `${history.length + finishedPlans.length}件`), span("todo-limit", `最大${data.work.history_limit}件`));
+    historyEl.append(historySummary, ...finishedPlans);
     if (history.length) history.forEach(r => historyEl.append(recordCard(r, true)));
-    else historyEl.append(text("p", "履歴なし"));
+    else if (!finishedPlans.length) historyEl.append(text("p", "履歴なし"));
     fold.append(historyEl);
   }
   function refresh(): Promise<void> {

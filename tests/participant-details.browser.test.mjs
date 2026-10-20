@@ -10,7 +10,7 @@ import { join } from "node:path";
 const edge = process.env.PREVIEW_BROWSER ?? ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe","C:/Program Files/Microsoft/Edge/Application/msedge.exe","/usr/bin/chromium"].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER");
 const record = (id,kind,extra={}) => ({id,kind,owner:"ai",added_by:"Codex Luna",text:kind==="decision"?"この方針で進めますか？":"参加者の状態表示を実装し、使用率と認証境界を確認する長い作業内容。".repeat(8),progress:"認証境界を検証中",references:["https://github.com/Liplus-Project/pullcept/issues/493","javascript:alert(1)"],source_message_id:"source",target_account_id:kind==="decision"?"human":null,created_at:"2026-10-19T00:00:00Z",updated_at:"2026-10-19T01:00:00Z",revision:1,state:"active",answer:null,...extra});
-const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
+const fixture = {topic_id:"t",retrieved_at:1,participants:[],work:{active:[record("work","work",{interrupted:true,owner_running:false}),record("q","decision")],history:[record("answered","decision",{state:"answered",owner_limited:true,interrupted:true,answer:{content:"その方針で進めて。",name:"マスター",account:"human",answered_at:"2026-10-19T01:01:00Z"}})],history_limit:50,pending_decisions:1},plans:[{account_id:"ai",source:"codex-app-server",updated_at:1,current_launch:false,steps:[{step:"認証済みの更新経路と別アカウントの混線防止を確認する長い計画項目".repeat(5),status:"completed"},{step:"次の確認",status:"inProgress"}]}],mcp_servers:[{server:"webhook",connection:"running",generation:1,pending:{state:"unsupported"}}]};
 
 // #536: an open card heading, as card mock B draws it — the gap from the heading
 // text's bottom to what follows it (TODO: the rule above its first section;
@@ -210,6 +210,16 @@ test("participant details use actual index, styles and row controller without st
   await page.evaluate(async()=>{window.detailsTest.plan(true);await window.detailsTest.refresh();});
   assert.match(await page.locator(".todo-plan .todo-head").innerText(),/計画（自己申告）\s*前の起動/);
   assert.equal(await page.locator('.todo-plan .todo-head > svg.todo-icon-calendar:first-child').count(),1);
+  // #553: a plan with every step done leaves the plan block for 完了履歴, and opens the same text there.
+  await page.evaluate(async()=>{const p=window.snapshot.plans[0];window.savedSteps=p.steps;p.steps=p.steps.map(s=>({...s,status:"completed"}));await window.detailsTest.refresh();});
+  assert.equal(await page.locator('.todo-plan').count(),0);
+  assert.match(await page.locator('.todo-history > summary').innerText(),/完了履歴\s*2件/);
+  assert.match(await page.locator('.todo-history .todo-plan-done').innerText(),/計画（Codex）2件 完了/);
+  await page.locator('.todo-history .todo-plan-done .todo-item').click();
+  assert.match(await page.locator('dialog[open]').innerText(),/完了 · 次の確認/);
+  await page.keyboard.press('Escape');
+  await page.evaluate(async()=>{window.snapshot.plans[0].steps=window.savedSteps;await window.detailsTest.refresh();});
+  assert.equal(await page.locator('.todo-plan').count(),1);
   // #523: a long title is clamped to two lines and wraps inside the sidebar; clicking it opens the full text.
   const clamp=await page.locator('.todo-works .todo-item').evaluate(e=>{const s=getComputedStyle(e);return {lines:Math.round(e.clientHeight/parseFloat(s.lineHeight)),clipped:e.scrollHeight>e.clientHeight+1,fits:e.getBoundingClientRect().right<=e.closest('.todo-card').getBoundingClientRect().right+1,full:e.textContent.length};});
   assert.deepEqual([clamp.lines,clamp.clipped,clamp.fits],[2,true,true],JSON.stringify(clamp));
