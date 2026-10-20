@@ -1047,7 +1047,7 @@ export function createAccountDialog(deps: Dependencies) {
     // previously disabled implicit default. A failure leaves account/body unsaved.
     if (kind === "codex_cli" && dialogCodexStyleEl.value === "on") {
       try {
-        await deps.invoke("setup_codex_output_style", { cwd: cwd || deps.homeDir, args });
+        await deps.invoke("setup_codex_output_style", { cwd: cwd || deps.homeDir, args, command: dialogCommandEl.value.trim(), env });
       } catch (err) {
         dialogError(String(err));
         return false;

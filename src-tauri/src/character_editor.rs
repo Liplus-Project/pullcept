@@ -5,16 +5,46 @@
 use character_file::{Cli, Opened, Saved, Wearer};
 use serde::Deserialize;
 
-/// Shared files only; this does not launch/restart a seat or grant hook trust.
+/// Explicit on-save: shared assets plus native folder/own-hook trust, model-free.
 #[tauri::command]
-pub fn setup_codex_output_style(cwd: String, args: Vec<String>) -> Result<(), String> {
+pub async fn setup_codex_output_style(cwd: String, args: Vec<String>, command: String, env: Vec<account_env::EnvVar>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || setup_style(&cwd, &args, &command, &env)).await.map_err(|e| e.to_string())?
+}
+
+fn setup_style(cwd: &str, args: &[String], command: &str, sealed: &[account_env::EnvVar]) -> Result<(), String> {
     let base = std::path::Path::new(&cwd);
     let effective = mcp_config::codex::effective_cwd(base, &args)?;
     let canonical = |p: &std::path::Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
     if canonical(base)? != canonical(&effective)? {
         return Err("起動オプションの --cd / -C と本文の保存先が異なります。作業ディレクトリ欄を実際のフォルダーに合わせ、--cd / -C を外してから保存してください。".into());
     }
-    mcp_config::codex::style_setup::install(&effective)
+    use mcp_config::codex::style_setup;
+    let env = account_env::open_all(sealed).map_err(|_| "環境変数を読めません。")?;
+    let home = style_setup::codex_home(base, &env)?;
+    let home_scope = style_setup::home_scope(&effective, &home);
+    style_setup::install_scoped(&effective, home_scope)?;
+    let mut options = style_setup::scoped_options(args, &effective, &home)?;
+    options = mcp_config::codex::discovery_options(&options, &home)?;
+    options.extend(["-c".into(), "features.codex_hooks=true".into()]);
+    let (entry, _) = crate::session::resolve_sidecar_paths()?;
+    let mut child = std::process::Command::new("node");
+    child.arg(entry.parent().unwrap().join("codex-style-setup.mjs"))
+        .arg(command).arg(base).arg(serde_json::to_string(&options).unwrap())
+        .arg(canonical(&effective)?.to_string_lossy().trim_start_matches(r"\\?\"))
+        .arg(style_setup::installed_hash(&effective)?)
+        .arg(if home_scope { "home" } else { "project" })
+        .envs(env).env("CODEX_HOME", home).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV)
+        .current_dir(base).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    let output = child.output().map_err(|_| "Codex の承認設定を起動できません。node と CLI コマンドを確認してください。")?;
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| "Codex の承認設定が失敗しました。")?;
+    if !output.status.success() || reply["approved"] != true {
+        return Err(reply["error"].as_str().unwrap_or("Codex の承認設定が失敗しました。").to_string());
+    }
+    Ok(())
 }
 
 fn cli(kind: &str) -> Result<Cli, String> {

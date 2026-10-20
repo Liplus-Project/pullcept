@@ -37,6 +37,7 @@ function fixture() {
   const root = realpathSync.native(scratch), nested = join(root, "nested");
   mkdirSync(nested); mkdirSync(join(root, ".codex/hooks"), {recursive:true});
   mkdirSync(join(root, ".codex/output-styles"));
+  for (const name of ["character_codex_luna", "character_Codex_Lala"]) writeFileSync(join(root, ".codex/output-styles", `${name}.md`), "fixture");
   const helper = join(root, ".codex/hooks/codex-output-style.py"), path = join(root, ".codex/hooks.json");
   writeFileSync(helper, peer); writeFileSync(path, "{}"); writeFileSync(join(root, "peer.json"), "{}");
   const discovery = {projects:[{folder:join(root, ".codex"), disabled:null}], styleHooks:[{
@@ -78,7 +79,7 @@ test("default, false, account replacement and independent environments return me
     assert.equal((await resolveOutputStyle(f.discovery, f.root, "character_codex_luna", env)).mode, "file");
     f.discovery.projects[0].disabled = "untrusted";
     // #555: no loader in reach — a selected character stops the launch, none runs without a style.
-    await assert.rejects(resolveOutputStyle(f.discovery, f.root, "character_Lin", env), /読み込み役/);
+    await assert.rejects(resolveOutputStyle(f.discovery, f.root, "character_Lin", env), /フォルダー.*未信頼/);
     assert.deepEqual(await resolveOutputStyle(f.discovery, f.root, "", env), {mode:"disabled", name:null});
   } finally { f.close(); }
 });

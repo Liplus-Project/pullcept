@@ -467,3 +467,6 @@ app-server 方式の Codex の席について、席の server がアプリへ送
 MCP の追加 observer は配布 bridge 一つにつき最大一プロセスであり、通知用プロセスの認証・token更新を維持する。npm 0.12.0 は metadata 契約がないため未対応の表示になる。契約を備えた公開版 0.12.1 を npm dependency と lockfile で採用済み。状態・権限・履歴・受動取得の契約は docs/0-requirements.md、1-room.md、2-screen.md、3-accounts.md を参照。
 
 合成テストと実機反映は区別する。Rust の実機反映はマスター指定の再起動タイミングを待ち、画面と status の照合、停止・再起動をまたぐ保持、画面回答と履歴、MCP の未取得/件数を実機で確認するまで #493 は開けておく。
+
+### #559 native trust onboarding follow-up（2026-10-20）
+隔離 CODEX_HOME と一時作業フォルダーで Codex 0.162.1 の config API を実行し、project／home／Windows codex.cmd の同梱 hook 承認・同一パス表の移行・無関係な設定と hook state の保持・再保存・変更 script の拒否を確認した。モデル呼び出しは行っていない。browser fixture で短い説明と保存挙動を確認した。実利用アカウントの起動・配備後確認は未実施であり、全席再起動の時刻を Master と合わせてから行う。

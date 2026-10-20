@@ -90,27 +90,41 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
     if (hook_keys.some(k => typeof k !== "string" || !k)) fail();
     return {mode:"disabled", name:null, hook_keys, body:null};
   }
-  const root = await fileModeRoot(discovery.projects, cwd);
+  let root = await fileModeRoot(discovery.projects, cwd);
+  const effective = await realpath(cwd);
+  const nativeHome = typeof discovery.home === "string" ? await realpath(discovery.home).catch(() => null) : null;
+  const homeScope = nativeHome !== null && await realpath(join(effective, ".codex")).catch(() => null) === nativeHome;
+  if (root === null && homeScope && (selected || enabled === true) && await lstat(join(effective, ".codex/hooks/codex-output-style.py")).catch(() => null)) root = effective;
   // No Li+ loader in reach (#555): a selected character cannot be delivered, so the
   // launch stops; with none selected the seat runs as one without an output style.
   if (root === null) {
+    if ((selected || enabled === true) && discovery.projects.some(layer => layer.disabled != null))
+      throw new StyleFailure("作業フォルダーが Codex で未信頼です。output-style をオンにして保存し、フォルダーと同梱専用 hook を承認してください。");
     if (selected || enabled === true) throw new StyleFailure(NO_LOADER);
     return {mode:"disabled", name:null};
   }
   const helper = resolve(root, ".codex/hooks/codex-output-style.py");
+  if (!await lstat(helper).catch(() => null)) throw new StyleFailure(NO_LOADER);
+  if (selected && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(selected) && !await lstat(join(root, ".codex/output-styles", `${selected}.md`)).catch(() => null))
+    throw new StyleFailure(`キャラクターの本文ファイル ${selected}.md が見つかりません。本文を保存してから起動してください。`);
   if (!within(root, await realpath(helper))) fail();
-  const expectedHooks = await realpath(resolve(root, ".codex/hooks.json"));
-  if (!within(root, expectedHooks)) fail();
+  const expectedHooks = homeScope ? null : await realpath(resolve(root, ".codex/hooks.json")).catch(() => null);
+  if (!homeScope && (!expectedHooks || !within(root, expectedHooks))) throw new StyleFailure(NO_LOADER);
   const commands = [root, root.replaceAll("\\", "/")].map(path =>
     `${process.platform === "win32" ? "python" : "python3"} "${path}/.codex/hooks/codex-output-style.py" hook --root "${path}"`);
   const hooks = [];
   for (const hook of discovery.styleHooks ?? []) {
     if (hook.enabled !== true) continue;
-    if (hook.source !== "project" || hook.async !== false || hook.additionalContextLimit !== 0 || hook.trust !== "trusted" ||
-        await realpath(hook.path).catch(() => null) !== expectedHooks || !commands.includes(hook.command)) fail();
+    const sourceMatches = homeScope ? hook.source === "sessionFlags" &&
+      (process.platform === "win32" ? /^[A-Za-z]:\\<session-flags>\\config\.toml$/.test(hook.path) : hook.path === "/<session-flags>/config.toml") &&
+      hook.key === `${hook.path}:session_start:0:0`
+      : hook.source === "project" && await realpath(hook.path).catch(() => null) === expectedHooks;
+    if (!sourceMatches || hook.async !== false || hook.additionalContextLimit !== 0 || !commands.includes(hook.command)) fail();
+    if (hook.trust !== "trusted") throw new StyleFailure("専用 SessionStart hook が Codex で未信頼です。output-style をオンにして保存し、同梱専用 hook を承認してください。");
     hooks.push(hook);
   }
   const matchers = ["startup", "resume", "clear", "compact"];
+  if (!hooks.length) throw new StyleFailure(NO_LOADER);
   for (const matcher of matchers) {
     const matches = hooks.filter(hook => hook.matcher === "startup|resume|clear|compact" || hook.matcher === matcher);
     if (matches.length !== 1) fail();
