@@ -193,6 +193,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogCharacterEl.placeholder = codex ? "例: character_codex_luna（ファイル名・拡張子なし）" : "例: character_Lay（output style の name）";
     document.getElementById("dialog-codex-note")!.hidden = !codex;
     dialogCodexAppServerFieldEl.hidden = !codex;
+    dialogCodexStyleFieldEl.hidden = !codex;
     dialogCodexRemoteFieldEl.hidden = !codex;
     dialogCodexPlanFieldEl.hidden = !codex;
     dialogClaudeRemoteFieldEl.hidden = kind !== "claude_code";
@@ -303,6 +304,7 @@ export function createAccountDialog(deps: Dependencies) {
         envText: dialogEnvDrawn === null ? null : dialogEnvEl.value,
         env: draft.env,
         codexAppServer: dialogCodexAppServerEl.checked,
+        codexOutputStyle: dialogCodexStyleEl.value === "on" ? true : dialogCodexStyleEl.value === "off" ? false : null,
       });
       // The form may have been closed or reopened during the round trip.
       if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
@@ -485,6 +487,7 @@ export function createAccountDialog(deps: Dependencies) {
     // A different kind has no Codex transport choice to preserve.
     dialogCodexAppServerEl.checked = draft.kind !== "codex_cli" || draft.codex_app_server !== false;
     dialogCodexRemoteEl.checked = draft.codex_remote_control === true;
+    dialogCodexStyleEl.value = draft.codex_output_style === true ? "on" : draft.codex_output_style === false ? "off" : "";
     // Missing is on, as every seat was before the switch (#475).
     dialogResumeNoticeEl.checked = draft.resume_notice !== false;
     dialogCommandEl.value = draft.command;
@@ -576,7 +579,7 @@ export function createAccountDialog(deps: Dependencies) {
     }
     if (opened && place.kind === "codex_cli" && !opened.folder_exists) {
       lines.push(
-        "この作業ディレクトリには .codex/output-styles がありません。保存で作ると、ここで起動する Codex の席はすべてファイル方式になり、キャラクター欄が空の席は character_instance.md を要します。",
+        "この作業ディレクトリには .codex/output-styles がありません。本文の保存で作ります。output-style をオンにすると読み込み役と hook も用意し、未選択の他の席の実効動作を保ちます。",
       );
     }
     dialogCharacterNoticeEl.textContent = lines.join("\n");
@@ -682,7 +685,7 @@ export function createAccountDialog(deps: Dependencies) {
       return { ok: false, written: false };
     }
     if (place.kind === "codex_cli" && !opened.folder_exists) {
-      asks.push(".codex/output-styles を作ると、この作業ディレクトリの Codex の席はファイル方式になります。");
+      if (dialogCodexStyleEl.value !== "on") asks.push(".codex/output-styles を作ると、この作業ディレクトリの Codex の席はファイル方式になります。");
     }
     const token = `${characterKey(place)}\n${body}`;
     if (asks.length > 0 && characterArmed !== token) {
@@ -1040,6 +1043,16 @@ export function createAccountDialog(deps: Dependencies) {
 
     // The character's body (#100), after everything about the account itself that
     // can still refuse the form: it is a file of its own, as the image is.
+    // Install before the editor creates output-styles, preserving sibling seats'
+    // previously disabled implicit default. A failure leaves account/body unsaved.
+    if (kind === "codex_cli" && dialogCodexStyleEl.value === "on") {
+      try {
+        await deps.invoke("setup_codex_output_style", { cwd: cwd || deps.homeDir, args });
+      } catch (err) {
+        dialogError(String(err));
+        return false;
+      }
+    }
     const characterFile = await settleCharacterFile(settling.id);
     if (!characterFile.ok) return false;
 
@@ -1069,6 +1082,7 @@ export function createAccountDialog(deps: Dependencies) {
       resume_command: kind === "cli" ? dialogResumeEl.value.trim() || null : null,
       // Kept only where it is read (#299).
       codex_app_server: kind === "codex_cli" && dialogCodexAppServerEl.checked,
+      codex_output_style: kind === "codex_cli" ? (dialogCodexStyleEl.value === "on" ? true : dialogCodexStyleEl.value === "off" ? false : null) : null,
       codex_remote_control: kind === "codex_cli" && dialogCodexAppServerEl.checked && dialogCodexRemoteEl.checked,
       // Stored as the box says on the kinds that read it; on the others the
       // default, so a kind switched back finds the prompt on (#475).
@@ -1586,6 +1600,9 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCwdEl = document.getElementById("dialog-cwd") as HTMLInputElement;
 
   const dialogCharacterEl = document.getElementById("dialog-character") as HTMLInputElement;
+  const dialogCodexStyleEl = document.getElementById("dialog-codex-style") as HTMLSelectElement;
+  const dialogCodexStyleFieldEl = document.getElementById("dialog-codex-style-field") as HTMLElement;
+  dialogCodexStyleEl.addEventListener("change", () => refreshDialogLine());
 
   // The character's body (#100): the file the three fields name, its place, and what is said about it.
   const dialogCharacterFileEl = document.getElementById("dialog-character-file") as HTMLElement;

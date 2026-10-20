@@ -151,6 +151,7 @@ fn codex_character_args(
     env: &[(String, String)],
     entry: &Path,
     character: Option<&str>,
+    enabled: Option<bool>,
     mut composed: Vec<String>,
 ) -> Result<CodexCharacterLaunch, String> {
     if !console_safe(command) || command.contains('%') {
@@ -158,10 +159,17 @@ fn codex_character_args(
     }
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
-    let style = codex_style(command, &options, cwd, env, entry, selected, false)?;
+    let style = codex_style(command, &options, cwd, env, entry, selected, false, enabled)?;
     let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
+    if enabled == Some(false) {
+        let keys: Vec<String> = style["hook_keys"].as_array().into_iter().flatten()
+            .filter_map(|v| v.as_str().map(str::to_string)).collect();
+        if let Some(off) = mcp_config::codex::app_server::hook_override(&keys)? {
+            composed.extend(["-c".into(), off]);
+        }
+    }
     mcp_config::codex::check_command_length(command, &composed)?;
     Ok(CodexCharacterLaunch {
         preview: LaunchPreview { args: composed, character_mode: Some(mode.clone()), character_name: name, server_args: None, room_prompt: None },
@@ -180,6 +188,7 @@ fn codex_style(
     entry: &Path,
     selected: Option<&str>,
     body: bool,
+    enabled: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let home = env.iter().find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
         .map(|(_, value)| PathBuf::from(value))
@@ -193,7 +202,7 @@ fn codex_style(
     let mut resolver = std::process::Command::new("node");
     resolver.arg(entry.parent().unwrap().join("codex-style.mjs"))
         .arg(command).arg(cwd).arg(serde_json::to_string(&discovery).unwrap())
-        .arg(effective).arg(selected.unwrap_or("")).arg(if body { "body" } else { "" })
+        .arg(effective).arg(selected.unwrap_or("")).arg(if body { "body" } else { "" }).arg(match enabled { Some(true) => "on", Some(false) => "off", None => "" })
         .envs(env.iter().cloned()).env_remove(mcp_config::codex::OUTPUT_STYLE_ENV)
         .env("CODEX_HOME", &home).current_dir(cwd)
         .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
@@ -267,13 +276,14 @@ fn codex_delivery(
     entry: &Path,
     character: Option<&str>,
     server_name: &str,
+    enabled: Option<bool>,
 ) -> Result<CodexDelivery, String> {
     if !console_safe(command) || command.contains('%') {
         return Err("Codex のコマンドを Windows の起動の行へ安全に運べません。起動を止めました。".into());
     }
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
-    let style = codex_style(command, &options, cwd, env, entry, selected, true)?;
+    let style = codex_style(command, &options, cwd, env, entry, selected, true, enabled)?;
     let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
@@ -983,6 +993,7 @@ pub async fn preview_launch_args(
     env_text: Option<String>,
     env: Option<Vec<account_env::EnvVar>>,
     codex_app_server: Option<bool>,
+    codex_output_style: Option<bool>,
 ) -> Result<LaunchPreview, String> {
     let topic_id = topic_id.unwrap_or_else(|| room.topic().topic_id);
     let server_name = server_name_for(account_id.trim(), &topic_id);
@@ -1024,7 +1035,7 @@ pub async fn preview_launch_args(
         return tauri::async_runtime::spawn_blocking(move || {
             mcp_config::codex::reject_options(&args)?;
             let plan = mcp_config::codex::app_server::plan(&mcp_config::codex::transport_options(&args)?)?;
-            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref(), &server_name)?;
+            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref(), &server_name, codex_output_style)?;
             // Placeholders where the launch puts its own values: the token's
             // digest, the port the server binds and the thread it starts.
             let server = mcp_config::codex::app_server::server_args(
@@ -1055,7 +1066,7 @@ pub async fn preview_launch_args(
     let sealed = if let Some(text) = env_text { crate::config::seal_account_env(text, previous)? } else { previous };
     let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
     tauri::async_runtime::spawn_blocking(move || {
-        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), composed).map(|launch| launch.preview)
+        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), codex_output_style, composed).map(|launch| launch.preview)
     }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?
 }
 
@@ -1953,7 +1964,7 @@ fn launch(
         &sidecar_entry,
     )?;
     let (composed, output_style) = if account.kind == AccountKind::CodexCli {
-        let launch = codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, composed)?;
+        let launch = codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, account.codex_output_style, composed)?;
         (launch.preview.args, launch.output_style)
     } else { (composed, None) };
     // The id goes in last, over the whole line. The account's own options may
@@ -2095,7 +2106,7 @@ fn launch_codex_app_server(
     // removal of what builds before #297 left in it.
     mcp_config::codex::prepare_project(&project_cwd)?;
     let plan = app_server::plan(&mcp_config::codex::transport_options(&account.args)?)?;
-    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name)?;
+    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name, account.codex_output_style)?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let token = crate::codex_app_server::new_token();
     let mut server_args = app_server::server_args(

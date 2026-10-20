@@ -2,7 +2,7 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {chromium} from "playwright-core";
 import {createServer} from "vite";
-import {existsSync} from "node:fs";
+import {existsSync,mkdirSync} from "node:fs";
 const edge=process.env.PREVIEW_BROWSER ?? ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe","C:/Program Files/Microsoft/Edge/Application/msedge.exe","/usr/bin/chromium"].find(existsSync);
 const entry = `import {createAccountDialog} from './account-dialog';
 import {codexPlanEnabled,withCodexPlan} from './codex-plan';
@@ -22,6 +22,7 @@ test('account save stays open, retries preserve identity and Codex options', {ti
    if(cmd==='account_env_text')return (args.env??[]).map(e=>e.key+'='+e.value).join('\n');
    if(cmd==='seal_account_env')return [{key:'CHECK',value:args.text.split('=')[1]}];
    if(cmd==='preview_launch_args')return {args:args.args};
+   if(cmd==='setup_codex_output_style'){if(window.failSetup)throw Error('style setup denied');return null;}
    if(cmd==='save_config'){if(window.delayConfig)await new Promise(r=>window.releaseConfig=r);if(window.failConfig)throw Error('disk unavailable');window.saved=args.accounts;return;}
    if(cmd==='create_mcp_server'){window.created={name:'server',command:args.command,args:args.args,env:args.env,listed:true,state:null,log:[]};return {server:'server',account_id:'mcp-id'};}
    if(cmd==='mcp_servers')return {file:'fixture',error:null,servers:window.created?[window.created]:[]};
@@ -70,6 +71,21 @@ test('account save stays open, retries preserve identity and Codex options', {ti
  // The character write refreshes its stamp/body baseline for a second save.
  await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="character"]').click();await page.locator('#dialog-character').fill('persona');await page.waitForFunction(()=>!document.querySelector('#dialog-character-body').disabled);await page.locator('#dialog-character-body').fill('changed');await save();await save();assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.cmd==='save_character_file').length),1);await page.locator('#dialog-cancel').click();
  await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="env"]').click();await page.locator('#dialog-env').fill('CHECK=value');await save();assert.equal(await page.locator('#dialog-env').inputValue(),'CHECK=value');assert.equal(await page.locator('#dialog-env').evaluate(e=>e.readOnly),false);await save();assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.cmd==='seal_account_env').length),1);await page.locator('#dialog-cancel').click();
+ // Setup precedes body creation, off is seat-only, and failure leaves account/body unsaved.
+ await page.evaluate(()=>{window.test.open(window.test.accounts[0]);window.calls=[];});
+ await page.locator('[data-section-tab="character"]').click();await page.locator('#dialog-codex-style').selectOption('on');
+ await page.waitForFunction(()=>!document.querySelector('#dialog-character-body').disabled);await page.locator('#dialog-character-body').fill('setup body');
+ await save();assert.equal(await page.evaluate(()=>window.test.accounts[0].codex_output_style),true);
+ await page.waitForFunction(()=>!document.querySelector('#account-form').inert && getComputedStyle(document.querySelector('#dialog-codex-style-field').closest('.pane')).opacity==='1');
+ const help=await page.locator('#dialog-codex-style-field .field-note').boundingBox();assert.ok(help.width>500,'setup help spans the field width');
+ mkdirSync('artifacts',{recursive:true});await page.screenshot({path:'artifacts/codex-output-style-account.png'});
+ const setupCalls=await page.evaluate(()=>window.calls.map(c=>c.cmd));assert.ok(setupCalls.indexOf('setup_codex_output_style')<setupCalls.indexOf('save_character_file'));
+ await page.locator('#dialog-codex-style').selectOption('off');await save();assert.equal(await page.evaluate(()=>window.test.accounts[0].codex_output_style),false);
+ assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.cmd==='setup_codex_output_style').length),1);
+ await page.locator('#dialog-codex-style').selectOption('on');await page.locator('#dialog-character-body').fill('must not write');await page.evaluate(()=>{window.failSetup=true;window.calls=[];});
+ await page.locator('#dialog-commit').click();await page.waitForFunction(()=>!document.querySelector('#dialog-commit').closest('form').inert);
+ assert.match(await page.locator('#dialog-error').innerText(),/style setup denied/);assert.equal(await page.evaluate(()=>window.calls.some(c=>c.cmd==='save_character_file'||c.cmd==='save_config')),false);assert.equal(await page.evaluate(()=>window.test.accounts[0].codex_output_style),false);
+ await page.evaluate(()=>window.failSetup=false);await page.locator('#dialog-cancel').click();await page.locator('#account-close-discard').click();
  // Avatar failure remains editable; the successful baseline avoids repeat deletion.
  await page.evaluate(()=>{window.test.accounts[0].avatar=true;window.test.avatars.set(window.test.accounts[0].id,"fixture.png");window.test.open(window.test.accounts[0]);window.failAvatar=true;});
  await page.locator('#dialog-avatar-clear').click();await page.locator('#dialog-commit').click();await page.waitForFunction(()=>!document.querySelector('#dialog-commit').closest('form').inert);assert.match(await page.locator('#dialog-error').innerText(),/avatar unavailable/);

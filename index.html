@@ -620,6 +620,14 @@
                      キャラクターが変われば読み直す。決定で、本文が変わっていれば
                      そこへ書く（無ければフォルダーとファイルを作る）。取消は何も
                      書かない。 -->
+                <label id="dialog-codex-style-field" class="field" hidden>Codex output-style
+                  <select id="dialog-codex-style">
+                    <option value="">既存の動作を維持（project の設定）</option>
+                    <option value="on">オン（保存時に読み込み役と hook を用意）</option>
+                    <option value="off">オフ（この席だけ）</option>
+                  </select>
+                  <span class="field-note">オンで保存すると、この作業フォルダーに .codex/hooks/codex-output-style.py と専用 SessionStart hook（hooks.json）を用意します。必要な config.toml の追加は他の席の動作を保ちます。Python 3.11 以上と Codex 側のフォルダー・hook の信頼が必要です。本文・読み込み役はフォルダーで共有し、オン・オフはこの席だけ。オフでも既存指示と共有ファイルを残します。次の起動から反映し、保存では再起動しません。</span>
+                </label>
                 <div id="dialog-character-file" class="character-file" hidden>
                   <label class="field body">
                     本文
@@ -649,7 +657,7 @@
                   <input id="dialog-cwd" type="text" spellcheck="false" />
                 </label>
                 <label class="field">CLI コマンド<input id="dialog-cli-command" type="text" spellcheck="false" placeholder="codex または CLI の絶対パス" /></label>
-                <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。キャラクター欄には project の .codex/output-styles にあるファイル名を、拡張子なしで入力します。空欄は project の既定に任せます。ファイル方式が未設定なら、従来の「# character_Codex_Lin」等の見出し名で選べます。下のプレビューで方式と選択名を確認できます。初回は診断端末でフォルダーと専用 SessionStart hook を信頼してください。本文が読めない、又は hook を信頼していない場合は起動を止めます。ID は最初の会話で保存されます。状態の五欄は最初の会話のあとに表示されます。</p>
+                <p id="dialog-codex-note" hidden>Codex CLI 0.160.0 以上が必要です。キャラクター欄は .codex/output-styles のファイル名（拡張子なし）です。空欄は project の既定です。オンで project が無効なら名前と本文を指定してください。読み込み役・本文・hook の信頼を確認できない場合は起動を止めます。ID と状態は最初の会話のあとに保存・表示されます。</p>
                 <!-- Codex の席を、席ごとの app-server 経由で立てる（#299）。入れると
                      キャラクターは thread/start の developerInstructions で渡り、
                      Li+ の output style の SessionStart hook はその席の server でだけ

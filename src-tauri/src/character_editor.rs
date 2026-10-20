@@ -5,6 +5,18 @@
 use character_file::{Cli, Opened, Saved, Wearer};
 use serde::Deserialize;
 
+/// Shared files only; this does not launch/restart a seat or grant hook trust.
+#[tauri::command]
+pub fn setup_codex_output_style(cwd: String, args: Vec<String>) -> Result<(), String> {
+    let base = std::path::Path::new(&cwd);
+    let effective = mcp_config::codex::effective_cwd(base, &args)?;
+    let canonical = |p: &std::path::Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
+    if canonical(base)? != canonical(&effective)? {
+        return Err("起動オプションの --cd / -C と本文の保存先が異なります。作業ディレクトリ欄を実際のフォルダーに合わせ、--cd / -C を外してから保存してください。".into());
+    }
+    mcp_config::codex::style_setup::install(&effective)
+}
+
 fn cli(kind: &str) -> Result<Cli, String> {
     Cli::of_kind(kind).ok_or_else(|| "この種別はキャラクターのファイルを持ちません。".to_string())
 }

@@ -112,6 +112,7 @@ impl Default for AppConfig {
                 server: None,
                 avatar: false,
                 codex_app_server: false,
+                codex_output_style: None,
                 codex_remote_control: false,
                 resume_notice: true,
             }],

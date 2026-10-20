@@ -55,6 +55,7 @@ const APP_COMMANDS: &[&str] = &[
     "restart_mcp_server",
     "open_mcp_servers_file",
     "open_character_file",
+    "setup_codex_output_style",
     "save_character_file",
     "character_file_wearers",
     "permission_answer",

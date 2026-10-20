@@ -34,6 +34,7 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "../LICENSE": "LICENSE",
       "../NOTICE.txt": "NOTICE.txt",
       "../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
       "../THIRD-PARTY-NOTICES-RUST.txt": "THIRD-PARTY-NOTICES-RUST.txt"

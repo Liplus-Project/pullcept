@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-codex-output-style"
+description = "Enables the setup_codex_output_style command without any pre-configured scope."
+commands.allow = ["setup_codex_output_style"]
+
+[[permission]]
+identifier = "deny-setup-codex-output-style"
+description = "Denies the setup_codex_output_style command without any pre-configured scope."
+commands.deny = ["setup_codex_output_style"]
