@@ -63,6 +63,8 @@ export function createAccountDialog(deps: Dependencies) {
   /** The account being edited, or null while the form is making a new one. */
   let editing: Account | null = null;
   let saving = false;
+  /** Edited since the form opened or last saved (#549). Closing then asks first. */
+  let edited = false;
   let planEdit: Promise<void> = Promise.resolve();
   let pendingMcpStart: string | null = null;
 
@@ -416,6 +418,7 @@ export function createAccountDialog(deps: Dependencies) {
    */
   function openAccountDialog(account: Account | null, field: "name" | "hue" = "name"): void {
     editing = account;
+    edited = false;
     pendingMcpStart = null;
     planEdit = Promise.resolve();
     draft = account
@@ -1231,9 +1234,44 @@ export function createAccountDialog(deps: Dependencies) {
     }
   }
 
+  /**
+   * 閉じる and Escape (#549). Nothing edited since the form opened or last saved
+   * closes at once; otherwise the in-app question answers: save and close,
+   * close without saving, or stay.
+   */
+  function requestCloseAccountDialog(): void {
+    if (saving) return;
+    if (!edited) {
+      closeAccountDialog();
+      return;
+    }
+    closeConfirmEl.showModal();
+  }
+
+  /** Run 保存 as the button does. Resolves true when the form was saved. */
+  function saveAccountDialog(): Promise<boolean> {
+    if (saving) return Promise.resolve(false);
+    saving = true;
+    dialogError("");
+    const focus = document.activeElement as HTMLElement | null;
+    dialogFormEl.inert = true;
+    return planEdit.then(() => commitAccountDialog()).then(saved => {
+      if (saved) edited = false;
+      return saved;
+    }).catch(err => {
+      dialogError(String(err));
+      return false;
+    }).finally(() => {
+      saving = false;
+      dialogFormEl.inert = false;
+      if (dialogEl.open) focus?.focus();
+    });
+  }
+
   /** Drop the draft and close. Nothing it held reached the account list. */
   function closeAccountDialog(): void {
     if (saving) return;
+    edited = false;
     editing = null;
     draft = null;
     disarmDelete();
@@ -1580,6 +1618,11 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCodexPlanFieldEl = document.getElementById("dialog-codex-plan-field") as HTMLElement;
   const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
 
+  const closeConfirmEl = document.getElementById("account-close-dialog") as HTMLDialogElement;
+  const closeSaveEl = document.getElementById("account-close-save") as HTMLButtonElement;
+  const closeDiscardEl = document.getElementById("account-close-discard") as HTMLButtonElement;
+  const closeKeepEl = document.getElementById("account-close-keep") as HTMLButtonElement;
+
   const mcpOpenFileEl = document.getElementById("mcp-open-file") as HTMLButtonElement;
 
   const mcpFileEl = document.getElementById("mcp-file") as HTMLElement;
@@ -1712,12 +1755,30 @@ export function createAccountDialog(deps: Dependencies) {
       tab.addEventListener("click", () => showDialogSection(tab.dataset.sectionTab as DialogSection));
       tab.addEventListener("keydown", stepDialogSection);
     }
-    dialogCancelEl.addEventListener("click", () => closeAccountDialog());
-    // Escape closes the dialog itself, and it means 取消: the draft is dropped by
-    // the close handler below, so there is no path out of this form that leaves
-    // half of it applied.
+    // An edit is whatever a person does to a field (#549). Code fills fields by
+    // assignment, which fires nothing, so only a person's input lands here.
+    dialogFormEl.addEventListener("input", () => { edited = true; });
+    dialogFormEl.addEventListener("change", () => { edited = true; });
+    dialogAvatarClearEl.addEventListener("click", () => { edited = true; });
+    dialogCancelEl.addEventListener("click", () => requestCloseAccountDialog());
+    // The question's three answers. キャンセル holds the focus, and Escape on the
+    // question is the same answer: the form stays with its edits.
+    closeKeepEl.addEventListener("click", () => closeConfirmEl.close());
+    closeDiscardEl.addEventListener("click", () => {
+      closeConfirmEl.close();
+      closeAccountDialog();
+    });
+    closeSaveEl.addEventListener("click", () => {
+      closeConfirmEl.close();
+      void saveAccountDialog().then(saved => { if (saved) closeAccountDialog(); });
+    });
+    // Escape asks the same question as 閉じる. When it closes the dialog anyway
+    // (the host may refuse to let `cancel` be held), the draft is dropped by the
+    // close handler below, so there is no path out of this form that leaves half
+    // of it applied.
     dialogEl.addEventListener("close", () => {
       if (dialogEl.open) return;
+      edited = false;
       editing = null;
       draft = null;
       mcpDrawn = null;
@@ -1725,19 +1786,32 @@ export function createAccountDialog(deps: Dependencies) {
       resetCharacterFile();
       disarmDelete();
     });
-    dialogEl.addEventListener("cancel", event => { if (saving) event.preventDefault(); });
+    // Escape is taken at the key, before the host's close request: a `cancel` the
+    // host fires without recent activation cannot be held, and a question opened
+    // from it would be closed together with the form by the next Escape.
+    dialogEl.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.isComposing || (!saving && !edited)) return;
+      event.preventDefault();
+      requestCloseAccountDialog();
+    });
+    closeConfirmEl.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      closeConfirmEl.close();
+    });
+    dialogEl.addEventListener("cancel", event => {
+      if (saving) {
+        event.preventDefault();
+        return;
+      }
+      if (edited) {
+        event.preventDefault();
+        requestCloseAccountDialog();
+      }
+    });
     dialogFormEl.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (saving) return;
-      saving = true;
-      dialogError("");
-      const focus = document.activeElement as HTMLElement | null;
-      dialogFormEl.inert = true;
-      void planEdit.then(() => commitAccountDialog()).catch(err => dialogError(String(err))).finally(() => {
-        saving = false;
-        dialogFormEl.inert = false;
-        if (dialogEl.open) focus?.focus();
-      });
+      void saveAccountDialog();
     });
 
   }

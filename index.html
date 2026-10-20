@@ -864,6 +864,24 @@
         </form>
       </dialog>
 
+      <!-- Asked when 閉じる or Escape would drop edits made since the account
+           dialog opened or was last saved (#549). Nothing edited closes without
+           it. Its own `<dialog>`, for the reason `#topic-delete-dialog` is its
+           own. キャンセル holds the focus and Escape is the same answer: the form
+           stays open with its edits. -->
+      <dialog id="account-close-dialog" aria-labelledby="account-close-title">
+        <div class="confirm">
+          <h2 id="account-close-title">保存していない変更があります</h2>
+          <p>閉じる前に保存しますか。保存せずに閉じると、前回の保存から後の変更は消えます。</p>
+          <menu class="actions">
+            <span class="spacer"></span>
+            <button id="account-close-save" type="button">保存して閉じる</button>
+            <button id="account-close-discard" type="button" class="danger">保存せずに閉じる</button>
+            <button id="account-close-keep" type="button" autofocus>キャンセル</button>
+          </menu>
+        </div>
+      </dialog>
+
       <!-- An attached picture, larger (#318): opened from its thumbnail in the
            conversation or in the composer, over a dimmed window. Closed by its
            ✕, a press on the dim around it, or Esc. Drawn by src/main.ts. -->
