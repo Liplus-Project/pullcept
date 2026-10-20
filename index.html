@@ -627,7 +627,7 @@
                       id="dialog-character-body"
                       rows="14"
                       spellcheck="false"
-                      placeholder="キャラクターの本文（output style の Markdown）"
+                      placeholder="キャラクターの本文（output style の Markdown）。書き方の例：&#10;---&#10;name: character_Lay&#10;description: 落ち着いた姉のような話し相手&#10;---&#10;名前：Lay&#10;話し方：やわらかい敬語まじりの口調。語尾は「〜わ」「〜ね」&#10;性格：面倒見がよく、手を動かして確かめるのが好き&#10;好きなもの：小さな差分で直ること&#10;苦手なもの：確かめずに「たぶん」と言うこと"
                     ></textarea>
                   </label>
                   <div class="field">
@@ -636,7 +636,7 @@
                   </div>
                   <p id="dialog-character-notice" class="notice" role="status"></p>
                   <button id="dialog-character-reload" type="button" hidden>読み直す（本文の変更を捨てる）</button>
-                  <p class="character-hint">保存した本文が効くのは、このアカウントの席の次の起動からです。決定で、本文を変えたときだけ書き込みます。</p>
+                  <p class="character-hint">保存した本文が効くのは、このアカウントの席の次の起動からです。保存で、本文を変えたときだけ書き込みます。</p>
                 </div>
               </section>
 
@@ -862,6 +862,9 @@
                    dialog of its own; whether this one follows is #72. -->
               <button id="dialog-delete" type="button" class="delete">削除</button>
               <span class="spacer"></span>
+              <!-- What 保存 just did, beside it (#557): the main status line sits
+                   behind this dialog. -->
+              <span id="dialog-saved" class="dialog-saved" role="status" aria-live="polite"></span>
               <!-- 保存 before 閉じる (#549): source order is the visual and the
                    Tab order alike. -->
               <button id="dialog-commit" type="submit" value="commit">保存</button>
