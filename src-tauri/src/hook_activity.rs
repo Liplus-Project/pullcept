@@ -91,6 +91,8 @@ struct Seat {
     held: Vec<Held>,
     /// Room posts kept while the seat waits on a prompt (#346).
     posts: Queue,
+    /// What its own task hooks have listed so far (#551).
+    plan: mcp_config::work_status::ClaudePlan,
 }
 
 impl Seat {
@@ -100,6 +102,7 @@ impl Seat {
             reporter: Reporter::new(topic_id, account_id, pty_id),
             held: Vec::new(),
             posts: Queue::new(),
+            plan: Default::default(),
         }
     }
 
@@ -147,10 +150,7 @@ impl HookSeats {
         let Some(pty_id) = app.state::<RoomSeats>().running_pty(topic_id, account_id) else {
             return;
         };
-        if let Some(steps) = mcp_config::work_status::claude_plan(event, body) {
-            crate::room_status::plan(app, topic_id, account_id, &pty_id, "claude-todowrite-hook", steps);
-        }
-        let (told, hand_over) = {
+        let (told, hand_over, steps) = {
             let mut seats = self.seats.lock();
             let key = (topic_id.to_string(), account_id.to_string());
             let seat = seats
@@ -167,8 +167,12 @@ impl HookSeats {
             }
             seat.activity.hear(event, body);
             seat.settle();
-            (seat.reporter.next(&seat.activity), seat.to_hand_over())
+            let steps = seat.plan.feed(event, body);
+            (seat.reporter.next(&seat.activity), seat.to_hand_over(), steps)
         };
+        if let Some(steps) = steps {
+            crate::room_status::plan(app, topic_id, account_id, &pty_id, "claude-task-hook", steps);
+        }
         if let Some(event) = told {
             crate::room_status::activity(app, &event);
             let _ = app.emit("seat-activity", event);

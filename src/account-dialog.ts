@@ -1,4 +1,4 @@
-import { codexPlanEnabled, withCodexPlan } from "./codex-plan";
+import { claudePlanInEnvText, codexPlanEnabled, withClaudePlanEnvText, withCodexPlan } from "./codex-plan";
 import type { invoke } from "@tauri-apps/api/core";
 import type { listen } from "@tauri-apps/api/event";
 import type { AccountKind, Account, EnvVar, LaunchFieldReport, SessionView, AvatarEdit, DialogSection, CharacterOpened, CharacterPlace, McpRunState, McpLogLine, McpServerView, McpPanelView } from "./contracts";
@@ -195,6 +195,7 @@ export function createAccountDialog(deps: Dependencies) {
     dialogCodexRemoteFieldEl.hidden = !codex;
     dialogCodexPlanFieldEl.hidden = !codex;
     dialogClaudeRemoteFieldEl.hidden = kind !== "claude_code";
+    dialogClaudePlanFieldEl.hidden = kind !== "claude_code";
     // The two kinds whose seats the app types a resume into (#475).
     dialogResumeNoticeFieldEl.hidden = !resumesKind(kind);
     if (launchesKind(kind)) refreshDialogLine();
@@ -723,6 +724,9 @@ export function createAccountDialog(deps: Dependencies) {
     dialogEnvDrawn = null;
     dialogEnvEl.value = "";
     dialogEnvEl.readOnly = true;
+    // The switch is the field (#551): it waits for the field to be drawn.
+    dialogClaudePlanEl.checked = false;
+    dialogClaudePlanEl.disabled = true;
     let text: string;
     try {
       text = await deps.invoke<string>("account_env_text", { env: forDraft.env });
@@ -737,6 +741,8 @@ export function createAccountDialog(deps: Dependencies) {
     dialogEnvEl.value = text;
     dialogEnvDrawn = text;
     dialogEnvEl.readOnly = false;
+    dialogClaudePlanEl.checked = claudePlanInEnvText(text);
+    dialogClaudePlanEl.disabled = false;
     refreshDialogLine();
   }
 
@@ -1587,6 +1593,8 @@ export function createAccountDialog(deps: Dependencies) {
   const dialogCodexRemoteFieldEl = document.getElementById("dialog-codex-remote-field") as HTMLElement;
   const dialogClaudeRemoteEl = document.getElementById("dialog-claude-remote") as HTMLInputElement;
   const dialogClaudeRemoteFieldEl = document.getElementById("dialog-claude-remote-field") as HTMLElement;
+  const dialogClaudePlanEl = document.getElementById("dialog-claude-plan") as HTMLInputElement;
+  const dialogClaudePlanFieldEl = document.getElementById("dialog-claude-plan-field") as HTMLElement;
 
   const dialogCodexAppServerEl = document.getElementById("dialog-codex-app-server") as HTMLInputElement;
 
@@ -1730,7 +1738,17 @@ export function createAccountDialog(deps: Dependencies) {
     // So does the working directory: which registrations the line stops is read
     // out of the directory it is pointed at (#103).
     dialogCwdEl.addEventListener("input", () => refreshDialogLine());
-    dialogEnvEl.addEventListener("input", () => refreshDialogLine());
+    dialogEnvEl.addEventListener("input", () => {
+      dialogClaudePlanEl.checked = claudePlanInEnvText(dialogEnvEl.value);
+      refreshDialogLine();
+    });
+    // The switch is the environment field (#551): on adds the variable's line,
+    // off takes it out. Saving seals it as any line typed there.
+    dialogClaudePlanEl.addEventListener("change", () => {
+      if (dialogEnvEl.readOnly) return;
+      dialogEnvEl.value = withClaudePlanEnvText(dialogEnvEl.value, dialogClaudePlanEl.checked);
+      refreshDialogLine();
+    });
     // The resume line is not in the preview — the preview answers for a fresh
     // launch — but it is a line that runs, and what it cannot carry is a topic
     // this account cannot go back into (#154, 決定4).

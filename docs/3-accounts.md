@@ -832,7 +832,7 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 
 `update_work_status` で本人の作業または対象人間への判断依頼を登録・更新・完了・取消し、`status` で読む。判断依頼は kind=decision、target_account_id は設定済み admin の ID である。AI の回答完了は同 topic の保存済み admin 発言の answer_message_id だけを渡す。回答原文や回答者を AI に入力させない。詳細・再試行は docs/1-room.md の journal 契約による。
 
-Codex app-server の plan は現在の親 thread と turn が一致する `turn/plan/updated` の構造化通知だけを受ける。Claude は現行 launch の認証済み、成功した親 `PostToolUse` の `TodoWrite` のみを受ける。失敗・子エージェント・古い launch・壊れた payload は更新しない。hook 方式の Codex は自動 plan を送らないので明示登録を使う。plan と手動作業は別であり、idle・ターン終了・plan の全項目完了から手動作業を完了にしない。
+Codex app-server の plan は現在の親 thread と turn が一致する `turn/plan/updated` の構造化通知だけを受ける。Claude は現行 launch の認証済み、成功した親 `PostToolUse` の `TodoWrite`、`TaskCreate`、`TaskUpdate` のみを受ける。`TodoWrite` は一覧全体を置き換える。`TaskCreate` と `TaskUpdate` は席ごとに積み上げて一覧を組み立て直し、`status: deleted` の項目は一覧から外す。積み上げは席の起動ごとに空から始める（#551）。Claude Code 2.1.304 は既定で計画用の道具を持たず、アカウントの「計画ツール」スイッチが環境変数 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` を足したときだけ Task 系の道具が出る。計画欄はこの変数を持つ Claude アカウントにだけ出す。失敗・子エージェント・古い launch・壊れた payload は更新しない。hook 方式の Codex は自動 plan を送らないので明示登録を使う。plan と手動作業は別であり、idle・ターン終了・plan の全項目完了から手動作業を完了にしない。
 
 CLI 0.162.1 の stable schema は通知形式の根拠であり、実機受信の観測ではない。Claude TodoWrite もこの変更の合成テストと実機観測を区別する。
 

@@ -1,4 +1,4 @@
-import { codexPlanEnabled } from "./codex-plan";
+import { CLAUDE_PLAN_ENV, codexPlanEnabled } from "./codex-plan";
 import { createParticipantDetails } from "./participant-details";
 import { openCodexRemote } from "./codex-remote";
 import { accountName } from "./account-name";
@@ -319,7 +319,7 @@ const diagnosticsEl = document.getElementById("diagnostics") as HTMLElement;
 const toggleEl = document.getElementById("toggle-diagnostics") as HTMLButtonElement;
 const socketStateEl = document.getElementById("socket-state") as HTMLElement;
 const participantDetails = createParticipantDetails({
-  planEnabled: id => { const account = accounts.find(a => a.id === id); return account?.kind !== "codex_cli" || codexPlanEnabled(account.args); },
+  planEnabled: id => { const account = accounts.find(a => a.id === id); if (account?.kind === "claude_code") return account.env.some(v => v.name === CLAUDE_PLAN_ENV); return account?.kind !== "codex_cli" || codexPlanEnabled(account.args); },
   element: document.getElementById("participant-details") as HTMLElement,
   topic: () => shownTopicId(), human: () => localAccountId,
   read: (topicId, accountId) => invoke<TopicStatus>("topic_status", {topicId,accountId}),

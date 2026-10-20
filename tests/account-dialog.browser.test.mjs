@@ -45,6 +45,14 @@ test('account save stays open, retries preserve identity and Codex options', {ti
  const first=await page.evaluate(()=>window.test.accounts[0]);assert.equal(first.args.filter(a=>a.startsWith('tools.update_plan.enabled=')).length,1);assert.ok(first.args.includes('tools.update_plan.enabled=false'));assert.ok(first.args.includes('unrelated=true'));
  await page.locator('#dialog-codex-plan').check();await save();assert.ok(await page.evaluate(()=>window.test.accounts[0].args.includes('tools.update_plan.enabled=true')));assert.equal(await page.locator('#account-dialog').evaluate(e=>e.open),true);await page.locator('#dialog-cancel').click();await page.evaluate(()=>window.test.open(window.test.accounts[0]));await page.locator('[data-section-tab="launch"]').click();assert.equal(await page.locator('#dialog-codex-plan').isChecked(),true);
  await page.locator('[data-section-tab="basic"]').click();await page.locator('#dialog-name').fill('two');await save();assert.equal(await page.evaluate(()=>window.test.accounts.length),1);assert.equal(await page.evaluate(()=>window.test.accounts[0].id),first.id);
+ // The Claude plan switch is the environment field's line (#551).
+ await page.evaluate(()=>window.test.open());await page.locator('#dialog-kind').selectOption('claude_code');await page.locator('[data-section-tab="launch"]').click();
+ assert.equal(await page.locator('#dialog-claude-plan-field').isHidden(),false);assert.equal(await page.locator('#dialog-codex-plan-field').isHidden(),true);
+ await page.waitForFunction(()=>!document.querySelector('#dialog-claude-plan').disabled);assert.equal(await page.locator('#dialog-claude-plan').isChecked(),false);
+ await page.locator('#dialog-claude-plan').check();assert.equal(await page.locator('#dialog-env').inputValue(),'CLAUDE_CODE_ENABLE_TODO_TOOLS=1');
+ await page.locator('#dialog-claude-plan').uncheck();assert.equal(await page.locator('#dialog-env').inputValue(),'');
+ await page.locator('[data-section-tab="env"]').click();await page.locator('#dialog-env').fill('CLAUDE_CODE_ENABLE_TODO_TOOLS=1');assert.equal(await page.locator('#dialog-claude-plan').isChecked(),true);
+ await page.locator('#dialog-cancel').click();await page.locator('#account-close-discard').click();await page.evaluate(()=>window.test.open(window.test.accounts[0]));
  // Unsaved edits ask before closing (#549); nothing edited since open or the last save closes at once.
  const isOpen=id=>page.locator('#'+id).evaluate(e=>e.open);
  await page.locator('#dialog-name').fill('unsaved');await page.locator('#dialog-cancel').click();
