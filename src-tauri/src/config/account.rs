@@ -232,6 +232,10 @@ pub struct Account {
     /// compatibility hook path (docs/3-accounts.md). Read only on Codex CLI.
     #[serde(default = "default_codex_app_server")]
     pub codex_app_server: bool,
+    /// None preserves the existing project default. False suppresses style
+    /// hooks only for this seat; true requests offline setup when saved.
+    #[serde(default)]
+    pub codex_output_style: Option<bool>,
     /// Opt-in relay; only these seats use their own SQLite directory (#419).
     #[serde(default)]
     pub codex_remote_control: bool,

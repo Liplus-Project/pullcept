@@ -60,6 +60,7 @@
     "allow-restart-mcp-server",
     "allow-open-mcp-servers-file",
     "allow-open-character-file",
+    "allow-setup-codex-output-style",
     "allow-save-character-file",
     "allow-character-file-wearers",
     "allow-permission-answer",

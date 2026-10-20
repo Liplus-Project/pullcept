@@ -83,6 +83,21 @@ test("default, false, account replacement and independent environments return me
   } finally { f.close(); }
 });
 
+test("seat off suppresses only style keys without executing a broken loader; on never silently drops style", async () => {
+  const f = fixture();
+  try {
+    f.settings({failure:true});
+    f.discovery.styleHooks[0].trust = "untrusted";
+    const off = await resolveOutputStyle(f.discovery, f.root, "Luna", process.env, true, false);
+    assert.equal(off.mode, "disabled");
+    assert.deepEqual(off.hook_keys, [f.discovery.styleHooks[0].key]);
+    f.discovery.styleHooks[0].trust = "trusted";
+    f.settings({mode:"disabled"});
+    await assert.rejects(resolveOutputStyle(f.discovery, f.root, "", process.env, true, true), /名前と本文/);
+    await assert.rejects(resolveOutputStyle({projects:[]}, f.root, "", process.env, true, true), /読み込み役/);
+  } finally { f.close(); }
+});
+
 test("file mode rejects missing, untrusted, modified, duplicate and partial handlers before helper execution", async () => {
   const f = fixture();
   try {

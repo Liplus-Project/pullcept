@@ -136,6 +136,7 @@ pub fn run() {
             app_mcp::restart_mcp_server,
             app_mcp::open_mcp_servers_file,
             character_editor::open_character_file,
+            character_editor::setup_codex_output_style,
             character_editor::save_character_file,
             character_editor::character_file_wearers,
             hook_activity::permission_answer,

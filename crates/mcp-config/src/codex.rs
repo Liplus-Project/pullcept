@@ -4,6 +4,7 @@ use toml_edit::{Document as DocumentMut, Item};
 pub mod activity;
 pub mod admission;
 pub mod app_server;
+pub mod style_setup;
 pub mod remote;
 mod character;
 pub mod limit;

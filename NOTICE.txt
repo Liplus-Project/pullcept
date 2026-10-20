@@ -31,3 +31,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Bundled Codex output-style loader: Li+ (https://github.com/Liplus-Project/liplus-language), Copyright 2026 Yoshiharu Uematsu, Apache-2.0. See crates/mcp-config/assets/README.txt in the source distribution.

@@ -82,12 +82,19 @@ export async function fileModeRoot(projects, cwd) {
 
 // `withBody` (#299): also the character text the loader would deliver, for a seat
 // that hands it to app-server as developerInstructions with that hook turned off.
-export async function resolveOutputStyle(discovery, cwd, selected, env = process.env, withBody = false) {
+export async function resolveOutputStyle(discovery, cwd, selected, env = process.env, withBody = false, enabled = null) {
+  if (enabled === false) {
+    // Seat-local suppression also works for missing/untrusted loaders. Never
+    // run their bodies or alter the shared selector, hooks, or instructions.
+    const hook_keys = (discovery.styleHooks ?? []).filter(h => h.enabled === true).map(h => h.key);
+    if (hook_keys.some(k => typeof k !== "string" || !k)) fail();
+    return {mode:"disabled", name:null, hook_keys, body:null};
+  }
   const root = await fileModeRoot(discovery.projects, cwd);
   // No Li+ loader in reach (#555): a selected character cannot be delivered, so the
   // launch stops; with none selected the seat runs as one without an output style.
   if (root === null) {
-    if (selected) throw new StyleFailure(NO_LOADER);
+    if (selected || enabled === true) throw new StyleFailure(NO_LOADER);
     return {mode:"disabled", name:null};
   }
   const helper = resolve(root, ".codex/hooks/codex-output-style.py");
@@ -114,6 +121,7 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
   const args = [helper, "resolve", "--cwd", cwd, "--root", root];
   if (selected) args.push("--style", selected);
   const metadata = await run(pythonCommand(env), args, cwd, childEnv);
+  if (enabled === true && metadata.mode === "disabled") throw new StyleFailure("project の output-style は無効です。オンで使うキャラクターの名前と本文を指定してください。");
   if (metadata.protocol_version !== 1 || !["file", "disabled"].includes(metadata.mode) || metadata.root !== root ||
       !Number.isInteger(metadata.byte_count) || metadata.byte_count < 0 || metadata.byte_count > 128 * 1024 ||
       (metadata.mode === "file" && (typeof metadata.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metadata.name) ||
@@ -146,12 +154,12 @@ export async function resolveOutputStyle(discovery, cwd, selected, env = process
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const [bin, cwd, options, effective, selected = "", body = ""] = process.argv.slice(2);
+    const [bin, cwd, options, effective, selected = "", body = "", enabled = ""] = process.argv.slice(2);
     const env = {...process.env};
     for (const key of Object.keys(env)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete env[key];
     const discovery = await run(process.execPath, [resolve(dirname(process.argv[1]), "codex-project.mjs"), bin, cwd, options], cwd, env);
     if (discovery.error) fail();
-    process.stdout.write(JSON.stringify(await resolveOutputStyle(discovery, effective, selected, env, body === "body")));
+    process.stdout.write(JSON.stringify(await resolveOutputStyle(discovery, effective, selected, env, body === "body", enabled === "off" ? false : enabled === "on" ? true : null)));
   } catch (error) {
     process.stdout.write(JSON.stringify({error:error instanceof StyleFailure ? error.message : FAILURE}));
     process.exitCode = 1;

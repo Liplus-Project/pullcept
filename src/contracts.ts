@@ -231,6 +231,7 @@ export interface Account {
    *  character as `developerInstructions` (#299). Absent: app-server by default. Explicit false:
    *  the compatibility Li+ output style hook. Read only for Codex CLI. */
   codex_app_server?: boolean;
+  codex_output_style?: boolean | null;
   codex_remote_control?: boolean;
   /** Whether the resume prompt is typed into this account's seat after its
    *  usage limit lifts (#475). Absent: on, as before the switch. Read only for
