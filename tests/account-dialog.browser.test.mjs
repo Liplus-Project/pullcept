@@ -76,6 +76,8 @@ test('account save stays open, retries preserve identity and Codex options', {ti
  await page.locator('[data-section-tab="character"]').click();await page.locator('#dialog-codex-style').selectOption('on');
  await page.waitForFunction(()=>!document.querySelector('#dialog-character-body').disabled);await page.locator('#dialog-character-body').fill('setup body');
  await save();assert.equal(await page.evaluate(()=>window.test.accounts[0].codex_output_style),true);
+ await page.waitForFunction(()=>!document.querySelector('#account-form').inert && getComputedStyle(document.querySelector('#dialog-codex-style-field').closest('.pane')).opacity==='1');
+ const help=await page.locator('#dialog-codex-style-field .field-note').boundingBox();assert.ok(help.width>500,'setup help spans the field width');
  mkdirSync('artifacts',{recursive:true});await page.screenshot({path:'artifacts/codex-output-style-account.png'});
  const setupCalls=await page.evaluate(()=>window.calls.map(c=>c.cmd));assert.ok(setupCalls.indexOf('setup_codex_output_style')<setupCalls.indexOf('save_character_file'));
  await page.locator('#dialog-codex-style').selectOption('off');await save();assert.equal(await page.evaluate(()=>window.test.accounts[0].codex_output_style),false);

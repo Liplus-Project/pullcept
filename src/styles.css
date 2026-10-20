@@ -3166,6 +3166,13 @@ button svg.icon {
   display: none;
 }
 
+#dialog-codex-style-field .field-note {
+  grid-column: 1 / -1;
+  font-size: 0.85em;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 #account-dialog input,
 #account-dialog select,
 #account-dialog textarea {
