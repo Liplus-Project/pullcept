@@ -21,6 +21,7 @@ const REASONS = {
   invalid_style_or_project:"キャラファイルの欠落・UTF-8・project 設定を確認してください。",
 };
 class StyleFailure extends Error {}
+const NO_LOADER = "Codex のキャラクターを届ける output style の読み込み役（project の .codex/output-styles と専用 SessionStart hook）が見つかりません。起動を止めました。";
 // The Python this module runs the helper with (#361). On Windows, an App Installer
 // alias in WindowsApps can stand before the real python.exe on PATH even with the
 // alias switched off: a redirector that prints "Python" and exits 49. The first
@@ -83,7 +84,12 @@ export async function fileModeRoot(projects, cwd) {
 // that hands it to app-server as developerInstructions with that hook turned off.
 export async function resolveOutputStyle(discovery, cwd, selected, env = process.env, withBody = false) {
   const root = await fileModeRoot(discovery.projects, cwd);
-  if (root === null) return {mode:"legacy", name:selected || null};
+  // No Li+ loader in reach (#555): a selected character cannot be delivered, so the
+  // launch stops; with none selected the seat runs as one without an output style.
+  if (root === null) {
+    if (selected) throw new StyleFailure(NO_LOADER);
+    return {mode:"disabled", name:null};
+  }
   const helper = resolve(root, ".codex/hooks/codex-output-style.py");
   if (!within(root, await realpath(helper))) fail();
   const expectedHooks = await realpath(resolve(root, ".codex/hooks.json"));

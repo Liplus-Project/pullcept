@@ -38,39 +38,13 @@ Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex
 
 アカウントの非空選択名だけを app-owned `LI_PLUS_OUTPUT_STYLE` に設定し、子プロセスへ渡す。本文は argv と環境へ載らず、長い本文でも Windows の8191文字制約を消費しない。空欄では inherited override を除去して project の既定を使う。原本 config と style、共通指示は更新しない。`codex-session.mjs` は ID callback 専用のままである。実環境での全文配送と画面起動は、Li+ loader 配備・個別 hook trust・新 Pullcept build の配備後の検証を要する。
 
-### 移行前の inline 選択（#276）
+### 読み込み役が無い席（#555）
 
-selector も `.codex/output-styles` も無い project では、次の従来方式を維持する。
+**Li+ の output style の読み込み役（project の `.codex/output-styles` と専用 SessionStart hook）が見つからない席は、キャラクターを届けられない。** キャラクター欄に名前があれば、理由を出して起動を止める。空欄なら output style を使わない席（`disabled`）として起動し、キャラは足さない。以前あった、有効な `developer_instructions` の中の `# character_<名前>` 見出しから本文を選んで `-c developer_instructions=...` で渡す方式（#276）は没案として削除した。
 
-キャラクター欄には `character_Codex_Lin` のように見出しの名前を正確に入力する。定義元は、実 CLI がその起動条件で解決した **有効な developer_instructions 一文字列**だけである。ファイルを別途検索したり、複数 layer の本文を連結したりしない。CLI の通常の優先順位（user base → 選択 profile-v2 → 信頼済み project layer → 手動 `-c`、managed 設定は CLI の制約に従う）で一つの本文が決まる。上位の文字列は下位の文字列を置換するため、共通部分は有効な本文の中へ置く。未信頼の project 本文は採用しない。
+その人の有効な developer instructions（下の「キャラの本文が無い席」と共通指示）は、次の読み取りで得る。モデルを呼ばない native `debug prompt-input` を、元 cwd・`--cd`・`--profile`・`-c`・`CODEX_HOME`・アカウント環境で実行する。ランダムな developer_instructions sentinel を上書きした比較実行と role/content 全体を照合し、その一か所の本文だけを取り出す。本文が無い時は別の permissions／skills／AGENTS を拾わない。比較が曖昧、TOML が壊れている、CLI が失敗、出力が8 MiB超、又は各実行が15秒超なら起動を止める。CLI stderr や他の指示・秘密はエラーへ出さない。
 
-モデルを呼ばない native `debug prompt-input` を、元 cwd・`--cd`・`--profile`・`-c`・`CODEX_HOME`・アカウント環境で実行する。ランダムな developer_instructions sentinel を上書きした比較実行と role/content 全体を照合し、その一か所の本文だけを取り出す。本文が無い時は別の permissions／skills／AGENTS を拾わない。比較が曖昧、TOML が壊れている、CLI が失敗、出力が8 MiB超、又は各実行が15秒超なら起動を止める。CLI stderr や他の指示・秘密はエラーへ出さない。
-
-定義の例:
-
-```toml
-developer_instructions = """
-共通指示をここへ置く。
-# character_Codex_Lin
-NAME=Codex Lin
-NICKNAME=Lin
-Lin の本文。
-## 詳細
-ここも Lin の本文。
-# character_Codex_Lay
-NAME=Codex Lay
-NICKNAME=Lay
-Lay の本文。
-# 共通の続き
-この見出し以降は両方に残る。
-"""
-```
-
-列0の `# character_<名前>` が開始、次の列0の H1 (`# `) が終端である。開始見出しの末尾空白を除いた文字列が選択名となる。名前の空白と空の名前は拒否する。H2以下、空行、区切り線は本文の一部で、バッククォート又はチルダ3個以上のコードフェンス内の見出しは区切りにしない。フェンスは同種で開始以上の長さ、残りが空白の行で閉じる。LF／CRLF・空白・区切りを保持し、選択したブロックを元位置に残して、他のキャラブロックだけを除く。キャラ外の共通指示はそのまま残る。全定義を検査し、重複・空本文を拒否する。未知名は別キャラへ代替しない。
-
-選択した本文を最後の `-c developer_instructions=...` として合成する。TOML Unicode escape で日本語・改行・引用符・シェル文字を保持する。手動 `-c` の文字列／配列／inline table も同値に符号化し、持ち運べない他のオプションは省略せず拒否する。短いフラグの値は空白で分ける（`-p 名前`、`-C パス`、`-c key=value`）。`-p名前`／`-p=名前` 等の連結・等号形式は探索と起動で明示拒否し、長い `--profile=名前`／`--cd=パス`／`--config=key=value` は扱う。Windows の合成行が8191文字を超える時も切り詰めず拒否する。Codex の PTY は `cmd /C call` で空白を含む .cmd コマンドを保ち、文字列の % は TOML escape で渡す。プレビューと起動・再開は同じ helper／parser／argv 合成を通る。プレビューは編集したコマンド・環境も使い、失敗理由を表示する。
-
-inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI に任せる。旧保存値は削除しないが、自由文から名前選択へ意味が変わるため、そのままでは未知名として拒否する。Codex の `PULLCEPT_CHARACTER` を MCP instructions へ送る旧経路は無い。原本 developer_instructions・AGENTS.md・Li+・グローバル設定は変更しない。既存 app-owned MCP の登録更新と ID 専用 SessionStart hook の追記は従来どおりである。Claude の output style 選択は従来どおり。
+起動の行へ載せる値は TOML Unicode escape で日本語・改行・引用符・シェル文字を保持する。手動 `-c` の文字列／配列／inline table も同値に符号化し、持ち運べない他のオプションは省略せず拒否する。短いフラグの値は空白で分ける（`-p 名前`、`-C パス`、`-c key=value`）。`-p名前`／`-p=名前` 等の連結・等号形式は探索と起動で明示拒否し、長い `--profile=名前`／`--cd=パス`／`--config=key=value` は扱う。Windows の合成行が8191文字を超える時も切り詰めず拒否する。Codex の PTY は `cmd /C call` で空白を含む .cmd コマンドを保ち、文字列の % は TOML escape で渡す。プレビューと起動・再開は同じ helper／parser／argv 合成を通る。プレビューは編集したコマンド・環境も使い、失敗理由を表示する。
 
 以後の `.mcp.json`・`--settings`・output style・`--session-id` は Claude Code の作法であり、Codex の設定と初回 ID 取得はこの節を参照する。
 
@@ -81,7 +55,7 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 
 **一つの席に一つの app-server を立て、その上に本物の TUI を繋ぐ。** 起動は次の順に進む。
 
-1. キャラクターを #281 と同じ loader で解決する。file mode では helper の `hook` を、hook がするのと同じ入力（`SessionStart`、`startup`、有効 cwd）と同じ環境（`LI_PLUS_OUTPUT_STYLE` に選択名）で一度だけ走らせ、hook が配るはずの本文を受け取る。本文の UTF-8 の長さと sha256 が `resolve` の metadata と一致しなければ、配らずに起動を止める（`sidecar/src/codex-style.mjs` の `body`）。移行前の inline 選択（#276）では、有効な developer instructions から見出しを選んだ本文を使う。persona が無効（false）なら本文は無い。
+1. キャラクターを #281 と同じ loader で解決する。file mode では helper の `hook` を、hook がするのと同じ入力（`SessionStart`、`startup`、有効 cwd）と同じ環境（`LI_PLUS_OUTPUT_STYLE` に選択名）で一度だけ走らせ、hook が配るはずの本文を受け取る。本文の UTF-8 の長さと sha256 が `resolve` の metadata と一致しなければ、配らずに起動を止める（`sidecar/src/codex-style.mjs` の `body`）。persona が無効（false）なら本文は無い。
 2. 席の app-server を `codex <オプション> -c mcp_servers.<自席>={…} -c features.codex_hooks=true -c hooks.state={…} app-server --listen ws://127.0.0.1:0 --ws-auth capability-token --ws-token-sha256 <digest>` で起動する。部屋の MCP の定義は #297 と同じものを、今度は server の行に載せる。部屋の変数（部屋トークン・URL・名前・アカウント・部屋 id・色・未読の印）は server の環境にある。待ち受けの港は OS に選ばせ、server が標準出力に書く `listening on:` の行から読む。
 3. アプリが server に繋ぎ（`Authorization: Bearer`）、`initialize`、`hooks/list`、`thread/start`（再開なら `thread/resume`）を送る。新しい会話には `thread/inject_items` で印を一つ記録する（下記）。
 4. 端末で `codex resume <会話 id> --remote ws://127.0.0.1:<港> --remote-auth-token-env PULLCEPT_CODEX_REMOTE_TOKEN` を起動する。TUI は自分で thread を始めず、アプリが用意した会話に繋がる。
@@ -90,9 +64,9 @@ inline 方式の空欄は developer_instructions 上書きを行わず既存 CLI
 
 **再開でも毎回 `developerInstructions` を送り直す。** `thread/resume` にも同じ本文を載せる。アカウントのキャラクターを変えた後の再開は、新しい本文で始まる。
 
-**file mode の `developerInstructions` は、利用者の共通指示、検証済みキャラ本文、部屋の一文の順に合成する（#303）。** 共通指示は #276 と同じモデル不要の native discovery（`codex-character.mjs`）で、その席のコマンド・cwd・起動オプション・環境から解決した有効な `developer_instructions` 一文字列である。空または未設定なら追加せず、取得失敗は起動・再開を止める。各本文の間に空行を置き、キャラ本文の改行・UTF-8 のバイトは変えない。本文の長さと sha256 の照合（上の 1.）はキャラ本文だけに行い、共通指示と部屋の一文は照合後に合成する。部屋の一文は Claude の席が `--append-system-prompt` で受け取るものと同じ関数（`crates/mcp-config` の `room_system_prompt`）で作る（下記「[席は部屋の道具の名を起動時に受け取る](#席は部屋の道具の名を起動時に受け取る)」）。起動と毎回の再開は同じ合成を `thread/start` と `thread/resume` に載せる。inline 選択では選択済み本文が共通指示を既に含むので、再追加せず、その後に部屋の一文だけを足す。
+**file mode の `developerInstructions` は、利用者の共通指示、検証済みキャラ本文、部屋の一文の順に合成する（#303）。** 共通指示は #276 と同じモデル不要の native discovery（`codex-character.mjs`）で、その席のコマンド・cwd・起動オプション・環境から解決した有効な `developer_instructions` 一文字列である。空または未設定なら追加せず、取得失敗は起動・再開を止める。各本文の間に空行を置き、キャラ本文の改行・UTF-8 のバイトは変えない。本文の長さと sha256 の照合（上の 1.）はキャラ本文だけに行い、共通指示と部屋の一文は照合後に合成する。部屋の一文は Claude の席が `--append-system-prompt` で受け取るものと同じ関数（`crates/mcp-config` の `room_system_prompt`）で作る（下記「[席は部屋の道具の名を起動時に受け取る](#席は部屋の道具の名を起動時に受け取る)」）。起動と毎回の再開は同じ合成を `thread/start` と `thread/resume` に載せる。
 
-**キャラの本文が無い席は、CLI 自身の有効な developer instructions を先頭に置く。** `developerInstructions` は CLI の `developer_instructions` を置き換える（`codex-rs/core/src/config/mod.rs`、`developer_instructions.or(cfg.developer_instructions)`）。persona が無効（false）の席や、inline 方式で名前を選んでいない席では、部屋の一文だけを送るとその人の指示が消える。そこでその席では #276 と同じモデル不要の読み取り（`codex-character.mjs`）で有効な本文を読み、その後に部屋の一文を足す。有効な本文が無ければ部屋の一文だけを送る。読み取りに失敗すれば起動を止める。
+**キャラの本文が無い席は、CLI 自身の有効な developer instructions を先頭に置く。** `developerInstructions` は CLI の `developer_instructions` を置き換える（`codex-rs/core/src/config/mod.rs`、`developer_instructions.or(cfg.developer_instructions)`）。persona が無効（false）の席や、キャラクターを選んでいない席では、部屋の一文だけを送るとその人の指示が消える。そこでその席では #276 と同じモデル不要の読み取り（`codex-character.mjs`）で有効な本文を読み、その後に部屋の一文を足す。有効な本文が無ければ部屋の一文だけを送る。読み取りに失敗すれば起動を止める。
 
 **会話 id は `thread/start` の答えから取り、`codex-session.mjs` は使わない。** hook 方式では初回の実会話で hook が id を知らせていた（#272）。app-server 方式では起動した時点で id が決まるので、新しい会話はその場でトピックに記録する。この席では `codex-session.mjs` を `hooks.json` に登録せず、server の環境に `PULLCEPT_NATIVE_URL` も `PULLCEPT_LAUNCH_ID` も置かない。以前の起動が残した登録があっても、その補助は環境が無ければ何も送らずに終わる。五欄（#283）と利用上限の扱い（#294）はこの id から rollout を読むので、最初の会話を待たずに働き始める。
 

@@ -8,11 +8,11 @@ import {join, resolve} from "node:path";
 const bin = process.env.PULLCEPT_TEST_CODEX_BIN;
 const hazard = '日本語 & | () %PATH% "quote" \\ 😀';
 const definitions = label => `COMMON ${label}\r\n# character_Codex_Lin\r\nNAME=Lin\r\n${hazard}\r\n# character_Codex_Lay\r\nNAME=Lay\r\nLay body\r\n# Shared\r\nTAIL\r\n`;
-function compose(options, source, selected) {
+function compose(options, instructions) {
   return JSON.parse(execFileSync("cargo", ["run", "--quiet", "--manifest-path", "crates/mcp-config/Cargo.toml", "--example", "codex_character"],
-    {input:JSON.stringify({options, source, selected}), encoding:"utf8", windowsHide:true}));
+    {input:JSON.stringify({options, instructions}), encoding:"utf8", windowsHide:true}));
 }
-test("native selection respects empty config, profile-v2, trusted project, cd, manual overrides and cmd shim", {skip:!bin}, async () => {
+test("native discovery respects empty config, profile-v2, trusted project, cd, manual overrides and cmd shim", {skip:!bin}, async () => {
   const scratch = mkdtempSync(join(tmpdir(), "pullcept-character-native-"));
   const previous = process.env.CODEX_HOME;
   try {
@@ -39,13 +39,6 @@ test("native selection respects empty config, profile-v2, trusted project, cd, m
     assert.equal(await discoverInstructions(bin, scratch, ["-C", nested, "-p", "custom"]), project);
     const manualArgs = compose(["--cd=" + nested, "--profile", "custom", "-c", "developer_instructions=" + JSON.stringify(manual)]);
     assert.equal(await discoverInstructions(bin, scratch, manualArgs), manual);
-    for (const selected of ["character_Codex_Lin", "character_Codex_Lay"]) {
-      const args = compose(manualArgs, manual, selected);
-      const result = await discoverInstructions(bin, scratch, args);
-      assert.ok(result.includes("COMMON MANUAL\r\n")); assert.ok(result.endsWith("# Shared\r\nTAIL\r\n"));
-      assert.ok(result.includes(selected.endsWith("Lin") ? hazard : "Lay body"));
-      assert.ok(!result.includes(selected.endsWith("Lin") ? "NAME=Lay" : "NAME=Lin"));
-    }
     if (process.platform === "win32") {
       const shim = join(scratch, "native shim.cmd"); writeFileSync(shim, `@echo off\r\n"${bin}" %*\r\n`);
       assert.equal(await discoverInstructions(shim, scratch, manualArgs), manual);
@@ -61,15 +54,13 @@ test("native selection respects empty config, profile-v2, trusted project, cd, m
   }
 });
 
-test("actual patched ConPTY/cmd delivers selected Unicode and shell text to native developer instructions", {skip:!bin || process.platform !== "win32" || !process.env.PULLCEPT_TEST_CODEX_PTY}, () => {
+test("actual patched ConPTY/cmd delivers Unicode and shell text to native developer instructions", {skip:!bin || process.platform !== "win32" || !process.env.PULLCEPT_TEST_CODEX_PTY}, () => {
   const scratch = mkdtempSync(join(tmpdir(), "pullcept-character-pty-"));
   try {
     const home = join(scratch, "home"); mkdirSync(home);
     writeFileSync(join(home, "config.toml"), "[features]\nmemories=false\n");
-    const source = definitions("PTY");
-    const selected = "character_Codex_Lin";
-    const options = compose([], source, selected);
-    const expected = `COMMON PTY\r\n# character_Codex_Lin\r\nNAME=Lin\r\n${hazard}\r\n# Shared\r\nTAIL\r\n`;
+    const expected = definitions("PTY");
+    const options = compose([], expected);
     execFileSync("cargo", ["build", "--quiet", "--manifest-path", "crates/codex-character-probe/Cargo.toml"], {windowsHide:true, stdio:"ignore"});
     const probe = resolve("crates/codex-character-probe/target/debug/codex-character-probe.exe");
     const shim = join(scratch, "native shim.cmd"); writeFileSync(shim, `@echo off\r\n"${bin}" %*\r\n`);

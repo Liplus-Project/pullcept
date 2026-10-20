@@ -306,8 +306,7 @@ export function createAccountDialog(deps: Dependencies) {
       // The form may have been closed or reopened during the round trip.
       if (draft?.id !== id || generation !== dialogPreviewGeneration) return;
       const character = merged.character_mode === "file" ? `キャラクター: ${merged.character_name}（project のファイル）\n`
-        : merged.character_mode === "disabled" ? "キャラクター: project の既定は無効\n"
-          : merged.character_mode === "legacy" ? `キャラクター: ${merged.character_name || "CLI の既定"}（従来の指示）\n` : "";
+        : merged.character_mode === "disabled" ? "キャラクター: なし（output style を使わない）\n" : "";
       const command = dialogCommandEl.value.trim() || "codex";
       // An app-server seat runs two lines: the server, then the terminal attached to it (#299).
       dialogPreviewEl.textContent = merged.server_args

@@ -77,7 +77,9 @@ test("default, false, account replacement and independent environments return me
     assert.equal((await resolveOutputStyle(f.discovery, f.root, "", env)).mode, "disabled");
     assert.equal((await resolveOutputStyle(f.discovery, f.root, "character_codex_luna", env)).mode, "file");
     f.discovery.projects[0].disabled = "untrusted";
-    assert.deepEqual(await resolveOutputStyle(f.discovery, f.root, "character_Lin", env), {mode:"legacy", name:"character_Lin"});
+    // #555: no loader in reach — a selected character stops the launch, none runs without a style.
+    await assert.rejects(resolveOutputStyle(f.discovery, f.root, "character_Lin", env), /読み込み役/);
+    assert.deepEqual(await resolveOutputStyle(f.discovery, f.root, "", env), {mode:"disabled", name:null});
   } finally { f.close(); }
 });
 
