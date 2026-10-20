@@ -855,8 +855,10 @@
                    dialog of its own; whether this one follows is #72. -->
               <button id="dialog-delete" type="button" class="delete">削除</button>
               <span class="spacer"></span>
-              <button id="dialog-cancel" type="button">閉じる</button>
+              <!-- 保存 before 閉じる (#549): source order is the visual and the
+                   Tab order alike. -->
               <button id="dialog-commit" type="submit" value="commit">保存</button>
+              <button id="dialog-cancel" type="button">閉じる</button>
             </menu>
           </div>
         </form>
