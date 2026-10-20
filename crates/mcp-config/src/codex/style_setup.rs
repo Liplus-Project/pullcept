@@ -88,7 +88,8 @@ pub fn install(cwd: &Path) -> Result<(), String> {
     }
     let config_bytes = if doc.to_string() == text.trim_start_matches('\u{feff}') { old_config.clone().unwrap_or_default() } else { doc.to_string().into_bytes() };
     let hook_bytes = if old_hooks.is_some() && serde_json::from_slice::<Value>(old_hooks.as_ref().unwrap()).ok().as_ref() == Some(&hooks) { old_hooks.clone().unwrap() } else { serde_json::to_vec_pretty(&hooks).unwrap() };
-    let plan = [(helper, old_helper, LOADER.as_bytes().to_vec()), (config, old_config, config_bytes), (hooks_path, old_hooks, hook_bytes)];
+    let helper_bytes = old_helper.clone().unwrap_or_else(|| LOADER.as_bytes().to_vec());
+    let plan = [(helper, old_helper, helper_bytes), (config, old_config, config_bytes), (hooks_path, old_hooks, hook_bytes)];
     fs::create_dir_all(dot.join("hooks")).map_err(|e| format!("{}: {e}", dot.display()))?;
     let lock_path = dot.join("pullcept-style-setup.lock");
     let _lock = fs::OpenOptions::new().write(true).create_new(true).open(&lock_path).map_err(|e| format!("{}: 設置ロックを取得できません: {e}", lock_path.display()))?;

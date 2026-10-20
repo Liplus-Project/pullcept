@@ -42,7 +42,8 @@ fn existing_liplus_hooks_and_config_are_preserved_byte_for_byte() {
     let f = Folder::new();
     fs::create_dir_all(f.0.join(".codex/hooks")).unwrap();
     fs::create_dir_all(f.0.join(".codex/output-styles")).unwrap();
-    f.write(".codex/hooks/codex-output-style.py", LOADER);
+    let helper = if LOADER.contains("\r\n") { LOADER.replace("\r\n", "\n") } else { LOADER.replace('\n', "\r\n") };
+    f.write(".codex/hooks/codex-output-style.py", &helper);
     f.write(".codex/config.toml", "# retain comment\ndeveloper_instructions='USER_BODY'\n[liplus]\noutput_style='Luna'\n");
     let canonical = fs::canonicalize(&f.0).unwrap();
     let text = canonical.to_string_lossy();
@@ -56,6 +57,7 @@ fn existing_liplus_hooks_and_config_are_preserved_byte_for_byte() {
     let before = (f.read(".codex/config.toml"), f.read(".codex/hooks.json"));
     install(&f.0).unwrap();
     assert_eq!(before, (f.read(".codex/config.toml"), f.read(".codex/hooks.json")));
+    assert_eq!(f.read(".codex/hooks/codex-output-style.py"), helper.as_bytes());
 }
 
 #[test]
