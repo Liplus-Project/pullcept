@@ -25,3 +25,16 @@ export function withCodexPlan(args: string[], enabled: boolean): string[] {
   kept.splice(end < 0 ? kept.length : end, 0, "-c", `${KEY}=${enabled}`);
   return kept;
 }
+
+/** Claude Code's task tools, switched on by one variable of the account (#551). */
+export const CLAUDE_PLAN_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+const claudeLine = new RegExp(String.raw`^\s*${CLAUDE_PLAN_ENV}\s*=`);
+export function claudePlanInEnvText(text: string): boolean {
+  return text.split(/\r?\n/).some(line => claudeLine.test(line));
+}
+export function withClaudePlanEnvText(text: string, enabled: boolean): string {
+  const lines = text === "" ? [] : text.split(/\r?\n/).filter(line => !claudeLine.test(line));
+  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  if (enabled) lines.push(`${CLAUDE_PLAN_ENV}=1`);
+  return lines.join("\n");
+}

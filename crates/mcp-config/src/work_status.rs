@@ -291,23 +291,63 @@ impl CodexPlan {
         }
     }
 }
-pub fn claude_plan(event: &str, body: &[u8]) -> Option<Value> {
-    if event != "PostToolUse" {
-        return None;
+/// A Claude Code seat's plan, heard from its own PostToolUse hooks: TodoWrite
+/// sends the whole list, while the task tools (`CLAUDE_CODE_ENABLE_TODO_TOOLS`,
+/// #551) send one task at a time, so their list is kept here.
+#[derive(Default)]
+pub struct ClaudePlan {
+    tasks: Vec<(String, String, String)>,
+}
+impl ClaudePlan {
+    pub fn feed(&mut self, event: &str, body: &[u8]) -> Option<Value> {
+        if event != "PostToolUse" {
+            return None;
+        }
+        let p: Value = serde_json::from_slice(body).ok()?;
+        if p["hook_event_name"] != event || !p["agent_id"].is_null() || p.get("error").is_some() {
+            return None;
+        }
+        let status = |s: &Value| match s.as_str() {
+            Some("pending") => "pending",
+            Some("in_progress") => "inProgress",
+            Some("completed") => "completed",
+            _ => "invalid",
+        };
+        match p["tool_name"].as_str()? {
+            "TodoWrite" => {
+                let todos = p["tool_input"]["todos"].as_array()?;
+                let steps = todos.iter().map(|t| json!({"step":t["content"],"status":status(&t["status"])})).collect::<Vec<_>>();
+                return plan_steps(&json!(steps)).ok();
+            }
+            "TaskCreate" => {
+                let id = p["tool_response"]["task"]["id"].as_str()?;
+                let subject = p["tool_input"]["subject"].as_str()?;
+                self.tasks.retain(|t| t.0 != id);
+                self.tasks.push((id.into(), subject.into(), "pending".into()));
+            }
+            "TaskUpdate" => {
+                if p["tool_response"]["success"] != true {
+                    return None;
+                }
+                let input = &p["tool_input"];
+                let id = input["taskId"].as_str()?;
+                if input["status"] == "deleted" {
+                    self.tasks.retain(|t| t.0 != id);
+                } else {
+                    let task = self.tasks.iter_mut().find(|t| t.0 == id)?;
+                    if let Some(subject) = input["subject"].as_str() {
+                        task.1 = subject.into();
+                    }
+                    if let Some(s) = input["status"].as_str() {
+                        task.2 = s.into();
+                    }
+                }
+            }
+            _ => return None,
+        }
+        let steps = self.tasks.iter().map(|t| json!({"step":t.1,"status":status(&json!(t.2))})).collect::<Vec<_>>();
+        plan_steps(&json!(steps)).ok()
     }
-    let p: Value = serde_json::from_slice(body).ok()?;
-    if p["hook_event_name"] != event
-        || p["tool_name"] != "TodoWrite"
-        || !p["agent_id"].is_null()
-        || p.get("error").is_some()
-    {
-        return None;
-    }
-    let todos = p["tool_input"]["todos"].as_array()?;
-    let steps = todos.iter().map(|t| json!({"step":t["content"],"status":match t["status"].as_str() {
-        Some("pending") => "pending",Some("in_progress") => "inProgress",Some("completed") => "completed", _ => "invalid",
-    }})).collect::<Vec<_>>();
-    plan_steps(&json!(steps)).ok()
 }
 
 #[cfg(test)]
@@ -456,14 +496,27 @@ mod tests {
         assert!(p.feed("parent", &plan).is_none());
         let hook = json!({"hook_event_name":"PostToolUse","tool_name":"TodoWrite","tool_input":{"todos":[{"content":"task","status":"in_progress"}]}});
         assert_eq!(
-            claude_plan("PostToolUse", &serde_json::to_vec(&hook).unwrap()).unwrap()[0]["status"],
+            ClaudePlan::default().feed("PostToolUse", &serde_json::to_vec(&hook).unwrap()).unwrap()[0]["status"],
             "inProgress"
         );
-        assert!(claude_plan("PostToolUseFailure", &serde_json::to_vec(&hook).unwrap()).is_none());
+        assert!(ClaudePlan::default().feed("PostToolUseFailure", &serde_json::to_vec(&hook).unwrap()).is_none());
         let mut child = hook;
         child["agent_id"] = "child".into();
-        assert!(claude_plan("PostToolUse", &serde_json::to_vec(&child).unwrap()).is_none());
-        assert!(claude_plan("PostToolUse", b"malformed").is_none());
+        assert!(ClaudePlan::default().feed("PostToolUse", &serde_json::to_vec(&child).unwrap()).is_none());
+        assert!(ClaudePlan::default().feed("PostToolUse", b"malformed").is_none());
+        let mut c = ClaudePlan::default();
+        let hear = |c: &mut ClaudePlan, v: Value| c.feed("PostToolUse", &serde_json::to_vec(&v).unwrap());
+        let create = |id: &str, s: &str| json!({"hook_event_name":"PostToolUse","tool_name":"TaskCreate","tool_input":{"subject":s},"tool_response":{"task":{"id":id,"subject":s}}});
+        hear(&mut c, create("1", "A"));
+        assert_eq!(hear(&mut c, create("2", "B")).unwrap(), json!([{"step":"A","status":"pending"},{"step":"B","status":"pending"}]));
+        let update = |id: &str, input: Value, ok: bool| { let mut i = input; i["taskId"] = id.into(); json!({"hook_event_name":"PostToolUse","tool_name":"TaskUpdate","tool_input":i,"tool_response":{"success":ok}}) };
+        assert_eq!(hear(&mut c, update("1", json!({"status":"in_progress"}), true)).unwrap()[0]["status"], "inProgress");
+        assert!(hear(&mut c, update("1", json!({"status":"completed"}), false)).is_none());
+        assert!(hear(&mut c, update("9", json!({"status":"completed"}), true)).is_none());
+        assert_eq!(hear(&mut c, update("1", json!({"status":"deleted"}), true)).unwrap(), json!([{"step":"B","status":"pending"}]));
+        let mut sub = create("3", "C");
+        sub["agent_id"] = "child".into();
+        assert!(hear(&mut c, sub).is_none());
     }
     #[test]
     fn human_target_ownership_filter_and_payload_identity() {

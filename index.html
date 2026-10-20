@@ -672,6 +672,13 @@
                 <!-- Claude Code のリモート（#432）。保存する項目は持たず、起動オプションの
                      --rc / --remote-control の有無をそのまま映し、切り替えるとオプションの欄を
                      書き換える。手で書いたアカウントもそのまま入として読める。 -->
+                <!-- Claude Code の計画ツール（#551）。保存する項目は持たず、環境変数の欄の
+                     CLAUDE_CODE_ENABLE_TODO_TOOLS の行の有無をそのまま映す。 -->
+                <label id="dialog-claude-plan-field" class="field launch-check" hidden>
+                  <input id="dialog-claude-plan" type="checkbox" role="switch" aria-labelledby="dialog-claude-plan-title" aria-describedby="dialog-claude-plan-help" />
+                  <span id="dialog-claude-plan-title" class="launch-check-title">計画ツール</span>
+                  <span id="dialog-claude-plan-help" class="launch-check-help">環境変数に CLAUDE_CODE_ENABLE_TODO_TOOLS=1 を足します。Claude Code 2.1.304 で確認。次の席起動から反映します。</span>
+                </label>
                 <label id="dialog-claude-remote-field" class="field launch-check" hidden>
                   <input id="dialog-claude-remote" type="checkbox" role="switch" aria-labelledby="dialog-claude-remote-title" aria-describedby="dialog-claude-remote-help" />
                   <span id="dialog-claude-remote-title" class="launch-check-title">スマホから接続（Remote Control）</span>
