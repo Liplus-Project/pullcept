@@ -456,7 +456,7 @@ fn configured_tuis(
     let before = owner.rpc("thread/resume", json!({"threadId":id})).unwrap();
     assert_eq!(before["model"], "gpt-5.4");
     assert_eq!(before["reasoningEffort"], "low");
-    assert_eq!(before["serviceTier"], Value::Null);
+    assert_eq!(before["serviceTier"], "default");
     assert_eq!(before["approvalPolicy"], "never");
     assert_eq!(before["sandbox"]["type"], "readOnly");
     for tier in ["default", "fast"] {
@@ -517,7 +517,7 @@ fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str, case: &str
     command.env("PULLCEPT_CODEX_REMOTE_TOKEN", token);
     command.env("CODEX_HOME", &home);
     command.env("TERM", "xterm-256color");
-    command.cwd(root.join("work"));
+    command.cwd(root.join("B"));
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut writer = pair.master.take_writer().unwrap();
