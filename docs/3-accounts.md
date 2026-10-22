@@ -67,9 +67,11 @@ Codex のキャラクター欄の「Codex output-style」は「既存の動作�
 
 ## Codex の席を app-server 経由で起動する（#299）
 
-**Codex の標準起動は、席ごとの app-server 方式である。** 新規アカウントと `codex_app_server` が欠落した設定では有効になり、明示保存された false（hook 方式）と true は保持する。他の種別から Codex CLI に変更するときも標準は有効である。アカウントの窓で種別が `Codex CLI` のときだけ「app-server 方式」の欄が出る。外して決定すれば次の起動から互換の hook 方式（上の #281）に戻る。編集・保存・プレビュー・実際の起動で同じ選択を使い、走っている席は切り替えても変わらない。2026-10-17 の実機往復と既定切り替えの依頼を受けて変更した（「[実装状況](4-status.md)」の #299 の検証範囲）。スマホ接続は別の opt-in で既定オフのままであり、Claude など他の種別の起動は変えない。
+**Codex の標準起動は、app-server 方式である。** 新規アカウントと `codex_app_server` が欠落した設定では有効になり、明示保存された false（hook 方式）と true は保持する。他の種別から Codex CLI に変更するときも標準は有効である。アカウントの窓で種別が `Codex CLI` のときだけ「app-server 方式」の欄が出る。外して決定すれば次の起動から互換の hook 方式（上の #281）に戻る。編集・保存・プレビュー・実際の起動で同じ選択を使い、走っている席は切り替えても変わらない。2026-10-17 の実機往復と既定切り替えの依頼を受けて変更した（「[実装状況](4-status.md)」の #299 の検証範囲）。スマホ接続は別の opt-in で既定オフのままであり、Claude など他の種別の起動は変えない。
 
-**一つの席に一つの app-server を立て、その上に本物の TUI を繋ぐ。** 起動は次の順に進む。
+スマホ共有接続の対象では、下記「共通の Codex 接続（#568）」の所有・認証境界を使う。以下の席別プロセスの説明は、スマホ接続オフ、または安全な共有ログイン識別子が得られない席に適用する。
+
+**席別経路では一つの席に一つの app-server を立て、その上に本物の TUI を繋ぐ。** 起動は次の順に進む。
 
 1. キャラクターを #281 と同じ loader で解決する。file mode では helper の `hook` を、hook がするのと同じ入力（`SessionStart`、`startup`、有効 cwd）と同じ環境（`LI_PLUS_OUTPUT_STYLE` に選択名）で一度だけ走らせ、hook が配るはずの本文を受け取る。本文の UTF-8 の長さと sha256 が `resolve` の metadata と一致しなければ、配らずに起動を止める（`sidecar/src/codex-style.mjs` の `body`）。persona が無効（false）なら本文は無い。
 2. 席の app-server を `codex <オプション> -c mcp_servers.<自席>={…} -c features.codex_hooks=true -c hooks.state={…} app-server --listen ws://127.0.0.1:0 --ws-auth capability-token --ws-token-sha256 <digest>` で起動する。部屋の MCP の定義は #297 と同じものを、今度は server の行に載せる。部屋の変数（部屋トークン・URL・名前・アカウント・部屋 id・色・未読の印）は server の環境にある。待ち受けの港は OS に選ばせ、server が標準出力に書く `listening on:` の行から読む。
@@ -788,11 +790,25 @@ Claude Code アカウントの「起動」に「スマホから接続（Remote C
 
 Codex CLI アカウントの「起動」で「スマホから接続」を選び、保存してから席を起動する。app-server 方式も有効になる。既定は無効で、保存済みの他のアカウントや稼働中の席の起動方法を変えない。稼働席の ⋯ →「スマホから接続」を開くと、状態と接続の開始・停止が表示される。接続済みになったら「ペアリングを更新」で QR、手入力コード、有効期限を表示し、公式 ChatGPT / Codex アプリで接続する。期限切れはもう一度更新する。ChatGPT 認証とアカウント側の許可が必要で、API キー認証は対象外。CLI の非対応・拒否・時間切れは画面に表示し、端末の利用は続けられる。
 
-QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サービスへ送らない。`https://chatgpt.com/codex/pair?pairing_code=…` の公式ペアリング形式を使う。QR とコードは保存しない。画面を閉じる、隠す、有効期限を迎える、席が終了する、接続を止めると表示を消す。画面を閉じるだけでは接続済み端末を失効させず、relay も停止しない。「接続を停止」で今の backend の relay を停止する。次の席の起動ではアカウントの選択に従って接続を試みる。接続希望の変更は `ephemeral:true` で native 設定に保存しないが、native enrollment は専用 DB へ保存され得る。
+QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サービスへ送らない。`https://chatgpt.com/codex/pair?pairing_code=…` の公式形式を使う。QR とコードは保存せず、画面を閉じる・隠す・期限切れ・席終了・接続停止で消す。画面を閉じるだけでは接続端末を失効させない。`ephemeral:true` で接続希望を native 設定へ保存しないが、enrollment は専用 DB に保存され得る。
 
-接続する席だけは Pullcept のアプリデータ内 `codex-seat-sqlite/<SHA-256>`（topic/account の UTF-8 バイト長を8byte big-endianで区切り、版付きnamespaceと両IDから導出する完全長64桁hexの単一component）を安定した `sqlite_home` として使う。分離対象は relay 登録だけでなく SQLite 群全体で、既存の一覧・検索・キャッシュの見え方が変わる場合がある。既存 DB をコピー・削除で移行しない。`CODEX_HOME` は変えず、認証・rollout 履歴ファイル・writer lock の範囲を保つ。トピックに保存された会話 ID は従来どおり明示して resume する。設定を外した次の起動は元の保存先を使い、専用 DB を削除しない。
+### 共通の Codex 接続（#568）
 
-制御は席の既存の認証済み loopback backend に短命の専用接続で送り、activity を読む接続は変更しない。要求ごとの接続と ID、最大 30 秒の応答期限、席の起動世代、PTY 生存の前後照合で遅延応答を隔離する。起動時 enable より後に届いた明示操作を優先する。承認要求にはこの接続から答えず、既存の承認所有・権限分割を保つ。remote TUI の行に権限上書き引数を追加しない。
+スマホ接続を明示的に有効にした互換な席は、一つの native app-server と一件のスマホ登録を共有する。トピック・作業フォルダー・アカウント表示名は共有キーにしない。最初の利用で起動し、最後の席が閉じても Pullcept 終了まで維持する。同じ認証 HOME の異なる process 設定は黙って最初の値へ合わせず拒否する。別の認証 HOME は別の backend を持つ。同じ HOME のログインを変えた場合は既存席を守るためアプリの再起動を案内する。
+
+安定したログイン識別は `auth.json` の `auth_mode`、選択 workspace の `tokens.account_id`、ID token の `chatgpt_user_id`（または `user_id`）だけを抽出し、メモリ内でハッシュ化する。token や更新時刻は識別に使わないので、同じログインの token refresh は共有を妨げない。keyring のみ・識別子欠落・非対応形式など、安全に識別できない設定は従来の席別接続を維持し、接続画面でその理由を表示する。keyring の秘密を取り出したり別の保存先へコピーしたりしない。
+
+登録保存先はアプリデータの `codex-seat-sqlite/<SHA-256>` の新しい共有 namespace・正規化した認証 HOME・安定したユーザー/workspace 識別子から導出する。同じ HOME でもログインが替われば別 DB とし、以前のスマホ登録を新しいログインへ引き継がない。topic/account 別の旧 DB は読み替え・移動・削除・併合・revoke しない。**初回移行では再ペアリングが必要**。`CODEX_HOME`、既存 rollout、writer lock、保存済みの明示会話 ID は変えない。スマホ接続オフ・互換 hook 方式・Claude・人間・MCP の経路は維持する。
+
+backend の cwd は部屋を持たないアプリ所有ディレクトリ、環境は部屋の資格情報を除いた互換な実効環境とする。model・effort・cwd・承認/sandbox・developer instructions・計画ツール・style hook の無効化・部屋 MCP は thread ごとに渡す。他の Pullcept room MCP は明示的に無効化する。部屋 token・投稿先・launch capability は native の引数や config に含めず、席の寿命に束縛した非公開 bootstrap file から sidecar へ渡す。Windows は所有 handle の delete-on-close で正常終了とクラッシュの両方で消す。file は席停止まで維持するが、部屋 admission は起動世代を照合するため別 instance が勝手に席を取り直せない。
+
+TUI は backend の生の token を受け取らない。席ごとの loopback proxy と別 token を使い、許可した RPC だけを自 thread と native がその親から生成した子 thread に束縛する。別席の thread 読み取り・操作・全体一覧・account logout・global config 書き込み・remoteControl は拒否する。再接続・cold resume では native の祖先指定一覧から親子関係を取り直し、元の親へ遡れる metadata だけで子の所有を再構成する。購読確立後にも確認し、スマホが先に生成した子も拾う。通知も同じ所有関係で絞り、request と approval の ID は接続ごとに相関し、別接続の応答 ID を流用できない。互換ログインの account 更新・rate limit 通知は各席へ届く。未知の RPC は拒否するため、未対応の TUI 管理操作はエラーになり得る。
+
+**席停止は部屋から離れる操作であり、共有のスマホ接続停止とは別である。** その席の proxy・PTY・observer・ローカル操作資格と room admission を失効し、実行中 turn の interrupt と購読解除を送る。他席や backend は止めない。スマホが会話を購読していれば、native は会話・writer を保持し、スマホからの会話利用は続けられるが、終了した席の部屋の道具は使えない。writer が解放されたと表示しない。
+
+CLI 0.162.1 は loaded thread への resume では MCP・指示などの上書きを無視する。したがって再開前に loaded 一覧を確認し、スマホなどがまだ保持していれば、会話を閉じてからの再試行を案内する。購読者が無い idle thread の unload 遅延は共有経路の既定で 0 秒にする（利用者の明示設定は保持）。今回の bootstrap 起動も確認し、一覧確認との競合で旧設定に rejoin した場合も成功扱いしない。履歴を archive/delete/revert して強制 unload しない。
+
+接続画面は「共通の Codex スマホ接続」と表示する。「共有接続を停止」は全席への影響を表示し、二度目の「全席の共有接続を停止する」で初めて実行する。閉じた席・別 launch の遅延応答は世代と PTY 生存の前後照合で捨てる。起動時 enable より後の明示操作を優先し、別席を追加しても手動の停止を取り消さない。アプリ終了時は manager が各 backend を一度だけ停止し、Windows job がクラッシュ時の子プロセスも止める。異常終了は各席の切断として通知し、勝手な再起動・無限再接続は行わない。
 
 検証範囲: 2026-10-16 の CLI 0.162.1 で、隔離した単一 WS + TUI + Android の同一試験会話入力、および同一 CODEX_HOME / 別 SQLite の二 backend の約16秒の connected 共存を確認した。製品コードの合成試験は起動計画・相関・秘密除外・画面寿命を扱う。製品への実適用、分離後の既存会話 resume / writer lock、複数端末表示と選択 routing、承認、切断再接続、長時間の共存は別途実機確認が必要。connected 表示や CI 成功をこれらの実証とは扱わない。
 
@@ -801,7 +817,7 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 
 中継が席の接続を HTTP 409 `{"detail":"Remote app server already online"}` で断っているあいだ、接続画面は一般の「接続に失敗しました」ではなく「別の接続が中継を使用中です」と表示し、Codex デスクトップアプリなど同じ中継を使っていそうなものを閉じて少し待つよう案内する。409 だけでは相手を特定できないため、デスクトップアプリは確認先の例として挙げ、断定しない。2026-10-16 の実機では、同じ PC のデスクトップアプリ（ChatGPT.exe）の app-server が登録を持っていた間この 409 が続き、アプリ終了の数十秒後に再接続で接続済みになった（#419）。登録の単位は確認できていない。
 
-`remoteControl/status/read` は `errored` / `connecting` しか返さず理由を持たないので、理由は席の app-server の stderr から読む。接続する席だけ、app-server の `RUST_LOG` に `codex_app_server_transport::transport::remote_control::websocket=warn` を加える（既定は `error`。アカウントの環境変数か Pullcept 自身の環境に `RUST_LOG` があればそれを保ち、末尾に足す。すでにこの target を指定していれば変えない）。この target の「failed to connect to app-server remote control websocket」警告のうち、最後のものが 409 と `Remote app server already online` を含むときだけ「使用中」と扱い、ほかの失敗の警告が来れば一般の表示に戻る。接続済み・停止中の状態を読んだとき、または「接続を開始」「接続を停止」を押したときに消す。席は再接続を続けるので、画面の定期的な状態読み取りで、つながった時点で表示は接続済みに変わり、押し直しは要らない。
+`remoteControl/status/read` は `errored` / `connecting` しか返さず理由を持たないので、理由は対応する app-server（共有または席別）の stderr から読む。接続する席だけ、app-server の `RUST_LOG` に `codex_app_server_transport::transport::remote_control::websocket=warn` を加える（既定は `error`。アカウントの環境変数か Pullcept 自身の環境に `RUST_LOG` があればそれを保ち、末尾に足す。すでにこの target を指定していれば変えない）。この target の「failed to connect to app-server remote control websocket」警告のうち、最後のものが 409 と `Remote app server already online` を含むときだけ「使用中」と扱い、ほかの失敗の警告が来れば一般の表示に戻る。接続済み・停止中の状態を読んだとき、または「接続を開始」「接続を停止」を押したときに消す。席は再接続を続けるので、画面の定期的な状態読み取りで、つながった時点で表示は接続済みに変わり、押し直しは要らない。
 
 検証範囲: 警告の行の形は CLI 0.162.1 の席 DB（`logs_2.sqlite`）に記録された実際の行と、0.162.1 のソース（`app-server-transport/src/transport/remote_control/websocket.rs`、失敗時に `Errored` を出してから再試行）で確認した。隔離した `CODEX_HOME` で、この `RUST_LOG` でも待ち受けの表示が変わらず起動することを確かめた。実際の 409 を stderr から読んで画面に出す往復は実機で確認する。
 

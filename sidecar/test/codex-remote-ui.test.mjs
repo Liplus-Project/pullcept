@@ -87,3 +87,28 @@ test("expiry while QR rendering is pending prevents the late canvas restoring co
   canvas.width=999; finishQr(); await settle();
   assert.equal(canvas.width,0); assert.equal(f.privateArea.children.length,0); f.dialog.close();
 });
+
+
+test("shared connection names its scope and requires a second explicit stop click", async t => {
+  const calls=[];
+  const f=fixture(t,async (_method,args)=>{calls.push(args);return {...status(),shared:true};});
+  await settle();
+  assert.match(f.dialog.children[0].textContent,/共通/);
+  assert.match(f.dialog.children[1].textContent,/再ペアリング/);
+  assert.match(f.dialog.children[1].textContent,/会話を閉じて/);
+  f.buttons[1].emit("click");await settle();
+  assert.equal(calls.filter(c=>c.action==="disable").length,0);
+  assert.match(f.buttons[1].textContent,/全席/);
+  assert.match(f.dialog.children[3].textContent,/すべての席/);
+  f.buttons[1].emit("click");await settle();
+  assert.equal(calls.filter(c=>c.action==="disable").length,1);
+  assert.equal(calls.find(c=>c.action==="disable").confirmShared,true);
+  f.dialog.close();
+});
+
+test("unknown shared identity displays dedicated-connection fallback notice", async t => {
+  const f=fixture(t,async()=>({...status(),shared:false,notice:"共通接続を利用できないため従来の席別接続"}));
+  await settle();assert.match(f.dialog.children[1].textContent,/席別接続/);
+  assert.doesNotMatch(f.dialog.children[0].textContent,/共通/);
+  f.dialog.close();
+});

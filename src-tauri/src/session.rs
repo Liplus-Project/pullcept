@@ -2106,19 +2106,19 @@ fn launch_codex_app_server(
     sidecar_runner: &Path,
 ) -> Result<StartedSession, String> {
     use mcp_config::codex::app_server;
-    // Validate the whole DB/journal path before discovery or the seat's
-    // backend can spawn. Opt-out seats do not resolve this root at all.
-    let remote_sqlite_home = if account.codex_remote_control {
-        let root = app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
-        Some(mcp_config::codex::remote::sqlite_home(&root, topic_id, &account.id)?)
-    } else {
-        None
-    };
+    let style_home = mcp_config::codex::style_setup::codex_home(cwd, account_env)?;
+    let shared_identity = if account.codex_remote_control { mcp_config::codex::remote::auth_identity(&style_home).ok().flatten() } else { None };
+    let auth_home=std::fs::canonicalize(&style_home).unwrap_or(style_home.clone());
+    // Preserve #426's failure boundary: validate DB/journal length before
+    // project discovery or launching any native helper.
+    let remote_sqlite_home=if account.codex_remote_control {
+        let root=app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
+        Some(if let Some(identity)=shared_identity.as_deref() { mcp_config::codex::remote::shared_sqlite_home(&root,&auth_home,identity)? } else { mcp_config::codex::remote::sqlite_home(&root,topic_id,&account.id)? })
+    } else {None};
     let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
     // The `.codex` folder native discovery lists a project layer for, and the
     // removal of what builds before #297 left in it.
     mcp_config::codex::prepare_project(&project_cwd)?;
-    let style_home = mcp_config::codex::style_setup::codex_home(cwd, account_env)?;
     let scoped_options = if account.codex_output_style != Some(false) && (account.codex_output_style == Some(true) || character.is_some_and(|c| !c.trim().is_empty())) {
         mcp_config::codex::style_setup::scoped_options(&account.args, &project_cwd, &style_home)?
     } else { mcp_config::codex::transport_options(&account.args)? };
@@ -2134,10 +2134,6 @@ fn launch_codex_app_server(
         &delivery.hook_keys,
         &crate::codex_app_server::token_sha256(&token),
     )?;
-    if let Some(path) = remote_sqlite_home {
-        std::fs::create_dir_all(&path).map_err(|_| "リモート接続用の席の保存先を作れません。")?;
-        mcp_config::codex::remote::isolate(&mut server_args, &path)?;
-    }
     mcp_config::codex::check_command_length(&account.command, &server_args)?;
 
     // The server is the process that starts MCP servers and runs hooks, so
@@ -2167,12 +2163,56 @@ fn launch_codex_app_server(
         .map(|(key, value)| (key.to_string(), value)),
     );
 
+    let mut shared_key = None;
+    let mut shared_home = None;
+    let mut remote_notice = None;
+    let mut thread_config = serde_json::json!({});
+    let mut credential = None;
+    let mut process_cwd = cwd.to_path_buf();
+    if account.codex_remote_control && shared_identity.is_some() {
+        use std::collections::BTreeMap;
+        let root = app.path().app_data_dir().map_err(|_| "共通接続の保存先が見つかりません。")?;
+        let home = auth_home.clone();
+        shared_home = Some(home.to_string_lossy().into_owned());
+        let db = remote_sqlite_home.as_ref().ok_or("共通接続の保存先がありません。")?;
+        std::fs::create_dir_all(&db).map_err(|_| "共通接続の保存先を作れません。")?;
+        process_cwd = root.join("codex-shared-runtime");
+        std::fs::create_dir_all(&process_cwd).map_err(|_| "共通接続の作業先を作れません。")?;
+        let (process, config) = app_server::shared_options(&plan)?;
+        thread_config = config;
+        server_args = app_server::shared_server_args(process, &crate::codex_app_server::token_sha256(&token));
+        mcp_config::codex::remote::isolate(&mut server_args, &db)?;
+        // Only room identity enters this disposable, single-use bootstrap.
+        // Native records its path in config, never the room credentials.
+        let secrets: BTreeMap<_,_> = server_env.iter().filter(|(key,_)| mcp_config::codex::SIDECAR_ENV.iter().any(|k| key.eq_ignore_ascii_case(k))).cloned().collect();
+        let path = process_cwd.join(format!("seat-{}.json",uuid::Uuid::new_v4()));
+        credential=Some(std::sync::Arc::new(crate::codex_app_server::CredentialFile::create(path.clone(),&serde_json::json!(secrets))?));
+        let bootstrap = sidecar_entry.parent().ok_or("席の起動補助が見つかりません。")?.join("shared-seat.mjs");
+        if !bootstrap.is_file() { return Err("共有接続の起動補助がありません。Pullcept を更新してください。".into()); }
+        app_server::shared_room_config(&mut thread_config, server_name, &bootstrap, &path, sidecar_runner, sidecar_entry, &delivery.hook_keys);
+        let mut effective: BTreeMap<String,String> = std::env::vars().map(|(k,v)|(k.to_ascii_uppercase(),v)).collect();
+        for (k,v) in account_env { effective.insert(k.to_ascii_uppercase(),v.clone()); }
+        effective.retain(|k,_| !k.starts_with("PULLCEPT_") && k != mcp_config::codex::OUTPUT_STYLE_ENV);
+        effective.insert("CODEX_HOME".into(),home.to_string_lossy().into_owned());
+        server_env = effective.into_iter().collect();
+        // Hash in memory; neither env values nor auth contents are logged.
+        shared_key = Some(mcp_config::codex::remote::process_key(&account.command,&server_args,&server_env)?);
+        mcp_config::codex::check_command_length(&account.command, &server_args)?;
+    }
+    if account.codex_remote_control && shared_key.is_none() {
+        let db=remote_sqlite_home.as_ref().ok_or("席の保存先がありません。")?;
+        std::fs::create_dir_all(&db).map_err(|_| "席の保存先を作れません。")?;
+        mcp_config::codex::remote::isolate(&mut server_args,&db)?;
+        remote_notice=Some("共通接続を利用できるログイン識別子を確認できないため、従来の席別接続を使っています。keyring のみのログインなどは共通接続の対象外です。");
+    }
+
     let on_spawn = |child| app.state::<RoomSeats>().starting_sidecar(topic_id, &account.id, &launch_id, child);
-    let started = crate::codex_app_server::start(crate::codex_app_server::Request {
+    let started = crate::codex_app_server::start(&app, crate::codex_app_server::Request {
+        shared_key, shared_home, shared_identity, thread_config, credential, remote_notice,
         on_spawn: Some(&on_spawn),
         command: &account.command,
         server_args,
-        cwd,
+        cwd: &process_cwd,
         thread_cwd: &project_cwd,
         env: server_env,
         instructions: delivery.instructions.as_deref(),

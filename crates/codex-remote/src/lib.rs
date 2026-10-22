@@ -1,4 +1,7 @@
-//! Seat-local relay RPC, isolated from activity and approval ownership.
+//! Native relay control transport.
+pub mod gateway;
+pub mod pool;
+pub mod credential;
 use mcp_config::codex::remote::{self as protocol, Action};
 use parking_lot::Mutex;
 use serde_json::{json, Value};

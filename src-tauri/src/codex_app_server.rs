@@ -1,34 +1,8 @@
-//! A Codex seat's own app-server (#299). See docs/3-accounts.md, "Codex の席を
-//! app-server 経由で起動する".
-//!
-//! **One server per seat, started before its terminal and stopped when the
-//! terminal ends.** The server runs `codex app-server` on a loopback port the
-//! OS picks, with the seat's environment and working directory, the room
-//! server on its line, and the token's SHA-256 as the only credential it is
-//! given. The app connects as the first client, starts or resumes the thread
-//! with the character as `developerInstructions`, and the real TUI attaches
-//! to the same thread with `--remote`, reading the token from its own
-//! environment.
-//!
-//! What is decided is `mcp_config::codex::app_server`, free of tauri so that
-//! it is tested; what stays here is the process, the socket and the seat.
-//!
-//! **Stopped on every way a seat closes.** Each server is watched against its
-//! terminal and taken down when the terminal is no longer running; the app's
-//! close sweeps every one (`stop_all`); and on Windows each server is placed in
-//! a job object that ends its whole tree if the app itself goes away first.
-//!
-//! **What the seat is doing is read off the same connection** (#326). Every
-//! notification the server sends the app — while the thread is being started
-//! or resumed (`Started::call`) and for the life of the seat after (`adopt`) —
-//! is fed to the seat's `Activity` (`mcp_config::codex::activity`), and the
-//! screen is told whenever what it says changes (`seat-activity`). Requests
-//! the server sends are not answered: approvals stay the terminal's.
-//!
-//! **Every notification is also written down, without what it says** (#329):
-//! one line each in `logs/codex-activity-probe.log` with the seat, the method,
-//! the thread status if it carries one and the UTC time (`Probe`). The lines of
-//! the start or resume are held until the seat is known and written first.
+//! Native Codex process ownership and seat leases (#299, #568).
+//! Opted-in, compatible logins use an app-owned pooled backend. Each seat
+//! owns its authenticated gateway, thread reservation, observer and PTY.
+//! Opt-out/unknown-identity seats retain the dedicated process path.
+//! See docs/3-accounts.md for detach, mobile subscriber and cold-resume limits.
 
 use mcp_config::codex::activity::{probe_line, probe_of, Activity, Reporter};
 use mcp_config::codex::app_server as plan;
@@ -68,6 +42,7 @@ const PROBE_FILE: &str = "codex-activity-probe.log";
 #[derive(Default)]
 pub struct CodexServers {
     servers: Mutex<HashMap<String, Server>>,
+    shared: codex_remote::pool::Pool<SharedBackend>,
 }
 
 impl CodexServers {
@@ -76,8 +51,34 @@ impl CodexServers {
     }
 }
 
+/// App-owned native process. Seat leases never stop this owner.
+struct SharedBackend {
+    url: String,
+    token: String,
+    child: Arc<Mutex<Child>>,
+    remote: Arc<remote::Control>,
+    relay_in_use: Arc<AtomicBool>,
+    threads: Arc<codex_remote::pool::Threads>,
+}
+impl SharedBackend {
+    fn check(&self) -> Result<(), String> {
+        if matches!(self.child.lock().try_wait(), Ok(None)) { Ok(()) }
+        else { self.remote.end(); Err("共有 Codex 接続が終了しました。Pullcept を起動し直してください。".into()) }
+    }
+    fn stop(&self) { self.remote.end(); stop_tree(&mut self.child.lock()); }
+}
+
+pub use codex_remote::credential::CredentialFile;
+
 /// The process tree of one seat's server.
 struct Server {
+    shared: Option<Arc<SharedBackend>>,
+    gateway: Option<Arc<codex_remote::gateway::Gateway>>,
+    _credential: Option<Arc<CredentialFile>>,
+    epoch: String,
+    lease: Option<Arc<codex_remote::pool::ThreadLease>>,
+    remote_notice: Option<&'static str>,
+    alive: Arc<AtomicBool>,
     child: Arc<Mutex<Child>>,
     remote: Option<Arc<remote::Control>>,
     /// The relay's last connection failure was 409 "already online" (#430),
@@ -87,6 +88,12 @@ struct Server {
 
 impl Server {
     fn stop(self) {
+        self.alive.store(false, Ordering::Release);
+        if let Some(gateway) = &self.gateway { gateway.end(); }
+        if let Some(shared) = &self.shared {
+            // The thread reservation is released by its observer after detach.
+            let _ = shared; return;
+        }
         if let Some(control) = &self.remote { control.end(); }
         stop_tree(&mut self.child.lock());
     }
@@ -124,14 +131,20 @@ pub fn stop_all(app: &AppHandle) {
         .drain()
         .map(|(_, server)| server)
         .collect();
-    for server in drained {
-        server.stop();
-    }
+    for server in drained { server.stop(); }
+    for shared in app.state::<CodexServers>().shared.close() { shared.stop(); }
 }
 
 /// What the seat's launch is handed: the character, the hooks to turn off,
 /// the person's options split, and the thread to go back into, if any.
+#[derive(Clone)]
 pub struct Request<'a> {
+    pub shared_key: Option<String>,
+    pub shared_home: Option<String>,
+    pub shared_identity: Option<String>,
+    pub remote_notice: Option<&'static str>,
+    pub thread_config: Value,
+    pub credential: Option<Arc<CredentialFile>>,
     pub on_spawn: Option<&'a dyn Fn(Arc<Mutex<Child>>)>,
     pub command: &'a str,
     pub server_args: Vec<String>,
@@ -161,7 +174,7 @@ pub struct Started {
     activity: Activity,
     /// Notifications that arrived before the seat was known, as the probe
     /// keeps them: method, thread status, arrival time (#329).
-    probe: Vec<(String, Option<String>, String)>,
+    probe: Vec<(String, Option<String>, String, Option<String>)>,
 }
 
 /// One seat's probe lines (#329): the file held open for the life of the
@@ -237,6 +250,9 @@ fn spawn(request: &Request, relay_in_use: &Arc<AtomicBool>) -> Result<(Child, u1
     } else {
         Command::new(command)
     };
+    // A shared backend must not inherit the launching room from Pullcept's
+    // own host environment. Opt-out seats explicitly receive theirs below.
+    for (key,_) in std::env::vars().filter(|(key,_)| key.to_ascii_uppercase().starts_with("PULLCEPT_")) { cmd.env_remove(key); }
     cmd.args(&request.server_args)
         .current_dir(request.cwd)
         .env_remove(mcp_config::codex::OUTPUT_STYLE_ENV)
@@ -368,7 +384,7 @@ impl Started {
                 self.activity.feed(&value);
                 if self.probe.len() < PROBE_EARLY_MAX {
                     if let Some((method, status)) = probe_of(&value) {
-                        self.probe.push((method, status, crate::room::now_iso()));
+                        self.probe.push((method, status, crate::room::now_iso(), value["params"]["threadId"].as_str().or_else(||value["params"]["thread"]["id"].as_str()).map(str::to_string)));
                     }
                 }
                 continue;
@@ -411,9 +427,8 @@ impl Started {
             thread_id,
             ..
         } = self;
-        if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
-            let _ = stream.set_read_timeout(None);
-        }
+        let alive = Arc::clone(&server.alive);
+        let lease = server.lease.clone();
         let mut seat = Seat {
             app: app.clone(),
             reporter: Reporter::new(topic_id, account_id, pty_id),
@@ -426,14 +441,29 @@ impl Started {
         let (topic, account, pty) = (topic_id.to_string(), account_id.to_string(), pty_id.to_string());
         std::thread::spawn(move || {
             let mut plan = mcp_config::work_status::CodexPlan::default();
-            for (method, status, at) in &early {
-                probe.write(method, status.as_deref(), at);
+            for (method, status, at, owner) in &early {
+                if owner.as_deref()==Some(thread_id.as_str()) { probe.write(method, status.as_deref(), at); }
             }
             seat.tell(&activity);
+            let mut turn_id: Option<String> = None;
             loop {
+                if !alive.load(Ordering::Acquire) {
+                    if let Some(turn) = turn_id.as_ref() {
+                        let _ = socket.send(Message::text(json!({"id":1000001,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn}}).to_string()));
+                    }
+                    let _ = socket.send(Message::text(json!({"id":1000002,"method":"thread/unsubscribe","params":{"threadId":thread_id}}).to_string()));
+                    let _ = socket.close(None);
+                    break;
+                }
                 match socket.read() {
                     Ok(Message::Text(text)) => {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if value["params"]["threadId"].as_str() == Some(thread_id.as_str()) {
+                                if value["method"] == "turn/started" { turn_id = value["params"]["turn"]["id"].as_str().map(str::to_owned); }
+                                if value["method"] == "turn/completed" { turn_id = None; }
+                            }
+                            // Only this seat's notifications enter its activity probe.
+                            if value["params"]["threadId"].as_str() != Some(thread_id.as_str()) && value["params"]["thread"]["id"].as_str() != Some(thread_id.as_str()) { continue; }
                             probe.note(&value);
                             if let Some(steps) = plan.feed(&thread_id, &value) { crate::room_status::plan(&seat.app, &topic, &account, &pty, "codex-app-server", steps); }
                             activity.feed(&value);
@@ -441,15 +471,19 @@ impl Started {
                         }
                     }
                     Ok(_) => {}
+                    Err(tokio_tungstenite::tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
                     Err(_) => break,
                 }
             }
+            drop(lease);
             activity.disconnect();
             seat.tell(&activity);
         });
-        if let Some(control) = &server.remote {
-            let control = Arc::clone(control);
-            std::thread::spawn(move || control.enable_on_start());
+        if server.shared.is_none() {
+            if let Some(control) = &server.remote {
+                let control = Arc::clone(control);
+                std::thread::spawn(move || control.enable_on_start());
+            }
         }
         app.state::<CodexServers>()
             .servers
@@ -477,11 +511,13 @@ impl Started {
 }
 
 /// Start the seat's server and have its thread ready for the terminal.
-pub fn start(request: Request) -> Result<Started, String> {
+pub fn start(app: &AppHandle, request: Request) -> Result<Started, String> {
+    if request.shared_key.is_some() { return start_shared(app, request); }
     let relay_in_use = Arc::new(AtomicBool::new(false));
     let (child, port) = spawn(&request, &relay_in_use)?;
     let url = format!("ws://127.0.0.1:{port}");
     let server = Server {
+        shared: None, gateway: None, _credential: request.credential.clone(), epoch: uuid::Uuid::new_v4().to_string(), lease: None, remote_notice: request.remote_notice, alive: Arc::new(AtomicBool::new(true)),
         relay_in_use,
         child: Arc::new(Mutex::new(child)),
         remote: request.remote_enabled.then(|| Arc::new(remote::Control::new(&url, request.token, uuid::Uuid::new_v4().to_string()))),
@@ -513,6 +549,76 @@ pub fn start(request: Request) -> Result<Started, String> {
     }
 }
 
+fn with_config(mut params: Value, extra: &Value) -> Value {
+    if let Some(extra) = extra.as_object() {
+        if !params["config"].is_object() { params["config"] = json!({}); }
+        for (key, value) in extra { params["config"][key] = value.clone(); }
+    }
+    params
+}
+
+fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
+    let state = app.state::<CodexServers>();
+    let backend = state.shared.acquire(request.shared_home.as_deref().ok_or("認証 HOME がありません。")?, request.shared_identity.as_deref().ok_or("ログイン識別子がありません。")?, request.shared_key.as_deref().unwrap(), || {
+        let token = new_token();
+        let mut spawning = request.clone();
+        let digest = token_sha256(&token);
+        let index = spawning.server_args.iter().position(|s| s == "--ws-token-sha256").ok_or("共有接続の認証設定がありません。")?;
+        spawning.server_args[index + 1] = digest;
+        let relay = Arc::new(AtomicBool::new(false));
+        let (child,port) = spawn(&spawning, &relay)?;
+        let url = format!("ws://127.0.0.1:{port}");
+        let backend = SharedBackend { child: Arc::new(Mutex::new(child)), remote: Arc::new(remote::Control::new(&url, &token, uuid::Uuid::new_v4().to_string())), url, token, relay_in_use: relay, threads: Arc::new(Default::default()) };
+        let control = Arc::clone(&backend.remote);
+        std::thread::spawn(move || control.enable_on_start());
+        Ok(backend)
+    })?;
+    backend.check()?;
+    if let Some(on_spawn) = request.on_spawn { on_spawn(Arc::clone(&backend.child)); }
+    let socket = connect(&backend.url, &backend.token)?;
+    let server = Server { child: Arc::clone(&backend.child), remote: Some(Arc::clone(&backend.remote)), relay_in_use: Arc::clone(&backend.relay_in_use), shared: Some(Arc::clone(&backend)), gateway: None, _credential: request.credential.clone(), epoch: uuid::Uuid::new_v4().to_string(), lease: None, remote_notice: request.remote_notice, alive: Arc::new(AtomicBool::new(true)) };
+    let mut started = Started { server, socket, url: backend.url.clone(), thread_id: String::new(), created: false, next_id: 0, activity: Activity::new(), probe: Vec::new() };
+    // A known conversation can only be cold-resumed. Loaded native resume
+    // ignores new room/launch settings, even if that call reports success.
+    let result = (|| {
+        started.call("initialize", plan::initialize_params(env!("CARGO_PKG_VERSION")))?;
+        started.socket.send(Message::text(json!({"method":"initialized"}).to_string())).map_err(|_| "共有接続が切れました。")?;
+        if let Some(id) = request.resume {
+            started.server.lease = Some(Arc::new(codex_remote::pool::ThreadLease::claim(&backend.threads,id)?));
+            let mut cursor = Value::Null;
+            loop {
+                let loaded = started.call("thread/loaded/list", json!({"cursor":cursor,"limit":100}))?;
+                if loaded["data"].as_array().is_some_and(|ids| ids.iter().any(|v| v.as_str() == Some(id))) {
+                    return Err("この会話はスマホなどでまだ開かれています。席の部屋設定を安全に更新するため、スマホで会話を閉じて少し待ち、再試行してください。履歴は保持しています。".into());
+                }
+                cursor = loaded["nextCursor"].clone();
+                if cursor.is_null() { break; }
+            }
+
+        }
+        prepare_thread(&mut started, &request)?;
+        if let Some(file) = &request.credential {
+            let marker=file.marker();
+            let deadline=Instant::now()+REQUEST_TIMEOUT;
+            while !marker.is_file() {
+                backend.check()?;
+                if Instant::now()>=deadline { return Err("会話へ今回の部屋設定を適用できませんでした。スマホで会話を閉じ、少し待って再試行してください。履歴は保持しています。".into()) }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _=std::fs::remove_file(marker);
+        }
+        if started.server.lease.is_none() { started.server.lease = Some(Arc::new(codex_remote::pool::ThreadLease::claim(&backend.threads,&started.thread_id)?)); }
+        let gateway = Arc::new(codex_remote::gateway::Gateway::start(backend.url.clone(), backend.token.clone(), request.token.to_string(), started.thread_id.clone(), request.thread_cwd.to_path_buf(), request.hook_keys.to_vec())?);
+        started.url = gateway.url.clone();
+        started.server.gateway = Some(gateway);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(started),
+        Err(err) => { started.abandon(); Err(err) }
+    }
+}
+
 fn prepare(started: &mut Started, request: &Request) -> Result<(), String> {
     started.call(
         "initialize",
@@ -522,23 +628,37 @@ fn prepare(started: &mut Started, request: &Request) -> Result<(), String> {
         .socket
         .send(Message::text(json!({"method": "initialized"}).to_string()))
         .map_err(|_| "Codex app-server へ initialized を送れません。".to_string())?;
+    prepare_thread(started, request)
+}
+
+fn prepare_thread(started: &mut Started, request: &Request) -> Result<(), String> {
     let cwd = request.thread_cwd.to_string_lossy().to_string();
     // Before any thread exists: the one hook is off and no style handler is
     // left to deliver the character a second time.
-    let hooks = started.call("hooks/list", json!({"cwds": [cwd]}))?;
-    plan::check_hooks(&hooks, request.hook_keys)?;
+    let mut thread_config = request.thread_config.clone();
+    if request.shared_key.is_some() {
+        let config = started.call("config/read", json!({"includeLayers":false,"cwd":cwd}))?;
+        if let Some(servers) = config["config"]["mcp_servers"].as_object() {
+            for name in servers.keys().filter(|name| name.starts_with(mcp_config::SERVER_PREFIX)) {
+                if thread_config.get(format!("mcp_servers.{name}")).is_none() { thread_config[format!("mcp_servers.{name}.enabled")] = json!(false); }
+            }
+        }
+    } else {
+        let hooks = started.call("hooks/list", json!({"cwds": [cwd]}))?;
+        plan::check_hooks(&hooks, request.hook_keys)?;
+    }
     let result = match request.resume {
         Some(id) => {
             started.thread_id = id.to_string();
             started.activity.set_thread(id);
             started.call(
                 "thread/resume",
-                plan::resume_params(id, &cwd, request.instructions, request.settings),
+                with_config(plan::resume_params(id, &cwd, request.instructions, request.settings), &thread_config),
             )?
         }
         None => started.call(
             "thread/start",
-            plan::start_params(&cwd, request.instructions, request.settings),
+            with_config(plan::start_params(&cwd, request.instructions, request.settings), &thread_config),
         )?,
     };
     let (id, _) = plan::thread_of(&result)?;
