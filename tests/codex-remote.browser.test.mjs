@@ -21,7 +21,9 @@ test("shared remote dialog confirms global stop in the app without native confir
  await page.getByRole('button',{name:'全席の共有接続を停止する',exact:true}).click();
  await page.waitForFunction(()=>window.calls.some(c=>c.action==='disable'&&c.confirmShared===true));
  await page.getByRole('button',{name:'閉じる',exact:true}).click();
+ await page.locator('.codex-remote-dialog').waitFor({state:'detached'});
  await page.evaluate(()=>window.openRemote(false));await page.getByRole('heading',{name:'fixture — スマホから接続'}).waitFor();
+ await page.getByText('共通接続を利用できないため従来の席別接続',{exact:true}).waitFor();
  assert.match(await page.locator('.codex-remote-dialog p').first().innerText(),/従来の席別接続/);
  await page.getByRole('button',{name:'閉じる',exact:true}).click();assert.deepEqual(errors,[]);
 });
