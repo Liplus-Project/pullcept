@@ -51,6 +51,109 @@ fn foreign_thread(value: &Value, owned: &HashSet<String>) -> bool {
     }
 }
 
+fn one_of(value: &Value, choices: &[&str]) -> bool {
+    value.as_str().is_some_and(|s| choices.contains(&s))
+}
+
+// Native 0.162.1 ThreadResumeParams. This adapter consumes configuration, not
+// applies it: even serviceTier:null would otherwise clear launcher state.
+fn attach_params(params: &Value) -> Result<Value, &'static str> {
+    let fields = params
+        .as_object()
+        .ok_or("resume params must be an object")?;
+    let mut attach = serde_json::Map::new();
+    for (name, value) in fields {
+        let valid = match name.as_str() {
+            "threadId" => value.is_string(),
+            "excludeTurns" => value.is_boolean(),
+            "initialTurnsPage" => {
+                value.is_null()
+                    || value.as_object().is_some_and(|page| {
+                        page.iter().all(|(key, v)| match key.as_str() {
+                            "limit" => {
+                                v.is_null() || v.as_u64().is_some_and(|n| n <= u32::MAX as u64)
+                            }
+                            "sortDirection" => v.is_null() || one_of(v, &["asc", "desc"]),
+                            "itemsView" => {
+                                v.is_null() || one_of(v, &["notLoaded", "summary", "full"])
+                            }
+                            _ => false,
+                        })
+                    })
+            }
+            "model"
+            | "modelProvider"
+            | "serviceTier"
+            | "cwd"
+            | "permissions"
+            | "baseInstructions"
+            | "developerInstructions" => value.is_null() || value.is_string(),
+            "runtimeWorkspaceRoots" => {
+                value.is_null()
+                    || value.as_array().is_some_and(|roots| {
+                        roots.iter().all(|v| {
+                            v.as_str()
+                                .is_some_and(|p| std::path::Path::new(p).is_absolute())
+                        })
+                    })
+            }
+            "config" => value.is_null() || value.is_object(),
+            "sandbox" => {
+                value.is_null()
+                    || one_of(
+                        value,
+                        &["read-only", "workspace-write", "danger-full-access"],
+                    )
+            }
+            "approvalsReviewer" => {
+                value.is_null() || one_of(value, &["user", "auto_review", "guardian_subagent"])
+            }
+            "personality" => value.is_null() || one_of(value, &["none", "friendly", "pragmatic"]),
+            "approvalPolicy" => {
+                value.is_null()
+                    || one_of(value, &["untrusted", "on-request", "never"])
+                    || value.as_object().is_some_and(|policy| {
+                        policy.len() == 1
+                            && policy
+                                .get("granular")
+                                .and_then(Value::as_object)
+                                .is_some_and(|g| {
+                                    ["mcp_elicitations", "rules", "sandbox_approval"]
+                                        .iter()
+                                        .all(|k| g.get(*k).is_some_and(Value::is_boolean))
+                                        && g.iter().all(|(k, v)| {
+                                            matches!(
+                                                k.as_str(),
+                                                "mcp_elicitations"
+                                                    | "rules"
+                                                    | "sandbox_approval"
+                                                    | "request_permissions"
+                                                    | "skill_approval"
+                                            ) && v.is_boolean()
+                                        })
+                                })
+                    })
+            }
+            // history/path can replace the selected thread's persisted history.
+            // Unknown null fields are tolerated for native optional-field drift.
+            _ => value.is_null(),
+        };
+        if !valid {
+            return Err("invalid or unsupported seat attach field");
+        }
+        if matches!(
+            name.as_str(),
+            "threadId" | "excludeTurns" | "initialTurnsPage"
+        ) {
+            attach.insert(name.clone(), value.clone());
+        }
+    }
+    if !attach.get("threadId").is_some_and(Value::is_string) {
+        return Err("this seat's thread ID is required");
+    }
+    Ok(Value::Object(attach))
+}
+
 // Only native relationship metadata can reconstruct an offline/cold seat's
 // descendants. Even a backend ignoring ancestorThreadId cannot grant a foreign
 // thread: every parent chain must terminate at the original seat root.
@@ -187,10 +290,12 @@ impl Policy {
             approvals: HashSet::new(),
         }
     }
-    pub fn client(&mut self, message: &Value) -> Result<(), &'static str> {
+    /// Validate the original request before projecting the actual upstream message.
+    pub fn client(&mut self, message: &Value) -> Result<Value, &'static str> {
+        let mut upstream = message.clone();
         if let Some(method) = message["method"].as_str() {
             if method == "initialized" && message.get("id").is_none() {
-                return Ok(());
+                return Ok(upstream);
             }
             let id = message
                 .get("id")
@@ -262,25 +367,14 @@ impl Policy {
                 if thread_id(p).is_none_or(|id| !self.owned.lock().contains(id)) {
                     return Err("this seat's thread ID is required");
                 }
-                // Attach is a rejoin only. The launcher owns configuration and history.
-                if method == "thread/resume"
-                    && p.as_object().is_some_and(|m| {
-                        m.iter().any(|(k, v)| {
-                            !v.is_null()
-                                && !matches!(
-                                    k.as_str(),
-                                    "threadId" | "excludeTurns" | "initialTurnsPage"
-                                )
-                        })
-                    })
-                {
-                    return Err("resume configuration belongs to the seat launcher");
+                if method == "thread/resume" {
+                    upstream["params"] = attach_params(p)?;
                 }
             } else if !global && !cwd_read {
                 return Err("method is unavailable through this seat");
             }
             self.pending.insert(id, method.into());
-            Ok(())
+            Ok(upstream)
         } else {
             let id = message
                 .get("id")
@@ -289,7 +383,7 @@ impl Policy {
             if !self.approvals.remove(&id) {
                 return Err("approval ID does not belong to this connection");
             }
-            Ok(())
+            Ok(upstream)
         }
     }
     pub fn backend(&mut self, message: &Value) -> bool {
@@ -509,10 +603,10 @@ fn serve(
     while alive.load(Ordering::Acquire) {
         let mut progress = false;
         match read(&mut local)? {
-            Some(mut value) => {
+            Some(value) => {
                 progress = true;
                 match policy.client(&value) {
-                    Ok(()) => {
+                    Ok(mut value) => {
                         if value["method"] == "account/read" {
                             value["params"]["refreshToken"] = json!(false);
                         }
@@ -602,6 +696,95 @@ fn send(socket: &mut WebSocket<TcpStream>, value: &Value) -> Result<(), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attach_consumes_settings_and_null_clears_in_actual_upstream_message() {
+        let params = json!({"threadId":"A", "excludeTurns":true,
+            "initialTurnsPage":{"limit":12,"sortDirection":"desc","itemsView":"summary"},
+            "model":"different", "modelProvider":"different", "serviceTier":null,
+            "cwd":"other", "runtimeWorkspaceRoots":[std::env::temp_dir()],
+            "approvalPolicy":{"granular":{"mcp_elicitations":false,"rules":true,"sandbox_approval":false}},
+            "approvalsReviewer":"auto_review", "sandbox":"danger-full-access", "permissions":"other",
+            "config":{"model_reasoning_effort":"medium","mcp_servers.fake":{"command":"ignored"}},
+            "baseInstructions":"other", "developerInstructions":"other", "personality":"friendly",
+            "history":null,"path":null,"future":null});
+        let expected = json!({"id":1,"method":"thread/resume","params":{
+            "threadId":"A","excludeTurns":true,"initialTurnsPage":params["initialTurnsPage"]}});
+        let mut policy = Policy::new("A");
+        assert_eq!(
+            policy
+                .client(&json!({"id":1,"method":"thread/resume","params":params}))
+                .unwrap(),
+            expected
+        );
+        assert!(policy.backend(&json!({"id":1,"result":{"model":"launcher"}})));
+        for name in [
+            "model",
+            "modelProvider",
+            "serviceTier",
+            "cwd",
+            "runtimeWorkspaceRoots",
+            "approvalPolicy",
+            "approvalsReviewer",
+            "sandbox",
+            "permissions",
+            "config",
+            "baseInstructions",
+            "developerInstructions",
+            "personality",
+        ] {
+            for value in [Value::Null, json!(17)] {
+                let mut params = json!({"threadId":"A"});
+                params[name] = value.clone();
+                let result = Policy::new("A")
+                    .client(&json!({"id":1,"method":"thread/resume","params":params}));
+                if value.is_null() {
+                    assert_eq!(result.unwrap()["params"], json!({"threadId":"A"}), "{name}");
+                } else {
+                    assert!(result.is_err(), "{name}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn attach_rejects_history_unknown_malformed_and_original_foreign_scope() {
+        for extra in [
+            json!({"history":[]}),
+            json!({"path":"other"}),
+            json!({"future":true}),
+            json!({"excludeTurns":null}),
+            json!({"excludeTurns":1}),
+            json!({"initialTurnsPage":{"limit":-1}}),
+            json!({"initialTurnsPage":{"limit":4294967296u64}}),
+            json!({"initialTurnsPage":{"sortDirection":"sideways"}}),
+            json!({"initialTurnsPage":{"itemsView":"other"}}),
+            json!({"initialTurnsPage":{"future":null}}),
+            json!({"runtimeWorkspaceRoots":["relative"]}),
+            json!({"sandbox":"other"}),
+            json!({"approvalsReviewer":"other"}),
+            json!({"personality":"other"}),
+            json!({"approvalPolicy":{"granular":{"rules":true}}}),
+            json!({"approvalPolicy":"on-failure"}),
+            json!({"config":{"nested":[{"threadId":"B"}]}}),
+        ] {
+            let mut params = json!({"threadId":"A"});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let mut policy = Policy::new("A");
+            assert!(
+                policy
+                    .client(&json!({"id":1,"method":"thread/resume","params":params}))
+                    .is_err(),
+                "{extra}"
+            );
+            assert!(policy.pending.is_empty());
+        }
+        assert_eq!(Policy::new("A").client(&json!({"id":1,"method":"thread/resume","params":{"threadId":"A","config":{"threadId":"B"}}})).unwrap_err(), "another seat's thread is not accessible");
+        assert!(Policy::new("A")
+            .client(&json!({"id":1,"method":"thread/resume","params":{"thread_id":"A"}}))
+            .is_err());
+    }
     #[test]
     fn thread_methods_fail_closed_and_approvals_are_correlated_per_connection() {
         let mut a = Policy::new("A");

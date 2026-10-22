@@ -251,7 +251,8 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
             &fake,
             &hook_keys,
         );
-        json!({"cwd":cwd,"developerInstructions":format!("fixture-{marker}"),"historyMode":"paginated","approvalPolicy":"never","sandbox":"read-only","config":config})
+        config["model_reasoning_effort"] = json!("low");
+        json!({"model":"gpt-5.4","serviceTier":null,"cwd":cwd,"developerInstructions":format!("fixture-{marker}"),"historyMode":"paginated","approvalPolicy":"never","sandbox":"read-only","config":config})
     };
     let a = owner_a
         .rpc("thread/start", start(&a_cwd, "A", &file_a))
@@ -379,9 +380,58 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
         )
         .unwrap();
     assert!(r["content"][0]["text"].as_str().unwrap().contains("FRESH"));
-    real_tui(&exe, &root, &gateway_b.url, "seat-B", &b);
+    configured_tuis(
+        &exe,
+        &root,
+        &gateway_b.url,
+        "seat-B",
+        &b,
+        &mut owner_b,
+        "fresh",
+    );
     gateway_b.end();
     drop(cb);
+    owner_b
+        .rpc("thread/unsubscribe", json!({"threadId":b}))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let loaded = owner_b
+            .rpc("thread/loaded/list", json!({"limit":100}))
+            .unwrap();
+        if !loaded["data"].as_array().unwrap().iter().any(|id| id == &b) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "B must actually unload before launcher cold resume"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    let mut cold = start(&b_cwd, "B", &file_b);
+    cold.as_object_mut().unwrap().remove("historyMode");
+    cold["threadId"] = json!(b);
+    let restored = owner_b.rpc("thread/resume", cold).unwrap();
+    assert_eq!(restored["thread"]["id"], b);
+    let cold_gateway = Gateway::start(
+        backend.url.clone(),
+        backend.token.clone(),
+        "seat-B".into(),
+        b.clone(),
+        b_cwd.clone(),
+        hook_keys.clone(),
+    )
+    .unwrap();
+    configured_tuis(
+        &exe,
+        &root,
+        &cold_gateway.url,
+        "seat-B",
+        &b,
+        &mut owner_b,
+        "cold",
+    );
+    cold_gateway.end();
     drop(fresh);
     drop(owner_b);
     drop(gateway_a);
@@ -394,8 +444,58 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
     assert!(!root.join("home/auth.json").exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
-fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str) {
+fn configured_tuis(
+    exe: &str,
+    root: &Path,
+    url: &str,
+    token: &str,
+    id: &str,
+    owner: &mut Client,
+    phase: &str,
+) {
+    let before = owner.rpc("thread/resume", json!({"threadId":id})).unwrap();
+    assert_eq!(before["model"], "gpt-5.4");
+    assert_eq!(before["reasoningEffort"], "low");
+    assert_eq!(before["serviceTier"], Value::Null);
+    assert_eq!(before["approvalPolicy"], "never");
+    assert_eq!(before["sandbox"]["type"], "readOnly");
+    for tier in ["default", "fast"] {
+        real_tui(exe, root, url, token, id, &format!("{phase}-{tier}"), tier);
+        let after = owner.rpc("thread/resume", json!({"threadId":id})).unwrap();
+        for field in [
+            "model",
+            "modelProvider",
+            "serviceTier",
+            "cwd",
+            "runtimeWorkspaceRoots",
+            "approvalPolicy",
+            "approvalsReviewer",
+            "sandbox",
+            "activePermissionProfile",
+            "reasoningEffort",
+        ] {
+            assert_eq!(
+                after[field], before[field],
+                "{phase}/{tier}: launcher {field} changed"
+            );
+        }
+        assert_eq!(tools(owner, id), vec!["fixture_b".to_string()]);
+        let r = owner
+            .rpc(
+                "mcpServer/tool/call",
+                json!({"threadId":id,"server":"fixture_b","tool":"echo","arguments":{}}),
+            )
+            .unwrap();
+        let value: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["marker"], "B");
+        assert_eq!(Path::new(value["cwd"].as_str().unwrap()), root.join("B"));
+    }
+}
+fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str, case: &str, tier: &str) {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    let home = root.join(format!("tui-{case}"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.toml"), format!("model=\"gpt-6.1-sol\"\nmodel_reasoning_effort=\"medium\"\nservice_tier=\"{tier}\"\ncheck_for_update_on_startup=false\n")).unwrap();
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 30,
@@ -415,9 +515,9 @@ fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str) {
         "--no-alt-screen",
     ]);
     command.env("PULLCEPT_CODEX_REMOTE_TOKEN", token);
-    command.env("CODEX_HOME", root.join("home"));
+    command.env("CODEX_HOME", &home);
     command.env("TERM", "xterm-256color");
-    command.cwd(root.join("B"));
+    command.cwd(root.join("work"));
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut writer = pair.master.take_writer().unwrap();
@@ -468,7 +568,11 @@ fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str) {
     // fixture-B exists only on the intended thread's successful native resume
     // response; the initial header is deliberately not sufficient evidence.
     assert!(
-        ready && !text.contains("failed to") && !text.contains("method is unavailable"),
+        ready
+            && !text.contains("failed to")
+            && !text.contains("method is unavailable")
+            && !text.contains("resume failed")
+            && !text.contains("invalid or unsupported seat attach field"),
         "real remote TUI did not settle on intended thread {id}: {text}"
     );
 }
