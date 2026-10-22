@@ -798,11 +798,11 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 
 安定したログイン識別は `auth.json` の `auth_mode`、選択 workspace の `tokens.account_id`、ID token の `chatgpt_user_id`（または `user_id`）だけを抽出し、メモリ内でハッシュ化する。token や更新時刻は識別に使わないので、同じログインの token refresh は共有を妨げない。keyring のみ・識別子欠落・非対応形式など、安全に識別できない設定は従来の席別接続を維持し、接続画面でその理由を表示する。keyring の秘密を取り出したり別の保存先へコピーしたりしない。
 
-登録保存先はアプリデータの `codex-seat-sqlite/<SHA-256>` の新しい共有 namespace と正規化した認証 HOME から導出する。topic/account 別の旧 DB は読み替え・移動・削除・併合・revoke しない。**初回移行では再ペアリングが必要**。`CODEX_HOME`、既存 rollout、writer lock、保存済みの明示会話 ID は変えない。スマホ接続オフ・互換 hook 方式・Claude・人間・MCP の経路は維持する。
+登録保存先はアプリデータの `codex-seat-sqlite/<SHA-256>` の新しい共有 namespace・正規化した認証 HOME・安定したユーザー/workspace 識別子から導出する。同じ HOME でもログインが替われば別 DB とし、以前のスマホ登録を新しいログインへ引き継がない。topic/account 別の旧 DB は読み替え・移動・削除・併合・revoke しない。**初回移行では再ペアリングが必要**。`CODEX_HOME`、既存 rollout、writer lock、保存済みの明示会話 ID は変えない。スマホ接続オフ・互換 hook 方式・Claude・人間・MCP の経路は維持する。
 
 backend の cwd は部屋を持たないアプリ所有ディレクトリ、環境は部屋の資格情報を除いた互換な実効環境とする。model・effort・cwd・承認/sandbox・developer instructions・計画ツール・style hook の無効化・部屋 MCP は thread ごとに渡す。他の Pullcept room MCP は明示的に無効化する。部屋 token・投稿先・launch capability は native の引数や config に含めず、席の寿命に束縛した非公開 bootstrap file から sidecar へ渡す。Windows は所有 handle の delete-on-close で正常終了とクラッシュの両方で消す。file は席停止まで維持するが、部屋 admission は起動世代を照合するため別 instance が勝手に席を取り直せない。
 
-TUI は backend の生の token を受け取らない。席ごとの loopback proxy と別 token を使い、許可した RPC だけを自 thread と native がその親から生成した子 thread に束縛する。別席の thread 読み取り・操作・全体一覧・account logout・global config 書き込み・remoteControl は拒否する。通知も同じ所有関係で絞り、request と approval の ID は接続ごとに相関し、別接続の応答 ID を流用できない。互換ログインの account 更新・rate limit 通知は各席へ届く。未知の RPC は拒否するため、未対応の TUI 管理操作はエラーになり得る。
+TUI は backend の生の token を受け取らない。席ごとの loopback proxy と別 token を使い、許可した RPC だけを自 thread と native がその親から生成した子 thread に束縛する。別席の thread 読み取り・操作・全体一覧・account logout・global config 書き込み・remoteControl は拒否する。再接続・cold resume では native の祖先指定一覧から親子関係を取り直し、元の親へ遡れる metadata だけで子の所有を再構成する。購読確立後にも確認し、スマホが先に生成した子も拾う。通知も同じ所有関係で絞り、request と approval の ID は接続ごとに相関し、別接続の応答 ID を流用できない。互換ログインの account 更新・rate limit 通知は各席へ届く。未知の RPC は拒否するため、未対応の TUI 管理操作はエラーになり得る。
 
 **席停止は部屋から離れる操作であり、共有のスマホ接続停止とは別である。** その席の proxy・PTY・observer・ローカル操作資格と room admission を失効し、実行中 turn の interrupt と購読解除を送る。他席や backend は止めない。スマホが会話を購読していれば、native は会話・writer を保持し、スマホからの会話利用は続けられるが、終了した席の部屋の道具は使えない。writer が解放されたと表示しない。
 

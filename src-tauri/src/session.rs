@@ -2106,11 +2106,19 @@ fn launch_codex_app_server(
     sidecar_runner: &Path,
 ) -> Result<StartedSession, String> {
     use mcp_config::codex::app_server;
+    let style_home = mcp_config::codex::style_setup::codex_home(cwd, account_env)?;
+    let shared_identity = if account.codex_remote_control { mcp_config::codex::remote::auth_identity(&style_home).ok().flatten() } else { None };
+    let auth_home=std::fs::canonicalize(&style_home).unwrap_or(style_home.clone());
+    // Preserve #426's failure boundary: validate DB/journal length before
+    // project discovery or launching any native helper.
+    let remote_sqlite_home=if account.codex_remote_control {
+        let root=app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
+        Some(if let Some(identity)=shared_identity.as_deref() { mcp_config::codex::remote::shared_sqlite_home(&root,&auth_home,identity)? } else { mcp_config::codex::remote::sqlite_home(&root,topic_id,&account.id)? })
+    } else {None};
     let project_cwd = mcp_config::codex::effective_cwd(cwd, &account.args)?;
     // The `.codex` folder native discovery lists a project layer for, and the
     // removal of what builds before #297 left in it.
     mcp_config::codex::prepare_project(&project_cwd)?;
-    let style_home = mcp_config::codex::style_setup::codex_home(cwd, account_env)?;
     let scoped_options = if account.codex_output_style != Some(false) && (account.codex_output_style == Some(true) || character.is_some_and(|c| !c.trim().is_empty())) {
         mcp_config::codex::style_setup::scoped_options(&account.args, &project_cwd, &style_home)?
     } else { mcp_config::codex::transport_options(&account.args)? };
@@ -2157,7 +2165,6 @@ fn launch_codex_app_server(
 
     let mut shared_key = None;
     let mut shared_home = None;
-    let shared_identity = if account.codex_remote_control { mcp_config::codex::remote::auth_identity(&style_home).ok().flatten() } else { None };
     let mut remote_notice = None;
     let mut thread_config = serde_json::json!({});
     let mut credential = None;
@@ -2165,9 +2172,9 @@ fn launch_codex_app_server(
     if account.codex_remote_control && shared_identity.is_some() {
         use std::collections::BTreeMap;
         let root = app.path().app_data_dir().map_err(|_| "共通接続の保存先が見つかりません。")?;
-        let home = std::fs::canonicalize(&style_home).unwrap_or(style_home.clone());
+        let home = auth_home.clone();
         shared_home = Some(home.to_string_lossy().into_owned());
-        let db = mcp_config::codex::remote::shared_sqlite_home(&root, &home)?;
+        let db = remote_sqlite_home.as_ref().ok_or("共通接続の保存先がありません。")?;
         std::fs::create_dir_all(&db).map_err(|_| "共通接続の保存先を作れません。")?;
         process_cwd = root.join("codex-shared-runtime");
         std::fs::create_dir_all(&process_cwd).map_err(|_| "共通接続の作業先を作れません。")?;
@@ -2193,8 +2200,7 @@ fn launch_codex_app_server(
         mcp_config::codex::check_command_length(&account.command, &server_args)?;
     }
     if account.codex_remote_control && shared_key.is_none() {
-        let root=app.path().app_data_dir().map_err(|_| "席の保存先が見つかりません。")?;
-        let db=mcp_config::codex::remote::sqlite_home(&root,topic_id,&account.id)?;
+        let db=remote_sqlite_home.as_ref().ok_or("席の保存先がありません。")?;
         std::fs::create_dir_all(&db).map_err(|_| "席の保存先を作れません。")?;
         mcp_config::codex::remote::isolate(&mut server_args,&db)?;
         remote_notice=Some("共通接続を利用できるログイン識別子を確認できないため、従来の席別接続を使っています。keyring のみのログインなどは共通接続の対象外です。");

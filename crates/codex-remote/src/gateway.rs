@@ -10,7 +10,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tungstenite::{
     client::IntoClientRequest,
@@ -49,6 +49,126 @@ fn foreign_thread(value: &Value, owned: &HashSet<String>) -> bool {
         Value::Array(a) => a.iter().any(|v| foreign_thread(v, owned)),
         _ => false,
     }
+}
+
+// Only native relationship metadata can reconstruct an offline/cold seat's
+// descendants. Even a backend ignoring ancestorThreadId cannot grant a foreign
+// thread: every parent chain must terminate at the original seat root.
+fn extend_descendants(owned: &mut HashSet<String>, root: &str, rows: &[Value]) {
+    let mut verified = HashSet::from([root.to_string()]);
+    loop {
+        let before = verified.len();
+        for row in rows {
+            if let (Some(id), Some(parent)) = (row["id"].as_str(), row["parentThreadId"].as_str()) {
+                if verified.contains(parent)
+                    && id.len() == 36
+                    && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+                {
+                    verified.insert(id.into());
+                }
+            }
+        }
+        if verified.len() == before {
+            break;
+        }
+    }
+    owned.extend(verified);
+}
+
+fn refresh_descendants(
+    url: &str,
+    token: &str,
+    root: &str,
+    owned: &Arc<Mutex<HashSet<String>>>,
+    alive: &AtomicBool,
+) -> Result<(), ()> {
+    let port = url
+        .rsplit(':')
+        .next()
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or(())?;
+    let stream = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2))
+        .map_err(|_| ())?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|_| ())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|_| ())?;
+    let mut req = url.into_client_request().map_err(|_| ())?;
+    req.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ())?,
+    );
+    let (mut socket, _) = tungstenite::client(req, stream).map_err(|_| ())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let rpc = |socket: &mut WebSocket<TcpStream>,
+               id: u64,
+               method: &str,
+               params: Value|
+     -> Result<Value, ()> {
+        socket
+            .send(Message::text(
+                json!({"id":id,"method":method,"params":params}).to_string(),
+            ))
+            .map_err(|_| ())?;
+        loop {
+            if !alive.load(Ordering::Acquire) || Instant::now() >= deadline {
+                return Err(());
+            }
+            match socket.read() {
+                Ok(Message::Text(text)) => {
+                    let value: Value = serde_json::from_str(&text).map_err(|_| ())?;
+                    if value.get("method").is_none() && value["id"] == id {
+                        return if value.get("error").is_some() {
+                            Err(())
+                        } else {
+                            Ok(value["result"].clone())
+                        };
+                    }
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => return Err(()),
+            }
+        }
+    };
+    rpc(
+        &mut socket,
+        1,
+        "initialize",
+        json!({"clientInfo":{"name":"pullcept-seat-scope","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),
+    )?;
+    socket
+        .send(Message::text(json!({"method":"initialized"}).to_string()))
+        .map_err(|_| ())?;
+    let mut rows = Vec::new();
+    let mut cursor = Value::Null;
+    let mut id = 1;
+    loop {
+        id += 1;
+        let result = rpc(
+            &mut socket,
+            id,
+            "thread/list",
+            json!({"ancestorThreadId":root,"sourceKinds":["subAgent","subAgentReview","subAgentCompact","subAgentThreadSpawn","subAgentOther"],"limit":100,"cursor":cursor,"useStateDbOnly":true}),
+        )?;
+        rows.extend(result["data"].as_array().ok_or(())?.iter().cloned());
+        if rows.len() > 4096 {
+            return Err(());
+        }
+        cursor = result["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    extend_descendants(&mut owned.lock(), root, &rows);
+    let _ = socket.close(None);
+    Ok(())
 }
 
 /// Per-client correlation, deliberately not shared across TUI connections.
@@ -359,6 +479,9 @@ fn serve(
     if !alive.load(Ordering::Acquire) {
         return Err(());
     }
+    // Older backends may not implement relationship queries. Keep the root
+    // usable and fail closed for unknown children if metadata is unavailable.
+    let _ = refresh_descendants(url, private, own, &owned, alive);
     let mut req = url.into_client_request().map_err(|_| ())?;
     req.headers_mut().insert(
         "Authorization",
@@ -411,6 +534,18 @@ fn serve(
         }
         if let Some(mut value) = read(&mut backend)? {
             progress = true;
+            if value.get("method").is_none()
+                && value
+                    .get("id")
+                    .and_then(key)
+                    .and_then(|id| policy.pending.get(&id))
+                    .is_some_and(|method| method == "thread/resume")
+                && value.get("error").is_none()
+            {
+                // Subscription is already installed; snapshots cover earlier
+                // children, and subsequent spawn notifications cover the race.
+                let _ = refresh_descendants(url, private, own, &policy.owned, alive);
+            }
             if value.get("method").is_none()
                 && value
                     .get("id")
@@ -517,24 +652,49 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel();
         let backend = thread::spawn(move || {
             let mut workers = Vec::new();
-            for index in 0..2 {
+            let mut main_index = 0;
+            while main_index < 2 {
                 let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut ws = tungstenite::accept_hdr(stream, |r: &Request, response: Response| {
+                    assert_eq!(r.headers()["Authorization"], "Bearer private");
+                    Ok(response)
+                })
+                .unwrap();
+                let read = |ws: &mut WebSocket<TcpStream>| {
+                    serde_json::from_str::<Value>(&ws.read().unwrap().into_text().unwrap()).unwrap()
+                };
+                let init = read(&mut ws);
+                ws.send(Message::text(
+                    json!({"id":init["id"],"result":{}}).to_string(),
+                ))
+                .unwrap();
+                assert_eq!(read(&mut ws)["method"], "initialized");
+                if init["params"]["clientInfo"]["name"] == "pullcept-seat-scope" {
+                    let query = read(&mut ws);
+                    assert_eq!(query["method"], "thread/list");
+                    ws.send(Message::text(
+                        json!({"id":query["id"],"result":{"data":[],"nextCursor":null}})
+                            .to_string(),
+                    ))
+                    .unwrap();
+                    continue;
+                }
+                let index = main_index;
+                main_index += 1;
                 let tx = done_tx.clone();
                 workers.push(thread::spawn(move||{
-                    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-                    let mut ws=tungstenite::accept_hdr(stream,|r:&Request,response:Response|{assert_eq!(r.headers()["Authorization"],"Bearer private");Ok(response)}).unwrap();
-                    let read=|ws:&mut WebSocket<TcpStream>|serde_json::from_str::<Value>(&ws.read().unwrap().into_text().unwrap()).unwrap();
-                    let init=read(&mut ws);ws.send(Message::text(json!({"id":init["id"],"result":{}}).to_string())).unwrap();
-                    assert_eq!(read(&mut ws)["method"],"initialized");
                     let request=read(&mut ws);assert_eq!(request["method"],"thread/read");
                     ws.send(Message::text(json!({"id":77,"method":"item/commandExecution/requestApproval","params":{"threadId":"B"}}).to_string())).unwrap();
                     ws.send(Message::text(json!({"id":request["id"],"result":{"thread":{"id":if index==0{"A"}else{"B"}}}}).to_string())).unwrap();
-                    if index==0 { assert!(ws.read().is_err(),"forged approval must not reach backend");tx.send("forged-rejected").unwrap(); }
+                    if index==0 {assert!(ws.read().is_err(),"forged approval must not reach backend");tx.send("forged-rejected").unwrap();}
                     else {let response=read(&mut ws);assert_eq!(response["id"],77);assert_eq!(response["result"]["decision"],"accept");tx.send("own-accepted").unwrap();}
                 }));
             }
-            for w in workers {
-                w.join().unwrap();
+            for worker in workers {
+                worker.join().unwrap();
             }
         });
         let cwd = std::env::current_dir().unwrap();
@@ -631,6 +791,36 @@ mod tests {
             .is_err());
         assert!(a.backend(&spawn("A")));
         assert!(a
+            .client(&json!({"id":1,"method":"thread/read","params":{"threadId":child}}))
+            .is_ok());
+    }
+    #[test]
+    fn authoritative_snapshot_reconstructs_offline_children_without_granting_foreign_ids() {
+        let child = "01a110c0-c898-75f0-be7d-ffff2e05b9f5";
+        let grandchild = "01a110c0-c898-75f0-be7d-ffff2e05b9f6";
+        let foreign = "01a110c0-c898-75f0-be7d-ffff2e05b9f7";
+        let rows = vec![
+            json!({"id":grandchild,"parentThreadId":child}),
+            json!({"id":foreign,"parentThreadId":"B"}),
+            json!({"id":child,"parentThreadId":"A"}),
+        ];
+        // A newly created gateway after a cold resume has no live spawn events.
+        let mut reconnected = Policy::new("A");
+        extend_descendants(&mut reconnected.owned.lock(), "A", &rows);
+        assert!(reconnected
+            .client(&json!({"id":1,"method":"thread/read","params":{"threadId":grandchild}}))
+            .is_ok());
+        assert!(reconnected
+            .client(&json!({"id":2,"method":"thread/read","params":{"threadId":foreign}}))
+            .is_err());
+        assert!(reconnected.backend(&json!({"id":77,"method":"item/commandExecution/requestApproval","params":{"threadId":child}})));
+        assert!(reconnected
+            .client(&json!({"id":77,"result":{"decision":"accept"}}))
+            .is_ok());
+        // Sharing a gateway across TUI reconnects retains the verified set.
+        let mut next = Policy::new("A");
+        next.owned = reconnected.owned.clone();
+        assert!(next
             .client(&json!({"id":1,"method":"thread/read","params":{"threadId":child}}))
             .is_ok());
     }

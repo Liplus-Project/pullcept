@@ -106,9 +106,9 @@ pub fn process_key(command: &str, args: &[String], env: &[(String,String)]) -> R
     Ok(format!("{:x}",Sha256::digest(bytes)))
 }
 
-pub fn shared_sqlite_home(root: &Path, auth_home: &Path) -> Result<PathBuf, String> {
+pub fn shared_sqlite_home(root: &Path, auth_home: &Path, login_identity: &str) -> Result<PathBuf, String> {
     let identity = auth_home.to_str().ok_or("認証 HOME を UTF-8 で表せません。")?;
-    let path = sqlite_home(root, "shared-backend-v1", identity)?;
+    let path = sqlite_home(root, &format!("shared-backend-v1:{login_identity}"), identity)?;
     Ok(path)
 }
 
@@ -448,6 +448,14 @@ mod tests {
         let mut a=vec!["-c".into(),"sqlite_home=fixture".into(),"app-server".into(),"--ws-token-sha256".into(),"first".into()];
         let first=process_key("codex",&a,&[]).unwrap();*a.last_mut().unwrap()="second".into();assert_eq!(first,process_key("codex",&a,&[]).unwrap());
         a[1]="sqlite_home=other".into();assert_ne!(first,process_key("codex",&a,&[]).unwrap());
+    }
+
+    #[test] fn shared_enrollment_follows_login_context_without_touching_old_paths() {
+        let root=Path::new("C:/fixture-app");let home=Path::new("C:/fixture-auth");
+        let a=shared_sqlite_home(root,home,"user-A-workspace-A").unwrap();
+        assert_eq!(a,shared_sqlite_home(root,home,"user-A-workspace-A").unwrap());
+        assert_ne!(a,shared_sqlite_home(root,home,"user-B-workspace-A").unwrap());
+        assert_ne!(a,shared_sqlite_home(root,Path::new("C:/other-auth"),"user-A-workspace-A").unwrap());
     }
 
 }
