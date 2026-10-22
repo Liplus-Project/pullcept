@@ -74,7 +74,7 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
       if (reply.notice) description.textContent = reply.notice;
       if (shared) {
         heading.textContent = "共通の Codex スマホ接続";
-        description.textContent = "同じログインと互換な設定の席で共有します。別のトピック・作業フォルダーでもペアリングは共通です。初回移行は再ペアリングが必要です。席を停止しても共通接続は維持します。スマホで会話を開いている間は会話と writer が残り、再開前にスマホで会話を閉じる必要があります。QR やコードは他の人に渡さないでください。";
+        description.textContent = "同じログインと互換な設定の席で共有します。別のトピック・作業フォルダーでもペアリングは共通です。初回移行は再ペアリングが必要です。席を停止しても共通接続は維持します。スマホで会話を開いたままでは、席を再開できない場合があります。会話を閉じてから再試行してください。QR やコードは他の人に渡さないでください。";
         refreshButtons();
       }
       error.textContent = reply.error ?? "";

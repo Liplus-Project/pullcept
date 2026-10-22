@@ -2179,13 +2179,7 @@ fn launch_codex_app_server(
         // Native records its path in config, never the room credentials.
         let secrets: BTreeMap<_,_> = server_env.iter().filter(|(key,_)| mcp_config::codex::SIDECAR_ENV.iter().any(|k| key.eq_ignore_ascii_case(k))).cloned().collect();
         let path = process_cwd.join(format!("seat-{}.json",uuid::Uuid::new_v4()));
-        let mut options = std::fs::OpenOptions::new(); options.write(true).create_new(true);
-        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
-        #[cfg(windows)] { use std::os::windows::fs::OpenOptionsExt; options.custom_flags(0x04000000); } // delete-on-close, including app crash
-        let mut file = options.open(&path).map_err(|_| "席の秘密を準備できません。")?;
-        use std::io::Write;
-        file.write_all(&serde_json::to_vec(&secrets).map_err(|_| "席の秘密を準備できません。")?).map_err(|_| "席の秘密を準備できません。")?;
-        credential = Some(std::sync::Arc::new(crate::codex_app_server::CredentialFile { path:path.clone(), _file:file }));
+        credential=Some(std::sync::Arc::new(crate::codex_app_server::CredentialFile::create(path.clone(),&serde_json::json!(secrets))?));
         let bootstrap = sidecar_entry.parent().ok_or("席の起動補助が見つかりません。")?.join("shared-seat.mjs");
         if !bootstrap.is_file() { return Err("共有接続の起動補助がありません。Pullcept を更新してください。".into()); }
         app_server::shared_room_config(&mut thread_config, server_name, &bootstrap, &path, sidecar_runner, sidecar_entry, &delivery.hook_keys);

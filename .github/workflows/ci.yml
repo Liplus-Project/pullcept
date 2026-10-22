@@ -85,6 +85,12 @@ jobs:
         working-directory: crates/mcp-config
         run: cargo test
 
+      - name: Install pinned native Codex fixture
+        run: npm install --prefix .artifacts/native-cli --no-save --no-audit --no-fund @openai/codex@0.162.1
+
+      - name: Test shared native threads and real remote TUI without model calls
+        run: node scripts/test-codex-shared.mjs
+
       - name: Test the native relay control boundary
         run: cargo test --manifest-path crates/codex-remote/Cargo.toml
 

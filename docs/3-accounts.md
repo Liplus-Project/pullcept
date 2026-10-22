@@ -796,7 +796,7 @@ QR はアプリ内の `qrcode` ライブラリで生成し、外部生成サー�
 
 スマホ接続を明示的に有効にした互換な席は、一つの native app-server と一件のスマホ登録を共有する。トピック・作業フォルダー・アカウント表示名は共有キーにしない。最初の利用で起動し、最後の席が閉じても Pullcept 終了まで維持する。同じ認証 HOME の異なる process 設定は黙って最初の値へ合わせず拒否する。別の認証 HOME は別の backend を持つ。同じ HOME のログインを変えた場合は既存席を守るためアプリの再起動を案内する。
 
-安定したログイン識別は `auth.json` の `auth_mode` と `tokens.account_id` だけを抽出し、メモリ内でハッシュ化する。token や更新時刻は識別に使わないので、同じログインの token refresh は共有を妨げない。keyring のみ・識別子欠落・非対応形式など、安全に識別できない設定は従来の席別接続を維持し、接続画面でその理由を表示する。keyring の秘密を取り出したり別の保存先へコピーしたりしない。
+安定したログイン識別は `auth.json` の `auth_mode`、選択 workspace の `tokens.account_id`、ID token の `chatgpt_user_id`（または `user_id`）だけを抽出し、メモリ内でハッシュ化する。token や更新時刻は識別に使わないので、同じログインの token refresh は共有を妨げない。keyring のみ・識別子欠落・非対応形式など、安全に識別できない設定は従来の席別接続を維持し、接続画面でその理由を表示する。keyring の秘密を取り出したり別の保存先へコピーしたりしない。
 
 登録保存先はアプリデータの `codex-seat-sqlite/<SHA-256>` の新しい共有 namespace と正規化した認証 HOME から導出する。topic/account 別の旧 DB は読み替え・移動・削除・併合・revoke しない。**初回移行では再ペアリングが必要**。`CODEX_HOME`、既存 rollout、writer lock、保存済みの明示会話 ID は変えない。スマホ接続オフ・互換 hook 方式・Claude・人間・MCP の経路は維持する。
 

@@ -58,14 +58,33 @@ pub fn sqlite_home(root: &Path, topic: &str, account: &str) -> Result<PathBuf, S
 /// Stable enrollment for the effective authentication home; projects and seats
 /// do not participate. Existing per-seat databases are left untouched.
 #[derive(Deserialize)] struct IdentityFile { auth_mode: Option<String>, tokens: Option<IdentityTokens> }
-#[derive(Deserialize)] struct IdentityTokens { account_id: Option<String> }
+#[derive(Deserialize)] struct IdentityTokens { account_id: Option<String>, #[serde(default,deserialize_with="identity_claims")] id_token: Option<TokenIdentity> }
+struct TokenIdentity { user:String, account:Option<String> }
+#[derive(Deserialize)] struct IdClaims { #[serde(rename="https://api.openai.com/auth")] auth:Option<AuthClaims> }
+#[derive(Deserialize)] struct AuthClaims { chatgpt_user_id:Option<String>, user_id:Option<String>, chatgpt_account_id:Option<String> }
+fn identity_claims<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<Option<TokenIdentity>,D::Error> {
+    use base64::Engine;
+    let jwt=Option::<String>::deserialize(deserializer)?;
+    let Some(jwt)=jwt.filter(|s|s.len()<=262144) else {return Ok(None)};
+    // This is local identity metadata, not an authorization verdict. Native
+    // Codex still validates and uses the credentials itself.
+    let mut parts=jwt.split('.');
+    let (Some(header),Some(payload),Some(signature))=(parts.next(),parts.next(),parts.next()) else {return Ok(None)};
+    if header.is_empty() || signature.is_empty() || parts.next().is_some() {return Ok(None)}
+    let Ok(bytes)=base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {return Ok(None)};
+    let Ok(claims)=serde_json::from_slice::<IdClaims>(&bytes) else {return Ok(None)};
+    let Some(auth)=claims.auth else {return Ok(None)};
+    Ok(auth.chatgpt_user_id.or(auth.user_id).filter(|s|!s.is_empty()).map(|user|TokenIdentity {user,account:auth.chatgpt_account_id}))
+}
 fn identity(reader: impl std::io::Read) -> Result<Option<String>,String> {
     use sha2::{Digest,Sha256};
     let value: IdentityFile = serde_json::from_reader(reader).map_err(|_| "Codex のログイン識別子を読めません。資格情報は表示しません。")?;
-    let Some(id) = value.tokens.and_then(|t|t.account_id).filter(|s|!s.is_empty()) else { return Ok(None) };
+    let Some(tokens)=value.tokens else {return Ok(None)};
+    let Some(claims)=tokens.id_token else {return Ok(None)};
+    let Some(id)=tokens.account_id.or(claims.account).filter(|s|!s.is_empty()) else {return Ok(None)};
     let mode=value.auth_mode.unwrap_or_else(||"chatgpt".into());
     if mode != "chatgpt" { return Ok(None) }
-    Ok(Some(format!("{:x}",Sha256::digest(format!("{mode}\0{id}").as_bytes()))))
+    Ok(Some(format!("{:x}",Sha256::digest(serde_json::to_vec(&(mode,id,claims.user)).map_err(|_|"ログイン識別子を照合できません。")?))))
 }
 /// Deserialize only stable account metadata; unknown credential fields are
 /// skipped rather than copied to a Value, log, launch line, or error.
@@ -411,11 +430,18 @@ mod tests {
         );
         assert!(pairing(&json!({"pairingCode":"test","expiresAt":999999}), 1000).is_err());
     }
-    #[test] fn identity_ignores_refresh_but_detects_account_switch() {
-        let a=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"A","access_token":"old","refresh_token":"first"},"last_refresh":"old"}"#.as_slice()).unwrap();
-        let refreshed=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"A","access_token":"new","refresh_token":"second"},"last_refresh":"new"}"#.as_slice()).unwrap();
-        let b=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"B","access_token":"new"}}"#.as_slice()).unwrap();
-        assert_eq!(a,refreshed);assert_ne!(a,b);assert!(!a.unwrap().contains("old"));
+    #[test] fn identity_ignores_refresh_but_detects_workspace_and_user_switch() {
+        use base64::Engine;
+        let fixture=|user:&str,account:&str,token:&str| {
+            let payload=base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"https://api.openai.com/auth":{"chatgpt_user_id":user,"chatgpt_account_id":account},"exp":token})).unwrap());
+            serde_json::to_vec(&json!({"auth_mode":"chatgpt","tokens":{"account_id":account,"id_token":format!("header.{payload}.fixture-signature"),"access_token":token,"refresh_token":token},"last_refresh":token})).unwrap()
+        };
+        let a=identity(fixture("user-A","workspace-A","old").as_slice()).unwrap();
+        assert_eq!(a,identity(fixture("user-A","workspace-A","refreshed").as_slice()).unwrap());
+        assert_ne!(a,identity(fixture("user-B","workspace-A","old").as_slice()).unwrap());
+        assert_ne!(a,identity(fixture("user-A","workspace-B","old").as_slice()).unwrap());
+        assert!(!a.unwrap().contains("user-A"));
+        assert_eq!(identity(br#"{"tokens":{"account_id":"workspace-A"}}"#.as_slice()).unwrap(),None);
         assert_eq!(identity(br#"{"tokens":null}"#.as_slice()).unwrap(),None);
     }
     #[test] fn randomized_listener_keys_are_not_process_configuration() {

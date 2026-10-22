@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -68,9 +68,7 @@ impl SharedBackend {
     fn stop(&self) { self.remote.end(); stop_tree(&mut self.child.lock()); }
 }
 
-/// Disposable sidecar bootstrap. Its contents never enter native config/logs.
-pub struct CredentialFile { pub path: PathBuf, pub _file: std::fs::File }
-impl Drop for CredentialFile { fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); let _ = std::fs::remove_file(self.path.with_extension("ready")); } }
+pub use codex_remote::credential::CredentialFile;
 
 /// The process tree of one seat's server.
 struct Server {
@@ -176,7 +174,7 @@ pub struct Started {
     activity: Activity,
     /// Notifications that arrived before the seat was known, as the probe
     /// keeps them: method, thread status, arrival time (#329).
-    probe: Vec<(String, Option<String>, String)>,
+    probe: Vec<(String, Option<String>, String, Option<String>)>,
 }
 
 /// One seat's probe lines (#329): the file held open for the life of the
@@ -386,7 +384,7 @@ impl Started {
                 self.activity.feed(&value);
                 if self.probe.len() < PROBE_EARLY_MAX {
                     if let Some((method, status)) = probe_of(&value) {
-                        self.probe.push((method, status, crate::room::now_iso()));
+                        self.probe.push((method, status, crate::room::now_iso(), value["params"]["threadId"].as_str().or_else(||value["params"]["thread"]["id"].as_str()).map(str::to_string)));
                     }
                 }
                 continue;
@@ -443,8 +441,8 @@ impl Started {
         let (topic, account, pty) = (topic_id.to_string(), account_id.to_string(), pty_id.to_string());
         std::thread::spawn(move || {
             let mut plan = mcp_config::work_status::CodexPlan::default();
-            for (method, status, at) in &early {
-                probe.write(method, status.as_deref(), at);
+            for (method, status, at, owner) in &early {
+                if owner.as_deref()==Some(thread_id.as_str()) { probe.write(method, status.as_deref(), at); }
             }
             seat.tell(&activity);
             let mut turn_id: Option<String> = None;
@@ -600,7 +598,7 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
         }
         prepare_thread(&mut started, &request)?;
         if let Some(file) = &request.credential {
-            let marker=file.path.with_extension("ready");
+            let marker=file.marker();
             let deadline=Instant::now()+REQUEST_TIMEOUT;
             while !marker.is_file() {
                 backend.check()?;
@@ -610,7 +608,7 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
             let _=std::fs::remove_file(marker);
         }
         if started.server.lease.is_none() { started.server.lease = Some(Arc::new(codex_remote::pool::ThreadLease::claim(&backend.threads,&started.thread_id)?)); }
-        let gateway = Arc::new(codex_remote::gateway::Gateway::start(backend.url.clone(), backend.token.clone(), request.token.to_string(), started.thread_id.clone())?);
+        let gateway = Arc::new(codex_remote::gateway::Gateway::start(backend.url.clone(), backend.token.clone(), request.token.to_string(), started.thread_id.clone(), request.thread_cwd.to_path_buf(), request.hook_keys.to_vec())?);
         started.url = gateway.url.clone();
         started.server.gateway = Some(gateway);
         Ok(())
