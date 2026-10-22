@@ -57,11 +57,12 @@ fn one_of(value: &Value, choices: &[&str]) -> bool {
 
 // Native 0.162.1 ThreadResumeParams. This adapter consumes configuration, not
 // applies it: even serviceTier:null would otherwise clear launcher state.
-fn attach_params(params: &Value) -> Result<Value, &'static str> {
+fn attach_params(params: &Value) -> Result<Value, String> {
     let fields = params
         .as_object()
         .ok_or("resume params must be an object")?;
     let mut attach = serde_json::Map::new();
+    let mut invalid = Vec::new();
     for (name, value) in fields {
         let valid = match name.as_str() {
             "threadId" => value.is_string(),
@@ -81,75 +82,53 @@ fn attach_params(params: &Value) -> Result<Value, &'static str> {
                         })
                     })
             }
+            // Consumed settings are checked by JSON type only, never by enum
+            // value: the user's codex CLI is not pinned, and a value added by
+            // a codex update must not stop seat startup. Nothing here is sent
+            // upstream, so a value check would not strengthen the boundary.
             "model"
             | "modelProvider"
             | "serviceTier"
             | "cwd"
             | "permissions"
             | "baseInstructions"
-            | "developerInstructions" => value.is_null() || value.is_string(),
+            | "developerInstructions"
+            | "sandbox"
+            | "approvalsReviewer"
+            | "personality" => value.is_null() || value.is_string(),
             "runtimeWorkspaceRoots" => {
                 value.is_null()
-                    || value.as_array().is_some_and(|roots| {
-                        roots.iter().all(|v| {
-                            v.as_str()
-                                .is_some_and(|p| std::path::Path::new(p).is_absolute())
-                        })
-                    })
+                    || value
+                        .as_array()
+                        .is_some_and(|roots| roots.iter().all(Value::is_string))
             }
             "config" => value.is_null() || value.is_object(),
-            "sandbox" => {
-                value.is_null()
-                    || one_of(
-                        value,
-                        &["read-only", "workspace-write", "danger-full-access"],
-                    )
-            }
-            "approvalsReviewer" => {
-                value.is_null() || one_of(value, &["user", "auto_review", "guardian_subagent"])
-            }
-            "personality" => value.is_null() || one_of(value, &["none", "friendly", "pragmatic"]),
-            "approvalPolicy" => {
-                value.is_null()
-                    || one_of(value, &["untrusted", "on-request", "never"])
-                    || value.as_object().is_some_and(|policy| {
-                        policy.len() == 1
-                            && policy
-                                .get("granular")
-                                .and_then(Value::as_object)
-                                .is_some_and(|g| {
-                                    ["mcp_elicitations", "rules", "sandbox_approval"]
-                                        .iter()
-                                        .all(|k| g.get(*k).is_some_and(Value::is_boolean))
-                                        && g.iter().all(|(k, v)| {
-                                            matches!(
-                                                k.as_str(),
-                                                "mcp_elicitations"
-                                                    | "rules"
-                                                    | "sandbox_approval"
-                                                    | "request_permissions"
-                                                    | "skill_approval"
-                                            ) && v.is_boolean()
-                                        })
-                                })
-                    })
-            }
-            // history/path can replace the selected thread's persisted history.
+            "approvalPolicy" => value.is_null() || value.is_string() || value.is_object(),
+            // Unknown non-null fields stay rejected: an unknown field may be an
+            // operation (like history/path, which replace the selected thread's
+            // persisted history), so dropping it silently is unsafe. A codex CLI
+            // update may therefore need this list checked for compatibility.
             // Unknown null fields are tolerated for native optional-field drift.
             _ => value.is_null(),
         };
         if !valid {
-            return Err("invalid or unsupported seat attach field");
-        }
-        if matches!(
+            invalid.push(name.as_str());
+        } else if matches!(
             name.as_str(),
             "threadId" | "excludeTurns" | "initialTurnsPage"
         ) {
             attach.insert(name.clone(), value.clone());
         }
     }
+    // Field names only: values may carry secrets.
+    if !invalid.is_empty() {
+        return Err(format!(
+            "invalid or unsupported seat attach field: {}",
+            invalid.join(", ")
+        ));
+    }
     if !attach.get("threadId").is_some_and(Value::is_string) {
-        return Err("this seat's thread ID is required");
+        return Err("this seat's thread ID is required".into());
     }
     Ok(Value::Object(attach))
 }
@@ -291,7 +270,7 @@ impl Policy {
         }
     }
     /// Validate the original request before projecting the actual upstream message.
-    pub fn client(&mut self, message: &Value) -> Result<Value, &'static str> {
+    pub fn client(&mut self, message: &Value) -> Result<Value, String> {
         let mut upstream = message.clone();
         if let Some(method) = message["method"].as_str() {
             if method == "initialized" && message.get("id").is_none() {
@@ -302,16 +281,16 @@ impl Policy {
                 .and_then(key)
                 .ok_or("request ID required")?;
             if self.pending.contains_key(&id) {
-                return Err("request ID already pending");
+                return Err("request ID already pending".into());
             }
             let p = &message["params"];
             if foreign_thread(p, &self.owned.lock()) {
-                return Err("another seat's thread is not accessible");
+                return Err("another seat's thread is not accessible".into());
             }
             let cwd_read = matches!(method, "skills/list" | "hooks/list");
             if cwd_read {
                 let Some(own) = self.cwd.as_ref() else {
-                    return Err("seat working directory unavailable");
+                    return Err("seat working directory unavailable".into());
                 };
                 if p["cwds"].as_array().is_none_or(|paths| {
                     paths.is_empty()
@@ -322,7 +301,7 @@ impl Policy {
                                 != Some(own)
                         })
                 }) {
-                    return Err("only this seat's working directory is accessible");
+                    return Err("only this seat's working directory is accessible".into());
                 }
             }
             let scoped = matches!(
@@ -365,13 +344,13 @@ impl Policy {
             );
             if scoped {
                 if thread_id(p).is_none_or(|id| !self.owned.lock().contains(id)) {
-                    return Err("this seat's thread ID is required");
+                    return Err("this seat's thread ID is required".into());
                 }
                 if method == "thread/resume" {
                     upstream["params"] = attach_params(p)?;
                 }
             } else if !global && !cwd_read {
-                return Err("method is unavailable through this seat");
+                return Err("method is unavailable through this seat".into());
             }
             self.pending.insert(id, method.into());
             Ok(upstream)
@@ -381,7 +360,7 @@ impl Policy {
                 .and_then(key)
                 .ok_or("response ID required")?;
             if !self.approvals.remove(&id) {
-                return Err("approval ID does not belong to this connection");
+                return Err("approval ID does not belong to this connection".into());
             }
             Ok(upstream)
         }
@@ -740,7 +719,10 @@ mod tests {
                 if value.is_null() {
                     assert_eq!(result.unwrap()["params"], json!({"threadId":"A"}), "{name}");
                 } else {
-                    assert!(result.is_err(), "{name}");
+                    assert_eq!(
+                        result.unwrap_err(),
+                        format!("invalid or unsupported seat attach field: {name}")
+                    );
                 }
             }
         }
@@ -758,12 +740,13 @@ mod tests {
             json!({"initialTurnsPage":{"sortDirection":"sideways"}}),
             json!({"initialTurnsPage":{"itemsView":"other"}}),
             json!({"initialTurnsPage":{"future":null}}),
-            json!({"runtimeWorkspaceRoots":["relative"]}),
-            json!({"sandbox":"other"}),
-            json!({"approvalsReviewer":"other"}),
-            json!({"personality":"other"}),
-            json!({"approvalPolicy":{"granular":{"rules":true}}}),
-            json!({"approvalPolicy":"on-failure"}),
+            json!({"runtimeWorkspaceRoots":"/root"}),
+            json!({"runtimeWorkspaceRoots":[1]}),
+            json!({"sandbox":true}),
+            json!({"approvalsReviewer":{"kind":"user"}}),
+            json!({"personality":["friendly"]}),
+            json!({"approvalPolicy":false}),
+            json!({"config":"model=other"}),
             json!({"config":{"nested":[{"threadId":"B"}]}}),
         ] {
             let mut params = json!({"threadId":"A"});
@@ -784,6 +767,43 @@ mod tests {
         assert!(Policy::new("A")
             .client(&json!({"id":1,"method":"thread/resume","params":{"thread_id":"A"}}))
             .is_err());
+    }
+    #[test]
+    fn attach_accepts_unrecognized_setting_values_by_type() {
+        // Values a newer codex CLI might send: only the JSON type is checked.
+        let params = json!({"threadId":"A",
+            "sandbox":"future-sandbox", "approvalsReviewer":"future_reviewer",
+            "personality":"future", "approvalPolicy":"on-failure",
+            "runtimeWorkspaceRoots":["relative"]});
+        assert_eq!(
+            Policy::new("A")
+                .client(&json!({"id":1,"method":"thread/resume","params":params}))
+                .unwrap()["params"],
+            json!({"threadId":"A"})
+        );
+        let params = json!({"threadId":"A",
+            "approvalPolicy":{"granular":{"rules":true,"future_scope":"ask"}}});
+        assert_eq!(
+            Policy::new("A")
+                .client(&json!({"id":1,"method":"thread/resume","params":params}))
+                .unwrap()["params"],
+            json!({"threadId":"A"})
+        );
+    }
+    #[test]
+    fn attach_rejection_names_every_offending_field_without_values() {
+        let params = json!({"threadId":"A", "sandbox":"future-sandbox",
+            "future":"secret-value", "personality":17, "later":null});
+        let mut policy = Policy::new("A");
+        let error = policy
+            .client(&json!({"id":1,"method":"thread/resume","params":params}))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "invalid or unsupported seat attach field: future, personality"
+        );
+        assert!(!error.contains("secret-value"));
+        assert!(policy.pending.is_empty());
     }
     #[test]
     fn thread_methods_fail_closed_and_approvals_are_correlated_per_connection() {
