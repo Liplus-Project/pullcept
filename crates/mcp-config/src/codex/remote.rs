@@ -55,6 +55,44 @@ pub fn sqlite_home(root: &Path, topic: &str, account: &str) -> Result<PathBuf, S
     Ok(path)
 }
 
+/// Stable enrollment for the effective authentication home; projects and seats
+/// do not participate. Existing per-seat databases are left untouched.
+#[derive(Deserialize)] struct IdentityFile { auth_mode: Option<String>, tokens: Option<IdentityTokens> }
+#[derive(Deserialize)] struct IdentityTokens { account_id: Option<String> }
+fn identity(reader: impl std::io::Read) -> Result<Option<String>,String> {
+    use sha2::{Digest,Sha256};
+    let value: IdentityFile = serde_json::from_reader(reader).map_err(|_| "Codex のログイン識別子を読めません。資格情報は表示しません。")?;
+    let Some(id) = value.tokens.and_then(|t|t.account_id).filter(|s|!s.is_empty()) else { return Ok(None) };
+    let mode=value.auth_mode.unwrap_or_else(||"chatgpt".into());
+    if mode != "chatgpt" { return Ok(None) }
+    Ok(Some(format!("{:x}",Sha256::digest(format!("{mode}\0{id}").as_bytes()))))
+}
+/// Deserialize only stable account metadata; unknown credential fields are
+/// skipped rather than copied to a Value, log, launch line, or error.
+pub fn auth_identity(home: &Path) -> Result<Option<String>,String> {
+    match std::fs::File::open(home.join("auth.json")) {
+        Ok(file) => identity(std::io::BufReader::new(file)),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Codex のログイン識別子を開けません。".into()),
+    }
+}
+
+pub fn process_key(command: &str, args: &[String], env: &[(String,String)]) -> Result<String,String> {
+    use sha2::{Digest,Sha256};
+    let mut args=args.to_vec();
+    let index=args.iter().position(|s|s=="--ws-token-sha256").ok_or("共通接続の認証設定がありません。")?;
+    if index+1>=args.len() { return Err("共通接続の認証設定がありません。".into()) }
+    args.remove(index+1); args.remove(index);
+    let bytes=serde_json::to_vec(&(command,args,env)).map_err(|_|"共通接続の設定を照合できません。")?;
+    Ok(format!("{:x}",Sha256::digest(bytes)))
+}
+
+pub fn shared_sqlite_home(root: &Path, auth_home: &Path) -> Result<PathBuf, String> {
+    let identity = auth_home.to_str().ok_or("認証 HOME を UTF-8 で表せません。")?;
+    let path = sqlite_home(root, "shared-backend-v1", identity)?;
+    Ok(path)
+}
+
 pub fn isolate(args: &mut Vec<String>, path: &Path) -> Result<(), String> {
     let index = args
         .iter()
@@ -373,4 +411,17 @@ mod tests {
         );
         assert!(pairing(&json!({"pairingCode":"test","expiresAt":999999}), 1000).is_err());
     }
+    #[test] fn identity_ignores_refresh_but_detects_account_switch() {
+        let a=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"A","access_token":"old","refresh_token":"first"},"last_refresh":"old"}"#.as_slice()).unwrap();
+        let refreshed=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"A","access_token":"new","refresh_token":"second"},"last_refresh":"new"}"#.as_slice()).unwrap();
+        let b=identity(br#"{"auth_mode":"chatgpt","tokens":{"account_id":"B","access_token":"new"}}"#.as_slice()).unwrap();
+        assert_eq!(a,refreshed);assert_ne!(a,b);assert!(!a.unwrap().contains("old"));
+        assert_eq!(identity(br#"{"tokens":null}"#.as_slice()).unwrap(),None);
+    }
+    #[test] fn randomized_listener_keys_are_not_process_configuration() {
+        let mut a=vec!["-c".into(),"sqlite_home=fixture".into(),"app-server".into(),"--ws-token-sha256".into(),"first".into()];
+        let first=process_key("codex",&a,&[]).unwrap();*a.last_mut().unwrap()="second".into();assert_eq!(first,process_key("codex",&a,&[]).unwrap());
+        a[1]="sqlite_home=other".into();assert_ne!(first,process_key("codex",&a,&[]).unwrap());
+    }
+
 }

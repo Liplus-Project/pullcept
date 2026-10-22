@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import QRCode from "qrcode";
 
 interface Pairing { pairingCode: string; manualPairingCode: string | null; expiresAt: number }
-interface Reply { epoch: string; status: string | null; error: string | null; pairing: Pairing | null; reason?: string | null }
+interface Reply { notice?: string | null; shared?: boolean; epoch: string; status: string | null; error: string | null; pairing: Pairing | null; reason?: string | null }
 
 /** The relay refused this seat with 409 "already online" (#430). The 409 does
  * not say who holds it, so the desktop app is only an example of where to look. */
@@ -36,6 +36,8 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollAt = 0;
   let currentStatus: string | null = null;
+  let shared = false;
+  let confirmStop = false;
   const clearPrivate = () => {
     generation += 1;
     expiresAt = 0;
@@ -45,19 +47,36 @@ export function openCodexRemote(ptyId: string, name: string, isLive: () => boole
   const refreshButtons = () => {
     enable.disabled = busy || !epoch;
     disable.disabled = busy || !epoch;
+    disable.textContent = shared ? (confirmStop ? "全席の共有接続を停止する" : "共有接続を停止") : "接続を停止";
     pair.disabled = busy || !epoch || currentStatus !== "connected";
   };
   const call = async (action: "status" | "enable" | "disable" | "pair") => {
     if (!alive || busy) return;
     if (!isLive()) { ended(); return; }
+    if (action === "disable" && shared && !confirmStop) {
+      confirmStop = true;
+      clearPrivate();
+      error.textContent = "同じ接続を使うすべての席とスマホに影響します。停止する場合は「全席の共有接続を停止する」を押してください。";
+      refreshButtons();
+      return;
+    }
+    const confirmed = action === "disable" && shared && confirmStop;
+    if (action !== "status") confirmStop = false;
     busy = true; refreshButtons();
     if (action !== "status") { clearPrivate(); error.textContent = ""; }
     const requestGeneration = generation;
     try {
-      const reply = await deps.invoke<Reply>("codex_remote_control", { ptyId, epoch, action });
+      const reply = await deps.invoke<Reply>("codex_remote_control", { ptyId, epoch, action, confirmShared: confirmed });
       if (!alive || !isLive()) { if (alive) ended(); return; }
       if (epoch && epoch !== reply.epoch) { ended(); return; }
       epoch = reply.epoch;
+      shared = reply.shared === true;
+      if (reply.notice) description.textContent = reply.notice;
+      if (shared) {
+        heading.textContent = "共通の Codex スマホ接続";
+        description.textContent = "同じログインと互換な設定の席で共有します。別のトピック・作業フォルダーでもペアリングは共通です。初回移行は再ペアリングが必要です。席を停止しても共通接続は維持します。スマホで会話を開いている間は会話と writer が残り、再開前にスマホで会話を閉じる必要があります。QR やコードは他の人に渡さないでください。";
+        refreshButtons();
+      }
       error.textContent = reply.error ?? "";
       if (reply.status) {
         currentStatus = reply.status;

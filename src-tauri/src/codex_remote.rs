@@ -8,6 +8,8 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct Reply {
     epoch: String,
+    shared: bool,
+    notice: Option<&'static str>,
     status: Option<String>,
     pairing: Option<protocol::Pairing>,
     error: Option<String>,
@@ -22,24 +24,31 @@ pub async fn codex_remote_control(
     pty_id: String,
     epoch: Option<String>,
     action: Action,
+    confirm_shared: Option<bool>,
 ) -> Result<Reply, String> {
-    let (control, relay_in_use) = app.state::<CodexServers>().servers.lock().get(&pty_id)
-        .and_then(|server| Some((server.remote.clone()?, Arc::clone(&server.relay_in_use))))
+    let (control, relay_in_use, seat_epoch, shared, alive, notice) = app.state::<CodexServers>().servers.lock().get(&pty_id)
+        .and_then(|server| Some((server.remote.clone()?, Arc::clone(&server.relay_in_use),server.epoch.clone(),server.shared.is_some(),Arc::clone(&server.alive),server.remote_notice)))
         .ok_or("この席ではリモート接続が有効ではありません。アカウント設定を確認し、席を起動し直してください。")?;
     if !app.state::<crate::pty::PtyState>().is_running(&pty_id) {
-        control.end();
+        if !shared { control.end(); }
+        return Err("この席は終了しました。".into());
     }
     control.check()?;
-    control.accept(action, epoch.as_deref())?;
+    if !alive.load(Ordering::Acquire) || epoch.as_ref().is_some_and(|epoch| epoch != &seat_epoch) || (action != Action::Status && epoch.is_none()) { return Err("席が切り替わりました。接続画面を開き直してください。".into()); }
+    if shared && action == Action::Disable && confirm_shared != Some(true) { return Err("共通接続の停止は、同じ接続を使うすべての席とスマホに影響します。共有接続の停止を確認してください。".into()); }
+    control.accept(action, Some(control.epoch()))?;
     if matches!(action, Action::Enable | Action::Disable) {
         // An explicit operation starts a new connection cycle; an earlier
         // refusal no longer describes it.
         relay_in_use.store(false, Ordering::Release);
     }
     let still_current = Arc::clone(&control);
+    let reply_epoch = seat_epoch.clone();
     let reply = tauri::async_runtime::spawn_blocking(move || {
         let mut reply = Reply {
-            epoch: control.epoch().to_string(),
+            epoch: reply_epoch,
+            shared,
+            notice,
             status: None,
             pairing: None,
             error: None,
@@ -90,7 +99,8 @@ pub async fn codex_remote_control(
     // Removal from the registry, terminal exit and generation all invalidate
     // replies even if they raced the RPC completion.
     if !app.state::<crate::pty::PtyState>().is_running(&pty_id) {
-        still_current.end();
+        if !shared { still_current.end(); }
+        return Err("この席は終了しました。".into());
     }
     still_current.check()?;
     let current = app.state::<CodexServers>();
@@ -99,6 +109,7 @@ pub async fn codex_remote_control(
         .get(&pty_id)
         .and_then(|s| s.remote.as_ref())
         .is_some_and(|c| Arc::ptr_eq(c, &still_current))
+        || servers.get(&pty_id).is_none_or(|s| s.epoch != seat_epoch || !s.alive.load(Ordering::Acquire))
     {
         return Err("この席は終了しました。".into());
     }

@@ -89,7 +89,9 @@ pub fn plan(options: &[String]) -> Result<Plan, String> {
                         "model_reasoning_effort" => plan.thread.effort = string_value(raw),
                         _ => {}
                     }
-                    plan.server.extend(["-c".into(), pair.clone()]);
+                    if !matches!(key, "model" | "approval_policy" | "sandbox_mode" | "model_reasoning_effort") {
+                        plan.server.extend(["-c".into(), pair.clone()]);
+                    }
                 }
             }
             "--enable" | "--disable" => {
@@ -181,6 +183,53 @@ pub fn server_args(
         .map(String::from),
     );
     Ok(args)
+}
+
+/// Split per-thread config from genuinely process-wide options for the pool.
+pub fn shared_options(plan: &Plan) -> Result<(Vec<String>, Value), String> {
+    let mut process = Vec::new(); let mut config = Map::new();
+    let mut i = 0;
+    while i < plan.server.len() {
+        if plan.server[i] == "-c" {
+            let pair = plan.server.get(i+1).ok_or("Codex 設定の値がありません。")?;
+            let (key,raw) = pair.split_once('=').ok_or("Codex 設定が不正です。")?;
+            if key.starts_with("hooks.") || key == "hooks" || key.starts_with("tools.") || key == "tools" || key.starts_with("mcp_servers.") || key == "mcp_servers" {
+                let value = raw.parse::<TomlValue>().map_err(|_| "Codex thread 設定が不正です。")?;
+                config.insert(key.into(), toml_json(&value)?);
+            } else { process.extend(["-c".into(),pair.clone()]); }
+            i += 2;
+        } else { process.push(plan.server[i].clone()); i += 1; }
+    }
+    Ok((process, Value::Object(config)))
+}
+fn toml_json(value: &TomlValue) -> Result<Value, String> {
+    Ok(match value {
+        TomlValue::String(s) => json!(s.value()), TomlValue::Boolean(v) => json!(v.value()),
+        TomlValue::Integer(v) => json!(v.value()), TomlValue::Float(v) => json!(v.value()),
+        TomlValue::Array(a) => Value::Array(a.iter().map(toml_json).collect::<Result<_,_>>()?),
+        TomlValue::InlineTable(t) => Value::Object(t.iter().map(|(k,v)| Ok((k.into(),toml_json(v)?))).collect::<Result<_,String>>()?),
+        _ => return Err("この Codex thread 設定値は共有接続へ渡せません。".into()),
+    })
+}
+
+pub fn shared_server_args(options: Vec<String>, digest: &str) -> Vec<String> {
+    let mut args = options;
+    if !args.windows(2).any(|pair| pair[0]=="-c" && pair[1].split('=').next()==Some("thread_unload_delay_secs")) {
+        args.extend(["-c".into(),"thread_unload_delay_secs=0".into()]);
+    }
+    args.extend(["-c".into(), "features.codex_hooks=true".into()]);
+    args.extend(["app-server","--listen",LISTEN,"--ws-auth","capability-token","--ws-token-sha256",digest].map(String::from));
+    args
+}
+
+pub fn shared_room_config(config: &mut Value, own: &str, bootstrap: &std::path::Path, credential: &std::path::Path, runner: &std::path::Path, entry: &std::path::Path, hook_keys: &[String]) {
+    let mut tools = Map::new();
+    for name in ["say_to_room","read_room_history","my_usage","status","list_account_sessions","account_session_status","control_account_session"] { tools.insert(name.into(),json!({"approval_mode":"approve"})); }
+    config[format!("mcp_servers.{own}")] = json!({"command":"node", "args":[bootstrap,credential,runner,entry], "env_vars":[], "enabled":true, "tools":tools});
+    if !hook_keys.is_empty() {
+        if !config["hooks.state"].is_object() { config["hooks.state"] = json!({}); }
+        for key in hook_keys { config["hooks.state"][key]["enabled"] = json!(false); }
+    }
 }
 
 /// The terminal's line: the real TUI, attached to the seat's server.
@@ -399,8 +448,8 @@ mod tests {
             sandbox: Some("danger-full-access".into()),
             effort: Some("high".into()),
         });
-        // The configuration still rides on the server's line as written.
-        assert!(p.server.iter().any(|a| a == "model_reasoning_effort=\"high\""));
+        // Thread options do not prevent sharing a native process.
+        assert!(p.server.is_empty());
         let p = planned(&["--dangerously-bypass-approvals-and-sandbox"]).unwrap();
         assert_eq!(p.thread.sandbox.as_deref(), Some("danger-full-access"));
         let p = planned(&["-a", "on-request", "-s", "workspace-write", "--enable", "x", "-C", "sub"]).unwrap();
