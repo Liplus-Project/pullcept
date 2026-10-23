@@ -770,7 +770,7 @@ app-server 方式・スマホから接続（Codex と、Claude Code の Remote C
 
 ## UI の方向（2026-08-21 時点、暫定。左の 1 枚は 2026-10-24 に描き直した、#46）
 
-設計キャンバス: [Pullcept UI 設計](https://claude.ai/code/artifact/aab6bbbd-0ebc-485e-9538-f63a8e6f40e5)
+設計キャンバス: [Pullcept UI 設計](https://claude.ai/artifact/DzcKz75r1XnB2TbU5QAPAA)
 
 2 枚のアートボードを並べ、その差分をロードマップとして読む形にしてある。
 

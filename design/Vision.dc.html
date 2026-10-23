@@ -1,7 +1,8 @@
 <!doctype html>
-<html>
+<html lang="ja">
 <head>
   <meta charset="utf-8">
+  <title>全体像</title>
   <script src="./support.js"></script>
 </head>
 <body>
@@ -15,7 +16,7 @@
   </style>
 </helmet>
 
-<div style="width: 1120px; height: 760px; display: flex; background: #ffffff; color: #1b1b1f; font-size: 14px;">
+<div style="width: 1120px; height: 760px; display: flex; background: #ffffff; color: #1b1b1f; font-size: 14px; font-family: system-ui, &quot;Segoe UI&quot;, &quot;Yu Gothic UI&quot;, sans-serif;">
 
   <!-- sidebar -->
   <div style="width: 216px; background: #f4f4f7; border-right: 1px solid #d8d8de; display: flex; flex-direction: column; min-height: 0;">
@@ -128,8 +129,8 @@
         </span>
       </div>
       <div style="display: flex; gap: 8px; align-items: flex-end;">
-        <textarea style="flex: 1; height: 46px; font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px; resize: vertical;">@Lay </textarea>
-        <button style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px 16px; cursor: pointer;">送信</button>
+        <textarea aria-label="発言" style="flex: 1; height: 46px; font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px; resize: vertical;">@Lay </textarea>
+        <button type="button" style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px 16px; cursor: pointer;">送信</button>
       </div>
     </div>
   </div>
@@ -176,9 +177,9 @@
     </div>
 
     <div style="padding: 0 14px 10px; display: flex; gap: 6px;">
-      <button style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">端末</button>
-      <button style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">ミュート</button>
-      <button style="flex: 1; font: inherit; font-size: 12px; color: #a52a2a; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">終了</button>
+      <button type="button" style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">端末</button>
+      <button type="button" style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">ミュート</button>
+      <button type="button" style="flex: 1; font: inherit; font-size: 12px; color: #a52a2a; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">終了</button>
     </div>
 
     <div style="border-top: 1px solid #d8d8de; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
@@ -198,7 +199,7 @@
 </div>
 </x-dc>
 
-<script data-dc-script data-props='{}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     return {};

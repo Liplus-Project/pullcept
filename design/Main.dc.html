@@ -1,7 +1,8 @@
 <!doctype html>
-<html>
+<html lang="ja">
 <head>
   <meta charset="utf-8">
+  <title>今の画面</title>
   <script src="./support.js"></script>
 </head>
 <body>
@@ -22,8 +23,7 @@
     }
     .pc * { box-sizing: border-box; }
     .pc .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-    .pc .btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; color: var(--fg); }
-    /* speaker colour = oklch(--speaker-l 0.54, --speaker-c 0.16, hue) */
+    .pc .btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; color: var(--fg); background: none; border: 0; padding: 0; }
     .pc .av { flex: none; display: flex; align-items: center; justify-content: center; border-radius: 999px; font-weight: 600; line-height: 1;
       color: color-mix(in oklch, var(--sp) 75%, #000); background: color-mix(in oklch, var(--sp) 13%, var(--bg)); }
     .pc .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--badge-ground); color: var(--muted); }
@@ -33,30 +33,30 @@
 
 <div class="pc">
 
-  <!-- titlebar (#252): icon, topic toggle, topic name + count, terminal, settings, account toggle, window buttons -->
+  <!-- titlebar (#252) -->
   <div style="display: flex; align-items: center; gap: 6px; height: 42px; padding-left: 10px; background: var(--surface); border-bottom: 1px solid var(--line);">
-    <svg width="20" height="20" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="16" rx="4" fill="#1e9be8"/><path d="M7 19l-2 3 5-3" fill="#1e9be8"/><circle cx="8" cy="11" r="1.4" fill="#fff"/><circle cx="12" cy="11" r="1.4" fill="#fff"/><circle cx="16" cy="11" r="1.4" fill="#fff"/></svg>
-    <span class="btn" title="トピックの開閉（Ctrl+B）"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/></svg></span>
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="16" rx="4" fill="#1e9be8"></rect><path d="M7 19l-2 3 5-3" fill="#1e9be8"></path><circle cx="8" cy="11" r="1.4" fill="#fff"></circle><circle cx="12" cy="11" r="1.4" fill="#fff"></circle><circle cx="16" cy="11" r="1.4" fill="#fff"></circle></svg>
+    <button class="btn" type="button" aria-label="トピックの開閉"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2"></rect><path d="M6 3v10"></path></svg></button>
     <span style="font-weight: 600; margin-left: 8px;">design キャンバスの更新</span>
     <span style="color: var(--muted);">4 人</span>
     <span style="flex: 1;"></span>
-    <span class="btn" title="端末"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M5 7l2 1.5L5 10M8.5 10.5h2.5"/></svg></span>
-    <span class="btn" title="設定"><svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg></span>
-    <span class="btn" title="アカウントの開閉"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></span>
+    <button class="btn" type="button" aria-label="端末"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2"></rect><path d="M5 7l2 1.5L5 10M8.5 10.5h2.5"></path></svg></button>
+    <button class="btn" type="button" aria-label="設定"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2"></circle><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"></path></svg></button>
+    <button class="btn" type="button" aria-label="アカウントの開閉"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2"></rect><path d="M10 3v10"></path></svg></button>
     <span style="display: flex; height: 100%; margin-left: 8px;">
-      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M3.5 8h9"/></svg></span>
-      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg></span>
-      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+      <button class="btn" type="button" aria-label="最小化" style="width: 46px; height: 100%; border-radius: 0;"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9"></path></svg></button>
+      <button class="btn" type="button" aria-label="最大化" style="width: 46px; height: 100%; border-radius: 0;"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"></rect></svg></button>
+      <button class="btn" type="button" aria-label="閉じる" style="width: 46px; height: 100%; border-radius: 0;"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg></button>
     </span>
   </div>
 
   <div style="flex: 1; display: flex; min-height: 0;">
 
-    <!-- topics (#115): ＋ starts a new topic; ● = a session runs there -->
+    <!-- topics (#115) -->
     <div style="width: 230px; background: var(--surface); border-right: 1px solid var(--line); padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; font-size: 13px;">
       <div style="display: flex; align-items: center; padding: 4px 8px 10px; font-weight: 600;">
         <span style="flex: 1;">トピック</span>
-        <svg class="ico" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg>
       </div>
       <div style="padding: 6px 8px; border-radius: 6px; background: var(--selected); display: grid; grid-template-columns: 1fr auto;">
         <span>design キャンバスの更新</span><span style="color: #185fa5; font-size: 10px;">●</span>
@@ -71,7 +71,7 @@
       <div style="padding: 6px 8px; display: grid;"><span style="color: var(--muted);">未記入</span><span style="color: var(--muted); font-size: 11.5px;">10月20日</span></div>
     </div>
 
-    <!-- conversation (#225): initial circles, @addressees in their colour, own lines as a right-hand bubble -->
+    <!-- conversation (#225) -->
     <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
       <div style="flex: 1; overflow: hidden; padding: 14px 18px; display: flex; flex-direction: column; gap: 18px; line-height: 1.7;">
 
@@ -109,29 +109,29 @@
         </div>
       </div>
 
-      <!-- who is busy, one line under the room (#307) -->
+      <!-- who is busy (#307) -->
       <div style="padding: 0 30px 4px; font-size: 12px; color: var(--muted);"><span style="color: oklch(0.54 0.16 300);">Lay</span> 出力中</div>
 
-      <!-- composer (#222): one box, words above, controls below, only 送信 is filled -->
+      <!-- composer (#222) -->
       <div style="border-top: 1px solid var(--line); padding: 10px 14px 14px;">
         <div style="border: 1px solid var(--composer-line); border-radius: 10px; padding: 10px 12px 8px;">
           <div style="color: var(--muted); height: 38px;">部屋に発言する</div>
           <div style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted);">
-            <svg class="ico" viewBox="0 0 16 16" style="color: var(--fg);"><path d="M10.5 4.5l-5 5a1.5 1.5 0 002 2l5.5-5.5a3 3 0 00-4-4L3.5 7.5a4.5 4.5 0 006 6l4-4"/></svg>
-            <span style="color: var(--fg); font-size: 15px;">@</span>
+            <button class="btn" type="button" aria-label="添付"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 4.5l-5 5a1.5 1.5 0 002 2l5.5-5.5a3 3 0 00-4-4L3.5 7.5a4.5 4.5 0 006 6l4-4"></path></svg></button>
+            <button class="btn" type="button" aria-label="宛先" style="font-size: 15px;">@</button>
             <span>@ 宛先</span><span>Enter 送信</span><span>Shift+Enter 改行</span>
             <span style="flex: 1;"></span>
-            <span style="width: 34px; height: 34px; border-radius: 8px; background: var(--send-ground); color: var(--send-ink); display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M14 2L7 9M14 2l-4.5 12-2.5-5-5-2.5z"/></svg></span>
+            <button type="button" aria-label="送信" style="width: 34px; height: 34px; border: 0; border-radius: 8px; background: var(--send-ground); color: var(--send-ink); display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 2L7 9M14 2l-4.5 12-2.5-5-5-2.5z"></path></svg></button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- accounts (#59, #493, #529): one list, then the selected row's 状態 and 詳細 cards -->
+    <!-- accounts (#59, #493, #529) -->
     <div style="width: 250px; background: var(--participants-ground); border-left: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px;">
       <div style="display: flex; align-items: center; padding: 4px 4px 8px; font-weight: 600;">
         <span style="flex: 1;">アカウント</span>
-        <svg class="ico" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg>
       </div>
 
       <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: oklch(0.54 0.16 150);">
@@ -178,7 +178,7 @@
 </div>
 </x-dc>
 
-<script data-dc-script data-props='{}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     return {};
