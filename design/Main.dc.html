@@ -8,170 +8,169 @@
 <x-dc>
 <helmet>
   <style>
-    body { margin: 0; font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif; }
-    a { color: #3a6ea5; }
-    a:hover { color: #2c5580; }
-    .mono { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
+    body { margin: 0; }
+    /* Values copied from src/styles.css (light theme, :root). Change them there first. */
+    .pc {
+      --bg: #ffffff; --fg: #1b1b1f; --line: #e2e2e1; --muted: #73726c;
+      --surface: #fbfbf9; --participants-ground: #fcfcfb; --participants-card-line: #e3e3e2;
+      --selected: #edece8; --composer-line: rgb(0 0 0 / 0.2);
+      --ok: #3b6d11; --ok-ground: #eaf3de; --badge-ground: #f1efe8;
+      --send-ground: #1e9be8; --send-ink: #ffffff;
+      width: 1120px; height: 760px; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--fg); font-size: 14px;
+      font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
+    }
+    .pc * { box-sizing: border-box; }
+    .pc .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .pc .btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; color: var(--fg); }
+    /* speaker colour = oklch(--speaker-l 0.54, --speaker-c 0.16, hue) */
+    .pc .av { flex: none; display: flex; align-items: center; justify-content: center; border-radius: 999px; font-weight: 600; line-height: 1;
+      color: color-mix(in oklch, var(--sp) 75%, #000); background: color-mix(in oklch, var(--sp) 13%, var(--bg)); }
+    .pc .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--badge-ground); color: var(--muted); }
+    .pc .badge.active { background: var(--ok-ground); color: var(--ok); }
   </style>
 </helmet>
 
-<div style="width: 1120px; height: 760px; display: flex; flex-direction: column; background: #ffffff; color: #1b1b1f; font-size: 14px;">
+<div class="pc">
 
-  <!-- titlebar -->
-  <div style="display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #d8d8de; padding: 8px 14px; font-size: 13.6px;">
-    <span style="font-weight: 600;">Pullcept</span>
-    <span style="flex: 1; color: #6b6b76; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Claude Code / Lin</span>
-    <label style="display: flex; align-items: center; gap: 6px; color: #6b6b76;">
-      名前
-      <input value="マスター" style="width: 112px; font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 3px 6px;">
-    </label>
-    <button style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 3px 8px; cursor: pointer;">診断</button>
+  <!-- titlebar (#252): icon, topic toggle, topic name + count, terminal, settings, account toggle, window buttons -->
+  <div style="display: flex; align-items: center; gap: 6px; height: 42px; padding-left: 10px; background: var(--surface); border-bottom: 1px solid var(--line);">
+    <svg width="20" height="20" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="16" rx="4" fill="#1e9be8"/><path d="M7 19l-2 3 5-3" fill="#1e9be8"/><circle cx="8" cy="11" r="1.4" fill="#fff"/><circle cx="12" cy="11" r="1.4" fill="#fff"/><circle cx="16" cy="11" r="1.4" fill="#fff"/></svg>
+    <span class="btn" title="トピックの開閉（Ctrl+B）"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/></svg></span>
+    <span style="font-weight: 600; margin-left: 8px;">design キャンバスの更新</span>
+    <span style="color: var(--muted);">4 人</span>
+    <span style="flex: 1;"></span>
+    <span class="btn" title="端末"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M5 7l2 1.5L5 10M8.5 10.5h2.5"/></svg></span>
+    <span class="btn" title="設定"><svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg></span>
+    <span class="btn" title="アカウントの開閉"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></span>
+    <span style="display: flex; height: 100%; margin-left: 8px;">
+      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M3.5 8h9"/></svg></span>
+      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg></span>
+      <span style="width: 46px; display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+    </span>
   </div>
 
-  <!-- launcher -->
-  <div style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d8d8de; padding: 6px 14px; font-size: 12.8px;">
-    <select style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 4px 7px;">
-      <option>Claude Code</option>
-    </select>
-    <label style="display: flex; align-items: center; gap: 6px; flex: 1; color: #6b6b76;">
-      作業ディレクトリ
-      <input class="mono" value="C:\Users\smile\ClaudeCode" style="flex: 1; font-size: 12px; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 4px 7px;">
-    </label>
-    <button style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 4px 10px; cursor: pointer;">セッション参加</button>
-  </div>
-
-  <!-- launch options -->
-  <div style="display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #d8d8de; padding: 6px 14px 8px; font-size: 12.5px;">
-    <label style="display: flex; align-items: center; gap: 6px; color: #6b6b76;">
-      起動オプション
-      <input class="mono" value="--dangerously-skip-permissions --dangerously-load-development-channels server:github-webhook-mcp" style="width: 352px; font-size: 12px; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 4px; padding: 4px 7px;">
-    </label>
-    <span class="mono" style="flex: 1; color: #6b6b76; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">claude --dangerously-skip-permissions --dangerously-load-development-channels server:pullcept-room server:github-webhook-mcp</span>
-  </div>
-
-  <!-- body: room + participants -->
   <div style="flex: 1; display: flex; min-height: 0;">
 
-    <!-- room -->
-    <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
-      <div style="flex: 1; overflow: hidden; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
-
-        <div style="max-width: 640px; border-left: 3px solid #3a6ea5; padding-left: 11px;">
-          <div style="display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #6b6b76;">
-            <span style="font-weight: 600; color: #1b1b1f;">マスター</span>
-            <span>10:15</span>
-          </div>
-          <div style="white-space: pre-wrap; line-height: 1.6; margin-top: 2px;">部屋の往復が通ったので、次は宛先を付けたい。</div>
-        </div>
-
-        <div style="max-width: 640px; border-left: 3px solid oklch(0.52 0.09 155); padding-left: 11px;">
-          <div style="display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #6b6b76;">
-            <span style="font-weight: 600; color: #1b1b1f;">Lin</span>
-            <span style="color: oklch(0.52 0.09 155);">→ マスター</span>
-            <span>10:16</span>
-          </div>
-          <div style="white-space: pre-wrap; line-height: 1.6; margin-top: 2px;">say フレームに to を足すだけで、名指しされていない側が黙れるようになります。判定はエージェント側に置いたままで済みます。</div>
-        </div>
-
-        <div style="max-width: 640px; border-left: 3px solid #d8d8de; padding-left: 11px;">
-          <div style="display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #6b6b76;">
-            <span style="font-weight: 600; color: #1b1b1f;">Lay</span>
-            <span>10:16</span>
-          </div>
-          <div style="white-space: pre-wrap; line-height: 1.6; margin-top: 2px;">（宛先なしの発言。作法により沈黙を選んでいる）</div>
-        </div>
-
-        <div style="max-width: 640px; border-left: 3px solid #3a6ea5; padding-left: 11px;">
-          <div style="display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: #6b6b76;">
-            <span style="font-weight: 600; color: #1b1b1f;">マスター</span>
-            <span style="color: #3a6ea5;">→ Lin</span>
-            <span>10:17</span>
-          </div>
-          <div style="white-space: pre-wrap; line-height: 1.6; margin-top: 2px;">じゃあそれで。</div>
-        </div>
-
+    <!-- topics (#115): ＋ starts a new topic; ● = a session runs there -->
+    <div style="width: 230px; background: var(--surface); border-right: 1px solid var(--line); padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; font-size: 13px;">
+      <div style="display: flex; align-items: center; padding: 4px 8px 10px; font-weight: 600;">
+        <span style="flex: 1;">トピック</span>
+        <svg class="ico" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>
       </div>
-
-      <!-- composer -->
-      <div style="border-top: 1px solid #d8d8de; padding: 10px 14px 6px;">
-        <div style="display: flex; align-items: center; gap: 6px; padding-bottom: 6px; font-size: 12.5px; color: #6b6b76;">
-          <span>宛先</span>
-          <span style="display: inline-flex; align-items: center; gap: 5px; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 999px; padding: 2px 9px; color: #1b1b1f;">
-            <span style="width: 6px; height: 6px; border-radius: 999px; background: oklch(0.52 0.09 155);"></span>
-            Lin
-            <span style="color: #6b6b76;">×</span>
-          </span>
-          <span style="color: #6b6b76;">未指定なら部屋全体へ</span>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: flex-end;">
-          <textarea style="flex: 1; height: 48px; font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px; resize: vertical;">@Lin </textarea>
-          <button style="font: inherit; color: #1b1b1f; background: #f4f4f7; border: 1px solid #d8d8de; border-radius: 6px; padding: 8px 16px; cursor: pointer;">送信</button>
-        </div>
+      <div style="padding: 6px 8px; border-radius: 6px; background: var(--selected); display: grid; grid-template-columns: 1fr auto;">
+        <span>design キャンバスの更新</span><span style="color: #185fa5; font-size: 10px;">●</span>
+        <span style="color: var(--muted); font-size: 11.5px;">今日</span>
       </div>
-      <div style="min-height: 20px; padding: 0 14px 8px; font-size: 12.5px; color: #6b6b76;">Claude Code を起動しました。C:\Users\smile\ClaudeCode\.mcp.json に登録済み。</div>
+      <div style="padding: 6px 8px; display: grid; grid-template-columns: 1fr auto;">
+        <span>Codex の共有接続</span><span style="color: #185fa5; font-size: 10px;">●</span>
+        <span style="color: var(--muted); font-size: 11.5px;">今日</span>
+      </div>
+      <div style="padding: 6px 8px; display: grid;"><span>Node.js の更新</span><span style="color: var(--muted); font-size: 11.5px;">昨日</span></div>
+      <div style="padding: 6px 8px; display: grid;"><span>スマホからの接続</span><span style="color: var(--muted); font-size: 11.5px;">10月21日</span></div>
+      <div style="padding: 6px 8px; display: grid;"><span style="color: var(--muted);">未記入</span><span style="color: var(--muted); font-size: 11.5px;">10月20日</span></div>
     </div>
 
-    <!-- participants -->
-    <div style="width: 264px; border-left: 1px solid #d8d8de; background: #f4f4f7; display: flex; flex-direction: column; min-height: 0;">
-      <div style="padding: 10px 14px 6px; font-size: 12.5px; font-weight: 600;">参加者</div>
+    <!-- conversation (#225): initial circles, @addressees in their colour, own lines as a right-hand bubble -->
+    <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+      <div style="flex: 1; overflow: hidden; padding: 14px 18px; display: flex; flex-direction: column; gap: 18px; line-height: 1.7;">
 
-      <div style="display: flex; flex-direction: column;">
-        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12.5px;">
-          <span style="width: 7px; height: 7px; border-radius: 999px; background: #3a6ea5;"></span>
-          <span style="flex: 1;">マスター（あなた）</span>
+        <div style="display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px;">
+          <span style="flex: 1; height: 1px; background: var(--line);"></span>今日<span style="flex: 1; height: 1px; background: var(--line);"></span>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12.5px; background: #ffffff; border-top: 1px solid #d8d8de; border-bottom: 1px solid #d8d8de;">
-          <span style="width: 7px; height: 7px; border-radius: 999px; background: oklch(0.52 0.09 155);"></span>
-          <span style="flex: 1;">Lin</span>
-          <span class="mono" style="color: #6b6b76; font-size: 11px;">PTY</span>
+
+        <div style="align-self: flex-end; max-width: 70%; padding: 8px 12px; border-radius: 12px; --sp: oklch(0.54 0.16 150); background: color-mix(in oklch, var(--sp) 9%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--sp) 35%, var(--bg));">
+          <div>pullceptのissueで進めれるの進めて～</div>
+          <div style="text-align: right; color: var(--muted);">23:52</div>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12.5px;">
-          <span style="width: 7px; height: 7px; border-radius: 999px; background: #d8d8de;"></span>
-          <span style="flex: 1; color: #6b6b76;">Lay</span>
-          <span class="mono" style="color: #6b6b76; font-size: 11px;">未起動</span>
+
+        <div style="display: flex; gap: 12px; --sp: oklch(0.54 0.16 250);">
+          <span class="av" style="width: 36px; height: 36px; font-size: 17px;">L</span>
+          <div>
+            <div style="display: flex; gap: 8px;"><span style="color: var(--sp);">Luna</span><span style="color: oklch(0.54 0.16 300);">@Lay</span><span style="color: oklch(0.54 0.16 0);">@Lin</span><span style="color: var(--muted);">23:57</span></div>
+            <div>Lay、#46 はお願いするわ。公開キャンバス側に変更がないか確認してから、現行画面との差分を洗い直してね。</div>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; --sp: oklch(0.54 0.16 0);">
+          <span class="av" style="width: 36px; height: 36px; font-size: 17px;">L</span>
+          <div>
+            <div style="display: flex; gap: 8px;"><span style="color: var(--sp);">Lin</span><span style="color: var(--muted);">23:57</span></div>
+            <div>#538 を引き受けるわ。読み取りだけで進めて、本番の席は止めない。</div>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; --sp: oklch(0.54 0.16 300);">
+          <span class="av" style="width: 36px; height: 36px; font-size: 17px;">L</span>
+          <div>
+            <div style="display: flex; gap: 8px;"><span style="color: var(--sp);">Lay</span><span style="color: oklch(0.54 0.16 250);">@Luna</span><span style="color: var(--muted);">23:58</span></div>
+            <div>了解。公開版は名前変更より前のままで、キャンバス側の編集は無かったわ。今の画面から描き直すわね。</div>
+          </div>
         </div>
       </div>
 
-      <div style="border-top: 1px solid #d8d8de; margin-top: 6px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
-        <div style="display: flex; justify-content: space-between; gap: 8px;">
-          <span style="color: #6b6b76;">部屋ソケット</span>
-          <span class="mono" style="color: #3a6ea5;">127.0.0.1:64475</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; gap: 8px;">
-          <span style="color: #6b6b76;">接続方法</span>
-          <span class="mono">PTY</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; gap: 8px;">
-          <span style="color: #6b6b76;">起動コマンド</span>
-          <span class="mono">claude</span>
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 2px;">
-          <span style="color: #6b6b76;">作業ディレクトリ</span>
-          <span class="mono" style="font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">C:\Users\smile\ClaudeCode</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; gap: 8px;">
-          <span style="color: #6b6b76;">開始時刻</span>
-          <span class="mono">10:12</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; gap: 8px;">
-          <span style="color: #6b6b76;">ウィンドウ</span>
-          <span class="mono">120×30</span>
+      <!-- who is busy, one line under the room (#307) -->
+      <div style="padding: 0 30px 4px; font-size: 12px; color: var(--muted);"><span style="color: oklch(0.54 0.16 300);">Lay</span> 出力中</div>
+
+      <!-- composer (#222): one box, words above, controls below, only 送信 is filled -->
+      <div style="border-top: 1px solid var(--line); padding: 10px 14px 14px;">
+        <div style="border: 1px solid var(--composer-line); border-radius: 10px; padding: 10px 12px 8px;">
+          <div style="color: var(--muted); height: 38px;">部屋に発言する</div>
+          <div style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted);">
+            <svg class="ico" viewBox="0 0 16 16" style="color: var(--fg);"><path d="M10.5 4.5l-5 5a1.5 1.5 0 002 2l5.5-5.5a3 3 0 00-4-4L3.5 7.5a4.5 4.5 0 006 6l4-4"/></svg>
+            <span style="color: var(--fg); font-size: 15px;">@</span>
+            <span>@ 宛先</span><span>Enter 送信</span><span>Shift+Enter 改行</span>
+            <span style="flex: 1;"></span>
+            <span style="width: 34px; height: 34px; border-radius: 8px; background: var(--send-ground); color: var(--send-ink); display: flex; align-items: center; justify-content: center;"><svg class="ico" viewBox="0 0 16 16"><path d="M14 2L7 9M14 2l-4.5 12-2.5-5-5-2.5z"/></svg></span>
+          </div>
         </div>
       </div>
+    </div>
 
-      <div style="padding: 0 14px 10px; display: flex; gap: 6px;">
-        <button style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">端末</button>
-        <button style="flex: 1; font: inherit; font-size: 12px; color: #1b1b1f; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">リサイズ</button>
-        <button style="flex: 1; font: inherit; font-size: 12px; color: #a52a2a; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 5px 0; cursor: pointer;">終了</button>
+    <!-- accounts (#59, #493, #529): one list, then the selected row's 状態 and 詳細 cards -->
+    <div style="width: 250px; background: var(--participants-ground); border-left: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px;">
+      <div style="display: flex; align-items: center; padding: 4px 4px 8px; font-weight: 600;">
+        <span style="flex: 1;">アカウント</span>
+        <svg class="ico" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>
       </div>
 
-      <div style="flex: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: oklch(0.54 0.16 150);">
+        <span class="av" style="width: 32px; height: 32px; font-size: 15px;">マ</span>
+        <span style="flex: 1; color: var(--sp);">マスター</span><span style="color: var(--muted); font-size: 12px;">（あなた）</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: oklch(0.54 0.16 300);">
+        <span class="av" style="width: 32px; height: 32px; font-size: 15px;">L</span>
+        <span style="flex: 1; color: var(--sp); line-height: 1.2;">Lay<br><small style="font-size: 10.5px;">Claude Lay</small></span><span class="badge active">出力中</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: oklch(0.54 0.16 0);">
+        <span class="av" style="width: 32px; height: 32px; font-size: 15px;">L</span>
+        <span style="flex: 1; color: var(--sp); line-height: 1.2;">Lin<br><small style="font-size: 10.5px;">Claude Lin</small></span><span class="badge">待機</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: oklch(0.54 0.16 250);">
+        <span class="av" style="width: 32px; height: 32px; font-size: 15px;">L</span>
+        <span style="flex: 1; color: var(--sp); line-height: 1.2;">Luna<br><small style="font-size: 10.5px;">Codex Luna</small></span><span class="badge active">ツール</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 4px; --sp: var(--muted);">
+        <span class="av" style="width: 32px; height: 32px; font-size: 15px;">g</span>
+        <span style="flex: 1; color: var(--muted);">github-webhook-mcp</span>
+      </div>
 
-      <div style="border-top: 1px solid #d8d8de; padding: 8px 14px 10px;">
-        <div style="font-size: 11.5px; color: #6b6b76; padding-bottom: 5px;">端末（診断）</div>
-        <div class="mono" style="height: 96px; overflow: hidden; background: #ffffff; border: 1px solid #d8d8de; border-radius: 4px; padding: 7px; font-size: 10.5px; line-height: 1.5; color: #1b1b1f; white-space: pre-wrap;">room socket: connected as "Lin"
-mcp: stdio transport connected
-&gt; </div>
+      <div style="margin-top: 10px; border: 1px solid var(--participants-card-line); border-radius: 10px; padding: 10px 12px; font-size: 12px;">
+        <div style="font-weight: 600; margin-bottom: 8px;">状態 ⌄</div>
+        <div style="display: grid; grid-template-columns: 1fr auto; row-gap: 3px; color: var(--muted);">
+          <span>セッション</span><span style="color: var(--fg);">実行中</span>
+          <span>ログイン</span><span style="color: var(--fg);">Claude</span>
+          <span>モデル</span><span style="color: var(--fg);">opus</span>
+          <span>5 時間</span><span style="color: var(--fg);">7%</span>
+          <span>週次</span><span style="color: var(--fg);">14%</span>
+          <span>コンテキスト</span><span style="color: var(--fg);">15%</span>
+        </div>
+      </div>
+      <div style="border: 1px solid var(--participants-card-line); border-radius: 10px; padding: 10px 12px; font-size: 12px;">
+        <div style="font-weight: 600;">詳細 ⌄</div>
+        <div style="margin-top: 8px; font-weight: 600;">TODO <span class="badge">1</span></div>
+        <div style="margin-top: 4px; color: var(--muted);">判断待ち：登録なし</div>
+        <div style="margin-top: 2px;">作業：#46 design キャンバスを現行画面に合わせて更新</div>
       </div>
     </div>
 
