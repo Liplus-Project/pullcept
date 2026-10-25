@@ -65,7 +65,8 @@ function readPrompt(rawBin, cwd, options) {
 function parts(prompt) {
   if (!Array.isArray(prompt)) throw Error(FAILURE);
   return prompt.flatMap(message => {
-    if (message.type !== "message" || !Array.isArray(message.content)) throw Error(FAILURE);
+    if (message?.type !== "message") return []; // e.g. additional_tools (codex-cli 0.164+)
+    if (!Array.isArray(message.content)) throw Error(FAILURE);
     return message.content.map(content => ({role:message.role, ...content}));
   });
 }
