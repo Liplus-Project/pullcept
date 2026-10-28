@@ -4,7 +4,28 @@ import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSyn
 import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
-import {fileModeRoot, resolveOutputStyle} from "../src/codex-style.mjs";
+import {fileModeRoot, resolveOutputStyle, run, failureReply} from "../src/codex-style.mjs";
+import {spawnSync} from "node:child_process";
+
+test("process outcomes carry only a fixed stage code and preserve generic errors", async () => {
+  for (const stage of ["discovery", "helper", "hook"]) {
+    for (const [outcome, error, stdout] of [
+      ["execution", new Error("SECRET command and path"), "SECRET stdout"],
+      ["timeout", Object.assign(new Error("SECRET timeout"), {killed:true}), "{}"],
+      ["json", null, "SECRET malformed JSON"],
+    ]) {
+      await assert.rejects(run("unused", [], ".", {}, stage, null, (_bin, _args, options, callback) => {
+        assert.equal(options.timeout, 15000);
+        queueMicrotask(() => callback(error, stdout));
+      }), error => {
+        const reply = failureReply(error);
+        assert.equal(reply.diagnostic_code, `${stage}_${outcome}`);
+        assert.equal(JSON.stringify(reply).includes("SECRET"), false);
+        return true;
+      });
+    }
+  }
+});
 
 // A protocol peer fixture, not a copy of the installed style parser.
 const peer = `import sys,json,hashlib,pathlib,os
@@ -72,6 +93,7 @@ test("default, false, account replacement and independent environments return me
     const [luna, lala] = await Promise.all(["character_codex_luna", "character_Codex_Lala"].map(name => resolveOutputStyle(f.discovery, f.nested, name, env)));
     assert.equal(luna.name, "character_codex_luna"); assert.equal(lala.name, "character_Codex_Lala");
     assert.equal(luna.byte_count, 100000); assert.equal(luna.protocol_version, 1);
+    assert.equal(Object.hasOwn(luna, "diagnostic_code"), false);
     assert.equal(Object.hasOwn(luna, "body"), false); assert.equal(Object.hasOwn(luna, "instructions"), false);
     assert.equal(env.LI_PLUS_OUTPUT_STYLE, "INHERITED_SECRET");
     f.settings({mode:"disabled"});
@@ -152,5 +174,63 @@ test("body mode returns the loader's own hook text and the hook keys to turn off
     const disabled = await resolveOutputStyle(f.discovery, f.root, "", process.env, true);
     assert.equal(disabled.body, null);
     assert.deepEqual(disabled.hook_keys, [f.discovery.styleHooks[0].key]);
+  } finally { f.close(); }
+});
+
+// Run the actual CLI envelope with a model-free discovery peer beside it.
+test("CLI failure JSON carries one code without child output and keeps existing error", () => {
+  const f = fixture();
+  try {
+    const script = join(f.root, "codex-style.mjs");
+    writeFileSync(script, readFileSync(new URL("../src/codex-style.mjs", import.meta.url)));
+    const discovery = join(f.root, "codex-project.mjs");
+    const invoke = () => spawnSync(process.execPath, [script, "unused", f.root, "[]", f.root, "character_codex_luna"], {encoding:"utf8"});
+    writeFileSync(discovery, `process.stdout.write(${JSON.stringify(JSON.stringify(f.discovery))})`);
+    f.settings({failure:true});
+    let reply = invoke();
+    assert.equal(reply.status, 1);
+    let value = JSON.parse(reply.stdout);
+    assert.equal(value.diagnostic_code, "helper_execution");
+    assert.match(value.error, /UTF-8/);
+    assert.equal(reply.stdout.includes("SECRET_FIXTURE"), false);
+    assert.equal(reply.stderr, "");
+    writeFileSync(discovery, 'process.stdout.write(JSON.stringify({error:"SECRET discovery"}))');
+    value = JSON.parse(invoke().stdout);
+    assert.equal(value.diagnostic_code, "discovery_error");
+    assert.equal(JSON.stringify(value).includes("SECRET"), false);
+    writeFileSync(discovery, 'process.stdout.write("SECRET invalid JSON")');
+    assert.equal(JSON.parse(invoke().stdout).diagnostic_code, "discovery_json");
+  } finally { f.close(); }
+});
+
+test("validation failures retain their stage through the failure envelope", async () => {
+  const f = fixture();
+  try {
+    const check = async code => assert.rejects(resolveOutputStyle(f.discovery, f.root, ""), error => {
+      assert.equal(failureReply(error).diagnostic_code, code);
+      return true;
+    });
+    const original = {...f.discovery.styleHooks[0]};
+    f.discovery.styleHooks[0].trust = "untrusted";
+    await check("hook_validation");
+    f.discovery.styleHooks = [original, original];
+    await check("matcher_validation");
+    f.discovery.styleHooks = [original];
+    f.settings({reply:{protocol_version:2}});
+    await check("metadata_validation");
+    f.settings({reply:{handler:null}});
+    await check("handler_validation");
+    f.settings({});
+    await assert.rejects(resolveOutputStyle(f.discovery, f.root, "", process.env, true), error => {
+      assert.equal(failureReply(error).diagnostic_code, "hook_hash_validation");
+      return true;
+    });
+    f.settings({reply:{handler:{path:f.helper, additional_context_limit:0,
+      matchers:["startup", "resume", "clear", "compact"], sha256:"0".repeat(64)}}});
+    await check("helper_hash_validation");
+    rmSync(f.helper);
+    await check("helper_resolve");
+    f.discovery.projects = null;
+    await check("project_validation");
   } finally { f.close(); }
 });

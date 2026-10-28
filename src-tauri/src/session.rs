@@ -145,6 +145,7 @@ struct CodexCharacterLaunch {
 }
 
 fn codex_character_args(
+    app: &AppHandle,
     command: &str,
     options: &[String],
     cwd: &Path,
@@ -159,7 +160,7 @@ fn codex_character_args(
     }
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
-    let style = codex_style(command, &options, cwd, env, entry, selected, false, enabled)?;
+    let style = codex_style(app, command, &options, cwd, env, entry, selected, false, enabled)?;
     let effective = mcp_config::codex::effective_cwd(cwd, &options)?;
     let home = mcp_config::codex::style_setup::codex_home(cwd, env)?;
     if enabled != Some(false) && (enabled == Some(true) || selected.is_some()) {
@@ -186,6 +187,7 @@ fn codex_character_args(
 /// installed Li+ loader. `body` also asks for the text the loader's hook would
 /// deliver and the keys of that hook (#299).
 fn codex_style(
+    app: &AppHandle,
     command: &str,
     options: &[String],
     cwd: &Path,
@@ -219,12 +221,8 @@ fn codex_style(
         resolver.creation_flags(0x08000000);
     }
     let output = resolver.output().map_err(|_| "Codex の output style 確認を起動できません。node と Python 3.11 以上を確認してください。")?;
-    let style: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| "Codex の output style 確認が失敗しました。")?;
-    if !output.status.success() || style.get("error").is_some() {
-        return Err(style["error"].as_str().unwrap_or("Codex のキャラクターを確認できません。project の output style と専用 SessionStart hook の登録・信頼、Python 3.11 以上を確認してください。").to_string());
-    }
-    Ok(style)
+    mcp_config::codex::style_diagnostic::decode(output.status.success(), &output.stdout,
+        || room_log::open_probe(app, "codex-style-probe.log"))
 }
 
 /// The effective developer instructions (`codex-character.mjs`), model-free:
@@ -277,6 +275,7 @@ struct CodexDelivery {
 }
 
 fn codex_delivery(
+    app: &AppHandle,
     command: &str,
     options: &[String],
     cwd: &Path,
@@ -291,7 +290,7 @@ fn codex_delivery(
     }
     let selected = character.map(str::trim).filter(|name| !name.is_empty());
     let options = mcp_config::codex::transport_options(options)?;
-    let style = codex_style(command, &options, cwd, env, entry, selected, true, enabled)?;
+    let style = codex_style(app, command, &options, cwd, env, entry, selected, true, enabled)?;
     let mode = style["mode"].as_str().filter(|mode| ["file", "disabled"].contains(mode))
         .ok_or("Codex の output style 応答が不正です。")?.to_string();
     let name = style["name"].as_str().map(str::to_string);
@@ -1048,7 +1047,7 @@ pub async fn preview_launch_args(
                 mcp_config::codex::style_setup::scoped_options(&args, &effective, &home)?
             } else { mcp_config::codex::transport_options(&args)? };
             let plan = mcp_config::codex::app_server::plan(&scoped)?;
-            let delivery = codex_delivery(&command, &args, &cwd, &env, &entry, character.as_deref(), &server_name, codex_output_style)?;
+            let delivery = codex_delivery(&app, &command, &args, &cwd, &env, &entry, character.as_deref(), &server_name, codex_output_style)?;
             // Placeholders where the launch puts its own values: the token's
             // digest, the port the server binds and the thread it starts.
             let server = mcp_config::codex::app_server::server_args(
@@ -1079,7 +1078,7 @@ pub async fn preview_launch_args(
     let sealed = if let Some(text) = env_text { crate::config::seal_account_env(text, previous)? } else { previous };
     let env = account_env::open_all(&sealed).map_err(|_| "環境変数を読めません。")?;
     tauri::async_runtime::spawn_blocking(move || {
-        codex_character_args(&command, &args, &cwd, &env, &entry, character.as_deref(), codex_output_style, composed).map(|launch| launch.preview)
+        codex_character_args(&app, &command, &args, &cwd, &env, &entry, character.as_deref(), codex_output_style, composed).map(|launch| launch.preview)
     }).await.map_err(|_| "Codex のプレビュー処理を完了できませんでした。".to_string())?
 }
 
@@ -1977,7 +1976,7 @@ fn launch(
         &sidecar_entry,
     )?;
     let (composed, output_style) = if account.kind == AccountKind::CodexCli {
-        let launch = codex_character_args(&line.command, &line.args, cwd, account_env, &sidecar_entry, character, account.codex_output_style, composed)?;
+        let launch = codex_character_args(&app, &line.command, &line.args, cwd, account_env, &sidecar_entry, character, account.codex_output_style, composed)?;
         (launch.preview.args, launch.output_style)
     } else { (composed, None) };
     // The id goes in last, over the whole line. The account's own options may
@@ -2123,7 +2122,7 @@ fn launch_codex_app_server(
         mcp_config::codex::style_setup::scoped_options(&account.args, &project_cwd, &style_home)?
     } else { mcp_config::codex::transport_options(&account.args)? };
     let plan = app_server::plan(&scoped_options)?;
-    let delivery = codex_delivery(&account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name, account.codex_output_style)?;
+    let delivery = codex_delivery(&app, &account.command, &account.args, cwd, account_env, sidecar_entry, character, server_name, account.codex_output_style)?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     let token = crate::codex_app_server::new_token();
     let mut server_args = app_server::server_args(

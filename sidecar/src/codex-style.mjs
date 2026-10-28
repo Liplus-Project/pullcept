@@ -38,26 +38,29 @@ export function pythonCommand(env = process.env, platform = process.platform, ex
   return "python";
 }
 const fail = () => { throw Error(FAILURE); };
-const within = (root, cwd) => { const part = relative(root, cwd); return !isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"); };
-function run(bin, args, cwd, env) {
-  return new Promise((accept, reject) => execFile(bin, args, {cwd, env, windowsHide:true, timeout:15000, maxBuffer:256 * 1024},
-    (error, stdout) => {
-      let value; try { value = JSON.parse(stdout); } catch { return reject(Error(FAILURE)); }
-      if (error) {
-        const detail = value?.protocol_version === 1 && value.status === "blocked" && Object.hasOwn(REASONS, value.reason) ? REASONS[value.reason] : "";
-        return reject(detail ? new StyleFailure(`${detail} ${FAILURE}`) : Error(FAILURE));
-      }
-      accept(value);
-    }));
+const diagnosed = (error, code) => Object.assign(error, {diagnostic_code:code});
+export function failureReply(error) {
+  return {error:error instanceof StyleFailure ? error.message : FAILURE, diagnostic_code:error.diagnostic_code ?? "unexpected_error"};
 }
-// The installed loader's own SessionStart reply, produced the way Codex would run it.
-function runHook(bin, args, cwd, env, input) {
+const within = (root, cwd) => { const part = relative(root, cwd); return !isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"); };
+// Only fixed stage/outcome codes cross the diagnostic boundary; child output
+// remains private even when it is malformed or a process fails.
+export function run(bin, args, cwd, env, stage = "helper", input = null, execute = execFile) {
   return new Promise((accept, reject) => {
-    const child = execFile(bin, args, {cwd, env, windowsHide:true, timeout:15000, maxBuffer:512 * 1024}, (error, stdout) => {
-      if (error) return reject(Error(FAILURE));
-      try { accept(JSON.parse(stdout)); } catch { reject(Error(FAILURE)); }
-    });
-    child.stdin.end(input);
+    const child = execute(bin, args, {cwd, env, windowsHide:true, timeout:15000, maxBuffer:input === null ? 256 * 1024 : 512 * 1024},
+      (error, stdout) => {
+        const outcome = error ? (error.killed ? "timeout" : "execution") : "json";
+        let value;
+        try { value = JSON.parse(stdout); } catch {
+          return reject(diagnosed(Error(FAILURE), `${stage}_${outcome}`));
+        }
+        if (error) {
+          const detail = stage === "helper" && value?.protocol_version === 1 && value.status === "blocked" && Object.hasOwn(REASONS, value.reason) ? REASONS[value.reason] : "";
+          return reject(diagnosed(detail ? new StyleFailure(`${detail} ${FAILURE}`) : Error(FAILURE), `${stage}_${outcome}`));
+        }
+        accept(value);
+      });
+    if (input !== null) child.stdin.end(input);
   });
 }
 
@@ -83,87 +86,100 @@ export async function fileModeRoot(projects, cwd) {
 // `withBody` (#299): also the character text the loader would deliver, for a seat
 // that hands it to app-server as developerInstructions with that hook turned off.
 export async function resolveOutputStyle(discovery, cwd, selected, env = process.env, withBody = false, enabled = null) {
-  if (enabled === false) {
-    // Seat-local suppression also works for missing/untrusted loaders. Never
-    // run their bodies or alter the shared selector, hooks, or instructions.
-    const hook_keys = (discovery.styleHooks ?? []).filter(h => h.enabled === true).map(h => h.key);
-    if (hook_keys.some(k => typeof k !== "string" || !k)) fail();
-    return {mode:"disabled", name:null, hook_keys, body:null};
+  let stage = "project_validation";
+  try {
+    if (enabled === false) {
+      // Seat-local suppression also works for missing/untrusted loaders. Never
+      // run their bodies or alter the shared selector, hooks, or instructions.
+      const hook_keys = (discovery.styleHooks ?? []).filter(h => h.enabled === true).map(h => h.key);
+      if (hook_keys.some(k => typeof k !== "string" || !k)) fail();
+      return {mode:"disabled", name:null, hook_keys, body:null};
+    }
+    let root = await fileModeRoot(discovery.projects, cwd);
+    const effective = await realpath(cwd);
+    const nativeHome = typeof discovery.home === "string" ? await realpath(discovery.home).catch(() => null) : null;
+    const homeScope = nativeHome !== null && await realpath(join(effective, ".codex")).catch(() => null) === nativeHome;
+    if (root === null && homeScope && (selected || enabled === true) && await lstat(join(effective, ".codex/hooks/codex-output-style.py")).catch(() => null)) root = effective;
+    // No Li+ loader in reach (#555): a selected character cannot be delivered, so the
+    // launch stops; with none selected the seat runs as one without an output style.
+    if (root === null) {
+      if ((selected || enabled === true) && discovery.projects.some(layer => layer.disabled != null))
+        throw new StyleFailure("作業フォルダーが Codex で未信頼です。output-style をオンにして保存し、フォルダーと同梱専用 hook を承認してください。");
+      if (selected || enabled === true) throw new StyleFailure(NO_LOADER);
+      return {mode:"disabled", name:null};
+    }
+    stage = "helper_resolve";
+    const helper = resolve(root, ".codex/hooks/codex-output-style.py");
+    if (!await lstat(helper).catch(() => null)) throw new StyleFailure(NO_LOADER);
+    if (selected && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(selected) && !await lstat(join(root, ".codex/output-styles", `${selected}.md`)).catch(() => null))
+      throw new StyleFailure(`キャラクターの本文ファイル ${selected}.md が見つかりません。本文を保存してから起動してください。`);
+    if (!within(root, await realpath(helper))) fail();
+    stage = "hook_validation";
+    const expectedHooks = homeScope ? null : await realpath(resolve(root, ".codex/hooks.json")).catch(() => null);
+    if (!homeScope && (!expectedHooks || !within(root, expectedHooks))) throw new StyleFailure(NO_LOADER);
+    const commands = [root, root.replaceAll("\\", "/")].map(path =>
+      `${process.platform === "win32" ? "python" : "python3"} "${path}/.codex/hooks/codex-output-style.py" hook --root "${path}"`);
+    const hooks = [];
+    for (const hook of discovery.styleHooks ?? []) {
+      if (hook.enabled !== true) continue;
+      const sourceMatches = homeScope ? hook.source === "sessionFlags" &&
+        (process.platform === "win32" ? /^[A-Za-z]:\\<session-flags>\\config\.toml$/.test(hook.path) : hook.path === "/<session-flags>/config.toml") &&
+        hook.key === `${hook.path}:session_start:0:0`
+        : hook.source === "project" && await realpath(hook.path).catch(() => null) === expectedHooks;
+      if (!sourceMatches || hook.async !== false || hook.additionalContextLimit !== 0 || !commands.includes(hook.command)) fail();
+      if (hook.trust !== "trusted") throw new StyleFailure("専用 SessionStart hook が Codex で未信頼です。output-style をオンにして保存し、同梱専用 hook を承認してください。");
+      hooks.push(hook);
+    }
+    stage = "matcher_validation";
+    const matchers = ["startup", "resume", "clear", "compact"];
+    if (!hooks.length) throw new StyleFailure(NO_LOADER);
+    for (const matcher of matchers) {
+      const matches = hooks.filter(hook => hook.matcher === "startup|resume|clear|compact" || hook.matcher === matcher);
+      if (matches.length !== 1) fail();
+    }
+    // No shell, no body/config on argv, no inherited account override.
+    const childEnv = {...env, PYTHONUTF8:"1", PYTHONIOENCODING:"utf-8"};
+    for (const key of Object.keys(childEnv)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete childEnv[key];
+    const args = [helper, "resolve", "--cwd", cwd, "--root", root];
+    if (selected) args.push("--style", selected);
+    stage = "metadata_validation";
+    const metadata = await run(pythonCommand(env), args, cwd, childEnv);
+    if (enabled === true && metadata.mode === "disabled") throw new StyleFailure("project の output-style は無効です。オンで使うキャラクターの名前と本文を指定してください。");
+    if (metadata.protocol_version !== 1 || !["file", "disabled"].includes(metadata.mode) || metadata.root !== root ||
+        !Number.isInteger(metadata.byte_count) || metadata.byte_count < 0 || metadata.byte_count > 128 * 1024 ||
+        (metadata.mode === "file" && (typeof metadata.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metadata.name) ||
+          !/^[a-f0-9]{64}$/.test(metadata.sha256) || metadata.byte_count === 0 || (selected && metadata.name !== selected))) ||
+        (metadata.mode === "disabled" && (selected || metadata.name !== null || metadata.sha256 !== null || metadata.byte_count !== 0))) fail();
+    stage = "handler_validation";
+    const handler = metadata.handler;
+    if (!handler || handler.additional_context_limit !== 0 || handler.path !== await realpath(helper) ||
+        JSON.stringify(handler.matchers) !== JSON.stringify(["startup", "resume", "clear", "compact"]) ||
+        !within(root, await realpath(helper))) fail();
+    stage = "helper_hash_validation";
+    if (createHash("sha256").update(await readFile(helper)).digest("hex") !== handler.sha256) fail();
+    const result = {protocol_version:1, mode:metadata.mode, name:metadata.name, root:metadata.root,
+      sha256:metadata.sha256, byte_count:metadata.byte_count};
+    if (!withBody) return result;
+    result.hook_keys = hooks.map(hook => hook.key);
+    if (result.hook_keys.some(key => typeof key !== "string" || key === "")) fail();
+    result.body = null;
+    if (metadata.mode === "file") {
+      // The hook path itself: same helper, same selection, same bytes.
+      stage = "hook_response_validation";
+      const reply = await run(pythonCommand(env), [helper, "hook", "--root", root], cwd,
+        {...childEnv, LI_PLUS_OUTPUT_STYLE:metadata.name}, "hook",
+        JSON.stringify({hook_event_name:"SessionStart", source:"startup", cwd}));
+      const body = reply?.hookSpecificOutput?.additionalContext;
+      if (typeof body !== "string" || reply.hookSpecificOutput.hookEventName !== "SessionStart") fail();
+      stage = "hook_hash_validation";
+      if (Buffer.byteLength(body, "utf8") !== metadata.byte_count ||
+          createHash("sha256").update(body, "utf8").digest("hex") !== metadata.sha256) fail();
+      result.body = body;
+    }
+    return result;
+  } catch (error) {
+    throw diagnosed(error, error.diagnostic_code ?? stage);
   }
-  let root = await fileModeRoot(discovery.projects, cwd);
-  const effective = await realpath(cwd);
-  const nativeHome = typeof discovery.home === "string" ? await realpath(discovery.home).catch(() => null) : null;
-  const homeScope = nativeHome !== null && await realpath(join(effective, ".codex")).catch(() => null) === nativeHome;
-  if (root === null && homeScope && (selected || enabled === true) && await lstat(join(effective, ".codex/hooks/codex-output-style.py")).catch(() => null)) root = effective;
-  // No Li+ loader in reach (#555): a selected character cannot be delivered, so the
-  // launch stops; with none selected the seat runs as one without an output style.
-  if (root === null) {
-    if ((selected || enabled === true) && discovery.projects.some(layer => layer.disabled != null))
-      throw new StyleFailure("作業フォルダーが Codex で未信頼です。output-style をオンにして保存し、フォルダーと同梱専用 hook を承認してください。");
-    if (selected || enabled === true) throw new StyleFailure(NO_LOADER);
-    return {mode:"disabled", name:null};
-  }
-  const helper = resolve(root, ".codex/hooks/codex-output-style.py");
-  if (!await lstat(helper).catch(() => null)) throw new StyleFailure(NO_LOADER);
-  if (selected && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(selected) && !await lstat(join(root, ".codex/output-styles", `${selected}.md`)).catch(() => null))
-    throw new StyleFailure(`キャラクターの本文ファイル ${selected}.md が見つかりません。本文を保存してから起動してください。`);
-  if (!within(root, await realpath(helper))) fail();
-  const expectedHooks = homeScope ? null : await realpath(resolve(root, ".codex/hooks.json")).catch(() => null);
-  if (!homeScope && (!expectedHooks || !within(root, expectedHooks))) throw new StyleFailure(NO_LOADER);
-  const commands = [root, root.replaceAll("\\", "/")].map(path =>
-    `${process.platform === "win32" ? "python" : "python3"} "${path}/.codex/hooks/codex-output-style.py" hook --root "${path}"`);
-  const hooks = [];
-  for (const hook of discovery.styleHooks ?? []) {
-    if (hook.enabled !== true) continue;
-    const sourceMatches = homeScope ? hook.source === "sessionFlags" &&
-      (process.platform === "win32" ? /^[A-Za-z]:\\<session-flags>\\config\.toml$/.test(hook.path) : hook.path === "/<session-flags>/config.toml") &&
-      hook.key === `${hook.path}:session_start:0:0`
-      : hook.source === "project" && await realpath(hook.path).catch(() => null) === expectedHooks;
-    if (!sourceMatches || hook.async !== false || hook.additionalContextLimit !== 0 || !commands.includes(hook.command)) fail();
-    if (hook.trust !== "trusted") throw new StyleFailure("専用 SessionStart hook が Codex で未信頼です。output-style をオンにして保存し、同梱専用 hook を承認してください。");
-    hooks.push(hook);
-  }
-  const matchers = ["startup", "resume", "clear", "compact"];
-  if (!hooks.length) throw new StyleFailure(NO_LOADER);
-  for (const matcher of matchers) {
-    const matches = hooks.filter(hook => hook.matcher === "startup|resume|clear|compact" || hook.matcher === matcher);
-    if (matches.length !== 1) fail();
-  }
-  // No shell, no body/config on argv, no inherited account override.
-  const childEnv = {...env, PYTHONUTF8:"1", PYTHONIOENCODING:"utf-8"};
-  for (const key of Object.keys(childEnv)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete childEnv[key];
-  const args = [helper, "resolve", "--cwd", cwd, "--root", root];
-  if (selected) args.push("--style", selected);
-  const metadata = await run(pythonCommand(env), args, cwd, childEnv);
-  if (enabled === true && metadata.mode === "disabled") throw new StyleFailure("project の output-style は無効です。オンで使うキャラクターの名前と本文を指定してください。");
-  if (metadata.protocol_version !== 1 || !["file", "disabled"].includes(metadata.mode) || metadata.root !== root ||
-      !Number.isInteger(metadata.byte_count) || metadata.byte_count < 0 || metadata.byte_count > 128 * 1024 ||
-      (metadata.mode === "file" && (typeof metadata.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metadata.name) ||
-        !/^[a-f0-9]{64}$/.test(metadata.sha256) || metadata.byte_count === 0 || (selected && metadata.name !== selected))) ||
-      (metadata.mode === "disabled" && (selected || metadata.name !== null || metadata.sha256 !== null || metadata.byte_count !== 0))) fail();
-  const handler = metadata.handler;
-  if (!handler || handler.additional_context_limit !== 0 || handler.path !== await realpath(helper) ||
-      JSON.stringify(handler.matchers) !== JSON.stringify(["startup", "resume", "clear", "compact"]) ||
-      !within(root, await realpath(helper)) ||
-      createHash("sha256").update(await readFile(helper)).digest("hex") !== handler.sha256) fail();
-  const result = {protocol_version:1, mode:metadata.mode, name:metadata.name, root:metadata.root,
-    sha256:metadata.sha256, byte_count:metadata.byte_count};
-  if (!withBody) return result;
-  result.hook_keys = hooks.map(hook => hook.key);
-  if (result.hook_keys.some(key => typeof key !== "string" || key === "")) fail();
-  result.body = null;
-  if (metadata.mode === "file") {
-    // The hook path itself: same helper, same selection, same bytes.
-    const reply = await runHook(pythonCommand(env), [helper, "hook", "--root", root], cwd,
-      {...childEnv, LI_PLUS_OUTPUT_STYLE:metadata.name},
-      JSON.stringify({hook_event_name:"SessionStart", source:"startup", cwd}));
-    const body = reply?.hookSpecificOutput?.additionalContext;
-    if (typeof body !== "string" || reply.hookSpecificOutput.hookEventName !== "SessionStart" ||
-        Buffer.byteLength(body, "utf8") !== metadata.byte_count ||
-        createHash("sha256").update(body, "utf8").digest("hex") !== metadata.sha256) fail();
-    result.body = body;
-  }
-  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -171,11 +187,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const [bin, cwd, options, effective, selected = "", body = "", enabled = ""] = process.argv.slice(2);
     const env = {...process.env};
     for (const key of Object.keys(env)) if (key.toUpperCase() === "LI_PLUS_OUTPUT_STYLE") delete env[key];
-    const discovery = await run(process.execPath, [resolve(dirname(process.argv[1]), "codex-project.mjs"), bin, cwd, options], cwd, env);
-    if (discovery.error) fail();
+    const discovery = await run(process.execPath, [resolve(dirname(process.argv[1]), "codex-project.mjs"), bin, cwd, options], cwd, env, "discovery");
+    if (discovery?.error) throw diagnosed(Error(FAILURE), "discovery_error");
     process.stdout.write(JSON.stringify(await resolveOutputStyle(discovery, effective, selected, env, body === "body", enabled === "off" ? false : enabled === "on" ? true : null)));
   } catch (error) {
-    process.stdout.write(JSON.stringify({error:error instanceof StyleFailure ? error.message : FAILURE}));
+    process.stdout.write(JSON.stringify(failureReply(error)));
     process.exitCode = 1;
   }
 }

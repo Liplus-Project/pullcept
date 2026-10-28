@@ -42,6 +42,8 @@ Python 3.11 以上と、その root に installed Li+ helper `.codex/hooks/codex
 
 Codex のキャラクター欄の「Codex output-style」は「既存の動作を維持」「オン」「オフ」を選ぶ。未指定の既存アカウントは従来の選択を保つ。明示的にオンで保存すると同梱 loader を設置し、Codex の native `config/read` / `config/batchWrite` / `hooks/list` で対象フォルダーと同梱専用 hook を承認する（#559）。保存前にその範囲を短く示す。Python 3.11 以上は別途必要。資材は Apache-2.0 の Li+ loader の固定 snapshot として実行ファイルへ埋め込み、ネット取得しない（出典は `crates/mcp-config/assets/`）。保存で起動中の席を再起動しない。既存動作維持・オフでの保存は承認を追加しない。
 
+output-style 確認に失敗した場合、プレビューと通常起動の両経路から app data の `logs/codex-style-probe.log` に固定工程コード1つを1行で追記する（#576）。discovery・helper・hook の実行失敗／timeout／JSON不正、project・helper参照・hook・matcher・metadata・handler・本文照合を区別する。backend は既知コードだけを採用し、任意の例外・stdout/stderr・引数・環境変数・本文・パスを診断へ記録しない。書込失敗は起動判定に影響せず、既存の表示エラー・timeout・成功時の動作は保つ。断続的失敗の原因解消を意味する変更ではない。
+
 ホーム cwd（`<cwd>/.codex` が実際の `CODEX_HOME`）では、user 全体の `hooks.json` に専用 hook を追加せず、当該 process の `-c hooks.SessionStart=[...]` に同じ canonical command を載せる。cwd は変えない。source=`sessionFlags`・設定場所・index・command を検証する。既存の inline hook／該当 CLI override と競合するときは既存設定を保ち、具体的に失敗する。#560 がホームに作った登録は、同梱 helper と専用登録が一致する場合だけオン保存時に取り除き、無関係な登録・本文を残す。選択のない既存動作維持やオフの席へ process hook を追加しない。
 
 承認は本文や任意の hook 全般には与えない。同梱版と一致する helper の bytes（従来対応の LF/CRLF を含む）を保存し、その exact digest と canonical command・root・設定場所・native currentHash を承認直前に再確認する。native が返す key の `trusted_hash` だけを leaf 編集し、他の `hooks.state` を保つ。ホームの共通 index に別 hash の承認があれば上書きせず失敗する。sealed account 環境を開いた同じ `CODEX_HOME` を使い、profile の discovery 設定を保持する。
