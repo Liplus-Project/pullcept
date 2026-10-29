@@ -863,11 +863,11 @@
             <p id="dialog-error" class="error" role="alert"></p>
 
             <menu class="actions">
-              <!-- Two clicks: this one cannot be taken back and it sits beside
-                   two that can. Not `window.confirm`, whose two failure
-                   directions are both wrong here (#57). 終了 in the list asked
-                   the same question in this same shape until #71 moved it into a
-                   dialog of its own; whether this one follows is #72. -->
+              <!-- This one cannot be taken back and it sits beside two that
+                   can, so a press opens `#account-delete-dialog` and the
+                   question is answered there (#72), the shape 終了 has had
+                   since #71. Not `window.confirm`, whose two failure
+                   directions are both wrong here (#57). -->
               <button id="dialog-delete" type="button" class="delete">削除</button>
               <span class="spacer"></span>
               <!-- What 保存 just did, beside it (#557): the main status line sits
@@ -896,6 +896,29 @@
             <button id="account-close-save" type="button">保存して閉じる</button>
             <button id="account-close-discard" type="button" class="danger">保存せずに閉じる</button>
             <button id="account-close-keep" type="button" autofocus>キャンセル</button>
+          </menu>
+        </div>
+      </dialog>
+
+      <!-- The アカウントの削除 confirmation (#72). 削除 in the account form
+           opens this, and the question is answered here rather than on the
+           button, the way 終了 is answered in `#end-dialog` (#71).
+
+           Its own `<dialog>`, opened over the account form, as
+           `#account-close-dialog` is: the form keeps its fields under the
+           question, and 取消 returns to it as it was. A second face of the
+           form itself would have to put those fields away and bring them back.
+
+           取消 holds the focus, so a stray Enter or Space answers the safe way.
+           Escape closes it, which is the same answer. -->
+      <dialog id="account-delete-dialog" aria-labelledby="account-delete-title">
+        <div class="confirm">
+          <h2 id="account-delete-title">アカウントの削除</h2>
+          <p id="account-delete-message"></p>
+          <menu class="actions">
+            <span class="spacer"></span>
+            <button id="account-delete-cancel" type="button" autofocus>取消</button>
+            <button id="account-delete-commit" type="button" class="danger">削除</button>
           </menu>
         </div>
       </dialog>

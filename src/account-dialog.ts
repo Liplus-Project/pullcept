@@ -72,9 +72,6 @@ export function createAccountDialog(deps: Dependencies) {
   /** The draft the form is filling in. Never the account itself. */
   let draft: Account | null = null;
 
-  /** True once 削除 has been armed. The shape 終了 held until #71; see #72. */
-  let deleteArmed = false;
-
   /**
    * The environment field exactly as it was drawn for the draft (masks, one line
    * per variable), or null while it has not been drawn — still loading, or the
@@ -157,13 +154,6 @@ export function createAccountDialog(deps: Dependencies) {
           : (at + step + shown.length) % shown.length;
     showDialogSection(shown[next].dataset.sectionTab as DialogSection);
     shown[next].focus();
-  }
-
-  /** Put 削除 back to resting. */
-  function disarmDelete(): void {
-    deleteArmed = false;
-    dialogDeleteEl.textContent = "削除";
-    dialogDeleteEl.classList.remove("armed");
   }
 
   /**
@@ -497,7 +487,6 @@ export function createAccountDialog(deps: Dependencies) {
     dialogResumeEl.value = draft.resume_command ?? "";
     void drawDialogEnv(draft);
     dialogDeleteEl.hidden = account === null;
-    disarmDelete();
     dialogError("");
     // Cleared before the round trip that refills it, so the account being opened
     // is never read against the last one's notice.
@@ -535,7 +524,7 @@ export function createAccountDialog(deps: Dependencies) {
   let characterTimer: number | undefined;
 
   /** The 決定 that was asked to be pressed again, as place and body: a second
-   *  press of the same is the confirmation (the shape 削除 has). */
+   *  press of the same is the confirmation. */
   let characterArmed: string | null = null;
 
   function characterPlace(): CharacterPlace | null {
@@ -1176,18 +1165,51 @@ export function createAccountDialog(deps: Dependencies) {
   }
 
   /**
-   * Delete the account the form is open on, on the second click.
-   *
-   * Two clicks rather than `window.confirm`, for the reason 終了 does not use one
-   * either: a host that answers nothing makes the button either silently dead or
-   * — the bias `confirm` defaults to — destructive on one click (#57). 終了 asks
-   * in a `<dialog>` of the app's own since #71; whether this follows is #72.
+   * Why the account the form is open on cannot be deleted, or null when it can.
    *
    * Refused while it is running: the session in the room belongs to this account,
    * and deleting the account under it would leave a participant on the roster
    * that nothing on this screen can name or account for. Refused for the person
    * at this screen too — they are in the room by being here, and there would be
    * nothing left to be here as.
+   */
+  function deleteRefusal(account: Account): string | null {
+    if (deps.seatedAnywhere(account.id)) {
+      return `「${account.name}」は起動中です。セッションを終了してから削除してください。`;
+    }
+    if (account.id === deps.localAccountId) return "この画面の本人のアカウントは削除できません。";
+    return null;
+  }
+
+  /**
+   * 削除 in the form: ask, in `#account-delete-dialog` (#72).
+   *
+   * The question is a dialog of the app's own, as 終了's is since #71, and not
+   * `window.confirm`: a host that answers nothing makes the button either
+   * silently dead or — the bias `confirm` defaults to — destructive on one click
+   * (#57). A refusal is said in the form at once, with no question before it.
+   */
+  function requestDeleteFromDialog(): void {
+    const account = editing;
+    if (!account) return;
+    const refusal = deleteRefusal(account);
+    if (refusal) {
+      dialogError(refusal);
+      return;
+    }
+    dialogError("");
+    const server = account.kind === "mcp" ? account.server : null;
+    deleteMessageEl.textContent = server
+      ? `「${account.name}」を削除します。設定ファイルからサーバ「${server}」を外し、動いていれば止めます。よろしいですか？`
+      : `「${account.name}」を削除します。よろしいですか？`;
+    deleteConfirmEl.showModal();
+  }
+
+  /**
+   * Delete the account the form is open on: the question's answer that acts.
+   *
+   * The refusals are read again here, not carried from when the question
+   * opened: the account may have been started while the question stood.
    *
    * A server's account takes its server with it (#200): the entry comes out of
    * the file and the run is ended, before the account goes. In that order,
@@ -1195,38 +1217,21 @@ export function createAccountDialog(deps: Dependencies) {
    * read of the config — so a file that cannot be written keeps the account.
    */
   async function deleteFromDialog(): Promise<void> {
+    if (deleteConfirmEl.open) deleteConfirmEl.close();
     const account = editing;
     if (!account) return;
-
-    if (deps.seatedAnywhere(account.id)) {
-      dialogError(`「${account.name}」は起動中です。セッションを終了してから削除してください。`);
-      disarmDelete();
-      return;
-    }
-    if (account.id === deps.localAccountId) {
-      dialogError("この画面の本人のアカウントは削除できません。");
-      disarmDelete();
+    const refusal = deleteRefusal(account);
+    if (refusal) {
+      dialogError(refusal);
       return;
     }
     const server = account.kind === "mcp" ? account.server : null;
-    if (!deleteArmed) {
-      deleteArmed = true;
-      dialogDeleteEl.textContent = "本当に削除";
-      dialogDeleteEl.classList.add("armed");
-      dialogError(
-        server
-          ? `もう一度押すと削除します。設定ファイルからサーバ「${server}」を外し、動いていれば止めます。`
-          : "もう一度押すと削除します。",
-      );
-      return;
-    }
 
     if (server) {
       try {
         await deps.invoke("delete_mcp_server", { name: server });
       } catch (err) {
         dialogError(`サーバを設定ファイルから外せませんでした: ${err}`);
-        disarmDelete();
         return;
       }
     }
@@ -1303,7 +1308,6 @@ export function createAccountDialog(deps: Dependencies) {
     edited = false;
     editing = null;
     draft = null;
-    disarmDelete();
     if (dialogEl.open) dialogEl.close();
   }
 
@@ -1648,6 +1652,11 @@ export function createAccountDialog(deps: Dependencies) {
 
   const dialogDeleteEl = document.getElementById("dialog-delete") as HTMLButtonElement;
 
+  const deleteConfirmEl = document.getElementById("account-delete-dialog") as HTMLDialogElement;
+  const deleteMessageEl = document.getElementById("account-delete-message") as HTMLElement;
+  const deleteCancelEl = document.getElementById("account-delete-cancel") as HTMLButtonElement;
+  const deleteCommitEl = document.getElementById("account-delete-commit") as HTMLButtonElement;
+
   const dialogCodexPlanEl = document.getElementById("dialog-codex-plan") as HTMLInputElement;
   const dialogCodexPlanFieldEl = document.getElementById("dialog-codex-plan-field") as HTMLElement;
   const dialogCancelEl = document.getElementById("dialog-cancel") as HTMLButtonElement;
@@ -1705,13 +1714,9 @@ export function createAccountDialog(deps: Dependencies) {
     // The form's circle is drawn from the name and the colour above it (#236).
     dialogNameEl.addEventListener("input", () => drawDialogAvatar());
     dialogHueEl.addEventListener("change", () => drawDialogAvatar());
-    dialogAvatarPickEl.addEventListener("click", () => {
-      disarmDelete();
-      dialogAvatarInputEl.click();
-    });
+    dialogAvatarPickEl.addEventListener("click", () => dialogAvatarInputEl.click());
     dialogAvatarInputEl.addEventListener("change", () => void pickDialogAvatar());
     dialogAvatarClearEl.addEventListener("click", () => {
-      disarmDelete();
       resetDialogAvatar();
       dialogAvatar = { kind: "clear" };
       drawDialogAvatar();
@@ -1780,22 +1785,11 @@ export function createAccountDialog(deps: Dependencies) {
     // launch — but it is a line that runs, and what it cannot carry is a topic
     // this account cannot go back into (#154, 決定4).
     dialogResumeEl.addEventListener("input", () => refreshDialogLine());
-    // Anything but the second click of 削除 disarms it: an arm left standing is
-    // one that an unrelated click fires later.
-    for (const field of [
-      dialogNameEl,
-      dialogKindEl,
-      dialogHueEl,
-      dialogCwdEl,
-      dialogCharacterEl,
-      dialogOptionsEl,
-      dialogResumeEl,
-      dialogEnvEl,
-      dialogCharacterBodyEl,
-    ]) {
-      field.addEventListener("input", () => disarmDelete());
-    }
-    dialogDeleteEl.addEventListener("click", () => void deleteFromDialog());
+    // 削除 asks; the question's two answers (#72). 取消 holds the focus, and
+    // Escape on the question is the same answer: the form stays as it was.
+    dialogDeleteEl.addEventListener("click", () => requestDeleteFromDialog());
+    deleteCancelEl.addEventListener("click", () => deleteConfirmEl.close());
+    deleteCommitEl.addEventListener("click", () => void deleteFromDialog());
     for (const tab of dialogSectionTabEls) {
       tab.addEventListener("click", () => showDialogSection(tab.dataset.sectionTab as DialogSection));
       tab.addEventListener("keydown", stepDialogSection);
@@ -1829,7 +1823,7 @@ export function createAccountDialog(deps: Dependencies) {
       mcpDrawn = null;
       resetDialogAvatar();
       resetCharacterFile();
-      disarmDelete();
+      if (deleteConfirmEl.open) deleteConfirmEl.close();
     });
     // Escape is taken at the key, before the host's close request: a `cancel` the
     // host fires without recent activation cannot be held, and a question opened
@@ -1843,6 +1837,11 @@ export function createAccountDialog(deps: Dependencies) {
       if (event.key !== "Escape" || event.isComposing) return;
       event.preventDefault();
       closeConfirmEl.close();
+    });
+    deleteConfirmEl.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      deleteConfirmEl.close();
     });
     dialogEl.addEventListener("cancel", event => {
       if (saving) {
