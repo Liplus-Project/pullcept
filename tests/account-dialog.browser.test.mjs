@@ -28,6 +28,7 @@ test('account save stays open, retries preserve identity and Codex options', {ti
    if(cmd==='mcp_servers')return {file:'fixture',error:null,servers:window.created?[window.created]:[]};
    if(cmd==='delete_account_avatar'&&window.failAvatar)throw Error('avatar unavailable');
    if(cmd==='save_mcp_server'){Object.assign(window.created,args);return;}
+   if(cmd==='delete_mcp_server'){window.created=null;return;}
    if(cmd==='open_character_file')return {body:'original',exists:true,folder_exists:true,path:'fixture.md',stamp:'first',name_in_file:'persona'};
    if(cmd==='character_file_wearers')return [];
    if(cmd==='save_character_file')return {written:true,opened:{body:args.body,exists:true,folder_exists:true,path:'fixture.md',stamp:'second'}};
@@ -96,6 +97,21 @@ test('account save stays open, retries preserve identity and Codex options', {ti
  // Footer order (#549): 削除 on the left, then 保存 before 閉じる — in the DOM (Tab order) and on screen.
  assert.deepEqual(await page.locator('#account-dialog .actions button').evaluateAll(bs=>bs.map(b=>b.id)),['dialog-delete','dialog-commit','dialog-cancel']);assert.ok(await page.evaluate(()=>document.getElementById('dialog-commit').getBoundingClientRect().right<=document.getElementById('dialog-cancel').getBoundingClientRect().left));
  assert.equal(await page.evaluate(()=>window.calls.some(c=>['start_session','start_codex_session'].includes(c.cmd))),false);
+ // 削除 asks in its own dialog over the form (#72), as 終了 does since #71: no armed second click on the button.
+ // The deletion is read from its status line and calls: the form replaces its list, so this page's copy is not it.
+ await page.evaluate(()=>{window.test.open(window.test.accounts.find(a=>a.id!=='mcp-id'));window.calls=[];window.statuses=[];});const doomed=await page.evaluate(()=>window.test.accounts.find(a=>a.id!=='mcp-id').id);
+ await page.locator('#dialog-delete').click();assert.equal(await isOpen('account-delete-dialog'),true);assert.equal(await isOpen('account-dialog'),true);assert.equal(await page.evaluate(()=>document.activeElement.id),'account-delete-cancel');
+ assert.match(await page.locator('#account-delete-message').innerText(),/を削除します/);assert.equal(await page.locator('#dialog-delete').innerText(),'削除');
+ await page.keyboard.press('Escape');assert.equal(await isOpen('account-delete-dialog'),false);assert.equal(await isOpen('account-dialog'),true);
+ await page.locator('#dialog-delete').click();await page.locator('#account-delete-cancel').click();assert.equal(await isOpen('account-delete-dialog'),false);assert.equal(await isOpen('account-dialog'),true);
+ assert.ok(await page.evaluate(id=>window.test.accounts.some(a=>a.id===id),doomed));assert.equal(await page.evaluate(()=>window.calls.some(c=>c.cmd==='save_config')),false);
+ await page.locator('#dialog-delete').click();await page.locator('#account-delete-commit').click();await page.waitForFunction(()=>!document.querySelector('#account-dialog').open);
+ assert.equal(await isOpen('account-delete-dialog'),false);assert.ok(await page.evaluate(()=>window.statuses.some(s=>/を削除しました。$/.test(s.text))));assert.ok(await page.evaluate(id=>window.calls.some(c=>c.cmd==='delete_account_avatar'&&c.args.accountId===id),doomed));assert.equal(await page.evaluate(()=>window.calls.some(c=>c.cmd==='delete_mcp_server')),false);
+ // A server's account names its server in the question, and the entry comes out before the account goes (#200).
+ await page.evaluate(()=>{window.test.open(window.test.accounts.find(a=>a.id==='mcp-id'));window.calls=[];});
+ await page.locator('#dialog-delete').click();assert.match(await page.locator('#account-delete-message').innerText(),/サーバ「server」を外し/);
+ await page.locator('#account-delete-commit').click();await page.waitForFunction(()=>!document.querySelector('#account-dialog').open);
+ const deleteCalls=await page.evaluate(()=>window.calls.map(c=>c.cmd));assert.ok(deleteCalls.indexOf('delete_mcp_server')>=0&&deleteCalls.indexOf('delete_mcp_server')<deleteCalls.indexOf('delete_account_avatar'));
  assert.deepEqual(await page.evaluate(()=>{const a=['--model','x','--config=tools.update_plan.enabled=false','-ctools.update_plan.enabled=true','--','tools.update_plan.enabled=prompt'];return [window.test.codexPlanEnabled(a),window.test.withCodexPlan(a,false)];}),[true,['--model','x','-c','tools.update_plan.enabled=false','--','tools.update_plan.enabled=prompt']]);
  assert.deepEqual(errors,[]);
 });
