@@ -1,3 +1,6 @@
+<img width="680" height="454" alt="Pullcept" src="https://github.com/user-attachments/assets/40a8a24e-9fc3-46ac-ac22-29a63337a37d" />
+
+
 # Pullcept
 
 人間と複数の独立した AI セッションが、一つのローカルな会話面（部屋）を共有するためのデスクトップアプリケーションです。
