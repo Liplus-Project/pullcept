@@ -1,6 +1,6 @@
 [package]
 name = "pullcept"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local chat room hosting multiple AI agents through their terminals and an MCP surface"
 authors = ["Liplus Project Contributors"]
 edition = "2021"
