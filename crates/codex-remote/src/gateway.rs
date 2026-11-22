@@ -259,6 +259,39 @@ fn refresh_descendants(
     Ok(())
 }
 
+/// Backend connections each seat thread's gateway still has open (#592).
+/// Kept outside the gateway so that a serve loop outliving its seat is still
+/// counted after the gateway is gone.
+fn open_registry() -> &'static Mutex<HashMap<String, usize>> {
+    static OPEN: std::sync::OnceLock<Mutex<HashMap<String, usize>>> = std::sync::OnceLock::new();
+    OPEN.get_or_init(Default::default)
+}
+
+/// How many backend connections the gateways of `thread`'s seats hold open.
+pub fn open_connections(thread: &str) -> usize {
+    open_registry().lock().get(thread).copied().unwrap_or(0)
+}
+
+/// One counted backend connection, for as long as its serve loop runs.
+struct Open(String);
+impl Open {
+    fn new(thread: &str) -> Self {
+        *open_registry().lock().entry(thread.to_string()).or_default() += 1;
+        Self(thread.to_string())
+    }
+}
+impl Drop for Open {
+    fn drop(&mut self) {
+        let mut open = open_registry().lock();
+        if let Some(count) = open.get_mut(&self.0) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.0);
+            }
+        }
+    }
+}
+
 /// Per-client correlation, deliberately not shared across TUI connections.
 pub struct Policy {
     owned: Arc<Mutex<HashSet<String>>>,
@@ -612,6 +645,7 @@ fn serve(
         .set_write_timeout(Some(Duration::from_secs(2)))
         .map_err(|_| ())?;
     let (mut backend, _) = tungstenite::client(req, native).map_err(|_| ())?;
+    let _open = Open::new(own);
     local.get_mut().set_nonblocking(true).map_err(|_| ())?;
     backend.get_mut().set_nonblocking(true).map_err(|_| ())?;
     let mut policy = Policy::new(own);
@@ -1023,6 +1057,48 @@ mod tests {
         a.end();
         b.end();
         drop(clients);
+        backend.join().unwrap();
+    }
+    #[test]
+    fn open_connections_counts_a_serving_backend_connection_until_the_gateway_ends() {
+        let thread_id = "open-count-592";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_url = format!("ws://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let backend = thread::spawn(move || {
+            let read = |ws: &mut WebSocket<TcpStream>| {
+                serde_json::from_str::<Value>(&ws.read().unwrap().into_text().unwrap()).unwrap()
+            };
+            // First the seat-scope refresh, answered with no children.
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let init = read(&mut ws);
+            assert_eq!(init["params"]["clientInfo"]["name"], "pullcept-seat-scope");
+            ws.send(Message::text(json!({"id":init["id"],"result":{}}).to_string())).unwrap();
+            assert_eq!(read(&mut ws)["method"], "initialized");
+            let query = read(&mut ws);
+            ws.send(Message::text(json!({"id":query["id"],"result":{"data":[],"nextCursor":null}}).to_string())).unwrap();
+            // Then the serve loop's own connection, held until the gateway drops it.
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            while ws.read().is_ok() {}
+        });
+        let gateway = Gateway::start(backend_url, "private".into(), "seat".into(), thread_id.into(), std::env::current_dir().unwrap(), vec![]).unwrap();
+        let wait = |want: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while open_connections(thread_id) != want {
+                assert!(Instant::now() < deadline, "open connections never reached {want}");
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+        assert_eq!(open_connections(thread_id), 0);
+        let mut req = gateway.url.as_str().into_client_request().unwrap();
+        req.headers_mut().insert("Authorization", HeaderValue::from_static("Bearer seat"));
+        let (client, _) = tungstenite::connect(req).unwrap();
+        wait(1);
+        gateway.end();
+        wait(0);
+        drop(client);
         backend.join().unwrap();
     }
     #[test]

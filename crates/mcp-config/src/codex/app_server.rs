@@ -223,9 +223,10 @@ pub fn shared_server_args(options: Vec<String>, digest: &str) -> Vec<String> {
 }
 
 /// What a resume is told when native still has the thread loaded after the
-/// wait for its unload (#586). The holder cannot be named: a phone, the desktop
-/// app, another client of the shared connection, or a turn still running with
-/// no seat. `status` is `thread/read`'s `thread.status`; an active one says the
+/// wait for its unload (#586). The holder cannot be named here: native's API
+/// does not tell subscribers (its log DB does afterwards, `held_log_line`), and
+/// it may be a phone, another client of the shared connection, or a turn still
+/// running with no seat. `status` is `thread/read`'s `thread.status`; an active one says the
 /// conversation is still working rather than open elsewhere.
 pub fn held_message(status: &Value) -> &'static str {
     if status["type"] == "active" {
@@ -238,6 +239,57 @@ pub fn held_message(status: &Value) -> &'static str {
 /// The room settings did not reach a resumed thread in time (#586: not only a
 /// phone can hold it).
 pub const SETTINGS_NOT_APPLIED: &str = "会話へ今回の部屋設定を適用できませんでした。ほかの端末やアプリで会話を閉じ、少し待って再試行してください。履歴は保持しています。";
+
+/// Where a held thread is diagnosed, under the app's `logs` (#592).
+pub const HOLD_LOG_FILE: &str = "codex-thread-hold.log";
+
+fn hold_token(text: &str) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_whitespace() || c.is_control() { '_' } else { c })
+        .take(120)
+        .collect();
+    if cleaned.is_empty() { "-".into() } else { cleaned }
+}
+
+fn hold_flag(seen: Option<bool>) -> &'static str {
+    match seen {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "-",
+    }
+}
+
+/// A resume stopped because native still had `thread` loaded (#592). Native
+/// does not tell its subscribers; its own log DB under `sqlite_home` does,
+/// in the rows whose `process_uuid` starts `pid:<backend_pid>:`. This line
+/// pins those rows and the time, and counts the Pullcept gateway connections
+/// still open to the thread. No token and no conversation text.
+pub fn held_log_line(thread: &str, status: &Value, backend_pid: u32, gateway: usize, sqlite_home: Option<&str>, at: &str) -> String {
+    format!(
+        "[codex-thread-hold] held thread={} at={} status={} pid={} gateway={} sqlite_home={}",
+        hold_token(thread),
+        hold_token(at),
+        hold_token(status["type"].as_str().unwrap_or_default()),
+        backend_pid,
+        gateway,
+        sqlite_home.map_or_else(|| "-".to_string(), |path| Value::from(path).to_string()),
+    )
+}
+
+/// A stopped shared seat's observer has left `thread` (#592): whether the
+/// interrupt's answer (the turn's end) and the unsubscribe's answer were seen.
+/// `-` = not attempted.
+pub fn left_log_line(thread: &str, turn: Option<&str>, turn_ended: Option<bool>, unsubscribed: Option<bool>, at: &str) -> String {
+    format!(
+        "[codex-thread-hold] left thread={} at={} turn={} turn_ended={} unsubscribed={}",
+        hold_token(thread),
+        hold_token(at),
+        hold_token(turn.unwrap_or_default()),
+        hold_flag(turn_ended),
+        hold_flag(unsubscribed),
+    )
+}
 
 pub fn shared_room_config(config: &mut Value, own: &str, bootstrap: &std::path::Path, credential: &std::path::Path, runner: &std::path::Path, entry: &std::path::Path, hook_keys: &[String]) {
     let mut tools = Map::new();
@@ -460,6 +512,18 @@ mod tests {
             assert!(text.contains("ほかの端末やアプリ"), "{text}");
             assert!(!text.contains("スマホで"), "{text}");
             assert!(text.contains("履歴は保持しています"), "{text}");
+        }
+    }
+    #[test]
+    fn hold_lines_pin_the_native_log_rows_and_carry_no_free_text() {
+        let held = held_log_line("T 1", &json!({"type":"idle"}), 23956, 0, Some("C:/app data/codex-seat-sqlite/ab"), "2026-11-22T12:41:23Z");
+        assert_eq!(held, "[codex-thread-hold] held thread=T_1 at=2026-11-22T12:41:23Z status=idle pid=23956 gateway=0 sqlite_home=\"C:/app data/codex-seat-sqlite/ab\"");
+        assert!(held_log_line("T", &Value::Null, 1, 2, None, "t").ends_with("status=- pid=1 gateway=2 sqlite_home=-"));
+        let left = left_log_line("T", Some("turn-1"), Some(true), Some(false), "t");
+        assert_eq!(left, "[codex-thread-hold] left thread=T at=t turn=turn-1 turn_ended=yes unsubscribed=no");
+        assert!(left_log_line("T", None, None, Some(true), "t").ends_with("turn=- turn_ended=- unsubscribed=yes"));
+        for line in [held, left] {
+            assert_eq!(line.lines().count(), 1);
         }
     }
     const ID: &str = "01a110c0-c898-75f0-be7d-ffff2e05b9f5";
