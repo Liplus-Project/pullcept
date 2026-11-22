@@ -4,7 +4,7 @@
 
 Pullcept の Codex 席で `/hooks` の ON/OFF を切り替えると、TUI に `config/batchWrite failed: method is unavailable through this seat (code -32600)` が出て保存されなかった。席の gateway が `config/batchWrite` を許可していなかったためである。TUI の `/hooks` が送る形（`hooks.state` の `enabled` と `trusted_hash`）に限り、書き込みのたびに聞き直した自席の作業フォルダーの `hooks/list` に在る hook だけを対象として中継する形にした。管理された hook へは書かせず、信頼はその時点の hash と一致するときだけ通す（「[共通の Codex 接続](3-accounts.md#共通の-codex-接続568)」）。書いた状態は共有の `CODEX_HOME` の設定に入るため、同じログインのほかの席にも効く。
 
-**確かめた範囲:** `gateway` の単体テストと偽 backend のテスト、固定の native 0.162.1 での `tests/native_shared.rs`（「[開発](5-development.md#native-relay-の回帰境界419)」）。native では席を通した信頼が保存されて `hooks/list` に反映された。`trusted_hash` を null にする取り消しは gateway を通るが、native が upsert の値の中の null を `configValidationError` で拒否し、保存されなかった。TUI が送る形は Codex の `tui/src/app/background_requests.rs`（`write_hook_enabled`）と `tui/src/hooks_rpc.rs`（`write_hook_trusts`）、欄の型は `app-server-protocol` の `ConfigBatchWriteParams` / `HookMetadata` の原文（openai/codex main、2026-11-23 に読んだ）で照合した。
+**確かめた範囲:** `gateway` の単体テストと偽 backend のテスト、固定の native 0.162.1 での `tests/native_shared.rs`（「[開発](5-development.md#native-relay-の回帰境界419)」）。native では席を通した信頼が保存されて `hooks/list` に反映された。`trusted_hash` を null にする取り消しは native（0.162.1 は native テストで確認、0.170.0 は隔離環境での報告）が upsert の値の中の null を `configValidationError` で拒否し、0.170.0 の TUI にも取り消しの操作が無いため、gateway でも拒否する。TUI が送る形は Codex の `tui/src/app/background_requests.rs`（`write_hook_enabled`）と `tui/src/hooks_rpc.rs`（`write_hook_trusts`）、欄の型は `app-server-protocol` の `ConfigBatchWriteParams` / `HookMetadata` の原文（openai/codex main、2026-11-23 に読んだ）で照合した。
 
 **未確認（実機では確かめていない）:** 稼働中の席の `/hooks` で切り替えと信頼が保存され、同じログインのほかの席に反映されること。Rust の変更であるため、全席の再起動の時刻を Master と合わせてから確かめる。
 

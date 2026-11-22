@@ -334,9 +334,10 @@ type HookScope = HashMap<String, HookTrust>;
 
 /// `config/batchWrite` as the TUI's `/hooks` sends it (#596): `hooks.state`
 /// upserts whose entries change only a hook's `enabled` or `trusted_hash`.
-/// Every key must be an unmanaged hook in `scope`. A trust write must name the
-/// hash native currently reports for it, or be null (revoking trust only
-/// lowers it). Field names only in errors.
+/// Every key must be an unmanaged hook in `scope`, and a trust write must name
+/// the hash native currently reports for it. The 0.170.0 TUI has no revoke
+/// path, and native refuses a null inside an upsert value, so null is refused
+/// here too. Field names only in errors.
 fn hooks_write_in_scope(params: &Value, scope: Option<&HookScope>) -> Result<(), String> {
     let fields = params
         .as_object()
@@ -391,8 +392,8 @@ fn hooks_write_in_scope(params: &Value, scope: Option<&HookScope>) -> Result<(),
             for (field, value) in change {
                 match field.as_str() {
                     "enabled" if value.is_boolean() => {}
-                    "trusted_hash" if value.is_string() || value.is_null() => {
-                        if !value.is_null() && hook.hash.as_deref() != value.as_str() {
+                    "trusted_hash" if value.is_string() => {
+                        if hook.hash.as_deref() != value.as_str() {
                             return Err("trust is writable only at the hook's current hash".into());
                         }
                     }
@@ -1366,14 +1367,11 @@ mod tests {
             edit(json!({"user:h5":{"enabled":false}})),
             edit(json!({"user:h1":{"trusted_hash":"sha256:1"}})),
             edit(json!({"user:h1":{"enabled":true,"trusted_hash":"sha256:1"}})),
-            // Revoking trust needs no hash match: it only lowers trust.
-            edit(json!({"user:h1":{"trusted_hash":null}})),
-            edit(json!({"user:h1":{"enabled":false,"trusted_hash":null}})),
             json!({"edits":[
                 {"keyPath":"hooks.state","value":{"user:h1":{"trusted_hash":"sha256:1"}},"mergeStrategy":"upsert"},
                 {"keyPath":"hooks.state","value":{"user:h5":{"enabled":true}},"mergeStrategy":"upsert"}
             ],"reloadUserConfig":true}),
-            edit(json!({"user:h1":{"enabled":false},"user:h5":{"trusted_hash":null}})),
+            edit(json!({"user:h1":{"enabled":false},"user:h5":{"trusted_hash":"sha256:5"}})),
             json!({"edits":[{"keyPath":"hooks.state","value":{"user:h1":{"enabled":false}},"mergeStrategy":"upsert"}]}),
             json!({"edits":[{"keyPath":"hooks.state","value":{"user:h1":{"enabled":false}},"mergeStrategy":"upsert"}],"expectedVersion":"v1"}),
         ] {
@@ -1399,10 +1397,10 @@ mod tests {
             edit(json!({"bare:h4":{"trusted_hash":"sha256:4"}})),
             edit(json!({"user:h1":{"trusted_hash":"sha256:old"}})),
             edit(json!({"user:h1":{"trusted_hash":""}})),
+            // No revoke form: the TUI sends none and native refuses it.
+            edit(json!({"user:h1":{"trusted_hash":null}})),
+            edit(json!({"user:h1":{"enabled":false,"trusted_hash":null}})),
             edit(json!({"admin:h2":{"trusted_hash":null}})),
-            edit(json!({"bare:h4":{"trusted_hash":null}})),
-            edit(json!({"style:h3":{"trusted_hash":null}})),
-            edit(json!({"other:h9":{"trusted_hash":null}})),
             // Unexpected value types and fields under hooks.state.
             edit(json!({"user:h1":{"enabled":"false"}})),
             edit(json!({"user:h1":{"enabled":null}})),

@@ -375,10 +375,12 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
         .rpc("config/batchWrite", trust(json!("sha256:stale")))
         .unwrap_err();
     assert_eq!(stale["message"], "trust is writable only at the hook's current hash");
-    // A null trusted_hash passes the gateway, but this native refuses a null
-    // inside an upsert value, so the TUI's shape cannot revoke trust here.
-    let revoke = seat.rpc("config/batchWrite", trust(Value::Null)).unwrap_err();
+    // Native refuses a null inside an upsert value (configValidationError)
+    // and the TUI has no revoke path, so the gateway refuses it first.
+    let revoke = owner_a.rpc("config/batchWrite", trust(Value::Null)).unwrap_err();
     assert_eq!(revoke["data"]["config_write_error_code"], "configValidationError");
+    let revoke = seat.rpc("config/batchWrite", trust(Value::Null)).unwrap_err();
+    assert_eq!(revoke["message"], "hook state field `trusted_hash` is not writable through this seat");
     assert_eq!(style_hook(&mut owner_a)["trustStatus"], "trusted");
     owner_a
         .rpc("config/batchWrite", json!({"edits":[{"keyPath":"hooks.state","value":{},"mergeStrategy":"replace"}],"reloadUserConfig":true}))
