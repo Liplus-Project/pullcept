@@ -37,7 +37,9 @@ pub fn leave<S: Read + Write>(
         // An error answer (the turn ended on its own meanwhile) also ends the wait.
         left.turn_ended = Some(sent && wait(socket, each, |v| {
             answers(v, INTERRUPT_ID)
-                || (v["method"] == "turn/completed" && v["params"]["threadId"].as_str() == Some(thread))
+                || (v["method"] == "turn/completed"
+                    && v["params"]["threadId"].as_str() == Some(thread)
+                    && v["params"]["turn"]["id"].as_str() == Some(turn))
         }));
     }
     let sent = send(socket, UNSUBSCRIBE_ID, "thread/unsubscribe", json!({"threadId":thread}));
@@ -135,6 +137,20 @@ mod tests {
         let (mut ws, _rx) = native(|m| (m != "turn/interrupt").then_some(Duration::ZERO), notes);
         let left = leave(&mut ws, "T", Some("turn-1"), Duration::from_secs(5));
         assert_eq!(left, Left { turn_ended: Some(true), unsubscribed: Some(true) });
+    }
+
+    #[test]
+    fn an_earlier_turns_completion_does_not_end_the_interrupt_wait() {
+        // Only an earlier turn of the same thread completes; the interrupt is never answered.
+        let notes = vec![json!({"method":"turn/completed","params":{"threadId":"T","turn":{"id":"turn-0"}}})];
+        let (mut ws, rx) = native(|m| (m != "turn/interrupt").then_some(Duration::ZERO), notes);
+        let started = Instant::now();
+        let left = leave(&mut ws, "T", Some("turn-1"), Duration::from_millis(400));
+        assert_eq!(left.turn_ended, Some(false));
+        assert_eq!(rx.recv().unwrap().0, "turn/interrupt");
+        let (second, at) = rx.recv().unwrap();
+        assert_eq!(second, "thread/unsubscribe");
+        assert!(at.duration_since(started) >= Duration::from_millis(400), "unsubscribe must not follow an earlier turn's completion");
     }
 
     #[test]
