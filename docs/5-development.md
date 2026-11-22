@@ -57,6 +57,8 @@ webhook の通知（#169）のうち、ブリッジへ書く三つの行、ブ�
 
 追記の順序については、この面に確かめるものは無い——順序は床の判定と同じロックの内側で決まっており、その順序付け自体は既に `crates/room-floor/` が持っている。
 
+CI と CD の Rust は stable に追随させず、1.99.1 に固定している（#589。workflow の `RUST_TOOLCHAIN`）。rustc 1.100.0 から、build script の `OUT_DIR` が一段深くなった（`build/<pkg>/<hash>/out`。run 45024777733 のログ）。tauri-build 2.6.3 は `OUT_DIR` の三つ上を target dir とみなし（`src/lib.rs` 537–543 行）、GNU ターゲットでは `target_dir.join("build")` を読む（694 行）。新しい形ではその場所が無く、build script が `os error 3` で落ちる。tauri-build はこの形を 2.7.0 から扱う（`target_dir_from_out_dir` が祖先の `build` を探す）が、2.7 系は tauri-utils 2.10 を、つまり tauri 2.12 を要する。tauri の版上げは CI の修正の範囲を超えるため、ここでは toolchain の固定で済ませた。固定を外すのは tauri を 2.12 以降へ上げるときである。1.99.1 は CI が最後に通った stable であり、Rust のキャッシュのキーはこの版を含む（別の toolchain で作った target を戻さない）。
+
 CI が実行するもの:
 
 | コマンド | 対象 |

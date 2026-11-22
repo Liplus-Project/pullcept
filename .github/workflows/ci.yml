@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# Rust is pinned instead of following stable (#589). From rustc 1.100.0 a
+# build script's OUT_DIR sits one level deeper (build/<pkg>/<hash>/out), and
+# tauri-build 2.6.3 takes the target dir as three levels above OUT_DIR, so its
+# build script fails with os error 3. The layout is handled from tauri-build
+# 2.7.0, which needs tauri 2.12. Raise this together with that upgrade.
+# 1.99.1 is the last stable this CI passed on. The cache key carries it so a
+# target dir built by another toolchain is never restored.
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
 jobs:
   check:
     runs-on: windows-latest
@@ -20,8 +30,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-gnu
 
       - name: Set GNU as default host
@@ -42,8 +53,8 @@ jobs:
             crates/terminal-input/target
             crates/character-file/target
             crates/post-link/target
-          key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: rust-${{ runner.os }}-
+          key: rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
 
       - uses: actions/cache@v6
         with:
