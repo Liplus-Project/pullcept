@@ -51,6 +51,12 @@ fn foreign_thread(value: &Value, owned: &HashSet<String>) -> bool {
     }
 }
 
+fn same_dir(path: &Value, own: &std::path::Path) -> bool {
+    path.as_str()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .is_some_and(|p| p == own)
+}
+
 fn one_of(value: &Value, choices: &[&str]) -> bool {
     value.as_str().is_some_and(|s| choices.contains(&s))
 }
@@ -283,7 +289,20 @@ impl Policy {
             if self.pending.contains_key(&id) {
                 return Err("request ID already pending".into());
             }
-            let p = &message["params"];
+            // Native 0.170.0 HooksListParams serializes its cwd mode as
+            // `threadId: null`. That names no thread, so drop it before the
+            // ownership check instead of reading it as another seat's thread.
+            if method == "hooks/list"
+                && upstream["params"]
+                    .get("threadId")
+                    .is_some_and(Value::is_null)
+            {
+                if let Some(params) = upstream["params"].as_object_mut() {
+                    params.remove("threadId");
+                }
+            }
+            let params = upstream["params"].clone();
+            let p = &params;
             if foreign_thread(p, &self.owned.lock()) {
                 return Err("another seat's thread is not accessible".into());
             }
@@ -292,15 +311,24 @@ impl Policy {
                 let Some(own) = self.cwd.as_ref() else {
                     return Err("seat working directory unavailable".into());
                 };
-                if p["cwds"].as_array().is_none_or(|paths| {
-                    paths.is_empty()
-                        || paths.iter().any(|v| {
-                            v.as_str()
-                                .and_then(|v| std::fs::canonicalize(v).ok())
-                                .as_ref()
-                                != Some(own)
-                        })
-                }) {
+                // The 0.170.0 TUI's `/hooks` on a running thread asks for that
+                // thread's inventory with `threadId` and no `cwds`; the native
+                // backend rejects both together. The reply is still checked
+                // against this seat's cwd (`hooks_reply_in_scope`), because a
+                // backend without thread mode ignores `threadId`.
+                if method == "hooks/list" && p.get("threadId").is_some() {
+                    if thread_id(p).is_none_or(|id| !self.owned.lock().contains(id)) {
+                        return Err("this seat's thread ID is required".into());
+                    }
+                    if p.get("cwds")
+                        .is_some_and(|cwds| !cwds.as_array().is_some_and(Vec::is_empty))
+                    {
+                        return Err("specify either threadId or cwds".into());
+                    }
+                } else if p["cwds"]
+                    .as_array()
+                    .is_none_or(|paths| paths.is_empty() || paths.iter().any(|v| !same_dir(v, own)))
+                {
                     return Err("only this seat's working directory is accessible".into());
                 }
             }
@@ -364,6 +392,16 @@ impl Policy {
             }
             Ok(upstream)
         }
+    }
+    /// A `hooks/list` result may only describe this seat's cwd: each entry
+    /// names the directory it inventoried, whichever mode the request used.
+    pub fn hooks_reply_in_scope(&self, result: &Value) -> bool {
+        let Some(own) = self.cwd.as_ref() else {
+            return false;
+        };
+        result["data"]
+            .as_array()
+            .is_some_and(|data| data.iter().all(|entry| same_dir(&entry["cwd"], own)))
     }
     pub fn backend(&mut self, message: &Value) -> bool {
         if message.get("method").is_none() {
@@ -625,8 +663,12 @@ fn serve(
                     .and_then(key)
                     .and_then(|id| policy.pending.get(&id))
                     .is_some_and(|method| method == "hooks/list")
+                && value.get("error").is_none()
             {
-                if let Some(data) = value["result"]["data"].as_array_mut() {
+                if !policy.hooks_reply_in_scope(&value["result"]) {
+                    value = json!({"id":value["id"],"error":{"code":-32600,
+                        "message":"only this seat's working directory is accessible"}});
+                } else if let Some(data) = value["result"]["data"].as_array_mut() {
                     for entry in data {
                         for hook in entry["hooks"].as_array_mut().into_iter().flatten() {
                             if hook["key"].as_str().is_some_and(|k| {
@@ -982,6 +1024,76 @@ mod tests {
         b.end();
         drop(clients);
         backend.join().unwrap();
+    }
+    #[test]
+    fn hooks_list_accepts_own_thread_or_own_cwd_and_rejects_other_scopes() {
+        let own = std::env::current_dir().unwrap();
+        let other = std::env::temp_dir();
+        let mut a = Policy::new("A");
+        // The 0.170.0 TUI's `/hooks` on a running thread (#587).
+        let own_thread = json!({"id":"h1","method":"hooks/list","params":{"threadId":"A"}});
+        assert_eq!(
+            a.client(&own_thread).unwrap_err(),
+            "seat working directory unavailable"
+        );
+        a.cwd = std::fs::canonicalize(&own).ok();
+        assert_eq!(a.client(&own_thread).unwrap(), own_thread);
+        for params in [
+            json!({"threadId":"B"}),
+            json!({"threadId":7}),
+            json!({"threadId":"A","cwds":[own]}),
+            json!({"threadId":"A","cwds":null}),
+        ] {
+            let request = json!({"id":"h2","method":"hooks/list","params":params});
+            assert!(a.client(&request).is_err(), "{params}");
+        }
+        assert!(a
+            .client(&json!({"id":"h3","method":"hooks/list","params":{"threadId":"A","cwds":[]}}))
+            .is_ok());
+
+        // Cwd mode, as the 0.170.0 TUI serializes it before a thread exists.
+        assert_eq!(
+            a.client(
+                &json!({"id":"c1","method":"hooks/list","params":{"cwds":[own],"threadId":null}})
+            )
+            .unwrap(),
+            json!({"id":"c1","method":"hooks/list","params":{"cwds":[own]}})
+        );
+        for params in [
+            json!({"cwds":[other],"threadId":null}),
+            json!({"cwds":[own, other]}),
+            json!({"cwds":[]}),
+            json!({}),
+        ] {
+            let request = json!({"id":"c2","method":"hooks/list","params":params});
+            assert_eq!(
+                a.client(&request).unwrap_err(),
+                "only this seat's working directory is accessible",
+                "{params}"
+            );
+        }
+        // Only hooks/list has a thread mode; skills/list keeps the cwd rule.
+        assert!(a
+            .client(&json!({"id":"s1","method":"skills/list","params":{"threadId":"A"}}))
+            .is_err());
+        assert!(a
+            .client(&json!({"id":"s2","method":"skills/list","params":{"cwds":[own]}}))
+            .is_ok());
+
+        // A backend without thread mode ignores threadId and inventories its
+        // own default cwd; such a reply must not reach the seat.
+        assert!(a.hooks_reply_in_scope(&json!({"data":[{"cwd":own,"hooks":[]}]})));
+        assert!(a.hooks_reply_in_scope(&json!({"data":[]})));
+        for result in [
+            json!({"data":[{"cwd":other,"hooks":[]}]}),
+            json!({"data":[{"cwd":own},{"cwd":other}]}),
+            json!({"data":[{"hooks":[]}]}),
+            json!({}),
+        ] {
+            assert!(!a.hooks_reply_in_scope(&result), "{result}");
+        }
+        a.cwd = None;
+        assert!(!a.hooks_reply_in_scope(&json!({"data":[{"cwd":own}]})));
     }
     #[test]
     fn only_native_spawn_on_owned_parent_grants_child_scope() {
