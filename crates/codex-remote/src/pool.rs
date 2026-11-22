@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 struct Entry<T> {
@@ -83,6 +84,18 @@ impl ThreadLease {
             id: id.into(),
         })
     }
+    /// A seat being stopped holds its lease until its observer has left the
+    /// thread (#586); a restart started right after waits for that, within
+    /// `within`, instead of failing on the seat it replaces.
+    pub fn claim_within(registry: &Arc<Threads>, id: &str, within: Duration) -> Result<Self, String> {
+        let deadline = Instant::now() + within;
+        loop {
+            match Self::claim(registry, id) {
+                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                result => return result,
+            }
+        }
+    }
 }
 impl Drop for ThreadLease {
     fn drop(&mut self) {
@@ -161,5 +174,20 @@ mod tests {
         assert!(ThreadLease::claim(&registry, "A").is_err());
         drop(lease);
         assert!(ThreadLease::claim(&registry, "A").is_ok());
+    }
+    #[test]
+    fn claim_within_waits_for_the_leaving_seat_and_still_refuses_a_held_one() {
+        let registry = Arc::new(Threads::default());
+        let leaving = ThreadLease::claim(&registry, "A").unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            drop(leaving);
+        });
+        assert!(ThreadLease::claim_within(&registry, "A", Duration::from_secs(5)).is_ok());
+        release.join().unwrap();
+        let _held = ThreadLease::claim(&registry, "B").unwrap();
+        let started = Instant::now();
+        assert!(ThreadLease::claim_within(&registry, "B", Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() >= Duration::from_millis(200));
     }
 }
