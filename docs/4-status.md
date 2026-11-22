@@ -1,5 +1,13 @@
 # 実装状況
 
+## Codex の席の `/hooks` の保存（#596、2026-11-23）
+
+Pullcept の Codex 席で `/hooks` の ON/OFF を切り替えると、TUI に `config/batchWrite failed: method is unavailable through this seat (code -32600)` が出て保存されなかった。席の gateway が `config/batchWrite` を許可していなかったためである。TUI の `/hooks` が送る形（`hooks.state` の `enabled` と `trusted_hash`）に限り、書き込みのたびに聞き直した自席の作業フォルダーの `hooks/list` に在る hook だけを対象として中継する形にした。信頼はその時点の hash と一致し、管理されていない hook だけに通す（「[共通の Codex 接続](3-accounts.md#共通の-codex-接続568)」）。書いた状態は共有の `CODEX_HOME` の設定に入るため、同じログインのほかの席にも効く。
+
+**確かめた範囲:** `gateway` の単体テストと偽 backend のテスト（「[開発](5-development.md#native-relay-の回帰境界419)」）。TUI が送る形は Codex の `tui/src/app/background_requests.rs`（`write_hook_enabled`）と `tui/src/hooks_rpc.rs`（`write_hook_trusts`）、欄の型は `app-server-protocol` の `ConfigBatchWriteParams` / `HookMetadata` の原文（openai/codex main、2026-11-23 に読んだ）で照合した。
+
+**未確認（実機では確かめていない）:** 稼働中の席の `/hooks` で切り替えと信頼が保存され、同じログインのほかの席に反映されること。Rust の変更であるため、全席の再起動の時刻を Master と合わせてから確かめる。
+
 ## Codex の席の `/hooks`（#587、2026-11-22）
 
 Pullcept の Codex 席（CLI 0.170.0）で `/hooks` を開くと `Failed to load hooks: hooks/list failed in TUI` が出ていた。0.170.0 の TUI は会話の在る席で `hooks/list` を `threadId` だけで送り、会話の無い時は `cwds` に `threadId: null` を添えて送るが、席の gateway（`crates/codex-remote/src/gateway.rs`）は前者を `cwds` が無いとして、後者を null の `threadId` を別席の thread として拒否していた。0.162.1 の TUI は `cwds` だけを送っていたため通っていた。`hooks/list` の自席 thread 指定を中継し、null の `threadId` を取り除き、答えの `cwd` を席の作業フォルダーと照合する形にした（「[共通の Codex 接続](3-accounts.md#共通の-codex-接続568)」）。
