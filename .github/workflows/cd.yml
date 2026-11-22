@@ -4,6 +4,10 @@ on:
   release:
     types: [published]
 
+# Same pin as ci.yml (#589); see the comment there.
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -16,7 +20,9 @@ jobs:
         with:
           node-version: "22"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: actions/cache@v6
         with:
@@ -24,8 +30,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: rust-${{ runner.os }}-
+          key: rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
 
       - uses: actions/cache@v6
         with:
