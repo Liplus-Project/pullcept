@@ -186,6 +186,8 @@ git add --renormalize src-tauri/Cargo.toml
 
 `cargo test --manifest-path crates/codex-remote/Cargo.toml` は実際の control transport をローカル偽 WebSocket backend に接続する。Bearer header と experimental initialize、応答 ID の照合、通知と承認要求を応答と取り違えないこと、timeout 後に socket を捨てること、遅延応答と席終了の拒否、起動時 enable より前／後に届く明示 disable の順序、非対応 API をサニタイズして再試行可能に保つことを検証する。実 Codex・認証・モデルは使わない。
 
+`gateway` のテストは、`hooks/list` が自席の `threadId` だけの形と、自席の作業フォルダーを指す `cwds`（`threadId: null` を伴う形を含む）を中継し、別席の thread、数値の `threadId`、`threadId` と `cwds` の同時指定、別のフォルダーを含む `cwds`、空の `cwds` を拒否すること、作業フォルダーが解決できない席では両方の形を拒否すること、答えの各項目の `cwd` が席の作業フォルダーと一致しないときに答えを返さないことを確かめる（#587）。`tests/native_shared.rs`（`CODEX_TEST_NATIVE` に固定の CLI を指定したときだけ走る）は、0.162.1 の backend が `threadId` を無視して自分の作業フォルダーを列挙する答えを gateway が拒否し、`threadId: null` を伴う自席の cwd 指定は通り、別席の cwd は通らないことを確かめる。
+
 `mcp-config` の `codex::remote` は安定して衝突しない保存先、最後の global `sqlite_home` 設定、ephemeral 操作、純粋な ID 相関と秘密を含まない失敗、期限の正規化を検証する。`sidecar/test/codex-remote-ui.test.mjs` は実画面モジュールへ invoke / QR renderer / DOM / 時計を代入し、閉じた後の private reply、QR の遅延完了、期限切れ、非表示、席終了、epoch 変更、非対応の再試行を検証する。`frontend-lifecycle.test.mjs` は旧アカウントの既定 OFF と opt-in の保存・再読込、app-server 解除時の remote 解除を含む。
 
 これらは合成試験である。Tauri invoke と実 CLI の組合せ、分離 SQLite での既存会話 resume と writer lock、DB 再構築の一覧への影響、公式アプリでの複数席選択・入力・承認・再接続は、隔離した実環境と実機で別途確認する。製品の稼働席はこの PR の検証で更新しない。

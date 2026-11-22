@@ -325,6 +325,17 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
         let value: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["marker"], if name.ends_with('a') { "A" } else { "B" });
     }
+    // #587: 0.162.1 ignores threadId and inventories the backend's own cwd,
+    // so the gateway's reply check refuses it. Cwd mode, as a 0.170.0 TUI
+    // serializes it (threadId:null), reaches only this seat's cwd.
+    assert!(ca.rpc("hooks/list", json!({"threadId":a})).is_err());
+    assert!(ca.rpc("hooks/list", json!({"threadId":b})).is_err());
+    assert!(ca
+        .rpc("hooks/list", json!({"cwds":[a_cwd],"threadId":null}))
+        .is_ok());
+    assert!(ca
+        .rpc("hooks/list", json!({"cwds":[b_cwd],"threadId":null}))
+        .is_err());
     assert!(ca.rpc("thread/read", json!({"threadId":b})).is_err());
     assert!(ca
         .rpc(
