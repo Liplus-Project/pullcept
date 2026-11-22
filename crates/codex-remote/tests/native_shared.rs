@@ -336,6 +336,59 @@ fn native_shared_threads_gateway_phone_detach_cold_resume_and_real_tui() {
     assert!(ca
         .rpc("hooks/list", json!({"cwds":[b_cwd],"threadId":null}))
         .is_err());
+    // #596: the TUI's `/hooks` trust write through a seat reaches native's
+    // user config and shows in its hooks/list. The style hook is switched off
+    // for these seats, so their gateways refuse to write it at all.
+    let style_key = hook_keys[0].clone();
+    let trust = |hash: Value| {
+        json!({"edits":[{"keyPath":"hooks.state","value":{style_key.as_str():{"trusted_hash":hash}},
+            "mergeStrategy":"upsert"}],"filePath":null,"expectedVersion":null,"reloadUserConfig":true})
+    };
+    let style_hook = |c: &mut Client| {
+        c.rpc("hooks/list", json!({"cwds":[a_cwd],"threadId":null}))
+            .unwrap()["data"][0]["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["key"] == style_key.as_str())
+            .unwrap()
+            .clone()
+    };
+    let before = style_hook(&mut owner_a);
+    assert_eq!(before["trustStatus"], "trusted");
+    let current = before["currentHash"].clone();
+    for hash in [current.clone(), Value::Null] {
+        let refused = ca.rpc("config/batchWrite", trust(hash)).unwrap_err();
+        assert_eq!(refused["message"], "only hooks in this seat's working directory are writable");
+    }
+    let open = Gateway::start(
+        backend.url.clone(),
+        backend.token.clone(),
+        "seat-trust".into(),
+        a.clone(),
+        a_cwd.clone(),
+        Vec::new(),
+    )
+    .unwrap();
+    let mut seat = Client::connect(&open.url, "seat-trust");
+    let stale = seat
+        .rpc("config/batchWrite", trust(json!("sha256:stale")))
+        .unwrap_err();
+    assert_eq!(stale["message"], "trust is writable only at the hook's current hash");
+    // A null trusted_hash passes the gateway, but this native refuses a null
+    // inside an upsert value, so the TUI's shape cannot revoke trust here.
+    let revoke = seat.rpc("config/batchWrite", trust(Value::Null)).unwrap_err();
+    assert_eq!(revoke["data"]["config_write_error_code"], "configValidationError");
+    assert_eq!(style_hook(&mut owner_a)["trustStatus"], "trusted");
+    owner_a
+        .rpc("config/batchWrite", json!({"edits":[{"keyPath":"hooks.state","value":{},"mergeStrategy":"replace"}],"reloadUserConfig":true}))
+        .unwrap();
+    assert_eq!(style_hook(&mut seat)["trustStatus"], "untrusted");
+    seat.rpc("config/batchWrite", trust(current)).unwrap();
+    assert_eq!(style_hook(&mut seat)["trustStatus"], "trusted");
+    assert_eq!(style_hook(&mut owner_a)["trustStatus"], "trusted");
+    drop(seat);
+    open.end();
     assert!(ca.rpc("thread/read", json!({"threadId":b})).is_err());
     assert!(ca
         .rpc(

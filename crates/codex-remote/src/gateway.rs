@@ -321,15 +321,22 @@ impl Drop for Open {
     }
 }
 
-/// The hooks one `config/batchWrite` may touch, keyed by hook key. The value
-/// is the hash a trust write must carry: `None` when native reports the hook
-/// as managed or without a hash, so only `enabled` may change for it.
-type HookScope = HashMap<String, Option<String>>;
+/// A hook one `config/batchWrite` may name, as native reported it then.
+struct HookTrust {
+    /// Managed (policy / managed config, or not reported as unmanaged) hooks
+    /// take no write at all.
+    managed: bool,
+    /// The only hash a trust write may set; `None` when native gave none.
+    hash: Option<String>,
+}
+/// The hooks one `config/batchWrite` may touch, keyed by hook key.
+type HookScope = HashMap<String, HookTrust>;
 
 /// `config/batchWrite` as the TUI's `/hooks` sends it (#596): `hooks.state`
 /// upserts whose entries change only a hook's `enabled` or `trusted_hash`.
-/// Every key must be a hook in `scope`, and a trust write must name the hash
-/// native currently reports for that hook. Field names only in errors.
+/// Every key must be an unmanaged hook in `scope`. A trust write must name the
+/// hash native currently reports for it, or be null (revoking trust only
+/// lowers it). Field names only in errors.
 fn hooks_write_in_scope(params: &Value, scope: Option<&HookScope>) -> Result<(), String> {
     let fields = params
         .as_object()
@@ -371,9 +378,12 @@ fn hooks_write_in_scope(params: &Value, scope: Option<&HookScope>) -> Result<(),
             .filter(|hooks| !hooks.is_empty())
             .ok_or("hooks.state edit must name hooks")?;
         for (key, change) in hooks {
-            let trusted = scope
+            let hook = scope
                 .get(key)
                 .ok_or("only hooks in this seat's working directory are writable")?;
+            if hook.managed {
+                return Err("managed hooks are not writable through this seat".into());
+            }
             let change = change
                 .as_object()
                 .filter(|change| !change.is_empty())
@@ -381,12 +391,9 @@ fn hooks_write_in_scope(params: &Value, scope: Option<&HookScope>) -> Result<(),
             for (field, value) in change {
                 match field.as_str() {
                     "enabled" if value.is_boolean() => {}
-                    "trusted_hash" if value.is_string() => {
-                        if trusted.as_deref() != value.as_str() {
-                            return Err(
-                                "trust is writable only for an unmanaged hook at its current hash"
-                                    .into(),
-                            );
+                    "trusted_hash" if value.is_string() || value.is_null() => {
+                        if !value.is_null() && hook.hash.as_deref() != value.as_str() {
+                            return Err("trust is writable only at the hook's current hash".into());
                         }
                     }
                     _ => {
@@ -440,9 +447,9 @@ impl Policy {
                     let managed = hook["isManaged"] != false || hook["trustStatus"] == "managed";
                     let hash = hook["currentHash"]
                         .as_str()
-                        .filter(|hash| !managed && !hash.is_empty())
+                        .filter(|hash| !hash.is_empty())
                         .map(str::to_string);
-                    Some((key.to_string(), hash))
+                    Some((key.to_string(), HookTrust { managed, hash }))
                 })
                 .collect()
         });
@@ -1334,7 +1341,8 @@ mod tests {
                 {"key":"user:h1","isManaged":false,"trustStatus":"untrusted","currentHash":"sha256:1"},
                 {"key":"admin:h2","isManaged":true,"trustStatus":"managed","currentHash":"sha256:2"},
                 {"key":"style:h3","isManaged":false,"trustStatus":"trusted","currentHash":"sha256:3"},
-                {"key":"bare:h4","currentHash":"sha256:4"}
+                {"key":"bare:h4","currentHash":"sha256:4"},
+                {"key":"user:h5","isManaged":false,"trustStatus":"trusted","currentHash":"sha256:5"}
             ]}]})
         };
         let disabled = vec!["style:h3".to_string()];
@@ -1355,14 +1363,17 @@ mod tests {
         for params in [
             edit(json!({"user:h1":{"enabled":false}})),
             edit(json!({"user:h1":{"enabled":true}})),
-            edit(json!({"admin:h2":{"enabled":false}})),
-            edit(json!({"bare:h4":{"enabled":false}})),
+            edit(json!({"user:h5":{"enabled":false}})),
             edit(json!({"user:h1":{"trusted_hash":"sha256:1"}})),
             edit(json!({"user:h1":{"enabled":true,"trusted_hash":"sha256:1"}})),
+            // Revoking trust needs no hash match: it only lowers trust.
+            edit(json!({"user:h1":{"trusted_hash":null}})),
+            edit(json!({"user:h1":{"enabled":false,"trusted_hash":null}})),
             json!({"edits":[
                 {"keyPath":"hooks.state","value":{"user:h1":{"trusted_hash":"sha256:1"}},"mergeStrategy":"upsert"},
-                {"keyPath":"hooks.state","value":{"admin:h2":{"enabled":true}},"mergeStrategy":"upsert"}
+                {"keyPath":"hooks.state","value":{"user:h5":{"enabled":true}},"mergeStrategy":"upsert"}
             ],"reloadUserConfig":true}),
+            edit(json!({"user:h1":{"enabled":false},"user:h5":{"trusted_hash":null}})),
             json!({"edits":[{"keyPath":"hooks.state","value":{"user:h1":{"enabled":false}},"mergeStrategy":"upsert"}]}),
             json!({"edits":[{"keyPath":"hooks.state","value":{"user:h1":{"enabled":false}},"mergeStrategy":"upsert"}],"expectedVersion":"v1"}),
         ] {
@@ -1379,17 +1390,26 @@ mod tests {
             edit(json!({"other:h9":{"enabled":false}})),
             edit(json!({"style:h3":{"enabled":true}})),
             edit(json!({"user:h1":{"enabled":false},"other:h9":{"enabled":false}})),
-            // Trust: managed or unmarked hooks, or a hash native no longer reports.
+            // Managed hooks, and hooks native does not report as unmanaged,
+            // take no write; trust takes only the hash native reports now.
+            edit(json!({"admin:h2":{"enabled":false}})),
+            edit(json!({"bare:h4":{"enabled":false}})),
+            edit(json!({"user:h1":{"enabled":false},"admin:h2":{"enabled":false}})),
             edit(json!({"admin:h2":{"trusted_hash":"sha256:2"}})),
             edit(json!({"bare:h4":{"trusted_hash":"sha256:4"}})),
             edit(json!({"user:h1":{"trusted_hash":"sha256:old"}})),
             edit(json!({"user:h1":{"trusted_hash":""}})),
+            edit(json!({"admin:h2":{"trusted_hash":null}})),
+            edit(json!({"bare:h4":{"trusted_hash":null}})),
+            edit(json!({"style:h3":{"trusted_hash":null}})),
+            edit(json!({"other:h9":{"trusted_hash":null}})),
             // Unexpected value types and fields under hooks.state.
             edit(json!({"user:h1":{"enabled":"false"}})),
             edit(json!({"user:h1":{"enabled":null}})),
             edit(json!({"user:h1":{"enabled":0}})),
             edit(json!({"user:h1":{"trusted_hash":1}})),
-            edit(json!({"user:h1":{"trusted_hash":null}})),
+            edit(json!({"user:h1":{"trusted_hash":false}})),
+            edit(json!({"user:h1":{"trusted_hash":{}}})),
             edit(json!({"user:h1":{"command":"calc.exe"}})),
             edit(json!({"user:h1":{"enabled":false,"timeout":1}})),
             edit(json!({"user:h1":{}})),
@@ -1577,7 +1597,7 @@ mod tests {
         assert_eq!(stale["id"], 2);
         assert_eq!(
             stale["error"]["message"],
-            "trust is writable only for an unmanaged hook at its current hash"
+            "trust is writable only at the hook's current hash"
         );
         let current = rpc(3, "config/batchWrite", trust("sha256:new"));
         assert_eq!(current["result"]["status"], "ok");
