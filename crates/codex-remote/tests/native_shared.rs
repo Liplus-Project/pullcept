@@ -38,6 +38,9 @@ impl Drop for Native {
     }
 }
 fn spawn(exe: &str, root: &Path) -> Native {
+    spawn_with(exe, root, "http://127.0.0.1:9/v1")
+}
+fn spawn_with(exe: &str, root: &Path, model_url: &str) -> Native {
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(root.join("work")).unwrap();
     let token = "fixture-private-backend-key".to_string();
@@ -56,7 +59,7 @@ fn spawn(exe: &str, root: &Path) -> Native {
     );
     let mut cmd = Command::new(exe);
     cmd.args(["-c",&format!("hooks.SessionStart=[{{matcher='startup|resume|clear|compact',hooks=[{{type='command',command={},additionalContextLimit=0}}]}}]",mcp_config::codex::instruction_value(&command))]);
-    cmd.args(["-c","cli_auth_credentials_store=\"file\"","-c","project_doc_max_bytes=0","-c","features.codex_hooks=true","-c","model_provider=\"fixture\"","-c","model=\"gpt-5.4\"","-c","model_providers.fixture={name=\"fixture\",base_url=\"http://127.0.0.1:9/v1\",wire_api=\"responses\",requires_openai_auth=false}","-c","thread_unload_delay_secs=0","app-server","--listen","ws://127.0.0.1:0","--ws-auth","capability-token","--ws-token-file"]).arg(file)
+    cmd.args(["-c","cli_auth_credentials_store=\"file\"","-c","project_doc_max_bytes=0","-c","features.codex_hooks=true","-c","model_provider=\"fixture\"","-c","model=\"gpt-5.4\"","-c",&format!("model_providers.fixture={{name=\"fixture\",base_url=\"{model_url}\",wire_api=\"responses\",requires_openai_auth=false,stream_max_retries=0,request_max_retries=0}}"),"-c","thread_unload_delay_secs=0","app-server","--listen","ws://127.0.0.1:0","--ws-auth","capability-token","--ws-token-file"]).arg(file)
         .env("CODEX_HOME",root.join("home")).env("RUST_LOG","off").current_dir(root.join("work")).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars().filter(|(k, _)| {
         k.starts_with("PULLCEPT_") || k == "OPENAI_API_KEY" || k == "CODEX_API_KEY"
@@ -575,4 +578,83 @@ fn real_tui(exe: &str, root: &Path, url: &str, token: &str, id: &str, case: &str
             && !text.contains("invalid or unsupported seat attach field"),
         "real remote TUI did not settle on intended thread {id}: {text}"
     );
+}
+
+/// #586: the seat's terminal connection closes first (`Server::stop` ends the
+/// gateway), then its observer leaves. A turn still running at that moment must
+/// be interrupted, or native keeps the thread loaded with no seat and the
+/// seat's own resume is refused as if another client held it.
+#[test]
+fn stopped_seat_interrupts_its_running_turn_and_the_thread_unloads() {
+    let Ok(exe) = std::env::var("CODEX_TEST_NATIVE") else {
+        eprintln!("CODEX_TEST_NATIVE unset; native fixture not enabled");
+        return;
+    };
+    let root = root();
+    let cwd = root.join("seat");
+    std::fs::create_dir_all(&cwd).unwrap();
+    // A model endpoint that accepts and never answers: the turn stays active.
+    let model = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let model_url = format!("http://127.0.0.1:{}/v1", model.local_addr().unwrap().port());
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in model.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    let backend = spawn_with(&exe, &root, &model_url);
+    let mut owner = Client::connect(&backend.url, &backend.token);
+    let id = owner
+        .rpc("thread/start", json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"read-only","historyMode":"paginated"}))
+        .unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    owner
+        .rpc("thread/inject_items", mcp_config::codex::app_server::inject_params(&id))
+        .unwrap();
+    let gateway = Gateway::start(backend.url.clone(), backend.token.clone(), "seat".into(), id.clone(), cwd.clone(), Vec::new()).unwrap();
+    let mut terminal = Client::connect(&gateway.url, "seat");
+    terminal.rpc("thread/resume", json!({"threadId":id})).unwrap();
+    terminal
+        .rpc("turn/start", json!({"threadId":id,"input":[{"type":"text","text":"hold"}]}))
+        .unwrap();
+    let turn = loop {
+        if let Some(e) = owner.events.iter().find(|e| e["method"] == "turn/started") {
+            break e["params"]["turn"]["id"].as_str().unwrap().to_string();
+        }
+        if let Message::Text(text) = owner.ws.read().unwrap() {
+            owner.events.push(serde_json::from_str(&text).unwrap());
+        }
+    };
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        owner.rpc("thread/read", json!({"threadId":id})).unwrap()["thread"]["status"]["type"],
+        "active",
+        "the fixture turn must still be running when the seat stops"
+    );
+    gateway.end();
+    drop(terminal);
+    thread::sleep(Duration::from_millis(300));
+    if let tungstenite::stream::MaybeTlsStream::Plain(s) = owner.ws.get_ref() {
+        s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    }
+    let left = codex_remote::detach::leave(&mut owner.ws, &id, Some(&turn), Duration::from_secs(10));
+    assert_eq!(left.turn_ended, Some(true), "the running turn must end before the observer leaves");
+    assert_eq!(left.unsubscribed, Some(true));
+    drop(owner);
+    let mut observer = Client::connect(&backend.url, &backend.token);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let loaded = observer.rpc("thread/loaded/list", json!({"limit":100})).unwrap();
+        if !loaded["data"].as_array().unwrap().iter().any(|v| v == &id) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "a stopped seat's thread must unload once it has left");
+        thread::sleep(Duration::from_millis(100));
+    }
+    drop(observer);
+    drop(gateway);
+    drop(backend);
+    let _ = std::fs::remove_dir_all(&root);
 }
