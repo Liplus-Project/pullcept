@@ -457,12 +457,13 @@ impl Started {
             }
             seat.tell(&activity);
             let mut turn_id: Option<String> = None;
+            let mut left = None;
             loop {
                 if !alive.load(Ordering::Acquire) {
                     // Each answer is awaited: an interrupt followed at once by
                     // unsubscribe and close can be lost, and the turn then
                     // keeps the thread loaded with no seat (#586).
-                    let _ = codex_remote::detach::leave(&mut socket, &thread_id, turn_id.as_deref(), LEAVE_STEP);
+                    left = Some(codex_remote::detach::leave(&mut socket, &thread_id, turn_id.as_deref(), LEAVE_STEP));
                     break;
                 }
                 match socket.read() {
@@ -485,7 +486,13 @@ impl Started {
                     Err(_) => break,
                 }
             }
+            // Written after the lease is released, so the restart's wait for
+            // it is not lengthened (#592).
+            let shared = lease.is_some();
             drop(lease);
+            if let (true, Some(left)) = (shared, left) {
+                hold_log(&seat.app, &plan::left_log_line(&thread_id, turn_id.as_deref(), left.turn_ended, left.unsubscribed, &crate::room::now_iso()));
+            }
             activity.disconnect();
             seat.tell(&activity);
         });
@@ -601,6 +608,9 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
             while loaded(&mut started, id)? {
                 if Instant::now() >= deadline {
                     let status = started.call("thread/read", json!({"threadId":id})).map(|r| r["thread"]["status"].clone()).unwrap_or(Value::Null);
+                    let sqlite_home = mcp_config::codex::remote::isolated_home(&request.server_args);
+                    let pid = backend.child.lock().id();
+                    hold_log(app, &plan::held_log_line(id, &status, pid, codex_remote::gateway::open_connections(id), sqlite_home.as_deref().and_then(Path::to_str), &crate::room::now_iso()));
                     return Err(plan::held_message(&status).into());
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -627,6 +637,14 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
     match result {
         Ok(()) => Ok(started),
         Err(err) => { started.abandon(); Err(err) }
+    }
+}
+
+/// One line of `logs/codex-thread-hold.log` (#592), written whole in one call.
+/// A failure to open or write is dropped, as the probe's is: the log observes.
+fn hold_log(app: &AppHandle, line: &str) {
+    if let Some(mut file) = crate::room_log::open_probe(app, plan::HOLD_LOG_FILE) {
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 

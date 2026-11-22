@@ -123,6 +123,20 @@ pub fn isolate(args: &mut Vec<String>, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The `sqlite_home` `isolate` put on the line, if any (#592: native's own log
+/// DB lives there).
+pub fn isolated_home(args: &[String]) -> Option<PathBuf> {
+    args.windows(2)
+        .rev()
+        .find(|pair| pair[0] == "-c" && pair[1].starts_with("sqlite_home="))
+        .and_then(|pair| pair[1].split_once('='))
+        .map(|(_, raw)| match raw.parse::<toml_edit::Value>() {
+            Ok(value) => value.as_str().map_or_else(|| PathBuf::from(raw), PathBuf::from),
+            // Native reads a `-c` value that is not TOML as the raw string.
+            Err(_) => PathBuf::from(raw),
+        })
+}
+
 /// The relay transport's tracing target (#430). `remoteControl/status/read`
 /// says only `errored`; why is in this target's connection-failure warning,
 /// which the app-server's default stderr filter (error) does not print.
@@ -343,8 +357,11 @@ mod tests {
         ]
         .into_iter()
         .map(str::to_owned)
-        .collect();
+        .collect::<Vec<String>>();
+        assert_eq!(isolated_home(&args), Some(PathBuf::from("old")));
+        assert_eq!(isolated_home(&args[2..]), None);
         isolate(&mut args, Path::new("C:/seat db")).unwrap();
+        assert_eq!(isolated_home(&args), Some(PathBuf::from("C:/seat db")));
         let setting = args[3]
             .split_once('=')
             .unwrap()
@@ -364,6 +381,8 @@ mod tests {
         );
         assert!(!encoded.contains('%'));
         assert!(!encoded.contains('&'));
+        // The last setting on the line is the one read back.
+        assert_eq!(isolated_home(&args), Some(PathBuf::from(dangerous)));
         assert_eq!(Action::Enable.request().1, json!({"ephemeral":true}));
         assert_eq!(Action::Disable.request().1, json!({"ephemeral":true}));
     }
