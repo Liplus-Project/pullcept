@@ -143,7 +143,7 @@ npm run sidecar:test
 
 - Windows
 - Node.js 22 と npm
-- Rust stable
+- Rust 1.99.1（stable には追随せず、この版に固定しています。理由は [開発メモ](docs/5-development.md) を参照）
 - Rust ターゲット `x86_64-pc-windows-gnu`
 - GNU ターゲットをビルドできる MinGW ツールチェーン
 
