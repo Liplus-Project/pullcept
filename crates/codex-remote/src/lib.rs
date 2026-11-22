@@ -1,4 +1,5 @@
 //! Native relay control transport.
+pub mod detach;
 pub mod gateway;
 pub mod pool;
 pub mod credential;

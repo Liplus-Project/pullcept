@@ -37,6 +37,17 @@ const WATCH: Duration = Duration::from_millis(500);
 const PROBE_EARLY_MAX: usize = 1024;
 /// The probe's file, under the app's `logs` directory.
 const PROBE_FILE: &str = "codex-activity-probe.log";
+/// How long a stopped seat's observer waits for each answer while it leaves
+/// its thread: the interrupt's (the turn has ended), then the unsubscribe's
+/// (#586).
+const LEAVE_STEP: Duration = Duration::from_secs(5);
+/// How long a resume waits for the seat it replaces to have left: its thread
+/// lease is released only after its observer's leave, so this covers both of
+/// its waits.
+const LEAVE_WAIT: Duration = Duration::from_secs(12);
+/// How long a resume waits for native to unload the thread once no one holds
+/// it; the unload follows the last unsubscribe asynchronously (#586).
+const UNLOAD_WAIT: Duration = Duration::from_secs(5);
 
 /// Every running seat server, by its terminal.
 #[derive(Default)]
@@ -448,11 +459,10 @@ impl Started {
             let mut turn_id: Option<String> = None;
             loop {
                 if !alive.load(Ordering::Acquire) {
-                    if let Some(turn) = turn_id.as_ref() {
-                        let _ = socket.send(Message::text(json!({"id":1000001,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn}}).to_string()));
-                    }
-                    let _ = socket.send(Message::text(json!({"id":1000002,"method":"thread/unsubscribe","params":{"threadId":thread_id}}).to_string()));
-                    let _ = socket.close(None);
+                    // Each answer is awaited: an interrupt followed at once by
+                    // unsubscribe and close can be lost, and the turn then
+                    // keeps the thread loaded with no seat (#586).
+                    let _ = codex_remote::detach::leave(&mut socket, &thread_id, turn_id.as_deref(), LEAVE_STEP);
                     break;
                 }
                 match socket.read() {
@@ -584,15 +594,16 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
         started.call("initialize", plan::initialize_params(env!("CARGO_PKG_VERSION")))?;
         started.socket.send(Message::text(json!({"method":"initialized"}).to_string())).map_err(|_| "共有接続が切れました。")?;
         if let Some(id) = request.resume {
-            started.server.lease = Some(Arc::new(codex_remote::pool::ThreadLease::claim(&backend.threads,id)?));
-            let mut cursor = Value::Null;
-            loop {
-                let loaded = started.call("thread/loaded/list", json!({"cursor":cursor,"limit":100}))?;
-                if loaded["data"].as_array().is_some_and(|ids| ids.iter().any(|v| v.as_str() == Some(id))) {
-                    return Err("この会話はスマホなどでまだ開かれています。席の部屋設定を安全に更新するため、スマホで会話を閉じて少し待ち、再試行してください。履歴は保持しています。".into());
+            // A seat being stopped (a restart's own) releases its lease only
+            // after its observer has left the thread (#586).
+            started.server.lease = Some(Arc::new(codex_remote::pool::ThreadLease::claim_within(&backend.threads,id,LEAVE_WAIT)?));
+            let deadline = Instant::now() + UNLOAD_WAIT;
+            while loaded(&mut started, id)? {
+                if Instant::now() >= deadline {
+                    let status = started.call("thread/read", json!({"threadId":id})).map(|r| r["thread"]["status"].clone()).unwrap_or(Value::Null);
+                    return Err(plan::held_message(&status).into());
                 }
-                cursor = loaded["nextCursor"].clone();
-                if cursor.is_null() { break; }
+                std::thread::sleep(Duration::from_millis(100));
             }
 
         }
@@ -602,7 +613,7 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
             let deadline=Instant::now()+REQUEST_TIMEOUT;
             while !marker.is_file() {
                 backend.check()?;
-                if Instant::now()>=deadline { return Err("会話へ今回の部屋設定を適用できませんでした。スマホで会話を閉じ、少し待って再試行してください。履歴は保持しています。".into()) }
+                if Instant::now()>=deadline { return Err(plan::SETTINGS_NOT_APPLIED.into()) }
                 std::thread::sleep(Duration::from_millis(50));
             }
             let _=std::fs::remove_file(marker);
@@ -616,6 +627,19 @@ fn start_shared(app: &AppHandle, request: Request) -> Result<Started, String> {
     match result {
         Ok(()) => Ok(started),
         Err(err) => { started.abandon(); Err(err) }
+    }
+}
+
+/// Whether native lists `id` among its loaded threads.
+fn loaded(started: &mut Started, id: &str) -> Result<bool, String> {
+    let mut cursor = Value::Null;
+    loop {
+        let page = started.call("thread/loaded/list", json!({"cursor":cursor,"limit":100}))?;
+        if page["data"].as_array().is_some_and(|ids| ids.iter().any(|v| v.as_str() == Some(id))) {
+            return Ok(true);
+        }
+        cursor = page["nextCursor"].clone();
+        if cursor.is_null() { return Ok(false); }
     }
 }
 

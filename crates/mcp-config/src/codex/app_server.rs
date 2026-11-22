@@ -222,6 +222,23 @@ pub fn shared_server_args(options: Vec<String>, digest: &str) -> Vec<String> {
     args
 }
 
+/// What a resume is told when native still has the thread loaded after the
+/// wait for its unload (#586). The holder cannot be named: a phone, the desktop
+/// app, another client of the shared connection, or a turn still running with
+/// no seat. `status` is `thread/read`'s `thread.status`; an active one says the
+/// conversation is still working rather than open elsewhere.
+pub fn held_message(status: &Value) -> &'static str {
+    if status["type"] == "active" {
+        "この会話はまだ処理を続けています（前の作業が終わっていないか、ほかの端末やアプリで実行中です）。席の部屋設定を安全に更新するため、終わるまで少し待って再試行してください。履歴は保持しています。"
+    } else {
+        "この会話はほかの端末やアプリ（スマホ・デスクトップアプリなど）でまだ開かれています。席の部屋設定を安全に更新するため、そちらで会話を閉じて少し待ち、再試行してください。履歴は保持しています。"
+    }
+}
+
+/// The room settings did not reach a resumed thread in time (#586: not only a
+/// phone can hold it).
+pub const SETTINGS_NOT_APPLIED: &str = "会話へ今回の部屋設定を適用できませんでした。ほかの端末やアプリで会話を閉じ、少し待って再試行してください。履歴は保持しています。";
+
 pub fn shared_room_config(config: &mut Value, own: &str, bootstrap: &std::path::Path, credential: &std::path::Path, runner: &std::path::Path, entry: &std::path::Path, hook_keys: &[String]) {
     let mut tools = Map::new();
     for name in ["say_to_room","read_room_history","my_usage","status","list_account_sessions","account_session_status","control_account_session"] { tools.insert(name.into(),json!({"approval_mode":"approve"})); }
@@ -431,6 +448,20 @@ pub fn check_hooks(result: &Value, disabled: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_message_tells_a_running_turn_from_an_open_client_and_names_no_single_cause() {
+        let running = held_message(&json!({"type":"active","activeFlags":[]}));
+        let open = held_message(&json!({"type":"idle"}));
+        assert!(running.contains("処理を続けて"));
+        assert!(open.contains("開かれています"));
+        assert_eq!(held_message(&Value::Null), open);
+        for text in [running, open, SETTINGS_NOT_APPLIED] {
+            assert!(text.contains("ほかの端末やアプリ"), "{text}");
+            assert!(!text.contains("スマホで"), "{text}");
+            assert!(text.contains("履歴は保持しています"), "{text}");
+        }
+    }
     const ID: &str = "01a110c0-c898-75f0-be7d-ffff2e05b9f5";
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|v| v.to_string()).collect()
