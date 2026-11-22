@@ -1,5 +1,13 @@
 # 実装状況
 
+## Codex の席の `/hooks`（#587、2026-11-22）
+
+Pullcept の Codex 席（CLI 0.170.0）で `/hooks` を開くと `Failed to load hooks: hooks/list failed in TUI` が出ていた。0.170.0 の TUI は会話の在る席で `hooks/list` を `threadId` だけで送り、会話の無い時は `cwds` に `threadId: null` を添えて送るが、席の gateway（`crates/codex-remote/src/gateway.rs`）は前者を `cwds` が無いとして、後者を null の `threadId` を別席の thread として拒否していた。0.162.1 の TUI は `cwds` だけを送っていたため通っていた。`hooks/list` の自席 thread 指定を中継し、null の `threadId` を取り除き、答えの `cwd` を席の作業フォルダーと照合する形にした（「[共通の Codex 接続](3-accounts.md#共通の-codex-接続568)」）。
+
+**確かめた範囲:** `gateway` の単体テスト（「[開発](5-development.md#native-relay-の回帰境界419)」）。隔離した `CODEX_HOME` と一時フォルダーで native の app-server と二つの gateway を起こし、モデルを呼ばずに `hooks/list` を送った。修正前の gateway では 0.170.0 の backend に対し、自席 `threadId` の形が「only this seat's working directory is accessible」、`threadId: null` を伴う自席 cwd の形が「another seat's thread is not accessible」で拒否された。修正後は両方が自席の作業フォルダーの一覧（止めた hook は `enabled: false`）を返し、別席の thread と別席の cwd は拒否された。0.162.1 の backend では `threadId` が無視されて backend 自身の作業フォルダーが列挙され、gateway がその答えを拒否した。`tests/native_shared.rs` は、手元では修正前の `main` でも同じ箇所（MCP の道具の一覧）で失敗するため、通しでは走らせていない。
+
+**未確認（実機では確かめていない）:** 稼働中の席で `/hooks` が一覧と信頼状態を表示すること。Rust の変更であるため、全席の再起動の時刻を Master と合わせてから確かめる。
+
 ## 自分で終わったセッションを観測する（#130、2026-10-19）
 
 CLI が自分で終わったセッションが観測されず、行が「起動中」のまま止まっていた（2026-08-29、`main` `bea76b6` の実機。CLI のプロセスは消え、子を持たない `conhost.exe` だけが残り、`❌` を押して初めて「終了コード不明」で終了が着いた）。原因は ConPTY が擬似コンソールを開いている間、出力のパイプを閉じないことであり、出力の終わりを終了の合図にしていた `src-tauri/src/pty.rs` はそこで止まっていた。終了を子の `wait` で見る待ち受けスレッドに移し、待ちが返ったら擬似コンソールを閉じて出力を終わらせる形にした（「[診断面](2-screen.md#診断面)」）。止める経路が一覧から外してから止める形は変えておらず、頼んだ終了がコード無しで着く #121 / #127 の守りはそのままである。
