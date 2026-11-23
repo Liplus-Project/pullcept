@@ -498,39 +498,103 @@ pub fn native_matches<'a>(
     .then_some(id)
 }
 
+/// The rollout of conversation `id` that is being written: the latest of its
+/// files, or `None` when it has none yet.
+///
+/// **One conversation can span several files** (#598). Codex CLI 0.170.0
+/// carries a rollout on in a new file named `rollout-<time>-<id>_<other id>.jsonl`,
+/// whose first line is a `session_meta` naming the same `id`; the file before
+/// it stops growing. When or why it does so is not known here, so nothing is
+/// assumed about it: a file is this conversation's by its name and, for such a
+/// continuation, by the id its first line names. Among them the latest is the
+/// one whose name sorts last on `<time>`, then on the other id — both are
+/// written so that later sorts after earlier.
+///
+/// `sessions/` is looked in first and `archived_sessions/` only when it has
+/// none. An empty file is not one yet. A failure to read a directory or a
+/// candidate is an error, not missing history.
 pub fn transcript_checked(home: &Path, id: &str) -> Result<Option<PathBuf>, std::io::Error> {
     if !valid_id(id) {
         return Ok(None);
     }
-    fn find(dir: &Path, suffix: &str, depth: usize) -> Result<Option<PathBuf>, std::io::Error> {
+    /// Where a file of this conversation sorts, or `None` when its name is
+    /// not one: `<time>` part, then the continuation's other id (empty for
+    /// the first file).
+    fn place(name: &str, id: &str) -> Option<(String, String)> {
+        let rest = name.strip_suffix(".jsonl")?;
+        if let Some(head) = rest.strip_suffix(&format!("-{id}")) {
+            return Some((head.to_owned(), String::new()));
+        }
+        let (head, other) = rest.rsplit_once('_')?;
+        let head = head.strip_suffix(&format!("-{id}"))?;
+        valid_id(other).then(|| (head.to_owned(), other.to_owned()))
+    }
+    fn find(
+        dir: &Path,
+        id: &str,
+        depth: usize,
+        found: &mut Vec<((String, String), PathBuf)>,
+    ) -> Result<(), std::io::Error> {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
             let kind = entry.file_type()?;
-            if kind.is_file()
-                && entry.file_name().to_string_lossy().ends_with(suffix)
-                && entry.metadata()?.len() > 0
-            {
-                return Ok(Some(path));
-            }
-            if kind.is_dir() && depth > 0 {
-                if let Some(found) = find(&path, suffix, depth - 1)? {
-                    return Ok(Some(found));
+            if kind.is_file() {
+                if let Some(key) = place(&entry.file_name().to_string_lossy(), id) {
+                    if entry.metadata()?.len() > 0 {
+                        found.push((key, path));
+                    }
                 }
+            } else if kind.is_dir() && depth > 0 {
+                find(&path, id, depth - 1, found)?;
             }
         }
-        Ok(None)
+        Ok(())
     }
-    let suffix = format!("-{id}.jsonl");
-    match find(&home.join("sessions"), &suffix, 3)? {
-        Some(path) => Ok(Some(path)),
-        None => find(&home.join("archived_sessions"), &suffix, 0),
+    /// Whether a continuation's first line is the `session_meta` of `id`. A
+    /// first line not yet written out is not yet this conversation's.
+    fn continues(path: &Path, id: &str) -> Result<bool, std::io::Error> {
+        #[derive(serde::Deserialize)]
+        struct Meta {
+            #[serde(rename = "type")]
+            kind: String,
+            payload: Payload,
+        }
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(default)]
+            session_id: Option<String>,
+        }
+        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        match serde_json::Deserializer::from_reader(file)
+            .into_iter::<Meta>()
+            .next()
+        {
+            Some(Ok(meta)) => Ok(meta.kind == "session_meta"
+                && (meta.payload.id.as_deref() == Some(id)
+                    || meta.payload.session_id.as_deref() == Some(id))),
+            Some(Err(e)) if e.is_io() => Err(e.into()),
+            _ => Ok(false),
+        }
     }
+    for (root, depth) in [("sessions", 3), ("archived_sessions", 0)] {
+        let mut found = Vec::new();
+        find(&home.join(root), id, depth, &mut found)?;
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        for ((_, other), path) in found {
+            if other.is_empty() || continues(&path, id)? {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub fn transcript(home: &Path, id: &str) -> Option<PathBuf> {
@@ -873,6 +937,56 @@ PULLCEPT_ACCOUNT_ID = \"a\"
         assert_eq!(composed.last().map(String::as_str), Some(NO_ALT_SCREEN));
         std::fs::remove_file(file).unwrap();
         assert!(transcript(&dir, ID).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_rollout_gone_on_in_another_file_is_found_there() {
+        // The two files of one conversation, as Codex CLI 0.170.0 wrote them
+        // (2026-11-23, #598).
+        const THREAD: &str = "01a20331-7ef7-7b80-b3f4-06f80fbb4158";
+        const OTHER: &str = "01a203fc-cf28-7b61-a4eb-d84ffb1fa481";
+        let meta = |id: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-11-22T16:00:29.481Z\",\"ordinal\":2725,\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{id}\",\"id\":\"{id}\",\"cwd\":\"D:\\\\w\"}}}}\n"
+            )
+        };
+        let dir = scratch();
+        let (day1, day2) = (dir.join("sessions/2026/11/22"), dir.join("sessions/2026/11/23"));
+        std::fs::create_dir_all(&day1).unwrap();
+        std::fs::create_dir_all(&day2).unwrap();
+        let first = day1.join(format!("rollout-2026-11-22T21-18-25-{THREAD}.jsonl"));
+        std::fs::write(&first, meta(THREAD)).unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(first.clone()));
+
+        // Not yet a continuation: empty, then its first line cut short.
+        let next = day2.join(format!("rollout-2026-11-23T01-00-29-{THREAD}_{OTHER}.jsonl"));
+        std::fs::write(&next, "").unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(first.clone()));
+        std::fs::write(&next, &meta(THREAD)[..60]).unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(first.clone()));
+        // Written out: the later file is the one the conversation goes on in.
+        std::fs::write(&next, meta(THREAD)).unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(next.clone()));
+        // The other id is not a conversation of its own to this search.
+        assert_eq!(transcript(&dir, OTHER), None);
+
+        // A file named as a continuation whose first line names another
+        // conversation is not this one's.
+        let stranger = day2.join(format!("rollout-2026-11-23T09-00-00-{THREAD}_{ID}.jsonl"));
+        std::fs::write(&stranger, meta(ID)).unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(next.clone()));
+        std::fs::write(&stranger, "{\"type\":\"response_item\",\"payload\":{}}\n").unwrap();
+        assert_eq!(transcript(&dir, THREAD), Some(next.clone()));
+
+        // Names only near the shape are not this conversation's files.
+        for name in [
+            format!("rollout-2026-11-23T10-00-00-{THREAD}_not-an-id.jsonl"),
+            format!("rollout-2026-11-23T10-00-00-{THREAD}_{OTHER}.json"),
+            format!("rollout-2026-11-23T10-00-00-x{THREAD}.jsonl"),
+        ] {
+            std::fs::write(day2.join(name), meta(THREAD)).unwrap();
+        }
+        assert_eq!(transcript(&dir, THREAD), Some(next));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
