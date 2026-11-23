@@ -12,7 +12,9 @@
 //! appear after that, so both are looked for again on every round rather than
 //! once. A missing id, a missing file and a read error are all the same answer:
 //! nothing this round, look again next round. Nothing here stops the session or
-//! the launch.
+//! the launch. A file being read is looked for again every `SEARCH_SLOW`
+//! rounds: a conversation can go on in another file (#598), and the reading
+//! moves to it, keeping what was read before.
 //!
 //! The thread ends when its launch no longer holds the seat or its PTY has
 //! exited. The panel then keeps the last values, as it does for a Claude Code
@@ -46,10 +48,13 @@ const POLL: Duration = Duration::from_secs(1);
 /// reading of it once placed.
 struct Followed {
     id: String,
+    /// The file the reading's offset is in.
     path: Option<PathBuf>,
     tail: Option<Tail>,
-    /// Rounds spent looking for the file (`SEARCH_EVERY_AFTER`).
-    misses: u32,
+    /// The last read of `path` failed: look for the rollout again.
+    lost: bool,
+    /// Rounds since the rollout was last found (`SEARCH_EVERY_AFTER`).
+    rounds: u32,
 }
 
 /// After this many rounds without the file, it is looked for every
@@ -57,7 +62,48 @@ struct Followed {
 /// `sessions/` tree, and a CLI configured not to write a rollout would
 /// otherwise have that walk run every second for the life of the session.
 const SEARCH_EVERY_AFTER: u32 = 60;
+/// Also how often a rollout being read is looked for again, in case the
+/// conversation has gone on in another file (#598).
 const SEARCH_SLOW: u32 = 10;
+
+impl Followed {
+    /// Whether this round looks for the rollout.
+    fn search_due(&mut self) -> bool {
+        self.rounds = self.rounds.saturating_add(1);
+        if self.path.is_some() && !self.lost {
+            return self.rounds % SEARCH_SLOW == 0;
+        }
+        self.rounds <= SEARCH_EVERY_AFTER || self.rounds % SEARCH_SLOW == 0
+    }
+
+    /// Read `found` from here on. Whether any value changed.
+    ///
+    /// The first file found is placed at the resume's length when it is the
+    /// file the resume went back into, and at its start otherwise. The same
+    /// file found again keeps the offset it had reached, after a failed read
+    /// too. Another file is the conversation going on there (#598): what is
+    /// left of the old one is read first, then the new one from its start,
+    /// holding what was read so far.
+    fn place(&mut self, found: PathBuf, resumed: &Option<(PathBuf, u64)>) -> bool {
+        self.rounds = 0;
+        self.lost = false;
+        let start = match resumed {
+            Some((file, length)) if *file == found => *length,
+            _ => 0,
+        };
+        let mut changed = false;
+        match (self.tail.as_mut(), self.path.as_deref()) {
+            (None, _) => self.tail = Some(Tail::new(start)),
+            (Some(tail), Some(old)) if *old != found => {
+                changed = tail.read(old).unwrap_or(false);
+                tail.moved(start);
+            }
+            _ => {}
+        }
+        self.path = Some(found);
+        changed
+    }
+}
 
 /// Start watching one launch's rollout.
 ///
@@ -137,7 +183,8 @@ fn follow(limiter: &Limiter, home: &std::path::Path, resumed: Option<(PathBuf, u
     }
 }
 
-/// One round's reading of the rollout of `id`: found if it was not, then read
+/// One round's reading of the rollout of `id`: found if it was not, looked
+/// for again now and then in case it went on in another file, then read
 /// forward. Whether any of the five changed.
 fn read(
     followed: &mut Option<Followed>,
@@ -150,50 +197,33 @@ fn read(
             id,
             path: None,
             tail: None,
-            misses: 0,
+            lost: false,
+            rounds: 0,
         });
     }
-    let Some(Followed {
-        id,
-        path,
-        tail,
-        misses,
-    }) = followed.as_mut()
-    else {
+    let Some(f) = followed.as_mut() else {
         return false;
     };
-    if path.is_none() {
-        *misses = misses.saturating_add(1);
-        if *misses > SEARCH_EVERY_AFTER && *misses % SEARCH_SLOW != 0 {
-            return false;
+    let mut changed = false;
+    if f.search_due() {
+        if let Some(found) = mcp_config::codex::transcript(home, &f.id) {
+            changed = f.place(found, resumed);
         }
-        let Some(found) = mcp_config::codex::transcript(home, id) else {
-            return false;
-        };
-        *misses = 0;
-        // Placed once, at the first finding: a file found again
-        // after a failed read keeps the offset it had reached.
-        if tail.is_none() {
-            let start = match resumed {
-                Some((file, length)) if *file == found => *length,
-                _ => 0,
-            };
-            *tail = Some(Tail::new(start));
-        }
-        *path = Some(found);
     }
-    let Some(tail) = tail.as_mut() else {
-        return false;
+    if f.lost {
+        return changed;
+    }
+    let (Some(tail), Some(path)) = (f.tail.as_mut(), f.path.as_deref()) else {
+        return changed;
     };
-    match path.as_deref().map(|file| tail.read(file)) {
-        Some(Ok(changed)) => changed,
+    match tail.read(path) {
+        Ok(read) => changed | read,
         // Gone or unreadable for now: find it again next round. The
         // reading so far is kept; a file replaced under the same
         // name is read from its start (`Tail::read`).
-        Some(Err(_)) => {
-            *path = None;
-            false
+        Err(_) => {
+            f.lost = true;
+            changed
         }
-        None => false,
     }
 }

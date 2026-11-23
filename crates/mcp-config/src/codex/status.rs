@@ -2,7 +2,9 @@
 //!
 //! Codex has no status-line command. It writes the same facts into the
 //! session's rollout, `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`,
-//! one JSON object per line (`transcript_checked` finds the file):
+//! one JSON object per line (`transcript_checked` finds the file; a rollout
+//! that goes on in `rollout-<time>-<id>_<other id>.jsonl` is followed there,
+//! #598):
 //!
 //! | value | line |
 //! |---|---|
@@ -188,6 +190,15 @@ impl Tail {
             offset,
             ..Tail::default()
         }
+    }
+
+    /// The rollout goes on in another file (#598): read that one from
+    /// `offset`, holding the values and the not-yet-taken turn events read
+    /// from the file before. The offset was the old file's and is not carried.
+    pub fn moved(&mut self, offset: u64) {
+        self.offset = offset;
+        self.line.clear();
+        self.skipping = false;
     }
 
     /// Bytes appended to the file. Whether any value changed.
@@ -473,6 +484,30 @@ mod tests {
         assert_eq!(tail.status.model, None);
         tail.feed(lines(&[TURN]).as_bytes());
         assert_eq!(tail.status.model.as_deref(), Some("gpt-6.1-sol"));
+    }
+
+    #[test]
+    fn a_rollout_gone_on_in_another_file_is_read_there_from_its_start() {
+        // #598: the conversation's first file stops, a cut-off line and all,
+        // and the rest is written to a new file.
+        let old = scratch();
+        let new = old.with_file_name("rollout-next.jsonl");
+        std::fs::write(&old, format!("{}{{\"type\":", lines(&[TURN]))).unwrap();
+        let mut tail = Tail::new(0);
+        assert!(tail.read(&old).unwrap());
+        assert_eq!(tail.status.model.as_deref(), Some("gpt-6.1-sol"));
+        let stopped = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"}}}"#;
+        std::fs::write(&new, lines(&[TOKENS, stopped])).unwrap();
+        tail.moved(0);
+        assert!(tail.read(&new).unwrap());
+        // The old file's values are held; the new file's are added on top,
+        // and the cut-off line of the old file is not joined to the new one.
+        assert_eq!(tail.status.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(tail.status.five_hour, Some(85.0));
+        assert!(tail.take_limits_read());
+        assert_eq!(tail.take_turn_end(), Some(super::super::limit::TurnEnd::UsageLimit));
+        assert!(!tail.read(&new).unwrap());
+        let _ = std::fs::remove_dir_all(old.parent().unwrap());
     }
 
     #[test]
