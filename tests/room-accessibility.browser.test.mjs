@@ -11,7 +11,7 @@ const edge = process.env.PREVIEW_BROWSER ?? [
 ].find(existsSync);
 if (!edge) throw new Error("Install Chromium/Edge or set PREVIEW_BROWSER to its executable");
 
-test("room posts expose readable Markdown and controls with a single selectable copy", { timeout: 30000 }, async t => {
+async function openRoom(t, options) {
   const server = await createServer({
     server: { host: "127.0.0.1", port: 0 },
     logLevel: "error",
@@ -32,7 +32,7 @@ test("room posts expose readable Markdown and controls with a single selectable 
     await server.close();
   });
   browser = await chromium.launch({ executablePath: edge, headless: true });
-  const page = await browser.newPage({ permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await browser.newPage(options);
   await page.addInitScript(() => {
     window.calls = [];
     window.__TAURI_INTERNALS__ = {
@@ -47,6 +47,11 @@ test("room posts expose readable Markdown and controls with a single selectable 
   });
   await page.goto(server.resolvedUrls.local[0]);
   await page.waitForFunction(() => window.roomTest);
+  return page;
+}
+
+test("room posts expose readable Markdown and controls with a single selectable copy", { timeout: 30000 }, async t => {
+  const page = await openRoom(t, { permissions: ["clipboard-read", "clipboard-write"] });
 
   const markdown = [
     "# 聞き取れる見出し",
@@ -97,4 +102,45 @@ test("room posts expose readable Markdown and controls with a single selectable 
   await page.waitForFunction(() => window.calls.some(({ cmd, args }) => cmd === "open_post_url" && args.url === "https://example.test/"));
   await live.getByRole("button", { name: "fixture.html のプレビューを開く" }).click();
   await page.waitForFunction(() => window.calls.some(({ cmd, args }) => cmd === "html_preview" && args.pane?.document.includes("Preview fixture")));
+});
+
+test("long history and arriving posts scroll inside the room", { timeout: 30000 }, async t => {
+  const page = await openRoom(t, { viewport: { width: 1000, height: 640 }, reducedMotion: "reduce" });
+  const measurements = await page.evaluate(() => {
+    const post = {
+      speaker: "Fixture speaker", ts: "2026-11-25T00:00:00Z", to: [], account: null, hue: null, own: false,
+      content: "A short paragraph with **readable Markdown**.\n\nOne more paragraph.",
+    };
+    const room = document.querySelector("#room");
+    const composer = document.querySelector("#composer");
+    const root = document.scrollingElement;
+    const measure = () => ({
+      pageHeight: root.clientHeight,
+      pageScrollHeight: root.scrollHeight,
+      roomHeight: room.clientHeight,
+      roomScrollHeight: room.scrollHeight,
+      composerBottom: composer.getBoundingClientRect().bottom,
+    });
+
+    window.roomTest.drawTopic(Array.from({ length: 40 }, (_, i) => ({ ...post, message_id: `history-${i}` })));
+    const history = measure();
+    window.roomTest.appendMessage({ ...post, message_id: "arriving" });
+    return { history, arriving: measure() };
+  });
+
+  assert.deepEqual(
+    Object.values(measurements).map(({ pageHeight, pageScrollHeight }) => pageScrollHeight - pageHeight),
+    [0, 0],
+    `The page should fit after loading history and after an append: ${JSON.stringify(measurements)}`,
+  );
+  for (const { pageHeight, roomHeight, roomScrollHeight, composerBottom } of Object.values(measurements)) {
+    assert.ok(roomScrollHeight > roomHeight, "The room has its own scroll range");
+    assert.ok(composerBottom <= pageHeight, "The composer fits in the viewport");
+  }
+  assert.ok(measurements.arriving.roomScrollHeight > measurements.history.roomScrollHeight, "The arriving post extends the room");
+  await page.locator("#room").evaluate(room => { room.scrollTop = 0; });
+  await page.locator("#room").hover();
+  await page.mouse.wheel(0, 130);
+  await page.waitForFunction(() => document.querySelector("#room").scrollTop > 0);
+  assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
 });
