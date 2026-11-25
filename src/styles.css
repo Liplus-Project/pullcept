@@ -726,6 +726,18 @@ button svg.icon {
   margin-top: 0.15rem;
 }
 
+/* Keep the assistive text in reading order, outside visible word geometry and
+   outside the mouse selection. Its visible counterpart remains selectable. */
+.post-readable-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* A line of code does not wrap, so it would widen one's own bubble past the
    room; the bubble is held to the room's width and the code scrolls inside. */
 .message.mine:has(.code-block) {
