@@ -3286,6 +3286,31 @@ function appendPostWords(body: HTMLElement, text: string): void {
     link: markdownLink,
     code: codeBlock,
   });
+
+  // Windows MCP counts visible UI Automation word boxes before visiting the
+  // editor and send button. Keep each static text run in its original reading
+  // order and Markdown element, with a clipped copy for assistive technology.
+  // Leave links in place while clipping their static text too. Keep button and
+  // form control labels in their own elements.
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, (node) => {
+    if (node instanceof Element) {
+      return node.matches('button, input, select, textarea, summary, [tabindex], [contenteditable], [aria-hidden="true"]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_SKIP;
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  });
+  const textRuns: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) textRuns.push(node as Text);
+  for (const textRun of textRuns) {
+    const visual = document.createElement("span");
+    visual.setAttribute("aria-hidden", "true");
+    const spoken = document.createElement("span");
+    spoken.className = "post-readable-text";
+    spoken.textContent = textRun.data;
+    textRun.replaceWith(visual, spoken);
+    visual.appendChild(textRun);
+  }
 }
 
 /**
