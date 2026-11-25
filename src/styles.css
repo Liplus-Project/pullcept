@@ -2181,6 +2181,9 @@ button svg.icon {
   min-height: 0;
   overflow-y: auto;
   font-size: 0.78rem;
+  /* The last card keeps the same 10px gap from the panel's foot as the cards
+     keep between themselves (#609). */
+  padding-bottom: 10px;
 }
 
 /* The list's own heading, with the control that makes an account beside it.
