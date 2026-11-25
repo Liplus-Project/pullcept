@@ -491,6 +491,8 @@ button svg.icon {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Keep absolutely positioned reading text inside the scrolling room (#607). */
+  position: relative;
   padding: 1rem;
   display: flex;
   flex-direction: column;
