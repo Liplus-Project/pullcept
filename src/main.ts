@@ -27,6 +27,7 @@ import { createSessionController } from "./session-controller";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { createComposer, findCodeFences, highlightedCode, lineInFence } from "./composer";
 import { appendMarkdown } from "./markdown";
@@ -4186,11 +4187,13 @@ async function main(): Promise<void> {
   // page — Tauri takes the drop and reports the paths and where it landed
   // (`dragDropEnabled`, on by default) — so the composer is found by the
   // point, not by an element's drop event. A drop anywhere else attaches
-  // nothing. Heard on the window, not the webview: while the HTML preview's
-  // child view is in this window (#466) the window holds two webviews, and
-  // Tauri then sends this webview's drop to window listeners only (tauri
-  // 2.11.5, `src/manager/window.rs`).
-  await getCurrentWindow().onDragDropEvent((event) => {
+  // nothing. Heard on the webview, not the window (#605): the child view of
+  // the HTML preview (#466) needs Tauri's `unstable` feature, under which the
+  // main webview is built as a child of its window too, so its drops come as
+  // webview events and reach webview listeners only — with one webview in
+  // the window or two (tauri-runtime-wry 2.11.4 `create_window` and the drag
+  // handler in `create_webview`; tauri 2.11.5 `emit_to_webview`).
+  await getCurrentWebview().onDragDropEvent((event) => {
     const drag = event.payload;
     if (drag.type === "leave") {
       markDrop(false);
