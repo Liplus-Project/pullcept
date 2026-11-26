@@ -37,6 +37,7 @@ import { createComposerScreen } from "./screen/composer";
 import { createMessages } from "./screen/messages";
 import { createRoom } from "./screen/room";
 import { createTitlebar } from "./screen/titlebar";
+import { createDiagnostics } from "./screen/diagnostics";
 
 /**
  * Whether this account launches a session.
@@ -454,55 +455,6 @@ function status(text: string, kind: "info" | "error" = "info"): void {
 }
 
 /**
- * Whether the pane was open, kept across a reload of this screen (#454).
- *
- * In `sessionStorage` because the question is only ever asked by the same
- * window coming back: a reload keeps it, and an app restart has no seats to
- * re-adopt, so it never reads it. Nothing stored reads as folded, which is how
- * the page opens.
- */
-const DIAGNOSTICS_OPEN_KEY = "pullcept.diagnostics-open";
-
-function rememberDiagnostics(open: boolean): void {
-  try {
-    sessionStorage.setItem(DIAGNOSTICS_OPEN_KEY, open ? "1" : "0");
-  } catch {
-    // Unremembered, the pane comes back folded after a reload.
-  }
-}
-
-function diagnosticsWereOpen(): boolean {
-  try {
-    return sessionStorage.getItem(DIAGNOSTICS_OPEN_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function revealDiagnostics(): void {
-  diagnosticsEl.hidden = false;
-  toggleEl.setAttribute("aria-expanded", "true");
-  rememberDiagnostics(true);
-  // The container has no size while hidden, so the fit has to wait for layout.
-  requestAnimationFrame(() => fitShown());
-}
-
-/**
- * Fold the pane away. Nothing under it stops.
- *
- * Every terminal keeps its session, its listeners and its scrollback, so the
- * pane comes back with the same tabs on it. The two ways in and out are the
- * 端末 button in the title bar and ✕ in the pane's own header: one is reachable
- * while the pane is folded and the other while it is open, which is why both
- * exist for one act (#68).
- */
-function hideDiagnostics(): void {
-  diagnosticsEl.hidden = true;
-  toggleEl.setAttribute("aria-expanded", "false");
-  rememberDiagnostics(false);
-}
-
-/**
  * Draw both panels the way `panels` says, and say so on their buttons.
  *
  * One function for both states and both panels, called from the restore and
@@ -719,26 +671,6 @@ const htmlPreview = createHtmlPreview(document.getElementById("conversation")!,
   (pane) => invoke("html_preview", { document: null, open: false, pane }),
   (code) => highlightedCode(code, "html"));
 void listen("html-preview-return", () => htmlPreview.returnToMain());
-
-function renderSocket(port: number | null, error?: string): void {
-  // The socket's row is folded under 詳細 (#225), and a fold must not hide that
-  // the room is not listening: the summary takes the error colour with it.
-  factsMoreEl.dataset.kind = error || port === null ? "error" : "";
-  if (error) {
-    socketStateEl.textContent = error;
-    socketStateEl.dataset.kind = "error";
-    return;
-  }
-  if (port === null) {
-    socketStateEl.textContent = "未待受";
-    socketStateEl.dataset.kind = "error";
-    return;
-  }
-  // The address alone. It is an address, and the panel column is one line
-  // wide; that it is being listened on is what the accent colour says.
-  socketStateEl.textContent = `127.0.0.1:${port}`;
-  socketStateEl.dataset.kind = "ok";
-}
 
 async function main(): Promise<void> {
   // Before anything else is drawn, so no button is ever on screen empty.
@@ -1400,5 +1332,14 @@ const titlebar = createTitlebar({
   get topicName() { return topicName; },
 });
 const { wireWindowControls, renderRoomTitle } = titlebar;
+
+const diagnostics = createDiagnostics({
+  get diagnosticsEl() { return diagnosticsEl; },
+  get toggleEl() { return toggleEl; },
+  get socketStateEl() { return socketStateEl; },
+  get factsMoreEl() { return factsMoreEl; },
+  get fitShown() { return fitShown; },
+});
+const { revealDiagnostics, hideDiagnostics, renderSocket, diagnosticsWereOpen } = diagnostics;
 
 void main();
