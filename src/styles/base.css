@@ -1,0 +1,203 @@
+:root {
+  color-scheme: light dark;
+  /* Two grounds. `--bg` is the window's own ground, and the ground of every
+     field — input, select, textarea — which keeps its `--line` border: a field
+     is where text will go, and empty it has nothing else to show where that is.
+     `--surface` is a panel's tint — the participant list's and the topic
+     list's ground. `--tint` is the fill a label carries — an attachment's chip,
+     a log or a notice in a dialog — which in light is no longer the panels'
+     ground: the panels came up to Claude Desktop's sidebar (#235), close
+     enough to `--bg` that a chip drawn in it would vanish.
+
+     A button on the screen has no frame and no ground of its own (#221, Master,
+     2026-10-02): it is its drawing, and a light fill arrives only under the
+     pointer. That is what replaced the border every button carried since
+     2026-08-24, which was there so a button would be one shape on every panel.
+     The pointer's fill keeps that: it is a shade laid over whatever ground the
+     button stands on, not a colour of their own, so the same button lifts the
+     same way on `--bg` and on `--surface`. 送信 alone is filled, so the screen
+     has one control it puts forward.
+
+     The light values are the 2026-10-02 full-screen mockup's, its two side
+     columns in the colours of Claude Desktop's sidebar (#235, Master
+     「Cで、ダークは今のままでいいかな一旦」). Dark is what it was: a token
+     added for light carries there the value that draws dark as before. */
+  --bg: #ffffff;
+  --fg: #1b1b1f;
+  --line: #e2e2e1;
+  --muted: #73726c;
+  --surface: #fbfbf9;
+  /* The participant panel's own ground (#529): the right sidebar of Claude
+     Desktop, sampled from Master's reference — its panel and its section cards
+     are the same #fcfcfb. Only the right column takes it; the topic list stays
+     on `--surface`. Dark keeps the panel on the dark `--surface`. */
+  --participants-ground: #fcfcfb;
+  --participants-card-line: #e3e3e2;
+  --tint: #f4f4f7;
+  --accent: #185fa5;
+  --danger: #a52a2a;
+  /* A session that is still producing — the colour of the 考え中… / 出力中
+     badge in the participant panel (#225), and the ground under it. Not the
+     accent: on that panel the accent is oneself's colour. */
+  --ok: #3b6d11;
+  --ok-ground: #eaf3de;
+  /* The ground of every other state's badge — 未起動, 起動中, 終了 and the
+     rest (#225). The word on it is `--muted`. */
+  --badge-ground: #f1efe8;
+  /* The pointer on a button, and an item marked as the one chosen — a picked
+     row, the open tab. Chosen is the deeper of the two, so a row under the
+     pointer is not read as picked. Chosen is a colour in light (#235) and a
+     shade in dark; the pointer is a shade in both, kept light enough here
+     that it stays the shallower of the two on the panels' ground. */
+  --hover: rgb(0 0 0 / 0.04);
+  --selected: #edece8;
+  /* The composer's frame. Darker than `--line`: the box is where the screen's
+     one act is written, and the panels' lines came up close to white (#235). */
+  --composer-line: rgb(0 0 0 / 0.2);
+  /* 送信's ground and its drawing (#258): the blue of the app's icon
+     (src-tauri/app-icon.svg), in light and dark alike, so it is not
+     redefined below. Separate from `--accent` and the participants'
+     colour tokens (`--speaker-l` / `--speaker-c`). */
+  --send-ground: #1e9be8;
+  --send-ink: #ffffff;
+  /* How far a participant's colour is carried into the circle and into one's
+     own bubble (#235). Each is the share of the participant's colour in a mix:
+     the circle's ground and the bubble's ground and edge are mixed into
+     `--bg`, the circle's letter into black. In dark the letter is the colour
+     itself and the edge is the bubble's own ground, which draws no line. */
+  --avatar-ground: 13%;
+  --avatar-ink: 75%;
+  --avatar-ink-toward: #000000;
+  --mine-ground: 9%;
+  --mine-edge: 35%;
+  /* Declared and derived participant colours share this theme's lightness
+     and chroma; only hue varies. Lightness stays at the #395 setting;
+     chroma is higher than the original measured pair (#397), for vivid colours.
+     A declaration chooses only hue. An undeclared own colour stays accent. */
+  --speaker-l: 0.54;
+  --speaker-c: 0.16;
+  /* The shadow under a control that floats over the room's lines — 最新の発言へ
+     (#243) — so it reads as above them and not as one of them. Deeper in dark,
+     where a shadow on a dark ground barely shows. */
+  --float-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  /* 閉じる on the title bar under the pointer (#252): the window's close, which
+     the standard frame turned red, and which still does now the bar draws it.
+     The one button on the bar that is coloured, and only while the pointer is
+     on it — the rest of #221 holds. One pair for both themes, so the dark
+     block does not repeat it: red with white on it reads on either ground. */
+  --close-ground: #c42b1c;
+  --close-ink: #ffffff;
+  /* A ``` block's ground and frame (#348), in a post and behind the input
+     box's text. The text colour thinned into whatever ground the block stands
+     on — the room's, one's own bubble's — so one pair reads in light and dark
+     alike, and the dark block does not repeat it: `--fg` is resolved per
+     theme. */
+  --code-ground: color-mix(in oklch, var(--fg) 5%, transparent);
+  --code-line: color-mix(in oklch, var(--fg) 14%, transparent);
+  /* The colours code is drawn in (#354), in a post and in the input box: one
+     per kind of word lowlight marks. This app's own pair of palettes, one for
+     each ground, written for it. */
+  --hl-keyword: #8a3ab9;
+  --hl-string: #2f7a3b;
+  --hl-number: #a8540a;
+  --hl-comment: #8a8985;
+  --hl-title: #1a5fb4;
+  --hl-type: #0d7377;
+  --hl-attr: #9a6200;
+  --hl-tag: #b0306f;
+  --hl-meta: #5f5f86;
+  --hl-regexp: #b8322a;
+  --hl-deletion: #b8322a;
+  --hl-addition: #2f7a3b;
+  /* The UI's multiple (#66, #194), and the root size it becomes. The UI around
+     the conversation and the terminal is written in `rem`, so this one value
+     moves all of it. The conversation divides it back out (`--room-font-size`
+     below) and the terminal is sized in `px`, so the two other size axes do not
+     ride on it. `1` is `100%`, the user agent's default: the size the root has
+     always had, so a screen that has chosen nothing is unchanged.
+     src/main.ts overrides it when a scale has been stored. */
+  --ui-scale: 1;
+  font-size: calc(100% * var(--ui-scale));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --fg: #e8e8ea;
+    --line: #33333a;
+    --muted: #9a9aa5;
+    --surface: #202026;
+    --participants-ground: #202026;
+    --participants-card-line: var(--line);
+    --tint: #202026;
+    --accent: #7aa7d8;
+    --danger: #e08585;
+    --ok: #7cc49a;
+    /* The badge's word thinned into nothing, as both badges were drawn before
+       #235. `currentColor` is resolved on the badge, so it is the word's own
+       colour. */
+    --ok-ground: color-mix(in oklch, currentColor 14%, transparent);
+    --badge-ground: color-mix(in oklch, currentColor 14%, transparent);
+    --hover: rgb(255 255 255 / 0.08);
+    --selected: rgb(255 255 255 / 0.13);
+    --composer-line: #33333a;
+    --hl-keyword: #c79bef;
+    --hl-string: #9fcf8b;
+    --hl-number: #eda86d;
+    --hl-comment: #8d8d98;
+    --hl-title: #82b4f0;
+    --hl-type: #6ccfc6;
+    --hl-attr: #e2bc72;
+    --hl-tag: #ef8eac;
+    --hl-meta: #a6a6cc;
+    --hl-regexp: #f08484;
+    --hl-deletion: #f08484;
+    --hl-addition: #9fcf8b;
+    --avatar-ground: 22%;
+    --avatar-ink: 100%;
+    --mine-ground: 14%;
+    --mine-edge: 14%;
+    /* The vivid dark pair (#397) stays lighter than the light theme's
+       colours, for the dark ground. It is independent of the accent. */
+    --speaker-l: 0.76;
+    --speaker-c: 0.11;
+    --float-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
+}
+
+/* A button's drawing (src/main.ts, `ICONS`). Stroked in the button's own
+   colour, so muted, danger and the theme reach it the way they reach a word.
+   Each place sets the size it is drawn at. */
+button svg.icon {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+

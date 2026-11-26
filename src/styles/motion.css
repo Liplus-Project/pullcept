@@ -1,0 +1,163 @@
+/* ── motion (#307) ───────────────────────────────────────────────────────── */
+
+/* Movement so what is going on can be seen happening: the busy words pulse,
+   the room glides down to a new line and back to its foot, a new line fades
+   in, and the account window's sections cross-fade. All of it is here, and all
+   of it only where the system has not been asked to reduce motion — with
+   `prefers-reduced-motion: reduce` none of these rules applies, so the words
+   stand still, the room jumps and the sections switch at once, as before.
+
+   No word, colour or condition changes with it: the busy badge says what it
+   said and when, and only how it is drawn moves.
+
+   `--pulse-phase` is set by src/main.ts to the page's clock at the moment the
+   element is drawn, so one redrawn mid-pulse carries on where the one it
+   replaced was, rather than every redraw of the panel restarting the pulse. */
+@media (prefers-reduced-motion: no-preference) {
+  /* The glide is the room's own; src/main.ts asks for "auto" and gets this,
+     and asks for "instant" when a topic is opened. */
+  #room {
+    scroll-behavior: smooth;
+  }
+
+  /* Opacity only: a line moved by a transform would add to the room's
+     scrollable height while it moves, and the glide down to it would land
+     short or overshoot. */
+  #room .message.arriving {
+    animation: line-arrive 260ms ease-out;
+  }
+
+  #participants .note[data-kind="active"] {
+    animation: busy-pulse 1.6s ease-in-out infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
+  /* Dots flowing left to right, each a third of the period behind the last. */
+  #room-busy .busy-dots i {
+    animation: busy-dot 1.2s ease-in-out infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
+  #room-busy .busy-dots i:nth-child(2) {
+    animation-delay: calc(var(--pulse-phase, 0ms) + 0.2s);
+  }
+
+  #room-busy .busy-dots i:nth-child(3) {
+    animation-delay: calc(var(--pulse-phase, 0ms) + 0.4s);
+  }
+
+  /* A new say under the room fades in rather than appearing at once. */
+  #room-busy > * {
+    animation: line-arrive 200ms ease-out;
+  }
+
+  /* The account window's side menu: the mark moves softly to the section
+     picked, and the section fades in. A section going from `hidden` to drawn
+     starts the animation afresh, so it runs on every switch. */
+  #account-dialog .account-tabs [role="tab"] {
+    transition: background-color 160ms ease;
+  }
+
+  #account-dialog .pane {
+    animation: line-arrive 180ms ease-out;
+  }
+
+  /* 進行中 plan step's ring turns (#563); it stands still under reduced motion. */
+  .todo-step-inProgress .todo-icon {
+    animation: step-spin 1s linear infinite;
+    animation-delay: var(--pulse-phase, 0ms);
+  }
+
+  /* The larger picture and its dim fade in together (#318). */
+  #viewer[open],
+  #viewer[open]::backdrop {
+    animation: line-arrive 160ms ease-out;
+  }
+}
+
+@keyframes step-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes line-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes busy-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes busy-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+.who .original-name { display: block; font-size: 0.8em; opacity: 0.7; }
+
+
+.codex-remote-dialog {
+  max-width: 520px; width: calc(100vw - 64px); padding: 24px;
+  background: var(--bg, #202124); color: var(--fg);
+  border: 1px solid var(--line, #555); border-radius: 12px;
+}
+.codex-remote-dialog::backdrop { background: #0009; }
+.codex-remote-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.codex-remote-dialog canvas { display: block; max-width: 100%; margin: 16px auto; }
+.codex-remote-dialog [role="alert"] { color: var(--danger, #ffaaaa); }
+.codex-remote-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* File card (#439): icon, name, "開く ›"; hover tints with the theme line colour. */
+.html-file .html-preview-open { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 28rem; margin: .2rem 0; padding: .55rem .75rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: inherit; text-align: start; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.html-file .html-preview-open:hover { background: color-mix(in srgb, currentColor 7%, var(--surface)); border-color: color-mix(in srgb, currentColor 35%, var(--line)); }
+.html-file-icon { flex: none; position: relative; width: 1.1rem; height: 1.35rem; border: 1.5px solid currentColor; border-radius: 2px 6px 2px 2px; opacity: .65; }
+.html-file-icon::after { content: "</>"; position: absolute; inset: 0; display: grid; place-items: center; font: 700 .45rem/1 var(--mono, ui-monospace, monospace); }
+.html-file-name { flex: 1; min-width: 0; font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.html-file-action { flex: none; font-size: .85rem; opacity: .65; }
+.html-file .html-preview-open:hover .html-file-action { opacity: 1; }
+.html-preview-code[hidden], .html-preview-content[hidden] { display: none; }
+.html-preview-code { flex: 1; min-height: 0; margin: 0; padding: .6rem; overflow: auto; background: var(--code-ground); border-top: 1px solid var(--code-line); }
+
+/* The grip on each side panel's inner edge (#530). It sits between the panel
+   and the middle column, and goes away with the panel when the panel is hidden. */
+.sidebar-grip {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  background: transparent;
+}
+.sidebar-grip:hover,
+body.sidebar-resizing .sidebar-grip {
+  background: var(--line);
+}
+[hidden] + .sidebar-grip-left,
+.sidebar-grip-right:has(+ [hidden]) {
+  display: none;
+}
+body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* #557: what 保存 just did, beside the button. */
+.dialog-saved { color: var(--ok, var(--muted)); font-size: .85em; align-self: center; }

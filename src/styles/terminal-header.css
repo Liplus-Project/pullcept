@@ -1,0 +1,139 @@
+/* ── the terminal window's header ────────────────────────────────────────── */
+
+/* The window's name, then the tabs, then ✕ pinned to the right, so it is in
+   one place whatever is open. `flex: none` is what
+   keeps the header its own height while the terminal below takes the rest of the
+   pane.
+
+   A rule under it and no fill behind it. The line says where the header ends;
+   the colour it used to say that with is gone (see the pane above). */
+#terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0.45rem;
+}
+
+/* What this window is, at the left where a window's name goes. The tabs follow
+   it, so the strip reads as this pane's tabs rather than as a row of names
+   floating on the frame (Master, 実機, 2026-08-24). It is also the only thing
+   in the header when nothing is running, which is the state where a pane with
+   an empty strip would say nothing about itself at all. */
+#terminal-head .pane-title {
+  flex: none;
+  color: var(--muted);
+  font-weight: 600;
+  padding-left: 0.2rem;
+}
+
+/* Scrolls sideways rather than wrapping. A second row of tabs would change the
+   pane's header height, and the terminal under it computes its rows from
+   whatever is left — opening one more session would resize every session's
+   window. */
+#terminal-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* A tab is the account's name, in that account's colour: the same colour its
+   lines carry in the room and its dot carries in the panel, so a tab and a row
+   are read as one participant without matching the names letter by letter. */
+#terminal-tabs .tab {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  max-width: 12rem;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+}
+
+#terminal-tabs .tab:hover {
+  background: var(--hover);
+}
+
+#terminal-tabs .tab .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The mark the selected row in the panel carries, drawn the same way here
+   (`#participants .member.shown .pick`). The two selections are one selection
+   and one shape (Master, 実機, 2026-08-24): the chosen fill, and the name
+   turning from `--muted` to the participant's own colour. The fill was a shade
+   over the ground (#221) so it would read the same on the header's `--bg` as on
+   the panel's `--surface`; in light it is a solid colour now (#235), which
+   still does, the two grounds being near white alike. */
+#terminal-tabs .tab.shown {
+  color: var(--speaker, var(--fg));
+  background: var(--selected);
+}
+
+/* A session that has ended. Dimmed rather than dropped: what it printed on its
+   way out is the only account of why it went, and it stays readable until the
+   tab is closed (#68). */
+#terminal-tabs .tab.ended .name {
+  opacity: 0.7;
+}
+
+/* Only on an ended tab. On a running one it would be read as "end this
+   session", which is 終了 on the row and stays there (#68). */
+#terminal-tabs .tab .close {
+  flex: none;
+  color: var(--muted);
+  border-radius: 3px;
+  padding: 0.1rem;
+}
+
+#terminal-tabs .tab .close svg.icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+#terminal-tabs .tab .close:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* No frame and no ground, as every button on the screen (#221). The tab's name
+   is one of these too, and the tab around it is what takes the pointer's fill,
+   so the fill on the buttons themselves is the pane's ✕ and the tab's ✕ only. */
+#terminal-head button {
+  font: inherit;
+  flex: none;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.1rem 0.25rem;
+  cursor: pointer;
+}
+
+/* The pane's own way out. It folds the window and ends nothing — the session
+   under the terminal keeps running, so this is not drawn in the danger colour
+   that 終了 carries on the row. */
+#terminal-head #diagnostics-close {
+  padding: 0.2rem;
+}
+
+#terminal-head #diagnostics-close svg.icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+#terminal-head #diagnostics-close:hover {
+  background: var(--hover);
+}
+

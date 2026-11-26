@@ -110,7 +110,7 @@ const DERIVED_ARC = 360 - RESERVED_ARC * 2;
 
 const ICONS: Record<IconName, IconShape[]> = {
   // A panel seen edge-on, the divider on the side it folds (#118). The right
-  // one is this drawing turned over in src/styles.css.
+  // one is this drawing turned over in src/styles/titlebar.css.
   panel: [
     ["rect", { x: "1.7", y: "2.7", width: "12.6", height: "10.6", rx: "2.4" }],
     ["line", { x1: "6.2", y1: "2.7", x2: "6.2", y2: "13.3" }],
@@ -746,7 +746,7 @@ function fullDateTime(iso: string): string {
  * The screen person's own line is a bubble at the right edge (#185) and carries
  * neither the circle nor the name: where it stands and its tint already say
  * whose it is. Its clock is at its foot, and a run of them shows only the last
- * one's (src/styles.css, `.message.mine`).
+ * one's (src/styles/messages.css, `.message.mine`).
  */
 function roomLine(line: {
   speaker: string;
@@ -4046,7 +4046,7 @@ async function main(): Promise<void> {
   //
   // Each button folds the panel it stands over. Both stay on the bar in either
   // state: a folded panel leaves nothing behind to press (see `#history[hidden]`
-  // in src/styles.css), so the way back has to be somewhere that is always
+  // in src/styles/layout.css), so the way back has to be somewhere that is always
   // there.
   toggleHistoryEl.addEventListener("click", () => togglePanel("history"));
   toggleParticipantsEl.addEventListener("click", () => togglePanel("participants"));

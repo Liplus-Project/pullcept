@@ -146,7 +146,7 @@ export function createDisplaySettings(deps: Dependencies) {
    * bar, the panels, the windows — so one value on `:root` moves all of it without
    * naming any of it. The two other axes are kept out by construction rather than
    * by exception: the conversation's size divides this one back out
-   * (`--room-font-size` in src/styles.css), and the terminal is sized in `px`,
+   * (`--room-font-size` in src/styles/room.css), and the terminal is sized in `px`,
    * which a root size does not reach. Not the webview's own zoom: that takes the
    * whole screen, the two excluded surfaces with it, and those are what this may
    * not move.
@@ -359,7 +359,7 @@ export function createDisplaySettings(deps: Dependencies) {
   /**
    * Draw the UI at `scale`, and remember it if it was chosen.
    *
-   * One property on `:root`, which src/styles.css turns into the root's
+   * One property on `:root`, which src/styles/base.css turns into the root's
    * `font-size`. The conversation divides it back out and the terminal is in `px`,
    * so neither moves (see `UI_SCALE_KEY`). The terminal's pane does change size
    * when the chrome around it grows, and the `ResizeObserver` on it re-fits and

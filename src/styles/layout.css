@@ -1,0 +1,70 @@
+/* ── body ────────────────────────────────────────────────────────────────── */
+
+/* The conversation and the panel stand side by side, so the panel is read
+   without leaving the room. */
+#body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#conversation {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  /* Without this a long unbroken line in the room widens the column and pushes
+     the panel off the window. */
+  min-width: 0;
+}
+
+.html-preview[hidden] { display: none; }
+.html-preview {
+  display: flex;
+  flex: 0 1 48%;
+  min-width: 240px;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+}
+.html-preview header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+.html-preview header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Segmented "プレビュー｜コード" switch (#439). */
+.html-preview-views { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--code-ground, transparent); }
+.html-preview-views button { margin: 0; padding: .2rem .7rem; border: 0; border-radius: 6px; background: transparent; color: inherit; opacity: .7; cursor: pointer; }
+.html-preview-views button:hover { opacity: 1; }
+.html-preview-views button[aria-pressed="true"] { background: var(--surface); opacity: 1; box-shadow: 0 1px 2px #0003; }
+.html-preview-close { margin: 0; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 1.25rem; line-height: 1; cursor: pointer; }
+.html-preview-separate { display: inline-flex; align-items: center; gap: .35rem; margin: 0; height: 2rem; padding: 0 .5rem; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: .85rem; cursor: pointer; }
+.html-preview-separate svg { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.html-preview-separate:hover, .html-preview-close:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+.html-preview > p { margin: 0 .6rem .5rem; font-size: .85rem; }
+.html-preview > p:empty { display: none; }
+.html-preview-content { flex: 1; min-height: 0; display: flex; }
+.html-preview-content iframe { width: 100%; flex: 1; border: 0; background: white; }
+.html-preview-open { margin: .4rem; }
+@media (max-width: 760px) {
+  /* The preview covers only the conversation. Its own close control remains
+     outside posted CSS and returns focus to the source button. */
+  #body { position: relative; }
+  .html-preview { position: absolute; inset: 0; z-index: 15; min-width: 0; }
+}
+
+/* A folded panel takes no width at all — no strip is left where it stood
+   (#118, decision 2). A strip would be a signpost back, and the way back is on
+   the title bar whether the panel is open or not, so the room takes the whole
+   width instead.
+
+   `display: none` written out, for the reason `#diagnostics[hidden]` needs it
+   below: the `display: flex` these two carry outranks the user agent's rule
+   for the attribute, so the attribute on its own folds nothing.
+
+   Nothing under it stops, the way nothing under the terminal pane stops when
+   that is folded. Both panels are drawn from events that keep arriving — the
+   roster, the seats, the topic index — so a panel opened after a session ended
+   behind it shows that it ended (#118, 制約). */
+#history[hidden],
+#participants[hidden] {
+  display: none;
+}
+

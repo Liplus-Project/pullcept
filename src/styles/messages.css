@@ -1,0 +1,663 @@
+/* Speaker attribution is the load-bearing distinction in this room, so one
+   participant is separated from another by colour as well as by name. The axis
+   is the participant: `--speaker` is set per line from that participant, so the
+   colour of a line's circle and the dot beside their name in the panel are the
+   same colour, and a line can be traced to a participant without reading it.
+   Self/other was the earlier axis (#39) and is a two-valued one — it gave every
+   participant but oneself one shared colour.
+   Where the hue comes from is a ladder, resolved in src/main.ts: a hue the
+   participant declared, else the accent for oneself, else one derived from the
+   name. The derived hues leave a gap around the accent so that colour still
+   reads as one's own; a declared one is free of that gap, because it was
+   chosen. */
+
+/* The size lands on the whole line, not on its text alone: a name and a time
+   that stayed put while the words under them grew would read as a different
+   surface from the one they label. `em` below carries them along, and at the
+   default they resolve to exactly the sizes they were written at.
+   `max-width` is in `em` for the same reason — a measure fixed in `rem` would
+   hold the column still and shorten every line as the text grew, so the number
+   of characters to a line, which is what a measure is for, would change with
+   the size.
+
+   Two columns: the circle, and the name, time and words beside it (#225). The
+   circle is what the colour bar down the left edge was — who said it, in their
+   colour — with the initial in it, so it is read and not only matched. */
+.message {
+  font-size: var(--room-font-size);
+  max-width: 46em;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.65em;
+}
+
+.message > .meta,
+.message > .body {
+  grid-column: 2;
+}
+
+/* The speaker's initial on a tint of the speaker's own colour (#225). The tint
+   is the colour thinned into the page ground, the way the bubble below is, so
+   the letter keeps its contrast in light and dark alike. In light the letter is
+   the colour taken a step toward black and the tint is thinner (#235); in dark
+   both are as #225 drew them.
+   The circle and its letter grow together from `font-size` alone (#250, 0.85em
+   until then; 1.1em until #258, which took both up by 1.15): the diameter is in
+   the circle's own `em`, so the letter sits in it as it did, and the column it
+   heads widens with it. The fold's summary, the account dialog and the
+   participant panel set their own size and are not moved by this. */
+.avatar {
+  grid-row: 1 / span 2;
+  align-self: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1em;
+  height: 2.1em;
+  border-radius: 999px;
+  font-size: 1.265em;
+  font-weight: 600;
+  line-height: 1;
+  color: color-mix(
+    in oklch,
+    var(--speaker, var(--muted)) var(--avatar-ink),
+    var(--avatar-ink-toward)
+  );
+  background: color-mix(
+    in oklch,
+    var(--speaker, var(--line)) var(--avatar-ground),
+    var(--bg)
+  );
+  user-select: none;
+}
+
+/* An account's image in place of the initial (#236), cut to the circle. The
+   tint stays under it, so a picture with transparent corners sits on the
+   speaker's colour as the letter did. */
+.avatar.image {
+  overflow: hidden;
+}
+
+.avatar > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+/* The app's icon on the app's own lines (#340). Whole, inside the circle,
+   rather than cut to it: the drawing reaches its own edges, and cutting it
+   would take the bubble's corners. The inset is what lets a square fit a
+   circle of this diameter. */
+.avatar.app > img {
+  box-sizing: border-box;
+  padding: 0.3em;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+.message .meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+/* The head of a line — name, addressee, clock — is at the words' own size
+   (#258, 0.78em until then), so it inherits the line's and sets none. The
+   name is in the participant's colour, the one their circle and the panel's
+   row carry. */
+.message .speaker {
+  font-weight: 600;
+  color: var(--speaker, var(--fg));
+}
+
+/* Each addressee is `@name` in that addressee's own colour (#452), the colour
+   their name has where they speak. Until #452 the whole `→ name` was in the
+   speaker's colour, as part of what the speaker said. */
+.message .to {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 0.35em;
+}
+
+.message .to .addressee {
+  color: var(--addressee, var(--accent));
+}
+
+.message .body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* 1.6 until #225, opened a step with the gap between lines. */
+  line-height: 1.7;
+  margin-top: 0.15rem;
+}
+
+/* Keep the assistive text in reading order, outside visible word geometry and
+   outside the mouse selection. Its visible counterpart remains selectable. */
+.post-readable-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* A line of code does not wrap, so it would widen one's own bubble past the
+   room; the bubble is held to the room's width and the code scrolls inside. */
+.message.mine:has(.code-block) {
+  max-width: min(46em, 100%);
+}
+
+/* A ``` block in a post (#348): the code in monospace inside a frame, its
+   lines as written. A line longer than the frame scrolls inside it rather than
+   wrapping, so the code's own layout is kept; the frame is no wider than the
+   words around it. The language the fence names is a small label over the
+   code. */
+.message .code-block {
+  margin: 0.35rem 0;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  background: var(--code-ground);
+  overflow: hidden;
+}
+
+.message .code-block:first-child {
+  margin-top: 0.1rem;
+}
+
+.message .code-block:last-child {
+  margin-bottom: 0;
+}
+
+.message .code-lang {
+  padding: 0.3rem 0.75rem 0;
+  font-size: 0.78em;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.message .code-block pre {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  min-height: 1.5em;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+.message .code-block code {
+  font: inherit;
+}
+
+/* The words of code, coloured (#354): the classes lowlight puts on them, in a
+   post and in the input box alike. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in.hljs-keyword,
+.hljs-doctag {
+  color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-char.escape_ {
+  color: var(--hl-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--hl-number);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.function_,
+.hljs-title.class_ {
+  color: var(--hl-title);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-class {
+  color: var(--hl-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-selector-pseudo {
+  color: var(--hl-attr);
+}
+.hljs-tag,
+.hljs-name {
+  color: var(--hl-tag);
+}
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-subst {
+  color: var(--hl-meta);
+}
+.hljs-regexp,
+.hljs-link {
+  color: var(--hl-regexp);
+}
+.hljs-deletion {
+  color: var(--hl-deletion);
+}
+.hljs-addition {
+  color: var(--hl-addition);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* A URL or a Windows path in a post's words (#349): the accent, underlined,
+   so it reads as something a press opens and not as the speaker's colour.
+   The accent is redefined for dark, so one rule draws both themes. A long
+   path breaks where the words around it do (`overflow-wrap` above). */
+.message .body .link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.message .body .link:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* A post's words as Markdown (#431). Blocks keep the gap of a line between
+   them and none at the bubble's edges; the body's pre-wrap still draws a
+   single newline inside a paragraph as a line break. */
+.message .body > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, hr, .md-table, .mermaid-holder) {
+  margin: 0.35rem 0;
+}
+
+.message .body > :first-child {
+  margin-top: 0;
+}
+
+.message .body > :last-child {
+  margin-bottom: 0;
+}
+
+.message .body :is(li > p, blockquote > p) {
+  margin: 0.2rem 0;
+}
+
+.message .body :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.message .body h1 {
+  font-size: 1.2em;
+}
+
+.message .body h2 {
+  font-size: 1.1em;
+}
+
+.message .body :is(ul, ol) {
+  padding-left: 1.5em;
+  white-space: normal;
+}
+
+.message .body li {
+  white-space: pre-wrap;
+}
+
+.message .body li.task {
+  list-style: none;
+}
+
+.message .body li.task > input {
+  margin: 0 0.4em 0 -1.3em;
+  vertical-align: middle;
+}
+
+.message .body blockquote {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--code-line);
+  color: var(--muted);
+}
+
+.message .body hr {
+  border: 0;
+  border-top: 1px solid var(--code-line);
+}
+
+.message .body .inline-code {
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+  background: var(--code-ground);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+/* A table scrolls inside its frame, as a line of code does, rather than
+   widening the bubble. */
+.message .body .md-table {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
+  overflow-x: auto;
+}
+
+.message .body table {
+  border-collapse: collapse;
+  line-height: 1.5;
+}
+
+.message .body :is(th, td) {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--code-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message .body th {
+  background: var(--code-ground);
+  font-weight: 700;
+}
+
+.message.mine:has(.md-table, .mermaid-block) {
+  max-width: min(46em, 100%);
+}
+
+/* A ```mermaid diagram, once drawn. mermaid's own theme follows the screen's
+   (light or dark) at the first diagram. A wide diagram scrolls inside its
+   frame. */
+.message .mermaid-block {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
+  padding: 0.5rem;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: normal;
+  line-height: normal;
+}
+
+.message .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* What a post attached, below its words (#318): a picture as a tile, any other
+   file as a chip with its name and its type. The paths the post carries are
+   not drawn. A tile is a fixed square cut from the picture, so a line has its
+   height before the picture has arrived and does not push the room under the
+   reader when it does; a press opens the whole picture (`#viewer`). Placed
+   like the words — under the name, or in the bubble at the right edge. */
+.message > .attachments {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.message.mine > .attachments {
+  justify-content: flex-end;
+}
+
+/* A Claude Code seat's permission prompt, held for the room's answer (#336):
+   a card under the seat's name, modelled on Claude Desktop's — the tool, what
+   its input says, and 拒否 / 常に許可 / 一度だけ許可. Framed, so it does not read
+   as something the seat said. Ended, it keeps its words and loses its buttons. */
+.message.permission > .permission-body {
+  grid-column: 2;
+  margin-top: 0.3rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid color-mix(in oklch, var(--speaker, var(--line)) 45%, var(--line));
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.message.permission .permission-kind {
+  color: var(--muted);
+}
+
+.message.permission .permission-tool {
+  overflow-wrap: anywhere;
+}
+
+.message.permission .permission-server {
+  color: var(--muted);
+}
+
+.message.permission .permission-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.75rem;
+  margin: 0.45rem 0 0;
+  max-height: 18em;
+  overflow: auto;
+}
+
+.message.permission .permission-input dt {
+  color: var(--muted);
+}
+
+.message.permission .permission-input dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.message.permission .permission-note,
+.message.permission .permission-state {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.message.permission .permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.message.permission .permission-actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+}
+
+.message.permission .permission-actions button.permission-allow {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.message.permission .permission-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.message.permission.ended > .permission-body {
+  opacity: 0.7;
+}
+
+.message .attachments .thumb {
+  display: block;
+  width: 8rem;
+  height: 8rem;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--tint);
+  cursor: zoom-in;
+}
+
+.message .attachments .thumb > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message .attachments .file {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  max-width: 18rem;
+  padding: 0.25rem 0.6rem;
+  background: var(--tint);
+  border-radius: 6px;
+}
+
+/* A long name gives way at its end; the type stays. */
+.message .attachments .file .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message .attachments .file .kind {
+  flex: none;
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+/* The screen person's own lines stand at the right edge, the way a chat app
+   draws them, so whose line it is reads from where it is (#185). Everyone
+   else — sessions, and the notice fold — stays at the left. The line moves as
+   a whole; the words keep their own left-to-right flow, and only the block is
+   placed. Which lines are mine is decided in src/main.ts (`isMine`).
+   The block is tinted with the speaker's own colour, so it reads as a bubble
+   (#187). The tint is the speaker colour thinned into the page background, not
+   a fixed alpha over it: the result is a solid colour close to `--bg` in either
+   theme, so `--fg` text keeps its contrast in light and dark alike. The hue
+   comes from the same `--speaker` everyone's circle uses, so a live line and a
+   read-back line cannot disagree. In light the bubble also has an edge, the
+   same colour thinned less (#235). It is drawn inside the box rather than as a
+   border, so the bubble is the size it was; in dark the edge is the bubble's
+   own ground and draws nothing.
+
+   No circle and no name on these (#225). The colour bar #185 moved to the right
+   edge went with the bar on everyone else's lines, and the circle that took its
+   place is not drawn here either: the side and the tint already say whose line
+   it is. The head carries the addressee when there is one; the clock is at the
+   foot. */
+.message.mine {
+  display: block;
+  align-self: flex-end;
+  padding: 0.4rem 0.75rem;
+  border-radius: 12px;
+  background: color-mix(
+    in oklch,
+    var(--speaker, var(--line)) var(--mine-ground),
+    var(--bg)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklch, var(--speaker, var(--line)) var(--mine-edge), var(--bg));
+}
+
+.message.mine .meta {
+  justify-content: flex-end;
+}
+
+.message.mine > .ts {
+  display: block;
+  margin-top: 0.1rem;
+  text-align: right;
+  /* At the words' size, as the head of everyone else's lines is (#258, 0.72em
+     until then). */
+  color: var(--muted);
+}
+
+/* Several sent in a row are one block (#225): drawn close, and the clock is
+   said once, at the end of the run. A day divider or anyone else's line ends a
+   run, because it stands between. */
+.message.mine:has(+ .message.mine) > .ts {
+  display: none;
+}
+
+.message.mine + .message.mine {
+  margin-top: -0.85rem;
+}
+
+/* Where one day ends and the next begins (#225). Said once between the days
+   rather than on every line's stamp, which is now the clock alone. A rule
+   either side of the word, in the panel's line colour. */
+#room > .day {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: calc(var(--room-font-size) * 0.72);
+  color: var(--muted);
+}
+
+#room > .day::before,
+#room > .day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Notices from a local MCP server, folded (#169). A run of one server's is one
+   fold, drawn as a single quiet line headed by its account's circle until it is
+   opened (#193, #225); opened, the notices are ordinary lines, spaced as the
+   room spaces lines. What makes the fold a fold is the screen's alone — each
+   notice is still its own post (src/main.ts, `placeLine`). */
+.notice-fold {
+  font-size: var(--room-font-size);
+  max-width: 46em;
+}
+
+.notice-fold > summary {
+  cursor: pointer;
+  font-size: 0.78em;
+  color: var(--muted);
+}
+
+/* The circle at the summary's size, inline after the disclosure mark. */
+.notice-fold > summary .avatar {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 0 0.5em 0 0.2em;
+  font-size: 1em;
+  width: 1.9em;
+  height: 1.9em;
+}
+
+.notice-fold[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
