@@ -38,6 +38,7 @@ import { createMessages } from "./screen/messages";
 import { createRoom } from "./screen/room";
 import { createTitlebar } from "./screen/titlebar";
 import { createDiagnostics } from "./screen/diagnostics";
+import { createLayout } from "./screen/layout";
 
 /**
  * Whether this account launches a session.
@@ -452,39 +453,6 @@ function shownRoster(): Participant[] {
 function status(text: string, kind: "info" | "error" = "info"): void {
   statusEl.textContent = text;
   statusEl.dataset.kind = kind;
-}
-
-/**
- * Draw both panels the way `panels` says, and say so on their buttons.
- *
- * One function for both states and both panels, called from the restore and
- * from every toggle. The button's `aria-expanded` is set from the same value
- * that folds the panel, so there is no path where the bar says one thing and
- * the window shows another.
- *
- * Folding is `hidden` and nothing else. Nothing is torn down: both panels are
- * drawn from events that keep arriving whether or not they are on screen — the
- * roster, the seats, the topic index — so a panel opened after a session ended
- * behind it opens showing that it ended (#118, 制約).
- */
-function applyPanels(): void {
-  historyEl.hidden = !panels.history;
-  participantsEl.hidden = !panels.participants;
-  toggleHistoryEl.setAttribute("aria-expanded", String(panels.history));
-  toggleParticipantsEl.setAttribute("aria-expanded", String(panels.participants));
-}
-
-/**
- * Fold one panel away, or bring it back, and remember which.
- *
- * The write goes to disk on every press rather than at the end of the session:
- * the app is closed by the window's `✕` and by whatever ends it less politely,
- * and a layout only saved on the way out is one the second of those loses.
- */
-function togglePanel(which: keyof PanelState): void {
-  panels = { ...panels, [which]: !panels[which] };
-  applyPanels();
-  saveConfig();
 }
 
 /** Render saved arguments back into an editable line. */
@@ -1341,5 +1309,16 @@ const diagnostics = createDiagnostics({
   get fitShown() { return fitShown; },
 });
 const { revealDiagnostics, hideDiagnostics, renderSocket, diagnosticsWereOpen } = diagnostics;
+
+const layout = createLayout({
+  get historyEl() { return historyEl; },
+  get participantsEl() { return participantsEl; },
+  get toggleHistoryEl() { return toggleHistoryEl; },
+  get toggleParticipantsEl() { return toggleParticipantsEl; },
+  get panels() { return panels; },
+  set panels(value) { panels = value; },
+  saveConfig: (...args) => saveConfig(...args),
+});
+const { togglePanel, applyPanels } = layout;
 
 void main();
