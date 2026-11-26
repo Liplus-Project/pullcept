@@ -1,6 +1,6 @@
 // The ``` fences of a post's words (#348): the actual frontend functions, run
 // without Tauri or a DOM. The fences are read in src/composer.ts (#354), which
-// the input box shares; `splitAttachments` stays in src/main.ts and is run here
+// the input box shares; `splitAttachments` is in src/screen/messages.ts and is run here
 // with those functions beside it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,19 +11,22 @@ import { tsImport } from "tsx/esm/api";
 
 const fences = await tsImport("../../src/composer.ts", import.meta.url);
 const names = ["splitAttachments", "ATTACHMENT_HEAD"];
-const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-const statements = source.statements.filter(s =>
+const source = ts.createSourceFile("messages.ts", readFileSync(new URL("../../src/screen/messages.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const factory = source.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === "createMessages");
+const statements = factory.body.statements.filter(s =>
   (ts.isFunctionDeclaration(s) && names.includes(s.name?.text)) ||
   (ts.isVariableStatement(s) && s.declarationList.declarations.some(d => names.includes(d.name.getText(source)))));
 assert.equal(statements.length, names.length);
 const compiled = ts.transpileModule(statements.map(s => s.getText(source)).join("\n"), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-// `attachmentsRoot` is read off the global, as the screen's `let` is.
+// `attachmentsRoot` is read off the global, as the screen reads main.ts's `let` through `deps`.
 const ROOT = "C:\\rooms\\r1\\attachments";
 const context = vm.createContext({
   attachmentsRoot: ROOT,
   findCodeFences: fences.findCodeFences,
   lineInFence: fences.lineInFence,
 });
+// What the module reads through `deps.` is read off the same global.
+context.deps = context;
 vm.runInContext(compiled, context);
 context.splitCodeFences = fences.splitCodeFences;
 const plain = value => JSON.parse(JSON.stringify(value));

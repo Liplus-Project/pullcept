@@ -5,9 +5,10 @@ import vm from "node:vm";
 import ts from "typescript";
 import { tsImport } from "tsx/esm/api";
 const { accountName, speakerLabel } = await tsImport("../../src/account-name.ts", import.meta.url);
-const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const source = ts.createSourceFile("messages.ts", readFileSync(new URL("../../src/screen/messages.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const factory = source.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === "createMessages");
 const wanted = ["roomLine", "trackAddress", "pruneAwaiting"];
-const statements = source.statements.filter(s => ts.isFunctionDeclaration(s) && wanted.includes(s.name?.text));
+const statements = factory.body.statements.filter(s => ts.isFunctionDeclaration(s) && wanted.includes(s.name?.text));
 assert.equal(statements.length, wanted.length);
 const compiled = ts.transpileModule(statements.map(s => s.getText(source)).join("\n"), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 class Element {
@@ -19,6 +20,8 @@ const awaiting = new Map(); const rosters = new Map();
 const context = vm.createContext({speakerLabel, awaiting, rosters, shownTopicId: () => "topic", renderPanel(){},
   document:{createElement:()=>new Element()}, avatar:()=>new Element(), fullDateTime:()=>"time",
   splitAttachments:content=>({text:content, paths:[]}), appendPostWords(){}, MINE_SPEAKER:"blue"});
+// What the module reads through `deps.` is read off the same global.
+context.deps = context;
 vm.runInContext(compiled, context);
 function header(line) {
  const article = context.roomLine({speaker:"Luna", full_name:"Codex Luna", account:"a", app:false, colour:"blue", to:[], ts:"t", stamp:"t", content:"hi", past:true, mine:false, ...line});

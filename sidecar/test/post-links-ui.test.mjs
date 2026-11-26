@@ -6,9 +6,10 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 
-const source = ts.createSourceFile("main.ts", readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const source = ts.createSourceFile("messages.ts", readFileSync(new URL("../../src/screen/messages.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const factory = source.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === "createMessages");
 const wanted = ["LINK_PATTERN", "LINK_TRAILING", "LINK_CLOSERS", "trimLinkEnd", "linkPieces"];
-const statements = source.statements.filter(s =>
+const statements = factory.body.statements.filter(s =>
   (ts.isFunctionDeclaration(s) && wanted.includes(s.name?.text)) ||
   (ts.isVariableStatement(s) && s.declarationList.declarations.some(d => wanted.includes(d.name.getText(source)))));
 assert.equal(statements.length, wanted.length);
