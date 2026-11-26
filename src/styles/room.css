@@ -38,7 +38,7 @@
    circle, which keeps its size against the room's circle. The panel's text
    and controls do not read it and stay on the UI's axis.
 
-   src/main.ts overrides this on all three elements when a size has been
+   src/display-settings.ts overrides this on all three elements when a size has been
    stored. */
 #room,
 #input,

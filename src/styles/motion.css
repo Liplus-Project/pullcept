@@ -10,11 +10,11 @@
    No word, colour or condition changes with it: the busy badge says what it
    said and when, and only how it is drawn moves.
 
-   `--pulse-phase` is set by src/main.ts to the page's clock at the moment the
+   `--pulse-phase` is set by src/screen/participants.ts (`pulsePhase`) to the page's clock at the moment the
    element is drawn, so one redrawn mid-pulse carries on where the one it
    replaced was, rather than every redraw of the panel restarting the pulse. */
 @media (prefers-reduced-motion: no-preference) {
-  /* The glide is the room's own; src/main.ts asks for "auto" and gets this,
+  /* The glide is the room's own; src/screen/room.ts asks for "auto" and gets this,
      and asks for "instant" when a topic is opened. */
   #room {
     scroll-behavior: smooth;

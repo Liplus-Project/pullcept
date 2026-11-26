@@ -115,7 +115,7 @@
      below) and the terminal is sized in `px`, so the two other size axes do not
      ride on it. `1` is `100%`, the user agent's default: the size the root has
      always had, so a screen that has chosen nothing is unchanged.
-     src/main.ts overrides it when a scale has been stored. */
+     src/display-settings.ts overrides it when a scale has been stored. */
   --ui-scale: 1;
   font-size: calc(100% * var(--ui-scale));
 }
@@ -181,7 +181,7 @@ body {
   font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
 }
 
-/* A button's drawing (src/main.ts, `ICONS`). Stroked in the button's own
+/* A button's drawing (src/screen/base.ts, `ICONS`). Stroked in the button's own
    colour, so muted, danger and the theme reach it the way they reach a word.
    Each place sets the size it is drawn at. */
 button svg.icon {

@@ -5,7 +5,7 @@
    same colour, and a line can be traced to a participant without reading it.
    Self/other was the earlier axis (#39) and is a two-valued one — it gave every
    participant but oneself one shared colour.
-   Where the hue comes from is a ladder, resolved in src/main.ts: a hue the
+   Where the hue comes from is a ladder, resolved in src/screen/base.ts: a hue the
    participant declared, else the accent for oneself, else one derived from the
    name. The derived hues leave a gap around the accent so that colour still
    reads as one's own; a declared one is free of that gap, because it was
@@ -556,7 +556,7 @@
    draws them, so whose line it is reads from where it is (#185). Everyone
    else — sessions, and the notice fold — stays at the left. The line moves as
    a whole; the words keep their own left-to-right flow, and only the block is
-   placed. Which lines are mine is decided in src/main.ts (`isMine`).
+   placed. Which lines are mine is decided in src/screen/messages.ts (`isMine`).
    The block is tinted with the speaker's own colour, so it reads as a bubble
    (#187). The tint is the speaker colour thinned into the page background, not
    a fixed alpha over it: the result is a solid colour close to `--bg` in either
@@ -633,7 +633,7 @@
    fold, drawn as a single quiet line headed by its account's circle until it is
    opened (#193, #225); opened, the notices are ordinary lines, spaced as the
    room spaces lines. What makes the fold a fold is the screen's alone — each
-   notice is still its own post (src/main.ts, `placeLine`). */
+   notice is still its own post (src/screen/messages.ts, `placeLine`). */
 .notice-fold {
   font-size: var(--room-font-size);
   max-width: 46em;

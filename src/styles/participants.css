@@ -396,7 +396,7 @@
 /* It acts on the click, unlike 終了: a session started by mistake is ended
    from the same place, and a question here would charge every deliberate start
    an answer. Dead while the launch is out; what the row is doing meanwhile is
-   the 起動中 beside the name (src/main.ts). */
+   the 起動中 beside the name (src/screen/participants.ts). */
 #participants .member .start {
   color: var(--fg);
 }
@@ -602,7 +602,7 @@
 #participants .todo-history[open] > summary .todo-history-title::after { transform: rotate(45deg); }
 
 /* The room is not listening, and the row saying so is folded: the summary
-   says it is worth opening (src/main.ts, `renderSocket`). */
+   says it is worth opening (src/screen/diagnostics.ts, `renderSocket`). */
 #participants .facts-more[data-kind="error"] > summary {
   color: var(--danger);
 }
