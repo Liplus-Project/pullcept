@@ -136,7 +136,7 @@ test("display initialization restores fonts before wiring changes without writin
   globalThis.localStorage = {getItem: key => stored.get(key) ?? null, setItem: (key, value) => writes.push([key, value])};
   t.after(() => { globalThis.localStorage = before; });
   const sizes = [], cursors = [], fitted = [];
-  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size), setTerminalCursorStyle: style => cursors.push(style), fitTerminal: () => fitted.push({picker: get("settings-terminal-font-size").value, writes: [...writes]})});
+  const display = createDisplaySettings({roomEl: get("room"), inputEl: get("input"), composerBoxEl: get("composer-box"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: size => sizes.push(size), setTerminalCursorStyle: style => cursors.push(style), fitTerminal: () => fitted.push({picker: get("settings-terminal-font-size").value, writes: [...writes]})});
   assert.deepEqual(sizes, []);
   display.initialize();
   assert.deepEqual(sizes, [18]);
@@ -158,7 +158,7 @@ test("an unknown stored cursor shape falls back to the block default", t => {
   globalThis.localStorage = {getItem: key => stored.get(key) ?? null, setItem: noop};
   t.after(() => { globalThis.localStorage = before; });
   const cursors = [];
-  createDisplaySettings({roomEl: get("room"), inputEl: get("input"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: noop, setTerminalCursorStyle: style => cursors.push(style), fitTerminal: noop}).initialize();
+  createDisplaySettings({roomEl: get("room"), inputEl: get("input"), composerBoxEl: get("composer-box"), participantsEl: get("participants"), syncScrollLatest: noop, setTerminalFontSize: noop, setTerminalCursorStyle: style => cursors.push(style), fitTerminal: noop}).initialize();
   assert.deepEqual(cursors, ["block"]);
 });
 
