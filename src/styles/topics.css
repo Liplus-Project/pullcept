@@ -232,7 +232,7 @@
    the constraint #48 held the other way — that one is overwritten. What is
    drawn is the log, and the log carries no declared colour and no viewer's
    position, so these lines take a colour derived from the name and none of them
-   is this screen's accent (see `LoggedPost` in src/main.ts). Nothing marks them
+   is this screen's accent (see `LoggedPost` in src/contracts.ts). Nothing marks them
    as past beyond that: they are the same conversation, and a badge saying which
    side of a launch a line fell on would be an axis the room does not have. */
 #room .message.past .meta {

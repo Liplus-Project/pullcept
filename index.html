@@ -60,7 +60,7 @@
              answers to one question.
 
              Every button on this bar is a drawing with no frame, and its name
-             is the tooltip (#221). The drawings are in src/main.ts (`ICONS`),
+             is the tooltip (#221). The drawings are in src/screen/base.ts (`ICONS`),
              which fills each `data-icon` here at start: one copy of each. -->
         <button
           id="toggle-history"
@@ -79,12 +79,12 @@
              What stands here now is the room's own heading (#225): the topic
              that is open and how many are in it. A count, not the names — the
              names are the panel's. It takes the bar's slack, so the controls
-             after it stay pinned to the right. Drawn by src/main.ts
+             after it stay pinned to the right. Drawn by src/screen/titlebar.ts
              (`renderRoomTitle`). -->
         <div id="room-title" class="spacer">
           <!-- Out of the drag script (`false`): a double click on the name
                renames the topic (#469) rather than maximizing. The single
-               press that moves the window is started by src/main.ts. -->
+               press that moves the window is started by src/screen/titlebar.ts. -->
           <span
             id="room-title-name"
             data-tauri-drag-region="false"
@@ -131,7 +131,7 @@
         <!-- The window's own three, where the standard frame put them (#252).
              Drawn as every button on the bar is (#221); 閉じる alone turns red
              under the pointer, as the frame's did. They run the window's own
-             calls (src/main.ts, `wireWindowControls`): 閉じる asks for the same
+             calls (src/screen/titlebar.ts, `wireWindowControls`): 閉じる asks for the same
              close the frame's ✕ did, so the question about running sessions
              still stands in front of it (docs/2-screen.md, アプリの終了).
 
@@ -218,7 +218,7 @@
           <div id="room-frame">
             <main id="room" aria-live="polite"></main>
             <!-- Back to the newest line, shown only while the room is read back
-                 from its bottom (#243). Drawn by src/main.ts. -->
+                 from its bottom (#243). Drawn by src/screen/room.ts. -->
             <button
               id="scroll-latest"
               type="button"
@@ -232,7 +232,7 @@
                The same word as each row's badge in the participant panel, so
                it adds no signal and no word of its own. It keeps its row when
                it says nothing, so the room does not grow and shrink with every
-               burst of output. Drawn by src/main.ts (`renderRoomBusy`). -->
+               burst of output. Drawn by src/screen/room.ts (`renderRoomBusy`). -->
           <p id="room-busy"></p>
 
           <!-- Diagnostics, not the conversation surface. The room shows what
@@ -313,7 +313,7 @@
             <div id="composer-box">
               <!-- What is attached to the post being written (#223): one chip
                    per file, by name, each with its ✕. Above the text, because
-                   they go out with it. Drawn by src/main.ts; hidden while there
+                   they go out with it. Drawn by src/screen/composer.ts; hidden while there
                    are none. -->
               <ul id="attachments" aria-label="添付" hidden></ul>
               <!-- The text (#354): an editor src/composer.ts mounts here, whose
@@ -507,7 +507,7 @@
                sections are faces of one form, not forms of their own — a field
                in a section not on screen keeps what was typed into it, and 決定
                reads every section, the hidden ones too. Which sections a kind
-               has is `dialogSectionsFor` in src/main.ts; 削除・取消・決定 and the
+               has is `dialogSectionsFor` in src/account-dialog.ts; 削除・取消・決定 and the
                reason a decision is refused sit below every section. -->
           <div class="account-sections">
             <nav class="account-nav">
@@ -925,7 +925,7 @@
 
       <!-- An attached picture, larger (#318): opened from its thumbnail in the
            conversation or in the composer, over a dimmed window. Closed by its
-           ✕, a press on the dim around it, or Esc. Drawn by src/main.ts. -->
+           ✕, a press on the dim around it, or Esc. Drawn by src/screen/messages.ts. -->
       <dialog id="viewer" aria-label="添付の画像">
         <button id="viewer-close" type="button" data-icon="close" aria-label="閉じる" title="閉じる (Esc)"></button>
         <img id="viewer-image" alt="" />
@@ -1080,7 +1080,7 @@
       </dialog>
 
       <!-- An account row's menu (#224). One element for every row, filled from
-           src/main.ts (`openAccountMenu`) with the items that row has, and
+           src/screen/participants.ts (`openAccountMenu`) with the items that row has, and
            placed at the point it was opened from. Outside the panel so the
            panel's edge does not cut it off. -->
       <div id="account-menu" role="menu" hidden></div>

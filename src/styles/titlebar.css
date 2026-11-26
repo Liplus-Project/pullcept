@@ -56,7 +56,7 @@
 /* The rename field stands where the name was (#469), and is told from the
    bar by the field look the list's has. */
 #room-title input.rename {
-  /* Its width is set from the text by src/main.ts (#479, #484); it is never
+  /* Its width is set from the text by src/screen/titlebar.ts (#479, #484); it is never
      shrunk below that by the bar, and never runs past the bar's slack. */
   flex: none;
   box-sizing: border-box;
