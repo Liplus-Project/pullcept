@@ -775,6 +775,8 @@ button svg.icon {
 }
 
 .message .code-block pre {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
   margin: 0;
   padding: 0.45rem 0.75rem;
   min-height: 1.5em;
@@ -952,6 +954,8 @@ button svg.icon {
 /* A table scrolls inside its frame, as a line of code does, rather than
    widening the bubble. */
 .message .body .md-table {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
   overflow-x: auto;
 }
 
@@ -980,6 +984,8 @@ button svg.icon {
    (light or dark) at the first diagram. A wide diagram scrolls inside its
    frame. */
 .message .mermaid-block {
+  /* Keep absolutely positioned reading text clipped inside this scrolling block (#611). */
+  position: relative;
   padding: 0.5rem;
   border: 1px solid var(--code-line);
   border-radius: 8px;
