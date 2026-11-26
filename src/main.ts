@@ -4,7 +4,7 @@ import { accountName } from "./account-name";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import type { TopicStatus, RoomMessage, LoggedPost, Topic, TopicRef, Participant, Roster, SessionStats, SeatActivity, Account, PanelState, AppConfig, IconName, IconShape, PermissionCard, PermissionResolved, Member } from "./contracts";
+import type { TopicStatus, RoomMessage, LoggedPost, Topic, TopicRef, Participant, Roster, SessionStats, SeatActivity, Account, PanelState, AppConfig, IconName, IconShape, PermissionCard, PermissionResolved } from "./contracts";
 import { createAccountDialog } from "./account-dialog";
 import { createDisplaySettings } from "./display-settings";
 import { createSessionController } from "./session-controller";
@@ -35,6 +35,7 @@ import { createTopics } from "./screen/topics";
 import { createParticipants } from "./screen/participants";
 import { createComposerScreen } from "./screen/composer";
 import { createMessages } from "./screen/messages";
+import { createRoom } from "./screen/room";
 
 /**
  * Whether this account launches a session.
@@ -687,55 +688,6 @@ function fullDateTime(iso: string): string {
 }
 
 /**
- * Whether the room is at its foot: within 40px of the bottom. One judgment for
- * two things — an arriving line follows the room down only from here, and the
- * button back to the newest line is shown only away from here (#243).
- */
-function roomAtBottom(): boolean {
-  return roomGliding || roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight < 40;
-}
-
-/** Send the room to its foot: gliding, or at once for a topic just opened. */
-function glideRoomToFoot(behavior: "smooth" | "instant"): void {
-  const distance = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight;
-  // Already there: no scroll happens, so nothing would ever end the glide.
-  if (distance < 2) return;
-  // `smooth` here is "whatever `#room` says": the stylesheet glides only where
-  // motion is not reduced, and moves at once where it is.
-  roomGliding = behavior === "smooth";
-  roomEl.scrollTo({ top: roomEl.scrollHeight, behavior: behavior === "smooth" ? "auto" : "instant" });
-}
-
-/**
- * End the glide once it has landed, or once the person took the scroll over —
- * a wheel or a drag during a glide cancels it, and its `scrollend` comes where
- * they stopped.
- */
-function settleGlide(event: Event): void {
-  if (!roomGliding) return;
-  const distance = roomEl.scrollHeight - roomEl.scrollTop - roomEl.clientHeight;
-  if (event.type === "scrollend" || distance < 2) roomGliding = false;
-}
-
-/**
- * Show 最新の発言へ while the room is being read back, and hide it at the foot
- * (#243). Run wherever the distance to the foot can change: a scroll, the
- * room's own size, a line drawn, a fold opened, the conversation's text size.
- */
-function syncScrollLatest(): void {
-  scrollLatestEl.hidden = roomAtBottom();
-}
-
-/**
- * To the room's foot, where the conversation continues (#243). Gliding when
- * 最新の発言へ is pressed, at once when a topic is opened (#307).
- */
-function scrollRoomToLatest(behavior: "smooth" | "instant"): void {
-  glideRoomToFoot(behavior);
-  syncScrollLatest();
-}
-
-/**
  * The room's heading on the title bar (#225): the topic on the glass, and how
  * many are in its room.
  *
@@ -795,52 +747,6 @@ function beginTitleRename(): void {
   fit();
   field.focus();
   field.select();
-}
-
-/** What the line under the room says now, so an unchanged one is not redrawn. */
-let roomBusyKey = "";
-
-/**
- * The line under the room naming who is 考え中… or 出力中 now (#307):
- * 「Claude Lin が考え中…」, and the next one after 、.
- *
- * The same word, from the same reading, as each row's badge (`rowActivity`) —
- * this line adds no signal of its own and no word the badge does not say. It
- * keeps its row whether or not it says anything, so the room above it does not
- * grow and shrink with every burst of output. Redrawn only when what it says
- * changes, so its dots keep moving through the panel's redraws.
- */
-function renderRoomBusy(rows: Member[]): void {
-  const busy = rows.flatMap((row) => {
-    const said = rowActivity(row);
-    if (!said.kind) return [];
-    const name = memberName(row);
-    return [{ name, word: said.line, colour: speakerColor(name, row.participant!.hue, false) }];
-  });
-  const key = busy.map((one) => `${one.name}\u0000${one.word}\u0000${one.colour}`).join("\u0001");
-  if (key === roomBusyKey) return;
-  roomBusyKey = key;
-  roomBusyEl.replaceChildren();
-  if (!busy.length) return;
-
-  const dots = document.createElement("span");
-  dots.className = "busy-dots";
-  dots.setAttribute("aria-hidden", "true");
-  for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("i"));
-  dots.style.setProperty("--pulse-phase", pulsePhase());
-  roomBusyEl.appendChild(dots);
-
-  const text = document.createElement("span");
-  text.className = "busy-text";
-  busy.forEach((one, index) => {
-    if (index > 0) text.append("、");
-    const who = document.createElement("span");
-    who.className = "who";
-    who.style.setProperty("--speaker", one.colour);
-    who.textContent = one.name;
-    text.append(who, `が${one.word}`);
-  });
-  roomBusyEl.appendChild(text);
 }
 
 /**
@@ -1610,5 +1516,18 @@ const messagesScreen = createMessages({
   get baseName() { return baseName; },
 });
 const { appendMessage, trackAddress, showPermission, endPermission, loadAvatarImages, drawTopic, initialOf, avatarImages, drawAvatar, setAvatarImage, avatar, paintMine, pruneAwaiting, drawMissed, ATTACHMENT_HEAD, imageType, openViewer } = messagesScreen;
+
+const roomScreen = createRoom({
+  get roomEl() { return roomEl; },
+  get scrollLatestEl() { return scrollLatestEl; },
+  get roomBusyEl() { return roomBusyEl; },
+  get roomGliding() { return roomGliding; },
+  set roomGliding(value) { roomGliding = value; },
+  speakerColor: (...args) => speakerColor(...args),
+  get memberName() { return memberName; },
+  get pulsePhase() { return pulsePhase; },
+  get rowActivity() { return rowActivity; },
+});
+const { settleGlide, syncScrollLatest, scrollRoomToLatest, renderRoomBusy, roomAtBottom, glideRoomToFoot } = roomScreen;
 
 void main();
