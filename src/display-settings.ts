@@ -3,6 +3,7 @@ import type { TerminalCursorStyle } from "./contracts";
 export interface Dependencies {
   roomEl: HTMLElement;
   inputEl: HTMLElement;
+  composerBoxEl: HTMLElement;
   participantsEl: HTMLElement;
   syncScrollLatest: () => void;
   setTerminalFontSize: (size: number) => void;
@@ -236,6 +237,9 @@ export function createDisplaySettings(deps: Dependencies) {
     const value = `calc(${size}rem / var(--ui-scale))`;
     deps.roomEl.style.setProperty("--room-font-size", value);
     deps.inputEl.style.setProperty("--room-font-size", value);
+    // The composer's box is as wide as the room's column, which is counted in
+    // this size (#613).
+    deps.composerBoxEl.style.setProperty("--room-font-size", value);
     deps.participantsEl.style.setProperty("--room-font-size", value);
     // The lines change height with the size, and so does the distance to the foot.
     deps.syncScrollLatest();
