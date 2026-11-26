@@ -206,7 +206,7 @@ export function createParticipantDetails(o: Options) {
     const include = (r: WorkRecord) => selected?.id != null && (r.owner === selected.id || (r.kind === "decision" && r.target_account_id === selected.id));
     const active = data.work.active.filter(include);
     // #539: the folded heading tells how many open items (判断待ち + 作業) wait inside, between
-    // TODO and 更新; none -> no count. The open fold hides it (styles.css), its sections count.
+    // TODO and 更新; none -> no count. The open fold hides it (src/styles/participants.css), its sections count.
     if (active.length) { const count = span("todo-count todo-fold-count", String(active.length)); count.title = `未完了 ${active.length} 件`; count.setAttribute("aria-label", count.title); summary.insertBefore(count, update); }
     const decisions = active.filter(r => r.kind === "decision"), works = active.filter(r => r.kind !== "decision");
     const decisionSection = document.createElement("section"); decisionSection.className = "todo-section todo-decisions";

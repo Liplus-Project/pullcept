@@ -1,0 +1,498 @@
+/* ── composer ────────────────────────────────────────────────────────────── */
+
+#composer {
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.9rem;
+}
+
+/* One box: the text, and the row of what acts on it underneath (#222). The box
+   is the field, so it carries the field's frame (#221: a field keeps its
+   border on `--bg`; this one's is `--composer-line`, #235), and the text area
+   inside it carries none. The frame turns to the accent while the text has the
+   focus, so where the keys are going is still shown with the field's own edge
+   gone from the text. */
+#composer-box {
+  display: flex;
+  flex-direction: column;
+  /* The room's column (#613): as wide as the lines above it and under their
+     middle; the whole width where the window is narrower. */
+  box-sizing: border-box;
+  max-width: var(--room-column);
+  margin-inline: auto;
+  background: var(--bg);
+  border: 1px solid var(--composer-line);
+  border-radius: 10px;
+  padding: 0.5rem 0.5rem 0.4rem;
+}
+
+#composer-box:focus-within {
+  border-color: var(--accent);
+}
+
+/* A file held over the composer (#223): the frame says letting go here
+   attaches, the way it says where the keys go. */
+#composer-box[data-drop="over"] {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 8%, var(--bg));
+}
+
+/* What is attached, one chip per file above the text (#223). A chip is a label
+   rather than a control, so it may be filled (#221: a state's tag is a display
+   and is not bound by the ghost rule); its ✕ is a control and is drawn like
+   every other button. On the whole-UI axis like the row under the text: the
+   names are not the sentence. */
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+}
+
+#attachments[hidden] {
+  display: none;
+}
+
+#attachments li {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  max-width: 18rem;
+  padding: 0.1rem 0.15rem 0.1rem 0.5rem;
+  background: var(--tint);
+  border-radius: 6px;
+}
+
+/* A long name gives way at its end; the ✕ stays. */
+#attachments .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#attachments button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.2rem;
+  cursor: pointer;
+}
+
+#attachments button svg.icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+#attachments button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* A picture's chip is the picture (#318): a small square of it in place of the
+   name, opened larger by a press, with the ✕ over its top right corner. */
+#attachments li.image {
+  position: relative;
+  padding: 0;
+}
+
+#attachments .thumb {
+  display: block;
+  width: 3.5rem;
+  height: 3.5rem;
+  padding: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--tint);
+  cursor: zoom-in;
+}
+
+#attachments .thumb:hover {
+  background: var(--tint);
+}
+
+#attachments .thumb > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#attachments .thumb + button {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  padding: 0.15rem;
+  border-radius: 999px;
+  color: var(--fg);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+#attachments .thumb + button:hover {
+  background: var(--selected);
+}
+
+/* An attached picture, larger (#318). The dialog is the whole window and
+   transparent; the dim is its backdrop, and the picture stands in the middle
+   at its own size, made smaller only as far as the window and a margin round
+   it need. A press on the dim closes it (src/main.ts). The ✕ is at the
+   window's top right, white on a darkened round so it reads on any picture. */
+#viewer {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 3rem;
+  border: none;
+  background: transparent;
+}
+
+#viewer[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#viewer::backdrop {
+  background: rgb(0 0 0 / 0.7);
+}
+
+#viewer-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: var(--float-shadow);
+}
+
+#viewer-close {
+  position: fixed;
+  top: 0.9rem;
+  right: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: #ffffff;
+  background: rgb(0 0 0 / 0.45);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+#viewer-close:hover {
+  background: rgb(255 255 255 / 0.18);
+}
+
+#viewer-close svg.icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* The list of who can be addressed, opened by `@` in the text (#204).
+
+   Anchored to the composer and drawn above it, over the conversation's last
+   lines: below it the window ends. A control rather than the sentence, so it is
+   on the whole-UI axis (#66) — sized in `rem`, not in the conversation's own
+   size. Each name is in the colour the room draws that participant in. */
+#composer {
+  position: relative;
+}
+
+#mention-list {
+  position: absolute;
+  left: 0.9rem;
+  bottom: calc(100% + 0.25rem);
+  z-index: 10;
+  min-width: 12rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  font-size: 0.85rem;
+}
+
+#mention-list[hidden] {
+  display: none;
+}
+
+#mention-list li {
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--speaker, var(--fg));
+  font-weight: 600;
+}
+
+#mention-list li[aria-selected="true"] {
+  background: var(--tint);
+}
+
+/* The text (#354): the editor src/composer.ts mounts in `#input`. Written at
+   the size it will be read at (#81), in the room's font. It is two lines tall
+   empty, as the textarea's `rows="2"` was, grows with what is written, and
+   scrolls inside past 40% of the window. */
+#input {
+  position: relative;
+  font-size: var(--room-font-size);
+  color: var(--fg);
+}
+
+#input .ProseMirror {
+  outline: none;
+  padding: 0 0.15rem;
+  line-height: 1.5;
+  min-height: 3em;
+  max-height: 40vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+#input p {
+  margin: 0;
+}
+
+/* The placeholder, while the box is one empty line. Drawn by the mount, not
+   inside the editable text, so nothing in the editor is redrawn for it. */
+#input[data-empty]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
+  left: 0.15rem;
+  color: var(--muted);
+  pointer-events: none;
+  line-height: 1.5;
+}
+
+/* A code block in the box (#354): the post's frame (#348), the language
+   button over the code. The code wraps rather than scrolling sideways, so the
+   caret is never carried out of sight on a long line. */
+#input .code-block {
+  margin: 0.25rem 0;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  background: var(--code-ground);
+}
+
+#input .code-head {
+  display: flex;
+  padding: 0.2rem 0.35rem 0;
+  user-select: none;
+}
+
+/* A control on the UI's axis (#66), so it does not grow with the text: the
+   #221 shape, a word with `--hover` under the pointer. */
+.code-lang-button {
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  cursor: pointer;
+}
+
+.code-lang-button:hover {
+  background: var(--hover);
+}
+
+#input .code-block pre {
+  margin: 0;
+  padding: 0.2rem 0.6rem 0.4rem;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+#input .code-block code {
+  font: inherit;
+}
+
+/* The language list a code block's button opens (#354): a search, and the
+   languages under it. Over the page, beside the button; a control on the UI's
+   axis. */
+.lang-menu {
+  position: fixed;
+  z-index: 30;
+  width: 14rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--float-shadow);
+  padding: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.lang-menu[hidden] {
+  display: none;
+}
+
+.lang-menu input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.45rem;
+  outline: none;
+}
+
+.lang-menu input:focus {
+  border-color: var(--accent);
+}
+
+.lang-menu ul {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.lang-menu li {
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.lang-menu li[aria-selected="true"] {
+  background: var(--tint);
+}
+
+.lang-menu li[data-current]::after {
+  content: " ✓";
+  color: var(--muted);
+}
+
+.lang-menu li.none {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* Under the text: the tools on the left, the keys after them, 送信 on the
+   right. */
+#composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+#composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+/* A drawing like every other button on the screen (#221). */
+#composer-tools button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.35rem;
+  cursor: pointer;
+}
+
+#composer-tools button svg.icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+#composer-tools button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* The keys, small and muted: read once and then known. They take the room
+   between the tools and 送信, one line high. A hint that does not fit wraps
+   onto a second line the box does not show, so a narrow window drops whole
+   hints from the end rather than cutting one in half. */
+#composer-keys {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.8rem;
+  height: 1.4em;
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.72rem;
+  line-height: 1.4em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#composer-keys kbd {
+  font: inherit;
+  font-weight: 600;
+}
+
+/* 送信, the one filled control on the screen (#221). Every other button waits
+   under the pointer to show itself; this is the act the screen is for, so it
+   is the one thing put forward. A drawing like the rest, its name and its key
+   on the tooltip. */
+#composer #send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--send-ink);
+  background: var(--send-ground);
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem;
+  cursor: pointer;
+}
+
+#composer #send svg.icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  stroke-width: 1.6;
+}
+
+#composer #send:hover {
+  /* Toward black, not `--fg`: the ground is one colour in both themes, so the
+     pointer darkens it in both (#258). */
+  background: color-mix(in oklch, var(--send-ground) 85%, #000000);
+}
+
+#status {
+  min-height: 1.4rem;
+  padding: 0 0.9rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+#status[data-kind="error"] {
+  color: var(--danger);
+}
+

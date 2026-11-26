@@ -1,0 +1,241 @@
+/* ── topics ──────────────────────────────────────────────────────────────── */
+
+/* The other column, and the pair to #participants below: same width, same
+   ground, and the border on the side that faces the conversation. Two panels
+   flanking the room read as two panels; one of them a hand's width narrower
+   would read as a mistake, and the width was measured for that panel's content
+   rather than picked, so it is the one to match (#48).
+
+   The rule below is the whole of what makes them a pair — `border-right` here
+   against `border-left` there. Nothing else needs saying twice, because the
+   parts inside are the panel's own vocabulary (`.panel-head`, `.panel-title`,
+   `.empty`) and those are shared.
+
+   The id is still `history`: what this column is for did not change — it is
+   where the past is reached from — and only its unit did, from a post to a
+   topic (#115). */
+#history {
+  width: 16.5rem;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+
+#history .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem 0.35rem;
+}
+
+#history .panel-title {
+  margin: 0;
+  flex: 1;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* 新規, as ＋ beside the heading (#225): the same control the account panel
+   carries beside its own, drawn by the same rule (`.panel-head button` below).
+   It stood at the head of the list as a row of its own from #125 (決定1).
+
+   The room is in a topic the index does not carry (#125, AI 判断4): the chosen
+   fill, the shape a picked row has, because it is the same thing being said —
+   the room is there. */
+#history .new.current {
+  background: var(--selected);
+}
+
+/* A launch into a topic the list does not carry yet is in flight (#141): the
+   running mark the rows carry, at the ＋'s corner. */
+#history .new {
+  position: relative;
+}
+
+#history .new.running::after {
+  content: "";
+  position: absolute;
+  top: 0.1rem;
+  right: 0.1rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+#history .topics {
+  margin: 0;
+  padding: 0 0.3rem 0.6rem;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* One topic. The row is a track holding the control that opens it and the ✕
+   that deletes it (#119, decision 5; #125, 決定2 — every row in this list is now
+   a row of the index, so every one of them has something to delete). It was the
+   button itself until the ✕ arrived; what is drawn as picked is still the
+   button, so the panel opposite's shape is unchanged. */
+#history .topic {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+/* The control that opens the topic. It takes what the row has left, so a long
+   title ellipses against the ✕ rather than pushing it out of the panel. The ✕
+   is not drawn until the row is under the pointer or holds the focus (#225),
+   but its column stays, so a title does not shift when it appears. Picked
+   is the shape a picked row has on the panel opposite (#75): the chosen fill,
+   one shade deeper than the pointer's (#221). */
+#history .topic .pick {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  cursor: pointer;
+}
+
+#history .topic .pick:hover {
+  background: var(--hover);
+}
+
+#history .topic.current .pick {
+  background: var(--selected);
+}
+
+/* The name, and the one part of the row that can be long. It takes one line and
+   ellipses: a list is read down its left edge, and a title that wrapped to three
+   lines would put the next topic wherever the last one happened to end. */
+#history .topic .name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A row the index carries with no title on it — 未記入 (#125, AI 判断3). Said
+   rather than left blank, because blank is what a row with a failed read would
+   also look like. */
+#history .topic .name.unnamed {
+  color: var(--muted);
+}
+
+/* A session is running in this topic (#141, AI 判断5). Sessions stay running
+   when their topic is left, and this list is the one place every topic is on
+   screen at once, so it is where a session nobody is looking at is still seen.
+   In the accent colour, which is what already says "live" on this screen, and
+   set in the row's corner so the name keeps the width it ellipses against. */
+#history .topic.running .pick {
+  position: relative;
+  padding-right: 1.3rem;
+}
+
+#history .topic .running-mark {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.4rem;
+  color: var(--accent);
+  font-size: 0.8em;
+}
+
+/* When it was made: the day, short — 今日, or 9月28日 (#225). A list of topics
+   spans months, so the day is the part that places one; the clock is on the
+   tooltip. */
+#history .topic .when {
+  display: block;
+  margin-top: 0.05rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+/* Renaming, in place. The generated title is a starting point in an editable
+   field, which is the same thing an account's name is (#115, decision 9), so it
+   is edited where it is read rather than in a form of its own. */
+#history .topic input.rename {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.35rem;
+}
+
+/* Deleting the topic. The danger colour is that of 終了 in an account's menu
+   (`#account-menu .danger`), because this is the same kind of
+   act: the one thing on the row that cannot be taken back. Here it stands on
+   the row itself, next to one that merely changes what is showing.
+
+   It does not shrink. A row whose title is long is the row where the button
+   would otherwise be squeezed to nothing, and that is not a state this control
+   has. */
+#history .topic .delete {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  font: inherit;
+  color: var(--danger);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+
+#history .topic .delete svg.icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+#history .topic .delete:hover {
+  background: var(--hover);
+}
+
+/* Shown only on the row the pointer is on, or the keyboard is in (#225). A
+   column of ✕ down the list read as the list's content; it is one row's
+   operation. Transparent rather than removed, so it stays in the tab order and
+   in its place — focus reaching it is what shows it. */
+#history .topic .delete {
+  opacity: 0;
+}
+
+#history .topic:hover .delete,
+#history .topic:focus-within .delete {
+  opacity: 1;
+}
+
+#history .empty {
+  padding: 0.45rem 0.9rem;
+  color: var(--muted);
+}
+
+/* A line that was said before this window opened, drawn in the room among the
+   lines being said in it now.
+
+   Picking a topic puts its posts back in the room (#115, decision 2), which is
+   the constraint #48 held the other way — that one is overwritten. What is
+   drawn is the log, and the log carries no declared colour and no viewer's
+   position, so these lines take a colour derived from the name and none of them
+   is this screen's accent (see `LoggedPost` in src/main.ts). Nothing marks them
+   as past beyond that: they are the same conversation, and a badge saying which
+   side of a launch a line fell on would be an axis the room does not have. */
+#room .message.past .meta {
+  opacity: 0.75;
+}
+

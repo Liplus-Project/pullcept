@@ -1,0 +1,158 @@
+/* ── titlebar ────────────────────────────────────────────────────────────── */
+
+/* The window's top edge as well as the app's bar (#252): the standard frame
+   is gone and this is the row that stands in its place. Its height is what
+   the bar's own height was — the frame's row is what went, nothing was added
+   to this one. The ground is the side panels' (`--surface`), so the bar and
+   the two columns under it read as one frame around the room. */
+#titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  background: var(--surface);
+}
+
+/* The app's icon, at the size of the bar's drawings, so it takes no more
+   height than a button does. */
+#app-icon {
+  display: block;
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* Takes the slack so the controls stay pinned to the right. */
+#titlebar .spacer {
+  flex: 1;
+}
+
+/* The room's heading (#225): the open topic's name, and beside it, quieter, how
+   many are in its room. The name ellipses rather than pushing the controls
+   off the bar. */
+#room-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+#room-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* 未記入, the screen's word for an empty title, is not a title. */
+#room-title-name.unnamed {
+  font-weight: normal;
+  color: var(--muted);
+}
+
+/* The rename field stands where the name was (#469), and is told from the
+   bar by the field look the list's has. */
+#room-title input.rename {
+  /* Its width is set from the text by src/main.ts (#479, #484); it is never
+     shrunk below that by the bar, and never runs past the bar's slack. */
+  flex: none;
+  box-sizing: border-box;
+  min-width: 4rem;
+  max-width: 100%;
+  padding-inline: 0.3rem;
+  font: inherit;
+  font-weight: 600;
+}
+
+#room-title-count {
+  flex: none;
+  color: var(--muted);
+}
+
+#titlebar .who {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+
+#titlebar input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  width: 7rem;
+}
+
+/* Every button on the bar is a drawing with no frame, the way the title bar of
+   Claude Desktop carries its own (#221). Its name and its key, where it has
+   one, are the tooltip. Square, because a drawing is: padding on all four
+   sides around a drawing of one size puts every button on the bar at one
+   height and one width.
+
+   The drawing is the line the bar's words made — `1.125rem` against their
+   `0.85rem`, measured (#118) — so the bar keeps the height it had. */
+#titlebar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem;
+  cursor: pointer;
+}
+
+#titlebar button svg.icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+#titlebar button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+#titlebar button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The mirror, and the whole of it. The two buttons hold the same drawing and
+   this rule turns one of them over, so the divider stands on the side the
+   panel it folds is on. Two drawings would be two shapes to keep in step, and
+   the pair being one shape is the decision (#118, decision 4). */
+#titlebar #toggle-participants svg {
+  transform: scaleX(-1);
+}
+
+/* The window's three (#252). Drawings with no frame and no ground, as every
+   button on the bar (#221), but as tall as the bar and flush with its top and
+   right edges, as the frame's were: a pointer thrown into the window's top
+   right corner lands on 閉じる, maximized or not. The negative margins give
+   back the bar's padding on those three sides; the bar's height is still set
+   by the other buttons, so reaching to its edges adds none. Square-cornered,
+   because the fill meets the window's edge. */
+#window-controls {
+  display: flex;
+  align-self: stretch;
+  margin: -0.5rem -0.9rem -0.5rem 0;
+}
+
+#titlebar #window-controls button {
+  width: 2.75rem;
+  padding: 0;
+  border-radius: 0;
+}
+
+#titlebar #window-close:hover {
+  background: var(--close-ground);
+  color: var(--close-ink);
+}
+

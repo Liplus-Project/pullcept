@@ -1,0 +1,123 @@
+/* ── the 終了 confirmation ───────────────────────────────────────────────── */
+
+/* Its own dialog, holding a question and two answers. It borrows the account
+   dialog's frame because the two are the same kind of surface, and shares none
+   of its body: that one is a form, this one is a sentence (#71).
+
+   `#topic-delete-dialog` (#119) is drawn by these same rules rather than by a
+   copy of them. They are two questions and two elements — one element holding
+   both would have to decide which of them it is opening in — but they are one
+   shape, and a second copy of the shape is what drifts from the first. */
+#end-dialog,
+#topic-delete-dialog,
+#account-close-dialog,
+#account-delete-dialog {
+  width: min(22rem, calc(100vw - 3rem));
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+#end-dialog::backdrop,
+#topic-delete-dialog::backdrop,
+#account-close-dialog::backdrop,
+#account-delete-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+#end-dialog .confirm,
+#topic-delete-dialog .confirm,
+#account-close-dialog .confirm,
+#account-delete-dialog .confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem 1.1rem 0.9rem;
+}
+
+#end-dialog h2,
+#topic-delete-dialog h2,
+#account-close-dialog h2,
+#account-delete-dialog h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+/* Which session, by name. The name is the whole content of the question — the
+   row that was clicked is no longer under the pointer once this is open. */
+#end-dialog p,
+#topic-delete-dialog p,
+#account-close-dialog p,
+#account-delete-dialog p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Which sessions the delete would end (#119, decision 4). Hidden when none
+   are, so the dialog never says it about a topic where it is not true. It sits
+   under the sentence about the log as a second sentence, because it is a second
+   thing being lost rather than a qualification of the first. */
+#topic-delete-dialog .sessions {
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+#end-dialog .actions,
+#topic-delete-dialog .actions,
+#account-close-dialog .actions,
+#account-delete-dialog .actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+}
+
+#end-dialog .actions .spacer,
+#topic-delete-dialog .actions .spacer,
+#account-close-dialog .actions .spacer,
+#account-delete-dialog .actions .spacer {
+  flex: 1;
+}
+
+#end-dialog .actions button,
+#topic-delete-dialog .actions button,
+#account-close-dialog .actions button,
+#account-delete-dialog .actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+/* The answer that acts, filled in the danger colour. 取消 stays a plain button
+   and holds the focus, so the two are told apart by more than their position
+   and the easy answer is the one that changes nothing. */
+#end-dialog .actions .danger,
+#topic-delete-dialog .actions .danger,
+#account-close-dialog .actions .danger,
+#account-delete-dialog .actions .danger {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* The account dialog's unsaved-edits question (#549) has three answers whose
+   words are longer than the other questions' two, so it is wider and lets
+   them wrap rather than overflow. */
+#account-close-dialog {
+  width: min(28rem, calc(100vw - 3rem));
+}
+
+#account-close-dialog .actions {
+  flex-wrap: wrap;
+}
+

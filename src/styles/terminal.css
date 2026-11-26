@@ -1,0 +1,84 @@
+/* ── terminal ────────────────────────────────────────────────────────────── */
+
+/* The terminal's own area, below the header. It stood after the launcher's own
+   rules until #62 removed them, under a heading that was never about it.
+
+   It has no frame of its own any more: the border and the top corners are the
+   pane's (#68). What is left here is the bottom pair, which the pane's
+   `overflow: hidden` would clip anyway — they are written out so that the
+   radius is declared on both ends of the window rather than inherited by an
+   accident of clipping.
+
+   The inset is `0.15rem`, down from `0.35rem` (Master, 実機, 2026-08-24). The
+   area between the frame and the terminal is area the terminal is not using, and
+   it is not only whitespace here: the CLI's columns and rows are computed from
+   what is left, so trimming the inset is columns given back. It is not `0` —
+   xterm draws its own cursor and selection to the edge of its box, and a box
+   flush against the frame puts them on the border.
+
+   The ground is the pane's. It was declared here as well while the pane was
+   `--surface`, and there is one ground now.
+
+   `min-height` was `18rem`, the floor a TUI needs to draw a frame in. The pane
+   is a fixed `50vh` and now spends part of it on a header, so that floor is a
+   figure the terminal can be asked for and not given: on a short window the
+   column would total more than the pane and the excess would be clipped by the
+   rule above, silently. `0` lets this track shrink with the pane instead, which
+   is the height the pane actually has. What the floor was guarding is the pane's
+   `50vh`, and that is where it is enforced. */
+#terminal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 0 0 var(--pane-radius) var(--pane-radius);
+  padding: 0.15rem;
+}
+
+/* One frame, one terminal per running account, stacked and all but one hidden.
+   Each fills the frame, so switching between them does not resize anything and
+   a session is not told its window changed because another was looked at. */
+#terminal .term {
+  height: 100%;
+}
+
+/* xterm sizes itself to the container, so the container must have a size of
+   its own rather than growing with the content.
+
+   Only `.xterm` is written here. `.xterm-viewport` and `.xterm-screen` stood in
+   this selector too and neither could change anything: the screen carries an
+   inline `height` from the renderer, which a stylesheet rule does not reach, and
+   the viewport is positioned to its container's four edges already. */
+#terminal .xterm {
+  height: 100%;
+}
+
+/* The empty element xterm 6 left behind, kept from painting.
+
+   Scrolling moved to `.xterm-scrollable-element`, and `.xterm-viewport` is now
+   an empty `div` that nothing measures — but two declarations in xterm's own
+   stylesheet still land on it, and neither is maintained any more: a hard-coded
+   `#000` fill the theme no longer reaches, and `overflow-y: scroll`, which
+   reserves a native 15px scrollbar.
+
+   Both were being drawn, because the rule above stretches the box to the pane
+   while xterm draws whole rows only. What is drawn is `rows × cell height`; the
+   remainder is a strip along the bottom edge that nothing else paints, and the
+   viewport was painting it black across the full width with the lower arrow of
+   that native scrollbar at its right end (#77).
+
+   The strip is the division's remainder, so its height moves with the pane's:
+   4.44px to 14.44px over a 600–900px window, measured. It is not new — #68 took
+   it from 6.63px to 14.44px at 800px, from under the height of an arrow to
+   exactly one, which is where it started reading as a scrollbar rather than as
+   an edge.
+
+   The columns and rows are not what was wrong. The fit measures `.term`, and
+   what it reports is what is drawn — 126×23 against a 960×345 screen, before
+   this rule and after it. So the repair is the element that draws nothing, not
+   the measurement. `display: none` rather than a fill or an `overflow` of our
+   own: covering it would leave the strip standing at whatever height the next
+   pane produces, and this is the one value that holds at every height. */
+#terminal .xterm-viewport {
+  display: none;
+}
+

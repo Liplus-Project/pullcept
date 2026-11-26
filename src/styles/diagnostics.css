@@ -1,0 +1,47 @@
+/* ── diagnostics ─────────────────────────────────────────────────────────── */
+
+/* Not the conversation surface. The room answers "what was said"; this answers
+   "is anything under the room alive", which is the question a silent room
+   leaves unanswerable.
+
+   A window rather than a strip since #68. The rounding is here, on the frame
+   that is actually folded and unfolded, and the header and the terminal are
+   clipped to it — the terminal had a 4px radius of its own and it drew a
+   rounded rectangle inside a square pane, which is a corner on nothing. The
+   margin is what makes the corners visible at all: an edge-to-edge pane has no
+   corner to round against the window.
+
+   `overflow: hidden` is load-bearing, not tidiness. It is what puts the header's
+   top corners and the terminal's bottom corners on the radius declared here,
+   so one value holds both ends of the frame.
+
+   One ground across the whole window, and it is the page's rather than the
+   panel's tint. The pane was `--surface` while it was a strip, which left the
+   header a band of one colour above a terminal of another — a header does not
+   need a fill to say it is one, its position and its contents say that
+   (Master, 実機, 2026-08-24). What tells the window from the room above it is
+   the border and the rounding, which is what a frame is for. */
+#diagnostics {
+  --pane-radius: 8px;
+  margin: 0 0.9rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+  background: var(--bg);
+  font-size: 0.78rem;
+  /* The CLI is a full-screen TUI; a strip too short to hold its frame is not
+     worth opening. This is also why the terminal stayed in this column instead
+     of folding into the participant panel: at the panel's width the CLI has no
+     frame to draw. */
+  height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The `display` above outranks the user agent's rule for the attribute, so
+   without this the pane is never actually folded and the terminal sits under
+   the room from the first frame. */
+#diagnostics[hidden] {
+  display: none;
+}
+

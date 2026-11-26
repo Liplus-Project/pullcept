@@ -1,0 +1,763 @@
+/* ── participants ────────────────────────────────────────────────────────── */
+
+#participants {
+  width: 16.5rem;
+  flex: none;
+  border-left: 1px solid var(--line);
+  background: var(--participants-ground);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  /* The last card keeps the same 10px gap from the panel's foot as the cards
+     keep between themselves (#609). */
+  padding-bottom: 10px;
+}
+
+/* The list's own heading, with the control that makes an account beside it.
+   Making one belongs next to the list it appears in, not on the row that
+   launches one (#59). */
+#participants .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem 0.35rem;
+}
+
+#participants .panel-title {
+  margin: 0;
+  flex: 1;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* The control beside a panel's heading — ＋ on both panels (#59, #225). */
+.panel-head button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.2rem;
+  cursor: pointer;
+}
+
+.panel-head button svg.icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.panel-head button:hover {
+  background: var(--hover);
+}
+
+#participants .roster {
+  margin: 0;
+  padding: 0 0.3rem 0.35rem;
+  list-style: none;
+}
+
+/* A group of one kind, and how many of them are here. The count is what a
+   heading buys over a divider — the label alone would say what these are, and
+   this says how many without counting rows (#59).
+
+   The kind is the one declared when the account was made. A participant with no
+   account declared none, and their group is that absence rather than a guess
+   read off the connection they arrived on. */
+#participants .roster .group {
+  padding: 0.7rem 0.6rem 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+/* Three columns. The name takes the slack; 開始 and the row's menu sit in
+   tracks after it, so each is in one place on every row (#62, #224). A track
+   has its width whether or not anything is in it, which is what keeps a row
+   with no 開始 — a person, who is not launched, or a session that is running —
+   from closing the column and sliding its menu left of everyone else's.
+
+   Both tracks are fixed, because both hold a mark and a mark is one width
+   (#71). The name keeps everything the two tracks do not take. That matters at
+   this size: the panel is 16.5rem, and it was a measured 「マスター（あなた）」
+   that ruled out widening these tracks before. */
+#participants .member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2rem 2rem;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Every participant can select details, including humans and unstarted seats. */
+#participants .member .pick {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem;
+}
+
+#participants .member .lifecycle { grid-column: 2; grid-row: 1; }
+#participants .member .more { grid-column: 3; grid-row: 1; }
+#participants .member.detail-selected button.pick { background: var(--selected); }
+#participants .member .notification-count { flex: none; padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); font-size: 11px; line-height: 1.2; white-space: nowrap; }
+#participant-details { border-top: 1px solid var(--line); padding: 0; min-width: 0; overflow-wrap: anywhere; font-size: .78rem; }
+/* Approved right-hand card variant (#534). Hidden sections retain native hidden layout. */
+#participants #terminal-facts,
+#participants #participant-details:not(:empty),
+#participants #terminal-diagnostics {
+  border: 1px solid var(--participants-card-line);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 10px 10px 0;
+  box-sizing: border-box;
+  min-width: 0;
+}
+#participants #terminal-facts { margin-top: 12px; }
+#participants .state-title { font-size: .78rem; font-weight: 650; margin: 0 0 8px; }
+#participants #terminal-facts > .facts { padding: 0; border: 0; }
+#participant-details:empty { display: none; }
+#participant-details h3, #participant-details h4 { margin: .5rem 0; }
+#participant-details small { display: block; color: var(--muted); }
+#participant-details p { margin: .4rem 0; white-space: pre-wrap; }
+#participant-details button, .work-dialog button { border: 0; border-radius: 4px; color: var(--accent); background: none; cursor: pointer; font-size: inherit; max-width: 100%; overflow-wrap: anywhere; margin: .2rem; padding: .25rem .4rem; }
+#participant-details button:hover, .work-dialog button:hover { background: var(--hover); }
+.work-dialog .work-record { padding: .6rem 0; overflow-wrap: anywhere; }
+.work-dialog .work-record strong, .work-dialog .work-record small { display: block; white-space: pre-wrap; }
+.work-dialog .work-record button { max-width: 100%; overflow-wrap: anywhere; }
+/* The todo fold (#521): TODO heading with 更新 on its right, then 判断待ち cards,
+   the self-reported plan, the folded 完了履歴 and the existing 詳細 below. Every
+   row shrinks to the narrow right column; long text is cut, never widened. */
+.todo-fold > :not(summary), #participant-details > h4, #participant-details > p, #participant-details > small { margin-left: .65rem; margin-right: .65rem; }
+#participants .todo-fold > summary { display: flex; align-items: center; gap: .3rem; min-width: 0; }
+.todo-fold > summary .todo-title { flex: 0 1 auto; min-width: 0; font-weight: 600; color: var(--fg); }
+#participant-details .todo-fold > summary .todo-refresh { margin: -.2rem 0 -.2rem auto; padding: .1rem .35rem; font-size: .72rem; line-height: 1.2; }
+/* #539: closed, the open item count sits midway between TODO and 更新 in the
+   section count's badge; open, it is hidden (each section shows its own). */
+.todo-fold > summary .todo-fold-count { flex: none; margin: 0 auto; padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); line-height: 1.2; white-space: nowrap; }
+#participant-details .todo-fold:not([open]) > summary .todo-fold-count + .todo-refresh { margin-left: 0; }
+.todo-fold[open] > summary .todo-fold-count { display: none; }
+#participant-details .todo-fold > summary { cursor: pointer; list-style: none; }
+#participant-details .todo-fold > summary::-webkit-details-marker { display: none; }
+.todo-section, .todo-plan, .todo-history { border-top: 1px solid var(--line); padding: .4rem 0; min-width: 0; }
+.todo-head { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+#participant-details .todo-head h4 { margin: .2rem 0; font-size: .78rem; font-weight: 600; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #523, after the mockup: the panel stays quiet — only 判断待ち stands out, a done item gets the green check only. */
+.todo-count { color: var(--muted); font-size: 11px; }
+.todo-head .todo-count { padding: 2px 6px; border-radius: 10px; background: var(--badge-ground); color: var(--fg); line-height: 1.2; }
+.todo-card { display: flex; gap: 6px; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px; margin: .3rem 0; background: var(--surface); transition: background-color 120ms; }
+.todo-card:hover { background: color-mix(in oklch, var(--fg) 4%, var(--surface)); }
+.todo-card.todo-done { border: 0; border-radius: 0; border-bottom: 1px solid var(--line); background: none; margin: 0; padding: .3rem 0; }
+.todo-card.todo-done:hover { background: color-mix(in oklch, var(--fg) 4%, transparent); }
+.todo-card.todo-done:last-child { border-bottom: 0; }
+.todo-mark { flex: none; width: 1rem; text-align: center; color: var(--muted); line-height: 1.6; }
+.todo-done .todo-mark { color: var(--ok); }
+/* Line icons from the mockup (#523): the text's size and colour, so both themes carry them. */
+.todo-icon { display: inline-block; flex: none; width: 1em; height: 1em; vertical-align: -.15em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.todo-mark .todo-icon { width: .85rem; height: .85rem; vertical-align: -.12rem; }
+#participant-details .todo-source .todo-icon { margin-left: .2em; }
+#participant-details .todo-fold > summary .todo-refresh { display: inline-flex; align-items: center; justify-content: center; }
+#participant-details .todo-refresh .todo-icon { width: .9rem; height: .9rem; }
+#participant-details .todo-source .todo-icon { width: .85em; height: .85em; }
+.todo-plan .todo-head > .todo-icon { color: var(--muted); }
+.todo-body { flex: 1; min-width: 0; }
+.todo-meta, .todo-ref { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; min-width: 0; font-size: .7rem; color: var(--muted); }
+.todo-meta { margin-top: 2px; }
+.todo-ref { margin-left: auto; gap: 0; }
+.todo-done .todo-ref { margin-left: 0; }
+.todo-badge { flex: none; border-radius: 4px; padding: 0 .3rem; background: var(--badge-ground); color: var(--fg); font-size: 10px; white-space: nowrap; }
+.todo-badge.todo-plan-missing { background: none; color: var(--muted); font-size: 10px; }
+.todo-badge-decision { color: var(--danger); background: color-mix(in oklch, var(--danger) 12%, transparent); }
+.todo-head .todo-plan-state { margin-left: auto; }
+.todo-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#participant-details .todo-source { margin: 0; padding: .1rem .2rem; text-decoration: none; }
+#participant-details .todo-source, #participant-details .todo-fold > summary .todo-refresh { color: var(--fg); }
+#participant-details .todo-source:hover { text-decoration: underline; }
+/* The title is the whole text, clamped to two lines; clicking it opens the full record. */
+#participant-details .todo-card .todo-item { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+#participant-details .todo-item { display: block; width: 100%; margin: 0; padding: .1rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--fg); font-weight: 600; }
+.todo-plan > small { margin: 0 0 .2rem; }
+.todo-steps { list-style: none; margin: .2rem 0 0; padding: 0; }
+.todo-steps li { display: flex; align-items: center; gap: .35rem; min-width: 0; font-size: .72rem; }
+.todo-step-state { flex: none; width: 3rem; color: var(--muted); }
+/* #563: the icon sits where the word did, at the word's height, so rows keep their height and alignment.
+   #566: the slot narrows to the icon; only a state still shown as a word keeps the word's width. */
+.todo-step-state.todo-step-pending, .todo-step-state.todo-step-inProgress, .todo-step-state.todo-step-completed { display: inline-flex; align-items: center; width: auto; }
+.todo-step-completed { color: var(--ok); }
+.todo-step-pending .todo-icon { stroke-width: 1.5; }
+.todo-step-inProgress { color: var(--ok); }
+.todo-step-inProgress .todo-icon path:first-child { opacity: .25; }
+#participant-details .todo-steps .todo-item { flex: 1; font-weight: normal; }
+#participant-details .todo-plan-open { margin: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
+#participant-details .todo-plan-open:hover { text-decoration: underline; background: none; }
+.todo-history > summary { display: flex; align-items: center; gap: .4rem; min-width: 0; cursor: pointer; font-weight: 600; list-style: none; }
+.todo-history > summary::-webkit-details-marker { display: none; }
+.todo-history .todo-count { font-weight: normal; }
+.todo-history .todo-limit { margin-left: auto; color: var(--muted); font-size: .68rem; font-weight: normal; white-space: nowrap; }
+.work-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: 85vh; overflow: auto; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font: .85rem system-ui, sans-serif; padding: 1rem; }
+.work-dialog textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; margin: .5rem 0; }
+.work-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+#participants .member button.pick {
+  cursor: pointer;
+}
+
+#participants .member button.pick:hover {
+  background: var(--hover);
+}
+
+/* The pane on the glass: the chosen fill, one deeper than the pointer's (#221),
+   so which terminal is showing reads at a glance and in either theme. */
+#participants .member.shown button.pick {
+  background: var(--selected);
+}
+/* While another row is chosen for its details (a human or MCP row has no
+ terminal, so the shown one stays), only that row is filled: two fills would
+ read as two choices (#540). */
+#participants:has(.member.detail-selected) .member.shown:not(.detail-selected) button.pick:not(:hover) {
+  background: none;
+}
+
+/* The circle the participant's lines carry in the room (#253): the account's
+   image, or the initial on the line's colour. Sized on the conversation's text
+   axis (#260), not the UI's: the room's circle is `2.1em` of `1.265em` of the
+   room's text, and this one is that over 1.15 (#258), so the panel's circle
+   stays one step smaller than the room's at every UI scale and text size. In
+   `rem` until #260 it rode the UI's multiple while the room's divided it back
+   out, and the two met whenever either setting left its default. The rest of
+   the panel is still on the UI's axis. The letter keeps the ratio to the
+   diameter it took at #258 (0.75 to 1.4). The row grows to hold it; its tracks
+   do not change. */
+#participants .member .avatar {
+  flex: none;
+  width: calc(var(--room-font-size) * 2.31);
+  height: calc(var(--room-font-size) * 2.31);
+  font-size: calc(var(--room-font-size) * 1.2375);
+}
+
+/* The name carries the participant's own colour, which is what makes this list
+   a legend for the conversation rather than a second copy of the same names. */
+#participants .who {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--speaker, var(--fg));
+}
+
+/* What a line says about itself beyond the name: 「（あなた）」 for the person at
+   this screen, 「未起動」 for an account with no session in the room, 「終了」 for
+   one whose session has ended and whose output is still readable. Colour alone
+   would say the first of those, but only to someone who already knows which
+   colour is theirs. */
+#participants .note {
+  flex: none;
+  color: var(--muted);
+}
+
+/* A state, as a badge (#225): the word on a ground of its kind. The colour is
+   the kind's — the muted colour for a state where an utterance has ended or
+   none is under way, the danger colour for 起動失敗, and `--ok` for the two
+   words that say one is still under way (below). 「（あなた）」 is not a state
+   and is not a badge.
+
+   The ground is the word's colour thinned into nothing, so it sits on the
+   panel's ground and on a picked row's fill alike. In light the muted and the
+   `--ok` badges are the mockup's two solid grounds instead (#235,
+   `--badge-ground`, `--ok-ground`); 起動失敗 keeps the thinned one in both
+   themes. */
+#participants .note.badge {
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--badge-ground);
+  font-size: 0.92em;
+  line-height: 1.4;
+}
+
+/* 起動失敗. The status line carries the app's own reason and this carries the
+   fact, on the row that was pressed — a launch that failed discards its
+   terminal, so the row is the only thing left that the press happened to. */
+#participants .note[data-kind="error"] {
+  color: var(--danger);
+  background: color-mix(in oklch, currentColor 14%, transparent);
+}
+
+/* 考え中… and 出力中. The one note that is true only while it is on screen: the
+   others describe a state that holds until something happens, and this one is
+   gone within a second of the terminal falling quiet (#82). Lifted out of
+   `--muted` because a word that comes and goes has to be read in the moment it
+   is there. It was the body colour until its badge (#225) and is `--ok` now —
+   still not the accent, which is what says "oneself" on this surface and would
+   be the one colour on this row that already means something else. The name
+   keeps the participant's own colour beside it either way. */
+#participants .note[data-kind="active"],
+#participants .note[data-kind="waiting"] {
+  color: var(--ok);
+  background: var(--ok-ground);
+}
+
+/* 許可待ち and 答え待ち, from a Codex app-server seat (#326): stopped on the
+   person, so not an ended utterance and coloured with the busy words, but
+   nothing is moving, so it is the one coloured badge that does not pulse
+   (the pulse below names `active` only). */
+
+/* An account that exists but is not in the room. Dimmed rather than dropped: it
+   is still someone, and this list is where the person reads who they have
+   (#53). Dimmed rather than greyed — the colour carries the account's identity,
+   and someone merely absent must not read as someone else (#59). The circle
+   dims with the name, by the same amount (#253).
+   It is still not an addressee: that list comes from the room's roster, so an
+   offline account cannot appear in it at all. */
+#participants .member.offline .pick {
+  opacity: 0.35;
+}
+
+#participants .empty {
+  padding: 0.45rem 0.9rem;
+  color: var(--muted);
+}
+
+/* The account's own operations, riding on its row. This is what one list buys:
+   the row is keyed on the account id, so these act on one account and cannot be
+   tied to the wrong one by a shared name (#53, #59).
+
+   Each fills its track, so the button is the column: 開始 or 終了, and the menu,
+   are one width in one place, and whether a row has 開始 is read off the button
+   rather than off where the row's controls have slid to (#62). 編集 is in the
+   menu (`#account-menu`) since #224; 終了 went there with it and came back to
+   the row in 開始's place (#239), and is in the menu as well.
+
+   Sized rather than fitted (#71): the box is fixed and the drawing is centred
+   in it, so the two read as one column of the same shapes anywhere.
+
+   No frame and no ground until the pointer is on one, as every button on the
+   screen (#221). The ground they carried until then was the window's, put
+   there so these would not be the only controls in the app on the
+   panel's tint (Master, 実機, 2026-08-24); with no button carrying a ground of
+   its own, there is nothing left for them to be out of step with. */
+#participants .member .more,
+#participants .member .start,
+#participants .member .stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 1.6rem;
+  font: inherit;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+
+#participants .member .more svg.icon,
+#participants .member .start svg.icon,
+#participants .member .stop svg.icon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+#participants .member .more:hover,
+#participants .member .start:hover:not(:disabled),
+#participants .member .stop:hover {
+  background: var(--hover);
+}
+
+/* The menu that is open is the row's chosen control while it stands. */
+#participants .member .more[aria-expanded="true"] {
+  background: var(--selected);
+}
+
+/* The 開始 / 終了 column. Emitted whether or not it holds a button — an empty
+   one is what keeps the menu in place on the row of someone who is not
+   launched. A box rather than nothing, so the button inside it fills the track:
+   left inline, a button takes its own width and sits at the track's left edge,
+   which puts it a different distance from the menu than the track it is in. */
+#participants .member .lifecycle {
+  display: flex;
+}
+
+/* The drawings take the button's colour, so this is what tells the two apart
+   beyond their shapes: the menu is quiet and 開始 is the body colour. */
+#participants .member .more {
+  color: var(--muted);
+}
+
+/* It acts on the click, unlike 終了: a session started by mistake is ended
+   from the same place, and a question here would charge every deliberate start
+   an answer. Dead while the launch is out; what the row is doing meanwhile is
+   the 起動中 beside the name (src/main.ts). */
+#participants .member .start {
+  color: var(--fg);
+}
+
+/* 終了 on the row (#239): the one control here that cannot be taken back. It
+   only asks: the click opens `#end-dialog` (#71). Drawn in the colour of 開始,
+   whose place it takes, not in the danger colour (#241); 終了 in the menu and a
+   topic's delete keep that. */
+#participants .member .stop {
+  color: var(--fg);
+}
+
+/* Dimmed as a whole as well as muted. Being unable to press it is the state,
+   and the state has to be visible on the button that is in it. */
+#participants .member .start:disabled {
+  color: var(--muted);
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* An account row's menu (#224): 開始 (#239), 端末を開く, 編集, 色を変える and,
+   below a divider, 終了. Its items are the buttons of #221 laid in a column — no frame
+   and no ground of their own, a drawing and a word, and the `--hover` shade
+   under the pointer or the keyboard's focus. The box they stand in is the one
+   floating surface on the screen besides `#mention-list`, and is drawn the same
+   way: the window's ground, a line, a shadow. */
+#account-menu,
+#topic-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 10rem;
+  padding: 0.25rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  font-size: 0.85rem;
+}
+
+#account-menu[hidden],
+#topic-menu[hidden] {
+  display: none;
+}
+
+#account-menu [role="menuitem"],
+#topic-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+#account-menu [role="menuitem"]:hover,
+#account-menu [role="menuitem"]:focus-visible,
+#topic-menu [role="menuitem"]:hover,
+#topic-menu [role="menuitem"]:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+#account-menu [role="menuitem"] svg.icon,
+#topic-menu [role="menuitem"] svg.icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  color: var(--muted);
+}
+
+/* 色を変える shows what it changes: a dot in the account's colour, set on the
+   menu from the row it was opened on, standing where the others' drawings
+   stand. */
+#account-menu .swatch {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#account-menu .swatch::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--speaker, var(--accent));
+}
+
+#account-menu [role="separator"] {
+  height: 1px;
+  margin: 0.25rem 0.3rem;
+  background: var(--line);
+}
+
+/* 終了: the one item that cannot be taken back, apart below the divider and in
+   the danger colour, the word and the drawing both. It still only asks — the
+   question is `#end-dialog` (#71). */
+#account-menu [role="menuitem"].danger,
+#account-menu [role="menuitem"].danger svg.icon {
+  color: var(--danger);
+}
+
+#participants .facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.3rem 0.6rem;
+  margin: 0.35rem 0 0;
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.9rem;
+  font-size: 0.75rem;
+}
+
+/* The values read only when something is stuck — the socket, the id, how the
+   session was launched — folded under 詳細 (#225). Folded, the summary is one
+   line under the values that stay open, its heading set as TODO's is —
+   weight, size and colour (#527). */
+#participants .facts-more > summary {
+  padding: 0.35rem 0.9rem 0.6rem;
+  color: var(--fg);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Every fold in the participant panel — TODO, 完了履歴, 詳細 — carries the same
+   thin chevron: pointing right when folded, down when open (#523, after the
+   mockup). Drawn from two borders so it stays a line, not a filled triangle. */
+#participants .facts-more > summary,
+#participants .todo-history > summary {
+  list-style: none;
+}
+
+#participants .facts-more > summary::-webkit-details-marker,
+#participants .todo-history > summary::-webkit-details-marker {
+  display: none;
+}
+
+#participants .facts-more > summary::before,
+#participants .todo-history > summary::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 0.38em;
+  height: 0.38em;
+  margin: 0 .77em 0 0.1em;
+  vertical-align: 0.15em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+#participants .facts-more[open] > summary::before,
+#participants .todo-history[open] > summary::before {
+  vertical-align: 0.3em;
+  transform: rotate(45deg);
+}
+
+#participants .todo-history > summary::before {
+  color: var(--muted);
+}
+
+/* Card headings (#536), as the approved card mock B draws them: no space above
+   the heading (the card's own padding is the top), the heading's left edge on
+   the card content's left edge (TODO's sections sit .65rem in, 詳細's list
+   .9rem), and, open, about 10px between the heading and what follows — the
+   rule above 判断待ち, or 詳細's first row. */
+#participants #participant-details .todo-fold > summary { padding: 0 .65rem; }
+#participants #terminal-diagnostics > summary { padding: 0 .9rem; }
+#participants #participant-details .todo-fold[open] > summary,
+#participants #terminal-diagnostics[open] > summary { padding-bottom: .6rem; }
+
+/* Put these three fold markers directly after their labels (#534), leaving
+   the refresh button and history counts in their existing tracks. */
+#participants .todo-fold > summary::before,
+#participants #terminal-facts > summary::before,
+#participants #terminal-diagnostics > summary::before,
+#participants .todo-history > summary::before { display: none; }
+#participants .todo-title::after,
+#participants #terminal-facts > summary::after,
+#participants #terminal-diagnostics > summary::after,
+#participants .todo-history-title::after {
+  content: "";
+  display: inline-block;
+  width: .38em;
+  height: .38em;
+  margin-left: .55em;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+#participants .todo-fold[open] > summary .todo-title::after,
+#participants #terminal-facts[open] > summary::after,
+#participants #terminal-diagnostics[open] > summary::after,
+#participants .todo-history[open] > summary .todo-history-title::after { transform: rotate(45deg); }
+
+/* The room is not listening, and the row saying so is folded: the summary
+   says it is worth opening (src/main.ts, `renderSocket`). */
+#participants .facts-more[data-kind="error"] > summary {
+  color: var(--danger);
+}
+
+/* Inside the fold the list needs no second rule above it; the summary is the
+   divide. */
+#participants .facts-more .facts {
+  margin: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+/* A usage row (#225), laid out as Claude Desktop lays it out (#320): the
+   row takes the whole width of the panel, both columns. Line 1 is the label
+   on the left and the reset text and the number on the right; line 2 is the
+   bar across the whole width. The label column's width goes to the text. */
+#participants .facts > .usage-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+}
+
+/* The value cell lends its children to the row's grid: the line beside the
+   label, the bar under both. */
+#participants dd.usage {
+  display: contents;
+}
+
+#participants dd.usage .line {
+  grid-column: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+#participants dd.usage .meter {
+  grid-column: 1 / -1;
+  display: block;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--selected);
+  overflow: hidden;
+}
+
+#participants dd.usage .fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+/* At 100% or over: the line 制限中 stands on (#161). */
+#participants dd.usage .fill[data-kind="error"] {
+  background: var(--danger);
+}
+
+/* The number keeps its width of three digits and the sign, and never gives
+   way. */
+#participants dd.usage .value {
+  flex: none;
+  min-width: 2.6em;
+}
+
+/* The reset text (#306, #320) is the part that gives way on a line too narrow
+   for it: it shrinks to an ellipsis, the whole of it in its title. */
+#participants dd.usage .reset {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+#participants dt {
+  color: var(--muted);
+}
+
+/* Values are read against each other down the right edge, and every one of
+   them is a literal — a port, a path, a command — so they are set in the same
+   face the terminal uses. */
+#participants dd {
+  margin: 0;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A path is the one value here that is longer than the column. It gets the
+   whole width, below its own label, because a working directory truncated in
+   the middle is the value least worth guessing at. */
+#participants dd.path {
+  grid-column: 1 / -1;
+  text-align: left;
+}
+
+/* A uuid is wider than the value column, and it is copied rather than read, so
+   it takes the whole width like a path and carries its copy control beside it
+   (#139). */
+#participants dd.session-id {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+#participants dd.session-id span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#participants dd.session-id button {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.15rem;
+  cursor: pointer;
+}
+
+/* `display` above outranks the user agent's rule for the attribute, and the
+   button is hidden while there is no id to copy. */
+#participants dd.session-id button[hidden] {
+  display: none;
+}
+
+#participants dd.session-id button svg.icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+#participants dd.session-id button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+#participants dd[data-kind="ok"] {
+  color: var(--accent);
+}
+
+#participants dd[data-kind="error"] {
+  color: var(--danger);
+}
+
