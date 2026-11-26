@@ -473,8 +473,23 @@ button svg.icon {
    stored. */
 #room,
 #input,
+#composer-box,
 #participants {
   --room-font-size: calc(1rem / var(--ui-scale));
+}
+
+/* One column for the conversation and the composer on a wide window (#613),
+   the way Codex and Claude's desktop app hold theirs: the lines and the box
+   under them share a width and stand at the middle, and one's own bubbles end
+   at the column's right edge rather than the window's. The width is the line's
+   own measure, `46em` of the room's size (`.message`), so it is written from
+   `--room-font-size` and grows with the text; it is not a `rem`, which would
+   hold the column still while the words grew. Where the window is narrower
+   than that, the column is the whole width and nothing moves. `#composer-box`
+   carries the size for this alone — its own text is still `#input`'s. */
+#room,
+#composer-box {
+  --room-column: calc(var(--room-font-size) * 46);
 }
 
 /* The room and the button over its foot (#243). The frame takes the column's
@@ -498,6 +513,15 @@ button svg.icon {
   flex-direction: column;
   /* Wider than the 0.75rem it was, so lines read as lines apart (#225). */
   gap: 1.15rem;
+}
+
+/* Each of the room's lines, dividers and folds stands in the column (#613).
+   The margin is what is left of the room's width beyond the column, halved, so
+   a line keeps its own measure and side inside it: everyone else's from the
+   column's left edge, one's own (`align-self: flex-end`) to its right edge.
+   Narrower than the column, the margin is zero and the room is as it was. */
+#room > * {
+  margin-inline: max(0px, (100% - var(--room-column)) / 2);
 }
 
 /* 最新の発言へ (#243): a small round button at the middle of the room's foot,
@@ -1271,6 +1295,11 @@ button svg.icon {
 #composer-box {
   display: flex;
   flex-direction: column;
+  /* The room's column (#613): as wide as the lines above it and under their
+     middle; the whole width where the window is narrower. */
+  box-sizing: border-box;
+  max-width: var(--room-column);
+  margin-inline: auto;
   background: var(--bg);
   border: 1px solid var(--composer-line);
   border-radius: 10px;

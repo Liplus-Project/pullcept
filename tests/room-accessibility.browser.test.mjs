@@ -181,3 +181,75 @@ test("reading text stays inside horizontally scrolling code and tables", { timeo
   assert.ok(measured.preScrollWidth > measured.preClientWidth, `Long code still scrolls inside its box: ${detail}`);
   assert.ok(measured.tableScrollWidth > measured.tableClientWidth, `A wide table still scrolls inside its frame: ${detail}`);
 });
+
+async function measureColumn(page) {
+  return page.evaluate(() => {
+    const post = { speaker: "Fixture speaker", ts: "2026-11-25T00:00:00Z", to: [], account: null, hue: null };
+    const long = "A paragraph long enough to fill the line's whole measure. ".repeat(8);
+    window.roomTest.drawTopic([
+      { ...post, own: false, message_id: "other", content: long },
+      { ...post, speaker: "human", own: true, message_id: "mine", content: "My own short line." },
+    ]);
+    const room = document.querySelector("#room");
+    const roomRect = room.getBoundingClientRect();
+    const style = getComputedStyle(room);
+    const contentLeft = roomRect.left + room.clientLeft + parseFloat(style.paddingLeft);
+    const contentRight = roomRect.left + room.clientLeft + room.clientWidth - parseFloat(style.paddingRight);
+    const other = room.querySelector(".message:not(.mine)").getBoundingClientRect();
+    const mine = room.querySelector(".message.mine").getBoundingClientRect();
+    const composer = document.querySelector("#composer");
+    const composerRect = composer.getBoundingClientRect();
+    const composerStyle = getComputedStyle(composer);
+    const box = document.querySelector("#composer-box").getBoundingClientRect();
+    return {
+      contentLeft, contentRight,
+      otherLeft: other.left, otherRight: other.right,
+      mineRight: mine.right,
+      composerLeft: composerRect.left + parseFloat(composerStyle.paddingLeft),
+      composerRight: composerRect.right - parseFloat(composerStyle.paddingRight),
+      boxLeft: box.left, boxRight: box.right,
+      pageScrollWidth: document.scrollingElement.scrollWidth,
+      pageWidth: document.scrollingElement.clientWidth,
+      roomScrollWidth: room.scrollWidth, roomClientWidth: room.clientWidth,
+    };
+  });
+}
+
+test("on a wide window the conversation and the composer share one centred column", { timeout: 30000 }, async t => {
+  const page = await openRoom(t, { viewport: { width: 1900, height: 1000 }, reducedMotion: "reduce" });
+  const m = await measureColumn(page);
+  const detail = JSON.stringify(m);
+  const columnWidth = m.otherRight - m.otherLeft;
+  const near = (a, b, tolerance, what) => assert.ok(Math.abs(a - b) <= tolerance, `${what}: ${detail}`);
+  assert.ok(columnWidth < m.contentRight - m.contentLeft - 100, `The column is narrower than the room: ${detail}`);
+  near(m.otherLeft - m.contentLeft, m.contentRight - m.otherRight, 3, "The column stands at the room's middle");
+  near(m.mineRight, m.otherRight, 2, "One's own bubble ends at the column's right edge");
+  near(m.boxRight - m.boxLeft, columnWidth, 2, "The composer box is as wide as the column");
+  near(m.boxLeft - m.composerLeft, m.composerRight - m.boxRight, 3, "The composer box stands at the composer's middle");
+  assert.ok(m.roomScrollWidth <= m.roomClientWidth + 1, `The room does not scroll sideways: ${detail}`);
+  assert.ok(m.pageScrollWidth <= m.pageWidth + 1, `The page does not scroll sideways: ${detail}`);
+  const shot = process.env.COLUMN_SCREENSHOT;
+  if (shot) await page.screenshot({ path: shot });
+
+  // The column is counted in the conversation's size, so it grows with the text.
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("#room, #input, #composer-box")) {
+      el.style.setProperty("--room-font-size", "calc(1.25rem / var(--ui-scale))");
+    }
+  });
+  const larger = await measureColumn(page);
+  const largerDetail = JSON.stringify(larger);
+  near((larger.otherRight - larger.otherLeft) / columnWidth, 1.25, 0.01, `The column grows with the room's size (${largerDetail})`);
+  near(larger.boxRight - larger.boxLeft, larger.otherRight - larger.otherLeft, 2, `The composer box grows with it (${largerDetail})`);
+});
+
+test("on a narrow window the column is the room's whole width", { timeout: 30000 }, async t => {
+  const page = await openRoom(t, { viewport: { width: 700, height: 640 }, reducedMotion: "reduce" });
+  const m = await measureColumn(page);
+  const detail = JSON.stringify(m);
+  const near = (a, b, tolerance, what) => assert.ok(Math.abs(a - b) <= tolerance, `${what}: ${detail}`);
+  near(m.otherLeft, m.contentLeft, 1, "Everyone else's line starts at the room's left edge");
+  near(m.mineRight, m.contentRight, 1, "One's own bubble ends at the room's right edge");
+  near(m.boxLeft, m.composerLeft, 1, "The composer box starts at the composer's left edge");
+  near(m.boxRight, m.composerRight, 1, "The composer box ends at the composer's right edge");
+});

@@ -4428,6 +4428,7 @@ const { seatedAnywhere, viewName, fitShown, showTopicTerminals, renderTerminalTa
 const displaySettings = createDisplaySettings({
   get roomEl() { return roomEl; },
   get inputEl() { return inputEl; },
+  get composerBoxEl() { return composerBoxEl; },
   get participantsEl() { return participantsEl; },
   syncScrollLatest: (...args) => syncScrollLatest(...args),
   setTerminalFontSize: (size) => sessions.setTerminalFontSize(size),
