@@ -144,3 +144,40 @@ test("long history and arriving posts scroll inside the room", { timeout: 30000 
   await page.waitForFunction(() => document.querySelector("#room").scrollTop > 0);
   assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
 });
+
+test("reading text stays inside horizontally scrolling code and tables", { timeout: 30000 }, async t => {
+  const page = await openRoom(t, { viewport: { width: 1000, height: 640 }, reducedMotion: "reduce" });
+  const longLine = Array.from({ length: 60 }, (_, i) => `token${i}`).join("_");
+  const wideRow = Array.from({ length: 30 }, (_, i) => `wide-cell-${i}`);
+  const content = [
+    "```\n" + longLine + "\n```",
+    `| ${wideRow.join(" | ")} |\n| ${wideRow.map(() => "---").join(" | ")} |\n| ${wideRow.join(" | ")} |`,
+  ].join("\n\n");
+  const measured = await page.evaluate(content => {
+    const post = { speaker: "Fixture speaker", ts: "2026-11-25T00:00:00Z", to: [], account: null, hue: null, own: false };
+    window.roomTest.drawTopic([{ ...post, message_id: "wide-history", content }]);
+    window.roomTest.appendMessage({ ...post, message_id: "wide-live", content });
+    const room = document.querySelector("#room");
+    const root = document.scrollingElement;
+    const pre = room.querySelector(".message .code-block pre");
+    const table = room.querySelector(".message .body .md-table");
+    return {
+      roomScrollWidth: room.scrollWidth,
+      roomClientWidth: room.clientWidth,
+      pageScrollHeight: root.scrollHeight,
+      pageHeight: root.clientHeight,
+      pageScrollWidth: root.scrollWidth,
+      pageWidth: root.clientWidth,
+      preScrollWidth: pre.scrollWidth,
+      preClientWidth: pre.clientWidth,
+      tableScrollWidth: table.scrollWidth,
+      tableClientWidth: table.clientWidth,
+    };
+  }, content);
+  const detail = JSON.stringify(measured);
+  assert.ok(measured.roomScrollWidth <= measured.roomClientWidth + 1, `The room does not scroll sideways: ${detail}`);
+  assert.ok(measured.pageScrollWidth <= measured.pageWidth + 1, `The page does not scroll sideways: ${detail}`);
+  assert.ok(measured.pageScrollHeight <= measured.pageHeight, `The page fits vertically: ${detail}`);
+  assert.ok(measured.preScrollWidth > measured.preClientWidth, `Long code still scrolls inside its box: ${detail}`);
+  assert.ok(measured.tableScrollWidth > measured.tableClientWidth, `A wide table still scrolls inside its frame: ${detail}`);
+});
