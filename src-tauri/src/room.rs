@@ -325,6 +325,10 @@ struct IncomingFrame {
     before: Option<String>,
     operation_id: Option<String>,
     operation: Option<serde_json::Value>,
+    /// The server a `mcp_server_restart` names, and the generation its caller
+    /// read from `mcp_server_status` (#620).
+    server: Option<String>,
+    expected_generation: Option<u64>,
 }
 
 /// One room: a topic, the floor of what has been said in it this run, and who
@@ -492,6 +496,22 @@ impl RoomState {
                 )
             })
             .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The seats a notice from a local MCP server is typed into now, each with
+    /// the room it is in: everyone seated in a room `rooms_in_session` names,
+    /// but the screen's own person (#620). One entry per seat, so an account
+    /// seated in two rooms is listed twice.
+    pub fn notice_recipients(&self) -> Vec<(String, Participant)> {
+        self.rooms_in_session()
+            .into_iter()
+            .flat_map(|room_id| {
+                self.participants(&room_id)
+                    .into_iter()
+                    .filter(|seat| !seat.own)
+                    .map(move |seat| (room_id.clone(), seat))
+            })
             .collect()
     }
 
@@ -1241,6 +1261,16 @@ pub fn post_notice(
         }
     }
     delivered
+}
+
+/// A `session_result` frame answering `request_id`, as the sidecar's session
+/// tools read it.
+fn session_answer(request_id: &str, result: Result<serde_json::Value, String>) -> String {
+    match result {
+        Ok(result) => serde_json::json!({ "type": "session_result", "request_id": request_id, "result": result }),
+        Err(error) => serde_json::json!({ "type": "session_result", "request_id": request_id, "error": error }),
+    }
+    .to_string()
 }
 
 /// How many posts one pull answers with when the asker names no number.
@@ -2286,6 +2316,34 @@ async fn serve_participant(
                     Err(error) => serde_json::json!({ "type": "session_result", "request_id": request_id, "error": error }),
                 };
                 let _ = room.to_participants.send(Fanout { target: origin.clone(), frame: answer.to_string() });
+            }
+            // The app's own MCP servers, read and restarted by a seat (#620).
+            // Admitted as the session frames above are. A restart waits for the
+            // new run to settle, so it is answered from a task of its own and
+            // this connection goes on reading meanwhile.
+            "mcp_server_status" | "mcp_server_restart" => {
+                let request_id = frame.request_id.unwrap_or_default();
+                let admitted = app.state::<crate::session_control::SessionControl>().authorize(&app, &origin, &socket_id);
+                if frame.kind == "mcp_server_status" {
+                    let result = admitted.and_then(|()| crate::app_mcp::room_status(&app));
+                    let _ = room.to_participants.send(Fanout { target: origin.clone(), frame: session_answer(&request_id, result) });
+                    continue;
+                }
+                let request = admitted.and_then(|()| {
+                    let server = frame.server.filter(|name| !name.trim().is_empty()).ok_or("server required")?;
+                    let expected = frame.expected_generation.ok_or("expected_generation required: read it from mcp_server_status")?;
+                    let requester = joined_as.clone().ok_or("No requester name")?;
+                    let topic = joined_room.get().cloned().ok_or("No requester topic")?;
+                    Ok((server, expected, requester, topic))
+                });
+                let (task_app, task_room, task_origin) = (app.clone(), room.clone(), origin.clone());
+                tauri::async_runtime::spawn(async move {
+                    let result = match request {
+                        Ok((server, expected, requester, topic)) => crate::app_mcp::room_restart(task_app, server, expected, requester, topic).await,
+                        Err(error) => Err(error),
+                    };
+                    let _ = task_room.to_participants.send(Fanout { target: task_origin, frame: session_answer(&request_id, result) });
+                });
             }
             _ => {}
         }

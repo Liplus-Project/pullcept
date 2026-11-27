@@ -25,6 +25,8 @@
 //! and deleting that account takes the entry out again (`remove_server`). The
 //! file stays the person's to edit by hand either way.
 
+pub mod room_control;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, VecDeque};

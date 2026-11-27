@@ -62,7 +62,8 @@ use webhook_bridge::{
 /// The server is not restarted when it ends. The bridge reconnects its own
 /// WebSocket; what ends it is the process itself failing, and a loop restarting
 /// that would be the app retrying a failure on its own (`model-loop-safety`).
-/// 再起動 in the settings panel, or a restart of the app, starts it again.
+/// 再起動 in the settings panel, a room seat's `restart_mcp_server` (#620), or a
+/// restart of the app, starts it again.
 pub async fn receive(
     app: &AppHandle,
     room: &RoomState,
