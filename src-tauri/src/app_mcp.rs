@@ -579,9 +579,9 @@ fn listed_server(app: &AppHandle, name: &str) -> Result<Option<Server>, String> 
 /// sidecar's 15 s wait for an answer, so the caller hears back either way.
 const ROOM_RESTART_WAIT: Duration = Duration::from_secs(10);
 
-/// What `connected_seats` means, carried on every answer that lists them, so
+/// What `notice_recipients` means, carried on every answer that lists them, so
 /// the caller does not read more into the list than the app knows (#620).
-const CONNECTED_SCOPE: &str = "connected_seats (接続中) = AI seats in the rooms this server's notices are posted into while it is starting or running. Pullcept is the server's only MCP client; a seat's own CLI-loaded copy of a server is not seen here and is not restarted.";
+const RECIPIENTS_SCOPE: &str = "notice_recipients (通知の受け取り先) = AI seats in the rooms this server's notices are posted into while it is starting or running. They are not connected to the server: Pullcept is its only MCP client. A seat's own CLI-loaded copy of a server is not seen here and is not restarted.";
 
 fn live(state: &Option<RunState>) -> bool {
     matches!(state, Some(RunState::Starting | RunState::Running))
@@ -608,7 +608,7 @@ fn state_detail(state: &Option<RunState>) -> Option<String> {
 /// The seats a live server's notices are typed into: every AI seat in a room
 /// that holds one (`room::post_notice`). Each server's notices go to the same
 /// rooms, so the list is one for all live servers.
-fn connected_seats(app: &AppHandle) -> Vec<Value> {
+fn notice_recipients(app: &AppHandle) -> Vec<Value> {
     app.state::<RoomState>()
         .notice_recipients()
         .into_iter()
@@ -617,10 +617,10 @@ fn connected_seats(app: &AppHandle) -> Vec<Value> {
 }
 
 /// `mcp_server_status` (#620): every server the file lists or this run has
-/// started, its state, and the seats connected to it. Read-only.
+/// started, its state, and the seats its notices are posted to. Read-only.
 pub fn room_status(app: &AppHandle) -> Result<Value, String> {
     let listed = read_file(app).and_then(|root| mcp_servers::servers(&root))?;
-    let connected = connected_seats(app);
+    let recipients = notice_recipients(app);
     let runs: BTreeMap<String, (u64, Option<RunState>, Option<Server>)> = {
         let state = app.state::<McpServers>();
         let inner = state.inner.lock();
@@ -644,13 +644,13 @@ pub fn room_status(app: &AppHandle) -> Result<Value, String> {
                 "detail": state_detail(&state),
                 "generation": generation,
                 "stale": matches!((entry, started_with.as_ref()), (Some(entry), Some(started)) if entry != started),
-                "connected_seats": if live(&state) { connected.clone() } else { Vec::new() },
+                "notice_recipients": if live(&state) { recipients.clone() } else { Vec::new() },
             })
         })
         .collect();
     Ok(serde_json::json!({
         "servers": servers,
-        "connected_seats_scope": CONNECTED_SCOPE,
+        "notice_recipients_scope": RECIPIENTS_SCOPE,
         "retrieved_at": now_ms(),
     }))
 }
@@ -658,7 +658,7 @@ pub fn room_status(app: &AppHandle) -> Result<Value, String> {
 /// `restart_mcp_server` from the room (#620): restart one listed server whose
 /// generation is still the one the caller read, wait for the new run to settle,
 /// and say who restarted what and how it went into the rooms of the seats that
-/// were connected and the requester's own.
+/// were receiving its notices and the requester's own.
 ///
 /// The restart is the window's (`start_checked` from what the file lists). A
 /// name the file does not list is refused: restarting it would only stop it.
@@ -673,7 +673,7 @@ pub async fn room_restart(
     let server = listed_server(&app, &name)?.ok_or_else(|| unlisted(&name))?;
     let servers = app.state::<McpServers>().inner().clone();
     let (_, before) = servers.current(&name);
-    let connected = if live(&before) { connected_seats(&app) } else { Vec::new() };
+    let recipients = if live(&before) { notice_recipients(&app) } else { Vec::new() };
     let generation = servers.start_checked(&app, &name, server, Some(expected_generation))?;
 
     let deadline = Instant::now() + ROOM_RESTART_WAIT;
@@ -697,10 +697,10 @@ pub async fn room_restart(
     };
 
     let speaker = crate::config::mcp_speaker(&app, &name);
-    let names = seat_names(connected.iter().filter_map(|seat| seat["name"].as_str()));
+    let names = seat_names(recipients.iter().filter_map(|seat| seat["name"].as_str()));
     let text = notice_text(&requester, &speaker.name, &name, &outcome, &names);
     let mut rooms: Vec<String> = vec![requester_topic];
-    for topic in connected.iter().filter_map(|seat| seat["topic_id"].as_str()) {
+    for topic in recipients.iter().filter_map(|seat| seat["topic_id"].as_str()) {
         if !rooms.iter().any(|room| room == topic) {
             rooms.push(topic.to_string());
         }
@@ -719,8 +719,8 @@ pub async fn room_restart(
         "came_back": outcome.came_back(),
         "detail": outcome.detail(),
         "generation": generation,
-        "connected_seats": connected,
-        "connected_seats_scope": CONNECTED_SCOPE,
+        "notice_recipients": recipients,
+        "notice_recipients_scope": RECIPIENTS_SCOPE,
         "room_notices_posted": posted,
     }))
 }

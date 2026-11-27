@@ -334,8 +334,8 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
         if (sessionAnswer === "disconnect") { socket.close(); return; }
         socket.send(JSON.stringify({ type: "session_result", request_id: frame.request_id,
           ...(sessionAnswer === "denied" ? { error: "Only a connected account session may control sessions" } :
-            { result: frame.type === "mcp_server_status" ? { servers: [{ server: "github-webhook-mcp", state: "running", generation: 3, connected_seats: [{ topic_id: "room", account_id: TEST_ACCOUNT, name: "Lay" }] }] } :
-              frame.type === "mcp_server_restart" ? { server: frame.server, state: "running", came_back: true, generation: 4, connected_seats: [{ topic_id: "room", account_id: TEST_ACCOUNT, name: "Lay" }] } :
+            { result: frame.type === "mcp_server_status" ? { servers: [{ server: "github-webhook-mcp", state: "running", generation: 3, notice_recipients: [{ topic_id: "room", account_id: TEST_ACCOUNT, name: "Lay" }] }] } :
+              frame.type === "mcp_server_restart" ? { server: frame.server, state: "running", came_back: true, generation: 4, notice_recipients: [{ topic_id: "room", account_id: TEST_ACCOUNT, name: "Lay" }] } :
               frame.type === "room_status" ? { participants: [{ id: "human", role: "admin" }, { id: "ai", account_id: frame.account_id ?? TEST_ACCOUNT }], retrieved_at: 123 } : frame.type === "session_list" ? { accounts: [{ account_id: TEST_ACCOUNT }], topics: [{ topic_id: "room" }] } :
               { operation_id: frame.operation?.operation_id ?? frame.operation_id, status: "accepted", room_connected: false } }) }));
         return;
@@ -689,12 +689,13 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   assert.ok(!toolNames.some((tool) => /stop_mcp|mcp.*stop/.test(tool)), "there is no MCP server stop tool");
   const restartTool = tools.result.tools.find((tool) => tool.name === "restart_mcp_server");
   assert.deepEqual(restartTool.inputSchema.required, ["server", "expected_generation"]);
-  assert.match(restartTool.description, /connected_seats/);
+  assert.match(restartTool.description, /notice_recipients/);
+  assert.doesNotMatch(JSON.stringify(tools.result.tools), /connected_seats|接続中/, "notice recipients are not called connected");
   const postsBeforeMcp = postFrames.length;
   const mcpStatus = await request("tools/call", { name: "mcp_server_status", arguments: {} });
   assert.equal(sessionFrames.at(-1).type, "mcp_server_status");
   const mcpServer = JSON.parse(mcpStatus.result.content[0].text).servers[0];
-  assert.equal(mcpServer.connected_seats[0].name, "Lay");
+  assert.equal(mcpServer.notice_recipients[0].name, "Lay");
   const restarted = await request("tools/call", { name: "restart_mcp_server", arguments: { server: mcpServer.server, expected_generation: mcpServer.generation } });
   assert.equal(restarted.result.isError, undefined);
   assert.equal(sessionFrames.at(-1).type, "mcp_server_restart");
@@ -702,7 +703,7 @@ test("say_to_room reaches the room, and the room pushes nothing back", async (t)
   assert.equal(sessionFrames.at(-1).expected_generation, 3);
   const restartResult = JSON.parse(restarted.result.content[0].text);
   assert.equal(restartResult.came_back, true);
-  assert.equal(restartResult.connected_seats[0].name, "Lay");
+  assert.equal(restartResult.notice_recipients[0].name, "Lay");
   assert.equal(postFrames.length, postsBeforeMcp, "the room notice is the app's, not a post from this seat");
   const beforeInvalidRestart = sessionFrames.length;
   for (const args of [{}, { server: "github-webhook-mcp" }, { server: "", expected_generation: 3 }, { server: "x", expected_generation: -1 }, { server: "x", expected_generation: 1.5 }, { server: "x", expected_generation: 3, action: "stop" }]) {

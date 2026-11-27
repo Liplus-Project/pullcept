@@ -7,11 +7,12 @@
 //! are what a restart interrupts, and the only ones the app can name: a seat
 //! that loads its own copy of the server in its CLI runs a process the app does
 //! not see, and a restart here does not touch it. They are reported as
-//! 「接続中」 (`connected_seats`) and nothing more is claimed of them.
+//! 「通知の受け取り先」 (`notice_recipients`), not as connected seats, and
+//! nothing more is claimed of them.
 //!
 //! A restart names the generation the caller read (`check_generation`), the way
 //! `control_account_session` names the PTY it read: the caller has seen which
-//! seats are connected before the restart goes ahead, and two seats restarting
+//! seats receive the server's notices before the restart goes ahead, and two seats restarting
 //! the same server at once restart it once.
 //!
 //! What a restart came to is read back from the run after it (`Outcome`), and
@@ -29,7 +30,7 @@ pub fn check_generation(expected: u64, current: u64) -> Result<(), String> {
     } else {
         Err(format!(
             "Server changed since you read it (expected_generation {expected}, now {current}); \
-             read mcp_server_status again and check its connected seats before restarting"
+             read mcp_server_status again and check its notice recipients before restarting"
         ))
     }
 }
@@ -90,7 +91,7 @@ impl Outcome {
     }
 }
 
-/// The names of the connected seats, once each, in the order given.
+/// The names of the notice recipients, once each, in the order given.
 ///
 /// One account seated in two topics is one name in the notice; the response
 /// keeps one entry per seat.
@@ -105,12 +106,12 @@ pub fn seat_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 }
 
 /// The app notice a restart is said as: who restarted which server, what it
-/// came to, and which seats were connected when it was restarted.
+/// came to, and which seats were receiving its notices when it was restarted.
 ///
 /// `server` is the name the server's account goes by, with the entry's name
 /// beside it when the two differ. 「（返信不要）」 is added by the app notice
 /// itself (`room_floor::app_notice_content`).
-pub fn notice_text(requester: &str, server: &str, entry: &str, outcome: &Outcome, connected: &[String]) -> String {
+pub fn notice_text(requester: &str, server: &str, entry: &str, outcome: &Outcome, recipients: &[String]) -> String {
     let label = if server == entry {
         server.to_string()
     } else {
@@ -126,12 +127,12 @@ pub fn notice_text(requester: &str, server: &str, entry: &str, outcome: &Outcome
     if let Some(detail) = outcome.detail() {
         text.push_str(&format!("\n理由: {}", detail.replace(['\r', '\n'], " ")));
     }
-    let seats = if connected.is_empty() {
+    let seats = if recipients.is_empty() {
         "なし".to_string()
     } else {
-        connected.join("、")
+        recipients.join("、")
     };
-    text.push_str(&format!("\n接続中だった席: {seats}"));
+    text.push_str(&format!("\n通知の受け取り先: {seats}"));
     text
 }
 
@@ -145,7 +146,7 @@ mod tests {
         assert_eq!(check_generation(0, 0), Ok(()), "a server not started yet is generation 0");
         let refused = check_generation(3, 4).unwrap_err();
         assert!(refused.contains("mcp_server_status"), "{refused}");
-        assert!(refused.contains("connected seats"), "{refused}");
+        assert!(refused.contains("notice recipients"), "{refused}");
     }
 
     #[test]
@@ -174,15 +175,15 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_says_who_which_server_what_and_the_connected_seats() {
+    fn the_notice_says_who_which_server_what_and_the_notice_recipients() {
         let seats = vec!["Lin".to_string(), "Luna".to_string()];
         assert_eq!(
             notice_text("Lay", "github-webhook-mcp", "github-webhook-mcp", &Outcome::Running, &seats),
-            "Lay が MCP サーバー github-webhook-mcp を再起動しました（成功）\n接続中だった席: Lin、Luna"
+            "Lay が MCP サーバー github-webhook-mcp を再起動しました（成功）\n通知の受け取り先: Lin、Luna"
         );
         assert_eq!(
             notice_text("Lay", "Webhook", "github-webhook-mcp", &Outcome::Failed("spawn\nfailed".into()), &[]),
-            "Lay が MCP サーバー Webhook（github-webhook-mcp） を再起動しました（失敗）\n理由: spawn failed\n接続中だった席: なし"
+            "Lay が MCP サーバー Webhook（github-webhook-mcp） を再起動しました（失敗）\n理由: spawn failed\n通知の受け取り先: なし"
         );
         assert!(notice_text("Lay", "s", "s", &Outcome::StillStarting, &[]).contains("未確認: 起動中のまま"));
         assert!(notice_text("Lay", "s", "s", &Outcome::Replaced, &[]).contains("未確認"));

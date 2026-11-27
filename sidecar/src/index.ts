@@ -606,19 +606,19 @@ const TOOLS = [
   },
   /**
    * The MCP servers Pullcept runs itself (#620): their state and the seats
-   * connected to them, and a restart of one. There is no stop. A seat is
-   * "connected" when the server's notices are posted into its room; the app is
-   * each server's only client and knows of no other.
+   * their notices are posted to, and a restart of one. There is no stop. No
+   * seat is connected to these servers: the app is each server's only client,
+   * and a seat receives its notices through the room.
    */
   {
     name: "mcp_server_status",
-    description: "List MCP servers Pullcept runs itself (e.g. the webhook bridge): server, account name, listed in mcp-servers.json, state (not_started/starting/running/ended/failed/stopped) with failure detail, generation, stale (file changed since start), and connected_seats (接続中): AI seats whose rooms receive its notices while it runs. Only what Pullcept knows: a seat's own CLI-loaded copy of a server is not listed. Read-only; posts nothing.",
+    description: "List MCP servers Pullcept runs itself (e.g. the webhook bridge): server, account name, listed in mcp-servers.json, state (not_started/starting/running/ended/failed/stopped) with failure detail, generation, stale (file changed since start), and notice_recipients (通知の受け取り先): AI seats whose rooms receive its notices while it runs; they are not connected to the server. Only what Pullcept knows: a seat's own CLI-loaded copy of a server is not listed. Read-only; posts nothing.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     inputSchema: { type: "object" as const, properties: {}, required: [] as string[], additionalProperties: false },
   },
   {
     name: "restart_mcp_server",
-    description: "Restart one Pullcept-run MCP server from what mcp-servers.json lists now (no stop; unlisted names are refused). First read mcp_server_status, check its connected_seats, and pass its current generation as expected_generation; a changed generation is refused, so a server is restarted once per read. Waits up to 10s and returns state, came_back (true/false, null = unconfirmed) and the connected seats. running means initialize answered, not that the server's own upstream connection is up. Requester, server, outcome and connected seats are posted to the room.",
+    description: "Restart one Pullcept-run MCP server from what mcp-servers.json lists now (no stop; unlisted names are refused). First read mcp_server_status, check its notice_recipients, and pass its current generation as expected_generation; a changed generation is refused, so a server is restarted once per read. Waits up to 10s and returns state, came_back (true/false, null = unconfirmed) and the notice recipients. running means initialize answered, not that the server's own upstream connection is up. Requester, server, outcome and notice recipients are posted to the room.",
     inputSchema: {
       type: "object" as const,
       properties: { server: { type: "string", minLength: 1 }, expected_generation: { type: "integer", minimum: 0 } },
