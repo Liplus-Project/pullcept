@@ -293,7 +293,7 @@ pub fn left_log_line(thread: &str, turn: Option<&str>, turn_ended: Option<bool>,
 
 pub fn shared_room_config(config: &mut Value, own: &str, bootstrap: &std::path::Path, credential: &std::path::Path, runner: &std::path::Path, entry: &std::path::Path, hook_keys: &[String]) {
     let mut tools = Map::new();
-    for name in ["say_to_room","read_room_history","my_usage","status","list_account_sessions","account_session_status","control_account_session"] { tools.insert(name.into(),json!({"approval_mode":"approve"})); }
+    for name in ["say_to_room","read_room_history","my_usage","status","list_account_sessions","account_session_status","control_account_session","mcp_server_status","restart_mcp_server"] { tools.insert(name.into(),json!({"approval_mode":"approve"})); }
     config[format!("mcp_servers.{own}")] = json!({"command":"node", "args":[bootstrap,credential,runner,entry], "env_vars":[], "enabled":true, "tools":tools});
     if !hook_keys.is_empty() {
         if !config["hooks.state"].is_object() { config["hooks.state"] = json!({}); }

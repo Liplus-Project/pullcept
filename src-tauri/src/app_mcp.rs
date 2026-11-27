@@ -29,8 +29,10 @@
 //! saved** (#172, AI 判断). The window puts 再起動 beside 保存 and says when the
 //! running server was started from something other than what the file now
 //! holds. Nothing restarts a server on its own: a server that ended stays ended
-//! until someone presses the button or starts the app again, for the reason
-//! `webhook.rs` gives for not restarting the bridge.
+//! until someone presses the button, a room seat restarts it
+//! (`restart_mcp_server` in the sidecar, #620: `room_restart` below), or the app
+//! is started again, for the reason `webhook.rs` gives for not restarting the
+//! bridge.
 //!
 //! What the file holds, how the window's text is read, and which accounts the
 //! entries are given are in the `mcp-servers` crate, where they are tested.
@@ -43,7 +45,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -181,8 +183,20 @@ impl McpServers {
     /// The run it replaces is ended by aborting its task, which drops the
     /// process handle; the handle is `kill_on_drop` (`webhook.rs`).
     fn start(&self, app: &AppHandle, name: &str, server: Server) {
+        let _ = self.start_checked(app, name, server, None);
+    }
+
+    /// `start`, refused when `expected` is given and is not the generation the
+    /// name holds now (0 for none) — checked under the same lock the new
+    /// generation is taken under, so two room restarts of one read restart it
+    /// once (#620). Answers the new run's generation.
+    fn start_checked(&self, app: &AppHandle, name: &str, server: Server, expected: Option<u64>) -> Result<u64, String> {
         let generation = {
             let mut inner = self.inner.lock();
+            if let Some(expected) = expected {
+                let current = inner.runs.get(name).map(|run| run.generation).unwrap_or(0);
+                mcp_servers::room_control::check_generation(expected, current)?;
+            }
             inner.next_generation += 1;
             let generation = inner.next_generation;
             let run = inner.runs.entry(name.to_string()).or_default();
@@ -228,6 +242,18 @@ impl McpServers {
             // replaced it, so it is ended here.
             _ => task.abort(),
         }
+        Ok(generation)
+    }
+
+    /// The generation and state a name holds now: `(0, None)` for one this app
+    /// run has not started.
+    fn current(&self, name: &str) -> (u64, Option<RunState>) {
+        self.inner
+            .lock()
+            .runs
+            .get(name)
+            .map(|run| (run.generation, run.state.clone()))
+            .unwrap_or((0, None))
     }
 
     /// End a server's current run without starting another.
@@ -534,12 +560,169 @@ pub fn restart_mcp_server(
     servers: State<McpServers>,
     name: String,
 ) -> Result<(), String> {
-    let listed = read_file(&app).and_then(|root| mcp_servers::servers(&root))?;
-    match listed.get(&name) {
-        Some(server) => servers.start(&app, &name, server.clone()),
+    match listed_server(&app, &name)? {
+        Some(server) => servers.start(&app, &name, server),
         None => servers.stop(&app, &name),
     }
     Ok(())
+}
+
+/// The entry the file lists under a name now, or `None`. What a restart starts
+/// from, whether the window or a room participant asked for it.
+fn listed_server(app: &AppHandle, name: &str) -> Result<Option<Server>, String> {
+    let mut listed = read_file(app).and_then(|root| mcp_servers::servers(&root))?;
+    Ok(listed.remove(name))
+}
+
+/// How long a restart asked for from the room waits for the new run to answer
+/// `initialize` before it reports the run as still starting (#620). Under the
+/// sidecar's 15 s wait for an answer, so the caller hears back either way.
+const ROOM_RESTART_WAIT: Duration = Duration::from_secs(10);
+
+/// What `connected_seats` means, carried on every answer that lists them, so
+/// the caller does not read more into the list than the app knows (#620).
+const CONNECTED_SCOPE: &str = "connected_seats (接続中) = AI seats in the rooms this server's notices are posted into while it is starting or running. Pullcept is the server's only MCP client; a seat's own CLI-loaded copy of a server is not seen here and is not restarted.";
+
+fn live(state: &Option<RunState>) -> bool {
+    matches!(state, Some(RunState::Starting | RunState::Running))
+}
+
+fn state_word(state: &Option<RunState>) -> &'static str {
+    match state {
+        None => "not_started",
+        Some(RunState::Starting) => "starting",
+        Some(RunState::Running) => "running",
+        Some(RunState::Ended { .. }) => "ended",
+        Some(RunState::Failed { .. }) => "failed",
+        Some(RunState::Stopped) => "stopped",
+    }
+}
+
+fn state_detail(state: &Option<RunState>) -> Option<String> {
+    match state {
+        Some(RunState::Ended { detail } | RunState::Failed { detail }) => Some(detail.clone()),
+        _ => None,
+    }
+}
+
+/// The seats a live server's notices are typed into: every AI seat in a room
+/// that holds one (`room::post_notice`). Each server's notices go to the same
+/// rooms, so the list is one for all live servers.
+fn connected_seats(app: &AppHandle) -> Vec<Value> {
+    app.state::<RoomState>()
+        .notice_recipients()
+        .into_iter()
+        .map(|(topic_id, seat)| serde_json::json!({ "topic_id": topic_id, "account_id": seat.account, "name": seat.name }))
+        .collect()
+}
+
+/// `mcp_server_status` (#620): every server the file lists or this run has
+/// started, its state, and the seats connected to it. Read-only.
+pub fn room_status(app: &AppHandle) -> Result<Value, String> {
+    let listed = read_file(app).and_then(|root| mcp_servers::servers(&root))?;
+    let connected = connected_seats(app);
+    let runs: BTreeMap<String, (u64, Option<RunState>, Option<Server>)> = {
+        let state = app.state::<McpServers>();
+        let inner = state.inner.lock();
+        inner.runs.iter().map(|(name, run)| (name.clone(), (run.generation, run.state.clone(), run.started_with.clone()))).collect()
+    };
+    let mut names: Vec<&String> = listed.keys().chain(runs.keys()).collect();
+    names.sort();
+    names.dedup();
+    let servers: Vec<Value> = names
+        .into_iter()
+        .map(|name| {
+            let entry = listed.get(name);
+            let (generation, state, started_with) = runs.get(name).cloned().unwrap_or((0, None, None));
+            let speaker = crate::config::mcp_speaker(app, name);
+            serde_json::json!({
+                "server": name,
+                "name": speaker.name,
+                "account_id": speaker.account_id,
+                "listed": entry.is_some(),
+                "state": state_word(&state),
+                "detail": state_detail(&state),
+                "generation": generation,
+                "stale": matches!((entry, started_with.as_ref()), (Some(entry), Some(started)) if entry != started),
+                "connected_seats": if live(&state) { connected.clone() } else { Vec::new() },
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "servers": servers,
+        "connected_seats_scope": CONNECTED_SCOPE,
+        "retrieved_at": now_ms(),
+    }))
+}
+
+/// `restart_mcp_server` from the room (#620): restart one listed server whose
+/// generation is still the one the caller read, wait for the new run to settle,
+/// and say who restarted what and how it went into the rooms of the seats that
+/// were connected and the requester's own.
+///
+/// The restart is the window's (`start_checked` from what the file lists). A
+/// name the file does not list is refused: restarting it would only stop it.
+pub async fn room_restart(
+    app: AppHandle,
+    name: String,
+    expected_generation: u64,
+    requester: String,
+    requester_topic: String,
+) -> Result<Value, String> {
+    use mcp_servers::room_control::{notice_text, seat_names, unlisted, Outcome};
+    let server = listed_server(&app, &name)?.ok_or_else(|| unlisted(&name))?;
+    let servers = app.state::<McpServers>().inner().clone();
+    let (_, before) = servers.current(&name);
+    let connected = if live(&before) { connected_seats(&app) } else { Vec::new() };
+    let generation = servers.start_checked(&app, &name, server, Some(expected_generation))?;
+
+    let deadline = Instant::now() + ROOM_RESTART_WAIT;
+    let outcome = loop {
+        let (current, state) = servers.current(&name);
+        if current != generation {
+            break Outcome::Replaced;
+        }
+        match state {
+            Some(RunState::Running) => break Outcome::Running,
+            Some(RunState::Failed { detail }) => break Outcome::Failed(detail),
+            Some(RunState::Ended { detail }) => break Outcome::Ended(detail),
+            Some(RunState::Starting) => {}
+            // Forgotten or stopped under this generation: not this run any more.
+            Some(RunState::Stopped) | None => break Outcome::Replaced,
+        }
+        if Instant::now() >= deadline {
+            break Outcome::StillStarting;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+
+    let speaker = crate::config::mcp_speaker(&app, &name);
+    let names = seat_names(connected.iter().filter_map(|seat| seat["name"].as_str()));
+    let text = notice_text(&requester, &speaker.name, &name, &outcome, &names);
+    let mut rooms: Vec<String> = vec![requester_topic];
+    for topic in connected.iter().filter_map(|seat| seat["topic_id"].as_str()) {
+        if !rooms.iter().any(|room| room == topic) {
+            rooms.push(topic.to_string());
+        }
+    }
+    let room = app.state::<RoomState>();
+    let posted = rooms
+        .iter()
+        .filter(|room_id| crate::room::post_app_notice(&app, &room, room_id, &text, None).is_some())
+        .count();
+
+    Ok(serde_json::json!({
+        "server": name,
+        "name": speaker.name,
+        "previous_state": state_word(&before),
+        "state": outcome.state(),
+        "came_back": outcome.came_back(),
+        "detail": outcome.detail(),
+        "generation": generation,
+        "connected_seats": connected,
+        "connected_seats_scope": CONNECTED_SCOPE,
+        "room_notices_posted": posted,
+    }))
 }
 
 /// Open the file in whatever the system opens a `.json` file with. Written

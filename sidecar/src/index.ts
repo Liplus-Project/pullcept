@@ -604,6 +604,27 @@ const TOOLS = [
       required: ["operation_id", "action", "account_id", "topic_id"], additionalProperties: false,
     },
   },
+  /**
+   * The MCP servers Pullcept runs itself (#620): their state and the seats
+   * connected to them, and a restart of one. There is no stop. A seat is
+   * "connected" when the server's notices are posted into its room; the app is
+   * each server's only client and knows of no other.
+   */
+  {
+    name: "mcp_server_status",
+    description: "List MCP servers Pullcept runs itself (e.g. the webhook bridge): server, account name, listed in mcp-servers.json, state (not_started/starting/running/ended/failed/stopped) with failure detail, generation, stale (file changed since start), and connected_seats (接続中): AI seats whose rooms receive its notices while it runs. Only what Pullcept knows: a seat's own CLI-loaded copy of a server is not listed. Read-only; posts nothing.",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    inputSchema: { type: "object" as const, properties: {}, required: [] as string[], additionalProperties: false },
+  },
+  {
+    name: "restart_mcp_server",
+    description: "Restart one Pullcept-run MCP server from what mcp-servers.json lists now (no stop; unlisted names are refused). First read mcp_server_status, check its connected_seats, and pass its current generation as expected_generation; a changed generation is refused, so a server is restarted once per read. Waits up to 10s and returns state, came_back (true/false, null = unconfirmed) and the connected seats. running means initialize answered, not that the server's own upstream connection is up. Requester, server, outcome and connected seats are posted to the room.",
+    inputSchema: {
+      type: "object" as const,
+      properties: { server: { type: "string", minLength: 1 }, expected_generation: { type: "integer", minimum: 0 } },
+      required: ["server", "expected_generation"], additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -654,6 +675,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "control_account_session") {
       if (!args || typeof args.operation_id !== "string" || !args.operation_id.trim()) return sessionError("Supply operation_id before calling; keep it for retries and status");
       return await sessionRequest("session_control", { operation: args });
+    }
+    if (name === "mcp_server_status") {
+      if (args && Object.keys(args).length) return sessionError("mcp_server_status takes no arguments");
+      return await sessionRequest("mcp_server_status", {});
+    }
+    if (name === "restart_mcp_server") {
+      if (!args || Object.keys(args).some((key) => key !== "server" && key !== "expected_generation")) return sessionError("Only server and expected_generation are accepted");
+      if (typeof args.server !== "string" || !args.server.trim()) return sessionError("server required: a name from mcp_server_status");
+      if (typeof args.expected_generation !== "number" || !Number.isInteger(args.expected_generation) || args.expected_generation < 0) return sessionError("expected_generation required: the server's current generation from mcp_server_status");
+      return await sessionRequest("mcp_server_restart", { server: args.server, expected_generation: args.expected_generation });
     }
 
     if (name !== "say_to_room") {
@@ -1073,7 +1104,8 @@ async function sessionRequest(type: string, fields: Record<string, unknown>) {
   });
   if (!sendToRoom({ type, request_id: requestId, ...fields })) awaitingSessions.get(requestId)?.(null);
   const result = await answer;
-  if (result === null && type === "room_status") return sessionError("Status unavailable: disconnected or timed out. Read again after reconnecting.");
+  if (result === null && (type === "room_status" || type === "mcp_server_status")) return sessionError("Status unavailable: disconnected or timed out. Read again after reconnecting.");
+  if (result === null && type === "mcp_server_restart") return sessionError("Restart unconfirmed (disconnected or timed out); it may have run. Read mcp_server_status before retrying: a new generation means it was restarted.");
   if (result === null) return sessionError("Session request unconfirmed (disconnected or timed out). Query operation_id or retry with the SAME operation_id; do not create a new ID.");
   if (result.error) return sessionError(result.error);
   return { content: [{ type: "text" as const, text: JSON.stringify(result.result) }] };
