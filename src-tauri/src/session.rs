@@ -226,8 +226,10 @@ fn codex_style(
 }
 
 /// The effective developer instructions (`codex-character.mjs`), model-free:
-/// `None` when the CLI runs with none.
+/// `None` when the CLI runs with none. A failure appends its fixed stage code
+/// and elapsed time to `logs/codex-instructions-probe.log` (#622).
 fn codex_effective_instructions(
+    app: &AppHandle,
     command: &str,
     options: &[String],
     cwd: &Path,
@@ -248,6 +250,8 @@ fn codex_effective_instructions(
     let data: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "Codex のキャラ探索に失敗しました。CLI の設定を診断端末で確認してください。")?;
     if !output.status.success() || data.get("error").is_some() {
+        mcp_config::codex::instructions_diagnostic::record(&data, std::time::SystemTime::now(),
+            || room_log::open_probe(app, mcp_config::codex::instructions_diagnostic::LOG_FILE));
         return Err("Codex の有効指示を確認できません。診断端末で CLI の設定・profile・信頼を確認してください。".into());
     }
     match data.get("instructions") {
@@ -306,7 +310,7 @@ fn codex_delivery(
     let room_prompt = mcp_config::Cli::CodexCli.room_system_prompt(server_name);
     let instructions = mcp_config::codex::app_server::seat_instructions(
         &mode, instructions.as_deref(), room_prompt.as_deref(),
-        || codex_effective_instructions(command, &options, cwd, env, entry),
+        || codex_effective_instructions(app, command, &options, cwd, env, entry),
     )?;
     Ok(CodexDelivery { mode, name, instructions, hook_keys, room_prompt })
 }
