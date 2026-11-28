@@ -6,6 +6,7 @@ pub mod admission;
 pub mod app_server;
 pub mod style_setup;
 pub mod style_diagnostic;
+pub mod instructions_diagnostic;
 pub mod remote;
 mod character;
 pub mod limit;

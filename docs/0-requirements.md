@@ -1,5 +1,7 @@
 # Pullcept 要求仕様
 
+Codex の有効指示の読み取り（`debug prompt-input` 二回の比較）は、CLI 自身の `<tools>` ブロック（Deferred tool namespaces）の中身の違いでは失敗しない。MCP の接続時刻で変わる部分であり、指示の位置（sentinel の位置）は比べる対象に入らないため、実際の指示の違いはこれまでどおり検出して起動を止める（#622）。失敗時は app data の `logs/codex-instructions-probe.log` に UTC 時刻・固定の段階コード一つ・所要ミリ秒を一行で追記し、プロンプト本文・子プロセス出力・引数・パスは記録しない。利用者向けエラーと起動判定は変えない。
+
 Codex output-style の明示的なオン保存は、同梱 loader の設置と native 設定 API による対象フォルダー・専用 hook の承認を行う（#559）。ホーム cwd は作業場所を変えず process 限定 hook を使い、user 全体へ登録しない。承認直前に同梱 bytes・command・native hash を照合し、利用者の hook／設定や Windows 同一パスの既存節を保つ。既存動作維持・オフ保存は承認しない。本文欠落・未信頼フォルダー・未信頼 hook・loader 不足を区別し、配送できない指定キャラでは起動を止める。
 
 Codex の output-style 確認失敗は、プレビューと起動の両方で app data の `logs/codex-style-probe.log` に既知の固定工程コード1つを1行で追記する（#576）。discovery・helper・hook の実行失敗／timeout／JSON不正と、project・helper参照・hook・matcher・metadata・handler・本文照合の失敗を区別する。任意の例外・子プロセス出力・引数・環境変数・本文・パスは診断へ記録しない。診断の書込失敗は無視し、利用者向けエラーと起動判定、timeout は変えない。
